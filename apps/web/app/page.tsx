@@ -21,6 +21,7 @@ const navigation = [
 
 const STORAGE_KEY = "empire-os-captures";
 const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
+const PERSON_STORAGE_KEY = "empire-os-people";
 
 const reviewOutcomes = [
   "Keep as Capture",
@@ -302,6 +303,44 @@ type SopRecord = CaptureConversionRecord & {
   relatedLesson: string;
 };
 
+const personStatusOptions = ["Active", "Inactive", "Candidate", "Former"] as const;
+const personAccessLevelOptions = ["Founder", "Executive", "Manager", "Team Member", "Limited"] as const;
+
+type PersonStatus = (typeof personStatusOptions)[number];
+type PersonAccessLevel = (typeof personAccessLevelOptions)[number];
+
+type PersonRecord = {
+  id: string;
+  name: string;
+  role: string;
+  responsibilities: string;
+  authority: string;
+  manager: string;
+  pillar: string;
+  skills: string;
+  developmentAreas: string;
+  performanceIndicators: string;
+  accessLevel: PersonAccessLevel;
+  status: PersonStatus;
+  dateCreated: string;
+};
+
+type PersonFormValues = Omit<PersonRecord, "id" | "dateCreated">;
+
+const defaultPersonForm: PersonFormValues = {
+  name: "",
+  role: "",
+  responsibilities: "",
+  authority: "",
+  manager: "",
+  pillar: "Garden Maintenance",
+  skills: "",
+  developmentAreas: "",
+  performanceIndicators: "",
+  accessLevel: "Team Member",
+  status: "Active",
+};
+
 const defaultProblemForm: Omit<ProblemRecord, "id" | "sourceCaptureId" | "targetType" | "createdAt" | "title" | "originalRawNote" | "relatedArea" | "importance" | "status"> = {
   problemStatement: "",
   severity: "Medium",
@@ -336,6 +375,14 @@ function generateConversionId() {
   }
 
   return `conversion-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function generatePersonId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return `person-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function formatCapturedAt(value: string) {
@@ -654,7 +701,7 @@ const destinationDefinitions = [
   },
 ] as const;
 
-type DestinationKey = "Command" | "Capture" | (typeof destinationDefinitions)[number]["key"];
+type DestinationKey = "Command" | "Capture" | "People" | (typeof destinationDefinitions)[number]["key"];
 
 type RelatedRecordItem = {
   label: string;
@@ -2615,6 +2662,7 @@ export default function Home() {
   const [formValues, setFormValues] = useState<CaptureFormValues>(defaultFormValues);
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
   const [conversions, setConversions] = useState<CaptureConversionRecord[]>([]);
+  const [people, setPeople] = useState<PersonRecord[]>([]);
   const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<ReviewOutcome>("Keep as Capture");
   const [selectedProblemId, setSelectedProblemId] = useState<string | null>(null);
@@ -2631,6 +2679,8 @@ export default function Home() {
   const [systemEditor, setSystemEditor] = useState<SystemRecord | null>(null);
   const [selectedSopId, setSelectedSopId] = useState<string | null>(null);
   const [sopEditor, setSopEditor] = useState<SopRecord | null>(null);
+  const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
+  const [personEditor, setPersonEditor] = useState<PersonRecord | null>(null);
   const [creatingLinkedActionForProblemId, setCreatingLinkedActionForProblemId] = useState<string | null>(null);
   const [creatingLinkedActionForDecisionId, setCreatingLinkedActionForDecisionId] = useState<string | null>(null);
   const [creatingLinkedDecisionForOpportunityId, setCreatingLinkedDecisionForOpportunityId] = useState<string | null>(null);
@@ -2643,6 +2693,7 @@ export default function Home() {
     try {
       const storedCaptures = window.localStorage.getItem(STORAGE_KEY);
       const storedConversions = window.localStorage.getItem(CONVERSION_STORAGE_KEY);
+      const storedPeople = window.localStorage.getItem(PERSON_STORAGE_KEY);
 
       if (storedCaptures) {
         const parsedCaptures = JSON.parse(storedCaptures);
@@ -2665,6 +2716,14 @@ export default function Home() {
           } else {
             setConversions(parsedConversions);
           }
+        }
+      }
+
+      if (storedPeople) {
+        const parsedPeople = JSON.parse(storedPeople);
+
+        if (Array.isArray(parsedPeople)) {
+          setPeople(parsedPeople);
         }
       }
     } catch {
@@ -2691,9 +2750,21 @@ export default function Home() {
     }
   }, [conversions]);
 
+  useEffect(() => {
+    if (people.length === 0) {
+      window.localStorage.removeItem(PERSON_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(PERSON_STORAGE_KEY, JSON.stringify(people));
+    }
+  }, [people]);
+
   const orderedCaptures = [...captures].sort(
     (first, second) =>
       new Date(second.capturedAt).getTime() - new Date(first.capturedAt).getTime(),
+  );
+
+  const orderedPeople = [...people].sort(
+    (first, second) => new Date(second.dateCreated).getTime() - new Date(first.dateCreated).getTime(),
   );
 
   const getConvertedRecordsByType = (targetType: CaptureConversionRecord["targetType"]) =>
@@ -3992,6 +4063,78 @@ export default function Home() {
     setSystemEditor(null);
   };
 
+  const handlePersonEditOpen = (person: PersonRecord) => {
+    setSelectedPersonId(person.id);
+    setPersonEditor(person);
+  };
+
+  const handlePersonEditorChange = (
+    field: keyof PersonRecord,
+    value: string,
+  ) => {
+    if (!personEditor) {
+      return;
+    }
+
+    setPersonEditor({
+      ...personEditor,
+      [field]: value,
+    });
+  };
+
+  const handlePersonSave = () => {
+    if (!personEditor) {
+      return;
+    }
+
+    const nextPerson: PersonRecord = {
+      ...personEditor,
+      id: personEditor.id || generatePersonId(),
+      name: personEditor.name.trim() || "Unnamed person",
+      role: personEditor.role.trim(),
+      responsibilities: personEditor.responsibilities.trim(),
+      authority: personEditor.authority.trim(),
+      manager: personEditor.manager.trim(),
+      pillar: personEditor.pillar.trim() || "Garden Maintenance",
+      skills: personEditor.skills.trim(),
+      developmentAreas: personEditor.developmentAreas.trim(),
+      performanceIndicators: personEditor.performanceIndicators.trim(),
+      accessLevel: personAccessLevelOptions.includes(personEditor.accessLevel as PersonAccessLevel)
+        ? (personEditor.accessLevel as PersonAccessLevel)
+        : "Team Member",
+      status: personStatusOptions.includes(personEditor.status as PersonStatus)
+        ? (personEditor.status as PersonStatus)
+        : "Active",
+      dateCreated: personEditor.dateCreated || new Date().toISOString(),
+    };
+
+    const isNewPerson = !people.some((person) => person.id === nextPerson.id);
+
+    setPeople((currentPeople) =>
+      isNewPerson
+        ? [nextPerson, ...currentPeople]
+        : currentPeople.map((person) => person.id === nextPerson.id ? nextPerson : person),
+    );
+
+    setSelectedPersonId(nextPerson.id);
+    setPersonEditor(nextPerson);
+    setFeedback({
+      type: "success",
+      message: isNewPerson ? "Person created." : "Person details saved.",
+    });
+  };
+
+  const handleCreatePerson = () => {
+    const newPerson: PersonRecord = {
+      ...defaultPersonForm,
+      id: generatePersonId(),
+      dateCreated: new Date().toISOString(),
+    };
+
+    setSelectedPersonId(newPerson.id);
+    setPersonEditor(newPerson);
+  };
+
   return (
     <div className="min-h-screen bg-[#f1efe9] text-[#171717]">
       <div className="flex min-h-screen">
@@ -4023,7 +4166,8 @@ export default function Home() {
                       item === "Decisions" ||
                       item === "Lessons" ||
                       item === "Systems" ||
-                      item === "SOPs"
+                      item === "SOPs" ||
+                      item === "People"
                     ) {
                       setActiveView(item === "Command" ? "Command" : item);
                     }
@@ -4138,6 +4282,76 @@ export default function Home() {
                         </div>
                       </section>
                     ))}
+                </div>
+              )}
+            </div>
+          ) : activeView === "People" ? (
+            <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+              <header className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-4">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#4d4944]">
+                    People foundation
+                  </p>
+                  <h1 className="mt-2.5 text-[36px] font-semibold tracking-[-0.07em] text-[#171717] sm:text-[42px]">
+                    People
+                  </h1>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCreatePerson}
+                  className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]"
+                >
+                  Create Person
+                </button>
+              </header>
+
+              <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
+                People records provide a structured foundation for names, roles, authority, skills, accountability and access level without replacing the broader operating model.
+              </p>
+
+              {orderedPeople.length === 0 ? (
+                <div className="mt-6 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">
+                  No people yet. Create the first person record to establish the People foundation.
+                </div>
+              ) : (
+                <div className="mt-6 space-y-3">
+                  {orderedPeople.map((person) => (
+                    <button
+                      key={person.id}
+                      type="button"
+                      onClick={() => handlePersonEditOpen(person)}
+                      className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec]"
+                    >
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <h2 className="text-[20px] font-medium tracking-[-0.05em] text-[#171717]">
+                            {person.name}
+                          </h2>
+                          <p className="mt-2 text-[14px] leading-6 text-[#424039]">
+                            {person.role || "Role not specified"}
+                          </p>
+                        </div>
+                        <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">
+                          {person.status}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">
+                          {person.pillar}
+                        </span>
+                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">
+                          {person.accessLevel}
+                        </span>
+                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">
+                          {person.manager || "No manager"}
+                        </span>
+                        <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1.5">
+                          {formatCapturedAt(person.dateCreated)}
+                        </span>
+                      </div>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
@@ -5140,6 +5354,206 @@ export default function Home() {
           onSave={handleSopSave}
           onOpenRelatedSystem={() => handleOpenRelatedSystem(sopEditor)}
         />
+      ) : null}
+
+      {selectedPersonId && personEditor ? (
+        <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+            <div className="flex items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Person detail</p>
+                <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">
+                  {personEditor.name || "New person"}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedPersonId(null);
+                  setPersonEditor(null);
+                }}
+                className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Name
+                </label>
+                <input
+                  type="text"
+                  value={personEditor.name}
+                  onChange={(event) => handlePersonEditorChange("name", event.target.value)}
+                  className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Role
+                </label>
+                <input
+                  type="text"
+                  value={personEditor.role}
+                  onChange={(event) => handlePersonEditorChange("role", event.target.value)}
+                  className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Pillar / area
+                </label>
+                <select
+                  value={personEditor.pillar}
+                  onChange={(event) => handlePersonEditorChange("pillar", event.target.value)}
+                  className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                >
+                  <option>Garden Maintenance</option>
+                  <option>Hard Landscape Construction</option>
+                  <option>Excavation</option>
+                  <option>People</option>
+                  <option>Systems</option>
+                  <option>Finance</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Manager
+                </label>
+                <input
+                  type="text"
+                  value={personEditor.manager}
+                  onChange={(event) => handlePersonEditorChange("manager", event.target.value)}
+                  className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Status
+                </label>
+                <select
+                  value={personEditor.status}
+                  onChange={(event) => handlePersonEditorChange("status", event.target.value)}
+                  className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                >
+                  {personStatusOptions.map((status) => (
+                    <option key={status} value={status}>{status}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Access level
+                </label>
+                <select
+                  value={personEditor.accessLevel}
+                  onChange={(event) => handlePersonEditorChange("accessLevel", event.target.value)}
+                  className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                >
+                  {personAccessLevelOptions.map((level) => (
+                    <option key={level} value={level}>{level}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Responsibilities
+                </label>
+                <textarea
+                  rows={3}
+                  value={personEditor.responsibilities}
+                  onChange={(event) => handlePersonEditorChange("responsibilities", event.target.value)}
+                  className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Authority
+                </label>
+                <textarea
+                  rows={3}
+                  value={personEditor.authority}
+                  onChange={(event) => handlePersonEditorChange("authority", event.target.value)}
+                  className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Skills
+                </label>
+                <textarea
+                  rows={3}
+                  value={personEditor.skills}
+                  onChange={(event) => handlePersonEditorChange("skills", event.target.value)}
+                  className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Development areas
+                </label>
+                <textarea
+                  rows={3}
+                  value={personEditor.developmentAreas}
+                  onChange={(event) => handlePersonEditorChange("developmentAreas", event.target.value)}
+                  className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Performance indicators
+                </label>
+                <textarea
+                  rows={3}
+                  value={personEditor.performanceIndicators}
+                  onChange={(event) => handlePersonEditorChange("performanceIndicators", event.target.value)}
+                  className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-xl border border-[#d3cbc3] bg-[#f1eee9] p-3 text-[11px] uppercase tracking-[0.14em] text-[#4d4944]">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <span>Person ID: {personEditor.id}</span>
+                <span>Date created: {formatCapturedAt(personEditor.dateCreated)}</span>
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedPersonId(null);
+                  setPersonEditor(null);
+                }}
+                className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handlePersonSave}
+                className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1]"
+              >
+                Save person
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );
