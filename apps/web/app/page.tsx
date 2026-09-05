@@ -179,6 +179,7 @@ type ActionRecord = CaptureConversionRecord & {
   actionTitle: string;
   description: string;
   owner: string;
+  ownerPersonId?: string;
   createdBy: string;
   createdDate: string;
   dueDate: string;
@@ -420,6 +421,37 @@ function formatReviewOutcome(outcome: ReviewOutcome | null | undefined) {
   }
 
   return outcome.replace("Convert to ", "");
+}
+
+function getActionOwnerDisplay(action: ActionRecord, people: PersonRecord[]) {
+  const activePerson = action.ownerPersonId
+    ? people.find((person) => person.id === action.ownerPersonId && person.status === "Active")
+    : null;
+
+  if (activePerson) {
+    return activePerson.name;
+  }
+
+  if (action.owner && action.owner.trim()) {
+    return action.owner.trim();
+  }
+
+  return "Unassigned";
+}
+
+function getActionOwnerValue(action: ActionRecord, people: PersonRecord[]) {
+  if (action.ownerPersonId) {
+    const activeOwner = people.find((person) => person.id === action.ownerPersonId && person.status === "Active");
+    if (activeOwner) {
+      return activeOwner.id;
+    }
+  }
+
+  const matchingActivePerson = people.find((person) =>
+    person.status === "Active" && person.name.trim().toLowerCase() === (action.owner || "").trim().toLowerCase(),
+  );
+
+  return matchingActivePerson ? matchingActivePerson.id : "unassigned";
 }
 
 function normalizeProblemRecord(record: CaptureConversionRecord): ProblemRecord {
@@ -1064,17 +1096,22 @@ function ProblemDetailPanel({ problem, linkedActions, upstream, downstream, onCl
 
 type ActionDetailPanelProps = {
   action: ActionRecord;
+  people: PersonRecord[];
   upstream: RelatedRecordItem[];
   downstream: RelatedRecordItem[];
   onClose: () => void;
   onChange: (field: keyof ActionRecord, value: string) => void;
+  onOwnerChange: (personId: string) => void;
   onSave: () => void;
   onOpenRelatedProblem?: () => void;
   onOpenRelatedDecision?: () => void;
 };
 
-function ActionDetailPanel({ action, upstream, downstream, onClose, onChange, onSave, onOpenRelatedProblem, onOpenRelatedDecision }: ActionDetailPanelProps) {
+function ActionDetailPanel({ action, people, upstream, downstream, onClose, onChange, onOwnerChange, onSave, onOpenRelatedProblem, onOpenRelatedDecision }: ActionDetailPanelProps) {
   const isCompleted = action.status === "Completed";
+  const ownerOptions = [{ id: "unassigned", name: "Unassigned" }, ...people.filter((person) => person.status === "Active")];
+  const selectedOwnerValue = getActionOwnerValue(action, people);
+  const ownerDisplay = getActionOwnerDisplay(action, people);
 
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
@@ -1123,11 +1160,19 @@ function ActionDetailPanel({ action, upstream, downstream, onClose, onChange, on
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
               Owner
             </label>
-            <input
-              value={action.owner}
-              onChange={(event) => onChange("owner", event.target.value)}
+            <select
+              value={selectedOwnerValue}
+              onChange={(event) => onOwnerChange(event.target.value)}
               className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
-            />
+            >
+              {ownerOptions.map((person) => (
+                <option key={person.id} value={person.id}>{person.name}</option>
+              ))}
+            </select>
+            <div className="mt-2 text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
+              {action.ownerPersonId ? `Owner: ${ownerDisplay}` : `Owner: ${ownerDisplay}`}
+              {action.ownerPersonId ? <span className="mt-1 block text-[9px] normal-case tracking-normal text-[#6a625d]">Person ID: {action.ownerPersonId}</span> : null}
+            </div>
           </div>
 
           <div>
@@ -3414,6 +3459,20 @@ export default function Home() {
     });
   };
 
+  const handleActionOwnerChange = (personId: string) => {
+    if (!actionEditor) {
+      return;
+    }
+
+    const activePerson = people.find((person) => person.id === personId && person.status === "Active");
+
+    setActionEditor({
+      ...actionEditor,
+      ownerPersonId: activePerson ? activePerson.id : "",
+      owner: activePerson ? activePerson.name : "Unassigned",
+    });
+  };
+
   const handleActionSave = () => {
     if (!selectedActionId || !actionEditor) {
       return;
@@ -4723,7 +4782,7 @@ export default function Home() {
                           {action.priority}
                         </span>
                         <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">
-                          {action.owner || "Unassigned"}
+                          {getActionOwnerDisplay(action, people)}
                         </span>
                         <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">
                           {action.relatedPillar}
@@ -5163,6 +5222,7 @@ export default function Home() {
       {selectedActionId && actionEditor ? (
         <ActionDetailPanel
           action={actionEditor}
+          people={people.filter((person) => person.status === "Active")}
           upstream={[
             ...getCaptureLineage(actionEditor.sourceCaptureId),
             ...(actionEditor.relatedProblem
@@ -5193,6 +5253,7 @@ export default function Home() {
             setActionEditor(null);
           }}
           onChange={handleActionEditorChange}
+          onOwnerChange={handleActionOwnerChange}
           onSave={handleActionSave}
           onOpenRelatedProblem={() => handleOpenRelatedProblem(actionEditor)}
           onOpenRelatedDecision={() => handleOpenRelatedDecision(actionEditor)}
