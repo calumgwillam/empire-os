@@ -2720,11 +2720,125 @@ export default function Home() {
     reasons: string[];
     statusText: string;
     area: string;
+    priorityScore: number;
+    sortDate: number;
     onOpen: () => void;
   };
 
   const getAreaText = (record: { relatedArea?: string; relatedPillar?: string; area?: string; }) => {
     return record.relatedPillar || record.relatedArea || record.area || "";
+  };
+
+  const getDateValue = (value?: string) => {
+    if (!value) {
+      return 0;
+    }
+
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+  };
+
+  const getProblemPriorityScore = (problem: ProblemRecord) => {
+    let score = 0;
+
+    if (problem.severity === "Critical") {
+      score += 150;
+    } else if (problem.severity === "High") {
+      score += 110;
+    }
+
+    if (problem.problemStatus === "Open") {
+      score += 35;
+    } else if (problem.problemStatus === "Action required") {
+      score += 30;
+    } else if (problem.problemStatus === "Investigating") {
+      score += 20;
+    }
+
+    return score;
+  };
+
+  const getActionPriorityScore = (action: ActionRecord) => {
+    let score = 0;
+
+    if (action.status === "Blocked") {
+      score += 140;
+    }
+
+    if (action.priority === "Critical") {
+      score += 120;
+    } else if (action.priority === "High") {
+      score += 90;
+    }
+
+    if (action.dueDate) {
+      const dueDate = getDateValue(action.dueDate);
+      const daysUntilDue = (dueDate - Date.now()) / (1000 * 60 * 60 * 24);
+
+      if (dueDate && daysUntilDue < 0) {
+        score += 180;
+      } else if (daysUntilDue <= 7) {
+        score += 60;
+      }
+    }
+
+    if (action.status === "In Progress") {
+      score += 20;
+    }
+
+    return score;
+  };
+
+  const getDecisionPriorityScore = (decision: DecisionRecord) => {
+    let score = 0;
+
+    if (decision.decisionStatus === "Under Review") {
+      score += 40;
+    }
+
+    if (decision.reviewDate) {
+      const reviewDate = getDateValue(decision.reviewDate);
+      if (reviewDate && reviewDate <= Date.now()) {
+        score += 150;
+      } else {
+        score += 60;
+      }
+    }
+
+    return score;
+  };
+
+  const getOpportunityPriorityScore = (opportunity: OpportunityRecord) => {
+    let score = 0;
+
+    if (opportunity.status === "Evaluating") {
+      score += 35;
+    }
+
+    if (opportunity.strategicFit === "Exceptional") {
+      score += 110;
+    } else if (opportunity.strategicFit === "High") {
+      score += 90;
+    }
+
+    return score;
+  };
+
+  const getLessonPriorityScore = (lesson: LessonRecord) => {
+    return lesson.status === "Change Required" ? 80 : 0;
+  };
+
+  const getSystemPriorityScore = (system: SystemRecord) => {
+    return system.status === "Reviewing" ? 65 : 0;
+  };
+
+  const getSopPriorityScore = (sop: SopRecord) => {
+    if (!sop.reviewDate) {
+      return 0;
+    }
+
+    const reviewDate = getDateValue(sop.reviewDate);
+    return reviewDate <= Date.now() ? 150 : 60;
   };
 
   const buildCommandAttention = (): Record<string, AttentionItem[]> => {
@@ -2785,6 +2899,8 @@ export default function Home() {
           reasons,
           statusText: `${problem.severity} / ${problem.problemStatus}`,
           area: getAreaText(problem),
+          priorityScore: getProblemPriorityScore(problem),
+          sortDate: getDateValue(problem.createdAt),
           onOpen: () => {
             setSelectedProblemId(problem.id);
             setProblemEditor(problem);
@@ -2832,6 +2948,8 @@ export default function Home() {
           reasons,
           statusText: `${action.status} / ${action.priority} / ${action.dueDate ? formatCapturedAt(action.dueDate) : "No due date"}`,
           area: getAreaText(action),
+          priorityScore: getActionPriorityScore(action),
+          sortDate: getDateValue(action.dueDate || action.createdAt),
           onOpen: () => {
             setSelectedActionId(action.id);
             setActionEditor(action);
@@ -2864,6 +2982,8 @@ export default function Home() {
           reasons,
           statusText: `${decision.decisionStatus} / ${decision.reviewDate ? formatCapturedAt(decision.reviewDate) : "No review date"}`,
           area: getAreaText(decision),
+          priorityScore: getDecisionPriorityScore(decision),
+          sortDate: getDateValue(decision.reviewDate || decision.createdAt),
           onOpen: () => {
             setSelectedDecisionId(decision.id);
             setDecisionEditor(decision);
@@ -2892,6 +3012,8 @@ export default function Home() {
           reasons,
           statusText: `${opportunity.status} / ${opportunity.strategicFit}`,
           area: getAreaText(opportunity),
+          priorityScore: getOpportunityPriorityScore(opportunity),
+          sortDate: getDateValue(opportunity.dateIdentified || opportunity.createdAt),
           onOpen: () => {
             setSelectedOpportunityId(opportunity.id);
             setOpportunityEditor(opportunity);
@@ -2910,6 +3032,8 @@ export default function Home() {
           reasons: ["Status: Change required"],
           statusText: lesson.status,
           area: getAreaText(lesson),
+          priorityScore: getLessonPriorityScore(lesson),
+          sortDate: getDateValue(lesson.dateLearned || lesson.createdAt),
           onOpen: () => {
             setSelectedLessonId(lesson.id);
             setLessonEditor(lesson);
@@ -2928,6 +3052,8 @@ export default function Home() {
           reasons: ["Status: Reviewing"],
           statusText: system.status,
           area: getAreaText(system),
+          priorityScore: getSystemPriorityScore(system),
+          sortDate: getDateValue(system.lastReviewed || system.createdAt),
           onOpen: () => {
             setSelectedSystemId(system.id);
             setSystemEditor(system);
@@ -2949,6 +3075,8 @@ export default function Home() {
             reasons: ["Review date due or overdue"],
             statusText: `${sop.status} / ${formatCapturedAt(sop.reviewDate)}`,
             area: getAreaText(sop),
+            priorityScore: getSopPriorityScore(sop),
+            sortDate: getDateValue(sop.reviewDate || sop.createdAt),
             onOpen: () => {
               setSelectedSopId(sop.id);
               setSopEditor(sop);
@@ -2962,7 +3090,23 @@ export default function Home() {
   };
 
   const commandAttention = buildCommandAttention();
-  const commandAttentionItems = Object.values(commandAttention).reduce((total, items) => total + items.length, 0);
+  const sortedCommandAttention = Object.fromEntries(
+    Object.entries(commandAttention).map(([reason, items]) => [
+      reason,
+      [...items].sort((left, right) => {
+        if (right.priorityScore !== left.priorityScore) {
+          return right.priorityScore - left.priorityScore;
+        }
+
+        if (right.sortDate !== left.sortDate) {
+          return right.sortDate - left.sortDate;
+        }
+
+        return left.title.localeCompare(right.title);
+      }),
+    ]),
+  ) as Record<string, AttentionItem[]>;
+  const commandAttentionItems = Object.values(sortedCommandAttention).reduce((total, items) => total + items.length, 0);
   const overdueActionCount = actionRecords.filter((action) => {
     if (!action.dueDate) {
       return false;
@@ -3941,7 +4085,7 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="mt-6 space-y-5">
-                  {Object.entries(commandAttention)
+                  {Object.entries(sortedCommandAttention)
                     .sort(([left], [right]) => left.localeCompare(right))
                     .map(([reason, items]) => (
                       <section key={reason} className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
@@ -3954,7 +4098,8 @@ export default function Home() {
                               key={`${item.objectType}-${item.id}-${item.reason}`}
                               type="button"
                               onClick={item.onOpen}
-                              className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717]"
+                              aria-label={`Open ${item.objectType}: ${item.title}`}
+                              className="block w-full cursor-pointer rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f5f2ee]"
                             >
                               <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                                 <div className="min-w-0 flex-1">
@@ -3975,7 +4120,7 @@ export default function Home() {
                                 </div>
                               </div>
 
-                              <div className="mt-2 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                              <div className="mt-2 flex flex-wrap items-center gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
                                 {item.area ? (
                                   <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">
                                     {item.area}
@@ -3983,6 +4128,9 @@ export default function Home() {
                                 ) : null}
                                 <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">
                                   {item.objectType}
+                                </span>
+                                <span className="rounded-full border border-[#cfc8c1] bg-[#f1efe9] px-2 py-1 text-[#2f2b28]">
+                                  Open record
                                 </span>
                               </div>
                             </button>
