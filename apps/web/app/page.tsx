@@ -23,6 +23,18 @@ const STORAGE_KEY = "empire-os-captures";
 const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
 const PERSON_STORAGE_KEY = "empire-os-people";
 
+const sharedAreaOptions = [
+  "Garden Maintenance",
+  "Hard Landscape Construction",
+  "Excavation",
+  "People",
+  "Systems",
+  "Finance",
+  "Marketing / Growth",
+] as const;
+
+const opportunityAreaOptions = [...sharedAreaOptions] as const;
+
 const reviewOutcomes = [
   "Keep as Capture",
   "Convert to Problem",
@@ -1452,11 +1464,19 @@ function OpportunityDetailPanel({ opportunity, linkedDecisions, upstream, downst
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
               Related pillar / area
             </label>
-            <input
-              value={opportunity.relatedPillar}
+            <select
+              value={opportunityAreaOptions.includes(opportunity.relatedPillar as (typeof opportunityAreaOptions)[number]) ? opportunity.relatedPillar : ""}
               onChange={(event) => onChange("relatedPillar", event.target.value)}
               className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
-            />
+            >
+              <option value="">Select area</option>
+              {opportunityAreaOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+              {!opportunityAreaOptions.includes(opportunity.relatedPillar as (typeof opportunityAreaOptions)[number]) && opportunity.relatedPillar ? (
+                <option value={opportunity.relatedPillar}>{opportunity.relatedPillar}</option>
+              ) : null}
+            </select>
           </div>
 
           <div>
@@ -4526,12 +4546,11 @@ export default function Home() {
                         onChange={(event) => handleFieldChange("relatedArea", event.target.value)}
                         className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
                       >
-                        <option>Garden Maintenance</option>
-                        <option>Hard Landscape Construction</option>
-                        <option>Excavation</option>
-                        <option>People</option>
-                        <option>Systems</option>
-                        <option>Finance</option>
+                        {sharedAreaOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
                       </select>
                     </div>
 
@@ -5473,12 +5492,11 @@ export default function Home() {
                   onChange={(event) => handlePersonEditorChange("pillar", event.target.value)}
                   className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
                 >
-                  <option>Garden Maintenance</option>
-                  <option>Hard Landscape Construction</option>
-                  <option>Excavation</option>
-                  <option>People</option>
-                  <option>Systems</option>
-                  <option>Finance</option>
+                  {sharedAreaOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
                 </select>
               </div>
 
