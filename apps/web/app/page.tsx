@@ -3970,6 +3970,10 @@ export default function Home() {
       return "High strategic-fit opportunity is still under evaluation.";
     }
 
+    if (item.objectType === "Project" && item.reasons.includes("BLOCKED")) {
+      return "Project is currently blocked and requires status review.";
+    }
+
     if (item.objectType === "Project" && item.reasons.includes("OVERDUE PROJECT")) {
       return "Project target completion date has passed.";
     }
@@ -4176,6 +4180,10 @@ export default function Home() {
       }
 
       if (reasons.length > 0) {
+        if (project.status.trim().toLowerCase() === "blocked" && !reasons.includes("BLOCKED")) {
+          reasons.push("BLOCKED");
+        }
+
         addAttentionItem(reasons[0], {
           id: project.id,
           objectType: "Project",
@@ -4353,7 +4361,7 @@ export default function Home() {
   ).sort(compareAttentionItems);
   const getAttentionGroup = (item: AttentionItem) => {
     const isBlockedOrWaiting = item.reasons.some((reason) =>
-      reason === "BLOCKED" || reason.startsWith("BLOCKED BY PROBLEM:") || reason.startsWith("WAITING ON DECISION:"),
+      (item.objectType !== "Project" && reason === "BLOCKED") || reason.startsWith("BLOCKED BY PROBLEM:") || reason.startsWith("WAITING ON DECISION:"),
     );
 
     if (isBlockedOrWaiting) {
