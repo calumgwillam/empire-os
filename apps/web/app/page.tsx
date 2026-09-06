@@ -5691,11 +5691,15 @@ export default function Home() {
       return;
     }
 
+    const selectedOwner = people.find((person) =>
+      person.status === "Active" && person.name === projectEditor.owner.trim(),
+    );
+
     const nextProject: ProjectRecord = {
       ...projectEditor,
       id: projectEditor.id || generateProjectId(),
       projectName: projectEditor.projectName.trim() || "Untitled project",
-      owner: projectEditor.owner.trim(),
+      owner: selectedOwner ? selectedOwner.name : "",
       area: projectEditor.area.trim() || "Garden Maintenance",
       startDate: projectEditor.startDate,
       targetCompletionDate: projectEditor.targetCompletionDate,
