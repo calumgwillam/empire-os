@@ -22,6 +22,9 @@ const navigation = [
 const STORAGE_KEY = "empire-os-captures";
 const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
 const PERSON_STORAGE_KEY = "empire-os-people";
+const PROJECT_STORAGE_KEY = "empire-os-projects";
+const SAVED_VIEWS_STORAGE_KEY = "empire-os-records-in-motion-views";
+const DEFAULT_SAVED_VIEW_STORAGE_KEY = "empire-os-records-in-motion-default-view";
 
 const sharedAreaOptions = [
   "Garden Maintenance",
@@ -340,6 +343,27 @@ type PersonRecord = {
 
 type PersonFormValues = Omit<PersonRecord, "id" | "dateCreated">;
 
+type ProjectRecord = {
+  id: string;
+  projectName: string;
+  owner: string;
+  area: string;
+  startDate: string;
+  targetCompletionDate: string;
+  status: string;
+};
+
+const projectStatusOptions = ["Open", "In Progress", "Blocked", "Completed", "Cancelled"] as const;
+
+const defaultProjectForm: Omit<ProjectRecord, "id"> = {
+  projectName: "",
+  owner: "",
+  area: "Garden Maintenance",
+  startDate: "",
+  targetCompletionDate: "",
+  status: "Open",
+};
+
 const defaultPersonForm: PersonFormValues = {
   name: "",
   role: "",
@@ -398,6 +422,14 @@ function generatePersonId() {
   return `person-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function generateProjectId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return `project-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function formatCapturedAt(value: string) {
   const date = new Date(value);
 
@@ -409,6 +441,37 @@ function formatCapturedAt(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+function formatSavedViewUpdatedAt(value?: string) {
+  if (!value) {
+    return "Updated date unavailable";
+  }
+
+  const updatedAt = new Date(value);
+  if (Number.isNaN(updatedAt.getTime())) {
+    return "Updated date unavailable";
+  }
+
+  const now = new Date();
+  const elapsedMinutes = Math.floor((now.getTime() - updatedAt.getTime()) / (1000 * 60));
+  if (elapsedMinutes < 1) {
+    return "Updated just now";
+  }
+
+  if (elapsedMinutes < 60) {
+    return `Updated ${elapsedMinutes} minutes ago`;
+  }
+
+  if (updatedAt.toDateString() === now.toDateString()) {
+    return "Updated today";
+  }
+
+  return `Updated ${new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(updatedAt)}`;
 }
 
 function getStatusFromOutcome(outcome: ReviewOutcome) {
@@ -759,6 +822,798 @@ type RelatedRecordsPanelProps = {
   downstream: RelatedRecordItem[];
 };
 
+type CommandRecordItem = {
+  id: string;
+  objectType: CommandRecordType;
+  title: string;
+  searchText: string;
+  createdAt: string;
+  operationalDate: string;
+  owner: string;
+  status: string;
+  area: string;
+  sourceCaptureId: string;
+  onOpen: () => void;
+};
+
+type AttentionObjectType = "Problem" | "Action" | "Decision" | "Opportunity" | "Lesson" | "System" | "SOP";
+type CommandRecordType = AttentionObjectType | "Project";
+
+type CommandRecordGroup = {
+  label: string;
+  records: CommandRecordItem[];
+};
+
+type RecordControls = {
+  searchQuery: string;
+  selectedType: string;
+  selectedStatus: string;
+  selectedArea: string;
+  selectedOwner: string;
+  selectedCreatedDate: string;
+  selectedOperationalDate: string;
+  sortOrder: string;
+  attentionOnly: boolean;
+};
+
+type SavedRecordView = {
+  id: string;
+  name: string;
+  controls: RecordControls;
+  updatedAt?: string;
+  pinned?: boolean;
+};
+
+function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: CommandRecordGroup[]; attentionRecordKeys: string[] }) {
+  const allTypeValue = "All";
+  const getDefaultRecordControls = (): RecordControls => ({
+    searchQuery: "",
+    selectedType: allTypeValue,
+    selectedStatus: "All statuses",
+    selectedArea: "All areas",
+    selectedOwner: "All owners",
+    selectedCreatedDate: "All dates",
+    selectedOperationalDate: "All due dates",
+    sortOrder: "Default",
+    attentionOnly: false,
+  });
+  const [recordControls, setRecordControls] = useState<RecordControls>(getDefaultRecordControls);
+  const [savedViews, setSavedViews] = useState<SavedRecordView[]>([]);
+  const [savedViewName, setSavedViewName] = useState("");
+  const [selectedSavedViewId, setSelectedSavedViewId] = useState("");
+  const [renameViewName, setRenameViewName] = useState("");
+  const [updatedSavedViewId, setUpdatedSavedViewId] = useState("");
+  const [defaultSavedViewId, setDefaultSavedViewId] = useState("");
+  const [savedViewsLoaded, setSavedViewsLoaded] = useState(false);
+  const [defaultSavedViewLoaded, setDefaultSavedViewLoaded] = useState(false);
+  const { searchQuery, selectedType, selectedStatus, selectedArea, selectedOwner, selectedCreatedDate, selectedOperationalDate, sortOrder, attentionOnly } = recordControls;
+  const updateRecordControls = (updates: Partial<RecordControls>) =>
+    setRecordControls((current) => ({ ...current, ...updates }));
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    try {
+      const storedViews = window.localStorage.getItem(SAVED_VIEWS_STORAGE_KEY);
+      const storedDefaultViewId = window.localStorage.getItem(DEFAULT_SAVED_VIEW_STORAGE_KEY);
+      if (storedViews) {
+        const parsedViews = JSON.parse(storedViews);
+        if (Array.isArray(parsedViews)) {
+          setSavedViews(parsedViews);
+          const defaultView = parsedViews.find((view) => view.id === storedDefaultViewId);
+          if (defaultView) {
+            setDefaultSavedViewId(defaultView.id);
+            setRecordControls({ ...defaultView.controls });
+          }
+        }
+      }
+    } catch {
+      setSavedViews([]);
+    } finally {
+      setSavedViewsLoaded(true);
+      setDefaultSavedViewLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!savedViewsLoaded) {
+      return;
+    }
+
+    if (savedViews.length === 0) {
+      window.localStorage.removeItem(SAVED_VIEWS_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(SAVED_VIEWS_STORAGE_KEY, JSON.stringify(savedViews));
+    }
+  }, [savedViews, savedViewsLoaded]);
+
+  useEffect(() => {
+    if (!defaultSavedViewLoaded) {
+      return;
+    }
+
+    if (defaultSavedViewId) {
+      window.localStorage.setItem(DEFAULT_SAVED_VIEW_STORAGE_KEY, defaultSavedViewId);
+    } else {
+      window.localStorage.removeItem(DEFAULT_SAVED_VIEW_STORAGE_KEY);
+    }
+  }, [defaultSavedViewId, defaultSavedViewLoaded]);
+  const typeOptions: Array<{ label: string; value: CommandRecordType }> = [
+    { label: "Problems", value: "Problem" },
+    { label: "Actions", value: "Action" },
+    { label: "Decisions", value: "Decision" },
+    { label: "Opportunities", value: "Opportunity" },
+    { label: "Projects", value: "Project" },
+    { label: "Lessons", value: "Lesson" },
+    { label: "Systems", value: "System" },
+    { label: "SOPs", value: "SOP" },
+  ];
+  const statusOptions = Array.from(new Set(groups.flatMap((group) => group.records.map((record) => record.status)))).sort();
+  const areaOptions = Array.from(new Set(groups.flatMap((group) => group.records.map((record) => record.area).filter(Boolean)))).sort();
+  const ownerOptions = Array.from(new Set(groups.flatMap((group) => group.records.map((record) => record.owner || "Unassigned")))).sort();
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const attentionKeySet = new Set(attentionRecordKeys);
+  const getCreatedTime = (record: CommandRecordItem) => {
+    const timestamp = new Date(record.createdAt).getTime();
+    return Number.isNaN(timestamp) ? null : timestamp;
+  };
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const sevenDaysAgo = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+  const thirtyDaysAgo = now.getTime() - 30 * 24 * 60 * 60 * 1000;
+  const startOfTomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
+  const nextSevenDays = now.getTime() + 7 * 24 * 60 * 60 * 1000;
+  const matchesCreatedDate = (record: CommandRecordItem) => {
+    if (selectedCreatedDate === "All dates") return true;
+    if (record.objectType === "Project") return true;
+    const createdTime = getCreatedTime(record);
+    if (createdTime === null) return false;
+    if (selectedCreatedDate === "Today") return createdTime >= startOfToday;
+    if (selectedCreatedDate === "Last 7 days") return createdTime >= sevenDaysAgo;
+    if (selectedCreatedDate === "Last 30 days") return createdTime >= thirtyDaysAgo;
+    return createdTime < thirtyDaysAgo;
+  };
+  const matchesOperationalDate = (record: CommandRecordItem) => {
+    if (selectedOperationalDate === "All due dates") return true;
+    const operationalTime = record.operationalDate ? new Date(record.operationalDate).getTime() : null;
+    const hasDate = operationalTime !== null && !Number.isNaN(operationalTime);
+    if (selectedOperationalDate === "No due/review date") return !hasDate;
+    if (!hasDate) return false;
+    if (selectedOperationalDate === "Overdue") return operationalTime < startOfToday;
+    if (selectedOperationalDate === "Due today") return operationalTime >= startOfToday && operationalTime < startOfTomorrow;
+    if (selectedOperationalDate === "Due in next 7 days") return operationalTime >= startOfTomorrow && operationalTime <= nextSevenDays;
+    return operationalTime > nextSevenDays;
+  };
+  const applyQuickView = (view: string) => {
+    switch (view) {
+      case "Attention":
+        setRecordControls({ ...getDefaultRecordControls(), attentionOnly: true });
+        return;
+      case "Open actions":
+        setRecordControls({ ...getDefaultRecordControls(), selectedType: "Action", selectedStatus: "Open" });
+        return;
+      case "Overdue":
+        setRecordControls({ ...getDefaultRecordControls(), selectedOperationalDate: "Overdue" });
+        return;
+      case "Unassigned":
+        setRecordControls({ ...getDefaultRecordControls(), selectedOwner: "Unassigned" });
+        return;
+      case "Recent":
+        setRecordControls({ ...getDefaultRecordControls(), selectedCreatedDate: "Last 7 days" });
+        return;
+      default:
+        setRecordControls(getDefaultRecordControls());
+    }
+  };
+  const saveCurrentView = () => {
+    const name = savedViewName.trim();
+    if (!name) {
+      return;
+    }
+
+    setSavedViews((current) => [
+      ...current.filter((view) => view.name.toLowerCase() !== name.toLowerCase()),
+      { id: `${Date.now()}-${name}`, name, controls: { ...recordControls }, updatedAt: new Date().toISOString(), pinned: false },
+    ]);
+    setSelectedSavedViewId("");
+    setSavedViewName("");
+  };
+  const renameSelectedView = () => {
+    const name = renameViewName.trim();
+    if (!name || !selectedSavedViewId) {
+      return;
+    }
+
+    setSavedViews((current) => current.map((view) =>
+      view.id === selectedSavedViewId ? { ...view, name, updatedAt: new Date().toISOString() } : view,
+    ));
+    setRenameViewName(name);
+  };
+  const duplicateSelectedView = () => {
+    if (!selectedSavedViewId) {
+      return;
+    }
+
+    setSavedViews((current) => {
+      const selectedView = current.find((view) => view.id === selectedSavedViewId);
+      if (!selectedView) {
+        return current;
+      }
+
+      return [
+        ...current,
+        {
+          id: `${Date.now()}-${selectedView.id}`,
+          name: `${selectedView.name} copy`,
+          controls: { ...selectedView.controls },
+          updatedAt: new Date().toISOString(),
+          pinned: false,
+        },
+      ];
+    });
+  };
+  const updateSelectedView = () => {
+    if (!selectedSavedViewId) {
+      return;
+    }
+
+    setSavedViews((current) => current.map((view) =>
+      view.id === selectedSavedViewId
+        ? { ...view, controls: { ...recordControls }, updatedAt: new Date().toISOString() }
+        : view,
+    ));
+    setUpdatedSavedViewId(selectedSavedViewId);
+  };
+  const deleteSavedView = (viewId: string) => {
+    setSavedViews((current) => current.filter((view) => view.id !== viewId));
+    if (viewId === defaultSavedViewId) {
+      setDefaultSavedViewId("");
+    }
+    if (viewId === selectedSavedViewId) {
+      setSelectedSavedViewId("");
+      setRenameViewName("");
+      setUpdatedSavedViewId("");
+    }
+  };
+  const toggleSelectedViewPin = () => {
+    if (!selectedSavedViewId) {
+      return;
+    }
+
+    setSavedViews((current) => current.map((view) =>
+      view.id === selectedSavedViewId ? { ...view, pinned: !view.pinned } : view,
+    ));
+  };
+  const compareRecords = (left: CommandRecordItem, right: CommandRecordItem) => {
+    if (sortOrder === "Title A-Z" || sortOrder === "Title Z-A") {
+      const titleOrder = left.title.localeCompare(right.title);
+      return (sortOrder === "Title Z-A" ? -1 : 1) * (titleOrder || left.id.localeCompare(right.id));
+    }
+
+    if (sortOrder === "Status A-Z") {
+      return left.status.localeCompare(right.status) || left.title.localeCompare(right.title) || left.id.localeCompare(right.id);
+    }
+
+    if (sortOrder === "Newest first" || sortOrder === "Oldest first") {
+      const leftTime = getCreatedTime(left);
+      const rightTime = getCreatedTime(right);
+
+      if (leftTime !== null || rightTime !== null) {
+        if (leftTime === null) return 1;
+        if (rightTime === null) return -1;
+        if (leftTime !== rightTime) return sortOrder === "Newest first" ? rightTime - leftTime : leftTime - rightTime;
+      }
+    }
+
+    return left.title.localeCompare(right.title) || left.id.localeCompare(right.id);
+  };
+  const filteredGroups = groups
+    .map((group) => ({
+      ...group,
+      records: group.records.filter((record) => {
+        const matchesSearch = !normalizedQuery || record.searchText.toLowerCase().includes(normalizedQuery);
+        const matchesType = selectedType === allTypeValue || record.objectType === selectedType;
+        const matchesStatus = selectedStatus === "All statuses" || record.status === selectedStatus;
+        const matchesArea = selectedArea === "All areas" || record.area === selectedArea;
+        const matchesOwner = selectedOwner === "All owners" || (record.owner || "Unassigned") === selectedOwner;
+        const matchesDate = matchesCreatedDate(record);
+        const matchesOperational = matchesOperationalDate(record);
+        const matchesAttention = !attentionOnly || attentionKeySet.has(`${record.objectType}:${record.id}`);
+        return matchesSearch && matchesType && matchesStatus && matchesArea && matchesOwner && matchesDate && matchesOperational && matchesAttention;
+      }).sort((left, right) => sortOrder === "Default" ? 0 : compareRecords(left, right)),
+    }))
+    .filter((group) => group.records.length > 0);
+  const totalRecordCount = groups.reduce((total, group) => total + group.records.length, 0);
+  const visibleRecordCount = filteredGroups.reduce((total, group) => total + group.records.length, 0);
+  const hasActiveFilters = Boolean(normalizedQuery) || selectedType !== allTypeValue || selectedStatus !== "All statuses" || selectedArea !== "All areas" || selectedOwner !== "All owners" || selectedCreatedDate !== "All dates" || selectedOperationalDate !== "All due dates" || sortOrder !== "Default" || attentionOnly;
+  const selectedSavedView = savedViews.find((view) => view.id === selectedSavedViewId);
+  const orderedSavedViews = [
+    ...savedViews.filter((view) => view.pinned),
+    ...savedViews.filter((view) => !view.pinned),
+  ];
+
+  return (
+    <section className="mt-6 border-t border-[#d7d1ca] pt-6">
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-[0.2em] text-[#4d4944]">Operating picture</p>
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h2 className="text-[24px] font-semibold tracking-[-0.05em] text-[#171717]">Records in motion</h2>
+            <span className="text-[11px] text-[#6a625d]">
+              {visibleRecordCount} {visibleRecordCount === 1 ? "record" : "records"}{hasActiveFilters ? ` shown of ${totalRecordCount}` : ""}
+            </span>
+          </div>
+        </div>
+        <p className="text-right text-[11px] leading-5 text-[#5e5953]">Stored records remain visible here, whether urgent or not.</p>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <span className="mr-1 text-[10px] uppercase tracking-[0.14em] text-[#6a625d]">Quick views</span>
+        <button type="button" onClick={() => applyQuickView("All records")} className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-2.5 py-1.5 text-[11px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]">All records</button>
+        <button type="button" onClick={() => applyQuickView("Attention")} className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-2.5 py-1.5 text-[11px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]">Attention</button>
+        <button type="button" onClick={() => applyQuickView("Open actions")} className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-2.5 py-1.5 text-[11px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]">Open actions</button>
+        <button type="button" onClick={() => applyQuickView("Overdue")} className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-2.5 py-1.5 text-[11px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]">Overdue</button>
+        <button type="button" onClick={() => applyQuickView("Unassigned")} className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-2.5 py-1.5 text-[11px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]">Unassigned</button>
+        <button type="button" onClick={() => applyQuickView("Recent")} className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-2.5 py-1.5 text-[11px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]">Recent</button>
+      </div>
+
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <div className="flex min-w-0 flex-1 gap-2">
+          <input
+            value={savedViewName}
+            onChange={(event) => setSavedViewName(event.target.value)}
+            placeholder="Save current view"
+            aria-label="Saved view name"
+            className="min-w-0 flex-1 rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none placeholder:text-[#7a726b] focus:border-[#171717]"
+          />
+          <button
+            type="button"
+            onClick={saveCurrentView}
+            disabled={!savedViewName.trim()}
+            className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717] disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            Save view
+          </button>
+        </div>
+        {savedViews.length > 0 ? (
+          <select
+            value={selectedSavedViewId}
+            onChange={(event) => {
+              const viewId = event.target.value;
+              setSelectedSavedViewId(viewId);
+              setUpdatedSavedViewId("");
+              const selectedView = savedViews.find((view) => view.id === viewId);
+              if (selectedView) {
+                setRecordControls({ ...selectedView.controls });
+                setRenameViewName(selectedView.name);
+              } else {
+                setRenameViewName("");
+              }
+            }}
+            aria-label="Apply saved view"
+            className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none focus:border-[#171717]"
+          >
+            <option value="">Saved views</option>
+            {orderedSavedViews.map((view) => <option key={view.id} value={view.id}>{view.pinned ? "Pinned: " : ""}{view.name}{view.id === defaultSavedViewId ? " (Default)" : ""}</option>)}
+          </select>
+        ) : null}
+        {selectedSavedViewId ? (
+          <div className="flex min-w-0 gap-2">
+            <input
+              value={renameViewName}
+              onChange={(event) => setRenameViewName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  renameSelectedView();
+                }
+              }}
+              placeholder="Rename selected view"
+              aria-label="New saved view name"
+              className="min-w-0 w-40 rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none placeholder:text-[#7a726b] focus:border-[#171717]"
+            />
+            <button
+              type="button"
+              onClick={renameSelectedView}
+              disabled={!renameViewName.trim()}
+              className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717] disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              Rename
+            </button>
+            <button
+              type="button"
+              onClick={duplicateSelectedView}
+              className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]"
+            >
+              Duplicate
+            </button>
+            <button
+              type="button"
+              onClick={updateSelectedView}
+              className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]"
+            >
+              Update
+            </button>
+            <button
+              type="button"
+              onClick={() => setDefaultSavedViewId(selectedSavedViewId)}
+              disabled={selectedSavedViewId === defaultSavedViewId}
+              className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717] disabled:cursor-default disabled:opacity-45"
+            >
+              Set as default
+            </button>
+            {defaultSavedViewId ? (
+              <button
+                type="button"
+                onClick={() => setDefaultSavedViewId("")}
+                className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]"
+              >
+                Clear default
+              </button>
+            ) : null}
+              <button
+                type="button"
+                onClick={toggleSelectedViewPin}
+                className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]"
+              >
+                {selectedSavedView?.pinned ? "Unpin" : "Pin"}
+              </button>
+            {updatedSavedViewId === selectedSavedViewId ? (
+              <span aria-live="polite" className="self-center text-[10px] text-[#6a625d]">Updated</span>
+            ) : null}
+            {selectedSavedView ? (
+              <span className="self-center text-[10px] text-[#7a726b]">{formatSavedViewUpdatedAt(selectedSavedView.updatedAt)}</span>
+            ) : null}
+          </div>
+        ) : null}
+        {savedViews.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {orderedSavedViews.map((view) => (
+              <button
+                key={view.id}
+                type="button"
+                onClick={() => deleteSavedView(view.id)}
+                aria-label={`Delete saved view ${view.name}`}
+                className="rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 text-[10px] text-[#6a625d] hover:border-[#171717] hover:text-[#171717]"
+              >
+                Delete {view.pinned ? "Pinned: " : ""}{view.name}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <input
+          value={searchQuery}
+          onChange={(event) => updateRecordControls({ searchQuery: event.target.value })}
+          placeholder="Search records"
+          aria-label="Search Records in Motion"
+          className="min-w-0 flex-1 rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none placeholder:text-[#7a726b] focus:border-[#171717]"
+        />
+        <select
+          value={selectedType}
+          onChange={(event) => updateRecordControls({ selectedType: event.target.value })}
+          aria-label="Filter Records in Motion by type"
+          className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none focus:border-[#171717]"
+        >
+          <option value={allTypeValue}>All types</option>
+          {typeOptions.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        {searchQuery ? (
+          <button
+            type="button"
+            onClick={() => updateRecordControls({ searchQuery: "" })}
+            className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]"
+          >
+            Clear search
+          </button>
+        ) : null}
+        <button
+          type="button"
+          aria-pressed={attentionOnly}
+          onClick={() => updateRecordControls({ attentionOnly: !attentionOnly })}
+          className={[
+            "rounded-lg border px-3 py-2 text-[12px] transition",
+            attentionOnly
+              ? "border-[#171717] bg-[#171717] text-[#f9f7f4]"
+              : "border-[#cfc8c1] bg-white text-[#171717] hover:border-[#171717]",
+          ].join(" ")}
+        >
+          Attention only
+        </button>
+        <select
+          value={selectedStatus}
+          onChange={(event) => updateRecordControls({ selectedStatus: event.target.value })}
+          aria-label="Filter Records in Motion by status"
+          className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none focus:border-[#171717]"
+        >
+          <option value="All statuses">All statuses</option>
+          {statusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+        </select>
+        <select
+          value={selectedArea}
+          onChange={(event) => updateRecordControls({ selectedArea: event.target.value })}
+          aria-label="Filter Records in Motion by area"
+          className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none focus:border-[#171717]"
+        >
+          <option value="All areas">All areas</option>
+          {areaOptions.map((area) => <option key={area} value={area}>{area}</option>)}
+        </select>
+        <select
+          value={selectedOwner}
+          onChange={(event) => updateRecordControls({ selectedOwner: event.target.value })}
+          aria-label="Filter Records in Motion by owner"
+          className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none focus:border-[#171717]"
+        >
+          <option value="All owners">All owners</option>
+          {ownerOptions.map((owner) => <option key={owner} value={owner}>{owner}</option>)}
+        </select>
+        <select
+          value={selectedCreatedDate}
+          onChange={(event) => updateRecordControls({ selectedCreatedDate: event.target.value })}
+          aria-label="Filter Records in Motion by created date"
+          className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none focus:border-[#171717]"
+        >
+          <option>All dates</option>
+          <option>Today</option>
+          <option>Last 7 days</option>
+          <option>Last 30 days</option>
+          <option>Older than 30 days</option>
+        </select>
+        <select
+          value={selectedOperationalDate}
+          onChange={(event) => updateRecordControls({ selectedOperationalDate: event.target.value })}
+          aria-label="Filter Records in Motion by due or review date"
+          className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none focus:border-[#171717]"
+        >
+          <option>All due dates</option>
+          <option>Overdue</option>
+          <option>Due today</option>
+          <option>Due in next 7 days</option>
+          <option>Due later</option>
+          <option>No due/review date</option>
+        </select>
+        {selectedType !== allTypeValue || selectedStatus !== "All statuses" || selectedArea !== "All areas" || selectedOwner !== "All owners" || selectedCreatedDate !== "All dates" || selectedOperationalDate !== "All due dates" ? (
+          <button
+            type="button"
+            onClick={() => {
+              updateRecordControls({ selectedType: allTypeValue, selectedStatus: "All statuses", selectedArea: "All areas", selectedOwner: "All owners", selectedCreatedDate: "All dates", selectedOperationalDate: "All due dates" });
+            }}
+            className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]"
+          >
+            Clear filters
+          </button>
+        ) : null}
+        <select
+          value={sortOrder}
+          onChange={(event) => updateRecordControls({ sortOrder: event.target.value })}
+          aria-label="Sort Records in Motion"
+          className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none focus:border-[#171717]"
+        >
+          <option>Default</option>
+          <option>Newest first</option>
+          <option>Oldest first</option>
+          <option>Title A-Z</option>
+          <option>Title Z-A</option>
+          <option>Status A-Z</option>
+        </select>
+        {sortOrder !== "Default" ? (
+          <button
+            type="button"
+            onClick={() => updateRecordControls({ sortOrder: "Default" })}
+            className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]"
+          >
+            Clear sort
+          </button>
+        ) : null}
+        {hasActiveFilters ? (
+          <button
+            type="button"
+            onClick={() => {
+              setRecordControls(getDefaultRecordControls());
+            }}
+            className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]"
+          >
+            Reset
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => setCollapsedGroups((current) => new Set([...current, ...filteredGroups.map((group) => group.label)]))}
+          className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]"
+        >
+          Collapse all
+        </button>
+        <button
+          type="button"
+          onClick={() => setCollapsedGroups((current) => {
+            const next = new Set(current);
+            filteredGroups.forEach((group) => next.delete(group.label));
+            return next;
+          })}
+          className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]"
+        >
+          Expand all
+        </button>
+      </div>
+
+      {hasActiveFilters ? (
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] uppercase tracking-[0.12em] text-[#6a625d]" aria-label="Active Records in Motion controls">
+          {searchQuery ? (
+            <button type="button" onClick={() => updateRecordControls({ searchQuery: "" })} className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 hover:border-[#171717]">
+              Search: {searchQuery} <span aria-hidden="true">×</span>
+            </button>
+          ) : null}
+          {selectedType !== allTypeValue ? (
+            <button type="button" onClick={() => updateRecordControls({ selectedType: allTypeValue })} className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 hover:border-[#171717]">
+              Type: {typeOptions.find((option) => option.value === selectedType)?.label} <span aria-hidden="true">×</span>
+            </button>
+          ) : null}
+          {selectedStatus !== "All statuses" ? (
+            <button type="button" onClick={(event) => { event.stopPropagation(); updateRecordControls({ selectedStatus: "All statuses" }); }} className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 hover:border-[#171717]">
+              Status: {selectedStatus} <span aria-hidden="true">×</span>
+            </button>
+          ) : null}
+          {selectedArea !== "All areas" ? (
+            <button type="button" onClick={() => updateRecordControls({ selectedArea: "All areas" })} className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 hover:border-[#171717]">
+              Area: {selectedArea} <span aria-hidden="true">×</span>
+            </button>
+          ) : null}
+          {selectedOwner !== "All owners" ? (
+            <button type="button" onClick={() => updateRecordControls({ selectedOwner: "All owners" })} className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 hover:border-[#171717]">
+              Owner: {selectedOwner} <span aria-hidden="true">×</span>
+            </button>
+          ) : null}
+          {selectedCreatedDate !== "All dates" ? (
+            <button type="button" onClick={() => updateRecordControls({ selectedCreatedDate: "All dates" })} className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 hover:border-[#171717]">
+              Created: {selectedCreatedDate} <span aria-hidden="true">×</span>
+            </button>
+          ) : null}
+          {selectedOperationalDate !== "All due dates" ? (
+            <button type="button" onClick={() => updateRecordControls({ selectedOperationalDate: "All due dates" })} className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 hover:border-[#171717]">
+              Due/review: {selectedOperationalDate} <span aria-hidden="true">×</span>
+            </button>
+          ) : null}
+          {sortOrder !== "Default" ? (
+            <button type="button" onClick={() => updateRecordControls({ sortOrder: "Default" })} className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 hover:border-[#171717]">
+              Sort: {sortOrder} <span aria-hidden="true">×</span>
+            </button>
+          ) : null}
+          {attentionOnly ? (
+            <button type="button" onClick={() => updateRecordControls({ attentionOnly: false })} className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 hover:border-[#171717]">
+              Attention only <span aria-hidden="true">×</span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {filteredGroups.length === 0 ? (
+        <div className="mt-4 rounded-xl border border-[#d3cbc3] bg-[#f9f7f4] px-3 py-4 text-[12px] text-[#6a625d]">
+          No records match the current filters.
+        </div>
+      ) : (
+        <div className="mt-4 grid gap-3 xl:grid-cols-2">
+        {filteredGroups.map((group) => (
+          <section key={group.label} className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+            <button
+              type="button"
+              onClick={() => setCollapsedGroups((current) => {
+                const next = new Set(current);
+                if (next.has(group.label)) {
+                  next.delete(group.label);
+                } else {
+                  next.add(group.label);
+                }
+                return next;
+              })}
+              className="flex w-full items-center justify-between gap-3 border-b border-[#e0dad4] pb-3 text-left"
+              aria-expanded={!collapsedGroups.has(group.label)}
+            >
+              <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">{group.label}</h3>
+              <span className="flex items-center gap-2 text-[11px] tabular-nums text-[#5e5953]">
+                {group.records.length} {group.records.length === 1 ? "record" : "records"}
+                <span aria-hidden="true" className="text-[14px]">{collapsedGroups.has(group.label) ? "+" : "−"}</span>
+              </span>
+            </button>
+
+            {!collapsedGroups.has(group.label) ? (
+              group.records.length === 0 ? (
+                <p className="pt-3 text-[12px] text-[#6a625d]">No records stored.</p>
+              ) : (
+                <div className="divide-y divide-[#e0dad4]">
+                  {group.records.map((record) => (
+                    <button
+                      key={record.id}
+                      type="button"
+                      onClick={record.onOpen}
+                      className="block w-full py-3 text-left transition first:pt-3 last:pb-0 hover:text-[#6a3328]"
+                      aria-label={`Open ${record.objectType}: ${record.title}`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <span className="min-w-0 truncate text-[14px] font-medium text-[#171717]">{record.title}</span>
+                        <span className="shrink-0 text-[9px] uppercase tracking-[0.14em] text-[#5e5953]">{record.status}</span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] uppercase tracking-[0.12em] text-[#6a625d]">
+                        {record.area ? <span>{record.area}</span> : null}
+                        {record.sourceCaptureId ? <span>Capture {record.sourceCaptureId}</span> : null}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )
+            ) : null}
+          </section>
+        ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ProjectDetailPanel({ project, people, onClose, onChange, onSave }: {
+  project: ProjectRecord;
+  people: PersonRecord[];
+  onClose: () => void;
+  onChange: (field: keyof ProjectRecord, value: string) => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+        <div className="flex items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Project detail</p>
+            <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{project.projectName || "New project"}</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
+        </div>
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Project name</label>
+            <input value={project.projectName} onChange={(event) => onChange("projectName", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Owner</label>
+            <select value={project.owner} onChange={(event) => onChange("owner", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6">
+              <option value="">Unassigned</option>
+              {people.filter((person) => person.status === "Active").map((person) => <option key={person.id} value={person.name}>{person.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Pillar / area</label>
+            <select value={project.area} onChange={(event) => onChange("area", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6">
+              {sharedAreaOptions.map((area) => <option key={area} value={area}>{area}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Start date</label>
+            <input type="date" value={project.startDate} onChange={(event) => onChange("startDate", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Target completion date</label>
+            <input type="date" value={project.targetCompletionDate} onChange={(event) => onChange("targetCompletionDate", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Status</label>
+            <select value={project.status} onChange={(event) => onChange("status", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6">
+              {!projectStatusOptions.includes(project.status as (typeof projectStatusOptions)[number]) && project.status ? <option value={project.status}>{project.status}</option> : null}
+              {projectStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+          <button type="button" onClick={onSave} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1]">Save project</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RelatedRecordsPanel({ upstream, downstream }: RelatedRecordsPanelProps) {
   const renderItems = (items: RelatedRecordItem[]) => {
     if (items.length === 0) {
@@ -923,7 +1778,6 @@ function ProblemDetailPanel({ problem, linkedActions, upstream, downstream, onCl
               className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
             />
           </div>
-
           <div>
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
               Severity
@@ -1109,6 +1963,8 @@ function ProblemDetailPanel({ problem, linkedActions, upstream, downstream, onCl
 type ActionDetailPanelProps = {
   action: ActionRecord;
   people: PersonRecord[];
+  problems: ProblemRecord[];
+  decisions: DecisionRecord[];
   upstream: RelatedRecordItem[];
   downstream: RelatedRecordItem[];
   onClose: () => void;
@@ -1119,11 +1975,13 @@ type ActionDetailPanelProps = {
   onOpenRelatedDecision?: () => void;
 };
 
-function ActionDetailPanel({ action, people, upstream, downstream, onClose, onChange, onOwnerChange, onSave, onOpenRelatedProblem, onOpenRelatedDecision }: ActionDetailPanelProps) {
+function ActionDetailPanel({ action, people, problems, decisions, upstream, downstream, onClose, onChange, onOwnerChange, onSave, onOpenRelatedProblem, onOpenRelatedDecision }: ActionDetailPanelProps) {
   const isCompleted = action.status === "Completed";
   const ownerOptions = [{ id: "unassigned", name: "Unassigned" }, ...people.filter((person) => person.status === "Active")];
   const selectedOwnerValue = getActionOwnerValue(action, people);
   const ownerDisplay = getActionOwnerDisplay(action, people);
+  const selectedProblemValue = problems.some((problem) => problem.id === action.relatedProblem) ? action.relatedProblem : "";
+  const selectedDecisionValue = decisions.some((decision) => decision.id === action.relatedDecision) ? action.relatedDecision : "";
 
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
@@ -1256,22 +2114,32 @@ function ActionDetailPanel({ action, people, upstream, downstream, onClose, onCh
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
               Related problem
             </label>
-            <input
-              value={action.relatedProblem}
+            <select
+              value={selectedProblemValue}
               onChange={(event) => onChange("relatedProblem", event.target.value)}
               className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
-            />
+            >
+              <option value="">Not linked</option>
+              {problems.map((problem) => (
+                <option key={problem.id} value={problem.id}>{problem.problemStatement || problem.title}</option>
+              ))}
+            </select>
           </div>
 
           <div>
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
               Related decision
             </label>
-            <input
-              value={action.relatedDecision}
+            <select
+              value={selectedDecisionValue}
               onChange={(event) => onChange("relatedDecision", event.target.value)}
               className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
-            />
+            >
+              <option value="">Not linked</option>
+              {decisions.map((decision) => (
+                <option key={decision.id} value={decision.id}>{decision.decisionTitle || decision.title}</option>
+              ))}
+            </select>
           </div>
 
           <div>
@@ -2728,6 +3596,7 @@ export default function Home() {
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
   const [conversions, setConversions] = useState<CaptureConversionRecord[]>([]);
   const [people, setPeople] = useState<PersonRecord[]>([]);
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<ReviewOutcome>("Keep as Capture");
   const [selectedProblemId, setSelectedProblemId] = useState<string | null>(null);
@@ -2746,6 +3615,8 @@ export default function Home() {
   const [sopEditor, setSopEditor] = useState<SopRecord | null>(null);
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
   const [personEditor, setPersonEditor] = useState<PersonRecord | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [projectEditor, setProjectEditor] = useState<ProjectRecord | null>(null);
   const [creatingLinkedActionForProblemId, setCreatingLinkedActionForProblemId] = useState<string | null>(null);
   const [creatingLinkedActionForDecisionId, setCreatingLinkedActionForDecisionId] = useState<string | null>(null);
   const [creatingLinkedDecisionForOpportunityId, setCreatingLinkedDecisionForOpportunityId] = useState<string | null>(null);
@@ -2759,6 +3630,7 @@ export default function Home() {
       const storedCaptures = window.localStorage.getItem(STORAGE_KEY);
       const storedConversions = window.localStorage.getItem(CONVERSION_STORAGE_KEY);
       const storedPeople = window.localStorage.getItem(PERSON_STORAGE_KEY);
+      const storedProjects = window.localStorage.getItem(PROJECT_STORAGE_KEY);
 
       if (storedCaptures) {
         const parsedCaptures = JSON.parse(storedCaptures);
@@ -2789,6 +3661,14 @@ export default function Home() {
 
         if (Array.isArray(parsedPeople)) {
           setPeople(parsedPeople);
+        }
+      }
+
+      if (storedProjects) {
+        const parsedProjects = JSON.parse(storedProjects);
+
+        if (Array.isArray(parsedProjects)) {
+          setProjects(parsedProjects);
         }
       }
     } catch {
@@ -2823,6 +3703,14 @@ export default function Home() {
     }
   }, [people]);
 
+  useEffect(() => {
+    if (projects.length === 0) {
+      window.localStorage.removeItem(PROJECT_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(projects));
+    }
+  }, [projects]);
+
   const orderedCaptures = [...captures].sort(
     (first, second) =>
       new Date(second.capturedAt).getTime() - new Date(first.capturedAt).getTime(),
@@ -2850,15 +3738,22 @@ export default function Home() {
 
   type AttentionItem = {
     id: string;
-    objectType: "Problem" | "Action" | "Decision" | "Opportunity" | "Lesson" | "System" | "SOP";
+    objectType: "Problem" | "Action" | "Decision" | "Opportunity" | "Project" | "Lesson" | "System" | "SOP";
     title: string;
     reason: string;
     reasons: string[];
     statusText: string;
     area: string;
+    attentionRank: number;
+    tieWeight: number;
     priorityScore: number;
     sortDate: number;
+    sortDateAscending: boolean;
     onOpen: () => void;
+    dependencyAction?: {
+      label: string;
+      onOpen: () => void;
+    };
   };
 
   const getAreaText = (record: { relatedArea?: string; relatedPillar?: string; area?: string; }) => {
@@ -2925,6 +3820,31 @@ export default function Home() {
     return score;
   };
 
+  const isActionActive = (action: ActionRecord) =>
+    ["Open", "In Progress", "Blocked"].includes(action.status);
+
+  const isProblemUnresolved = (problem: ProblemRecord) =>
+    ["Open", "Investigating", "Action required"].includes(problem.problemStatus);
+
+  const isDecisionActive = (decision: DecisionRecord) =>
+    ["Draft", "Active", "Under Review"].includes(decision.decisionStatus);
+
+  const isOpportunityUnderEvaluation = (opportunity: OpportunityRecord) =>
+    opportunity.status === "Evaluating" && ["High", "Exceptional"].includes(opportunity.strategicFit);
+
+  const isProjectActive = (project: ProjectRecord) =>
+    !["completed", "closed", "final", "cancelled", "canceled"].includes(project.status.trim().toLowerCase());
+
+  const getDaysOverdue = (dateValue: string) => {
+    const dueDate = getDateValue(dateValue);
+
+    if (!dueDate || dueDate >= Date.now()) {
+      return 0;
+    }
+
+    return Math.max(1, Math.ceil((Date.now() - dueDate) / (1000 * 60 * 60 * 24)));
+  };
+
   const getDecisionPriorityScore = (decision: DecisionRecord) => {
     let score = 0;
 
@@ -2977,6 +3897,122 @@ export default function Home() {
     return reviewDate <= Date.now() ? 150 : 60;
   };
 
+  const compareAttentionItems = (left: AttentionItem, right: AttentionItem) => {
+    if (left.attentionRank !== right.attentionRank) {
+      return left.attentionRank - right.attentionRank;
+    }
+
+    if (left.tieWeight !== right.tieWeight) {
+      return right.tieWeight - left.tieWeight;
+    }
+
+    if (left.sortDate !== right.sortDate) {
+      return left.sortDateAscending
+        ? left.sortDate - right.sortDate
+        : right.sortDate - left.sortDate;
+    }
+
+    const titleOrder = left.title.localeCompare(right.title);
+    if (titleOrder !== 0) {
+      return titleOrder;
+    }
+
+    return left.id.localeCompare(right.id);
+  };
+
+  const orderAttentionReasons = (reasons: string[]) => {
+    const getReasonRank = (reason: string) => {
+      if (reason === "BLOCKED") return 1;
+      if (reason.startsWith("OVERDUE BY ")) return 2;
+      if (reason.includes("SEVERITY")) return 3;
+      if (reason.startsWith("REVIEW ")) return 4;
+      if (reason === "CRITICAL PRIORITY" || reason === "HIGH PRIORITY") return 5;
+      if (reason.startsWith("STRATEGIC FIT:")) return 6;
+      return 7;
+    };
+
+    return [...reasons].sort((left, right) => {
+      const rankDifference = getReasonRank(left) - getReasonRank(right);
+      return rankDifference || left.localeCompare(right);
+    });
+  };
+
+  const getAttentionSummary = (item: AttentionItem) => {
+    const blockerReason = item.reasons.find((reason) => reason.startsWith("BLOCKED BY PROBLEM: "));
+    if (blockerReason) {
+      return `Blocked by unresolved problem: ${blockerReason.slice("BLOCKED BY PROBLEM: ".length)}.`;
+    }
+
+    const decisionReason = item.reasons.find((reason) => reason.startsWith("WAITING ON DECISION: "));
+    if (decisionReason) {
+      return `Waiting on active decision: ${decisionReason.slice("WAITING ON DECISION: ".length)}.`;
+    }
+
+    const overdueReason = item.reasons.find((reason) => reason.startsWith("OVERDUE BY "));
+    if (overdueReason && item.objectType === "Action") {
+      const days = overdueReason.replace("OVERDUE BY ", "").replace(/ DAY(S)?$/, "");
+      return `Overdue by ${days} day${days === "1" ? "" : "s"} and still ${item.statusText.split(" /")[0].toLowerCase()}.`;
+    }
+
+    if (item.objectType === "Problem" && item.reasons.some((reason) => reason.includes("SEVERITY"))) {
+      return `${item.statusText.split(" /")[0]}-severity problem remains unresolved.`;
+    }
+
+    if (item.objectType === "Decision" && item.reasons.includes("REVIEW DUE")) {
+      return "Decision review date has been reached.";
+    }
+
+    if (item.objectType === "Action" && item.reasons.some((reason) => reason.endsWith("PRIORITY"))) {
+      return "High-priority action is still active.";
+    }
+
+    if (item.objectType === "Opportunity" && item.reasons.some((reason) => reason.startsWith("STRATEGIC FIT:"))) {
+      return "High strategic-fit opportunity is still under evaluation.";
+    }
+
+    if (item.objectType === "Project" && item.reasons.includes("OVERDUE PROJECT")) {
+      return "Project target completion date has passed.";
+    }
+
+    if (item.objectType === "Project" && item.reasons.includes("UNASSIGNED PROJECT")) {
+      return "Active project has no assigned owner.";
+    }
+
+    if (item.objectType === "Project" && item.reasons.includes("DUE SOON")) {
+      return "Project target completion date is approaching.";
+    }
+
+    return `${item.objectType} remains ${item.statusText.split(" /")[0].toLowerCase()}.`;
+  };
+
+  const getActionDependencyBlocker = (action: ActionRecord) => {
+    const relatedProblem = problemRecords.find((problem) => problem.id === action.relatedProblem);
+    if (relatedProblem && isProblemUnresolved(relatedProblem)) {
+      return {
+        reason: `BLOCKED BY PROBLEM: ${relatedProblem.problemStatement || relatedProblem.title}`,
+        label: "Open blocker",
+        onOpen: () => {
+          setSelectedProblemId(relatedProblem.id);
+          setProblemEditor(relatedProblem);
+        },
+      };
+    }
+
+    const relatedDecision = decisionRecords.find((decision) => decision.id === action.relatedDecision);
+    if (relatedDecision && isDecisionActive(relatedDecision)) {
+      return {
+        reason: `WAITING ON DECISION: ${relatedDecision.decisionTitle || relatedDecision.title}`,
+        label: "Open decision",
+        onOpen: () => {
+          setSelectedDecisionId(relatedDecision.id);
+          setDecisionEditor(relatedDecision);
+        },
+      };
+    }
+
+    return null;
+  };
+
   const buildCommandAttention = (): Record<string, AttentionItem[]> => {
     const groups: Record<string, AttentionItem[]> = {};
     const uniqueByKey = new Map<string, AttentionItem>();
@@ -2986,7 +4022,7 @@ export default function Home() {
       const existing = uniqueByKey.get(key);
 
       if (existing) {
-        const mergedReasons = Array.from(new Set([...existing.reasons, ...item.reasons]));
+        const mergedReasons = orderAttentionReasons(Array.from(new Set([...existing.reasons, ...item.reasons])));
         existing.reasons = mergedReasons;
         existing.reason = mergedReasons.join(" • ");
 
@@ -3002,6 +4038,8 @@ export default function Home() {
         return;
       }
 
+      item.reasons = orderAttentionReasons(item.reasons);
+      item.reason = item.reasons.join(" • ");
       uniqueByKey.set(key, item);
       if (!groups[groupName]) {
         groups[groupName] = [];
@@ -3014,16 +4052,11 @@ export default function Home() {
     problemRecords.forEach((problem) => {
       const reasons: string[] = [];
 
-      if (problem.severity === "Critical") {
-        reasons.push("Critical severity");
-      }
+      const isUnresolved = isProblemUnresolved(problem);
 
-      if (problem.severity === "High") {
-        reasons.push("High severity");
-      }
-
-      if (["Open", "Investigating", "Action required"].includes(problem.problemStatus)) {
-        reasons.push(`Status: ${problem.problemStatus}`);
+      if (isUnresolved && ["Critical", "High"].includes(problem.severity)) {
+        reasons.push(`${problem.severity.toUpperCase()} SEVERITY`);
+        reasons.push(problem.problemStatus.toUpperCase());
       }
 
       if (reasons.length > 0) {
@@ -3035,8 +4068,11 @@ export default function Home() {
           reasons,
           statusText: `${problem.severity} / ${problem.problemStatus}`,
           area: getAreaText(problem),
+          attentionRank: problem.severity === "Critical" ? 3 : 4,
+          tieWeight: problem.severity === "Critical" ? 2 : 1,
           priorityScore: getProblemPriorityScore(problem),
           sortDate: getDateValue(problem.createdAt),
+          sortDateAscending: false,
           onOpen: () => {
             setSelectedProblemId(problem.id);
             setProblemEditor(problem);
@@ -3047,13 +4083,25 @@ export default function Home() {
 
     actionRecords.forEach((action) => {
       const reasons: string[] = [];
+      const dependencyBlocker = getActionDependencyBlocker(action);
+
+      if (!isActionActive(action)) {
+        return;
+      }
 
       if (["Critical", "High"].includes(action.priority)) {
-        reasons.push(`Priority: ${action.priority}`);
+        reasons.push(`${action.priority.toUpperCase()} PRIORITY`);
+        reasons.push(action.status.toUpperCase());
       }
 
       if (action.status === "Blocked") {
-        reasons.push("Blocked");
+        if (!reasons.includes("BLOCKED")) {
+          reasons.push("BLOCKED");
+        }
+      }
+
+      if (dependencyBlocker) {
+        reasons.push(dependencyBlocker.reason);
       }
 
       if (action.dueDate) {
@@ -3064,15 +4112,11 @@ export default function Home() {
           const daysUntilDue = msUntilDue / (1000 * 60 * 60 * 24);
 
           if (daysUntilDue < 0) {
-            reasons.push("Overdue due date");
+            reasons.push(`OVERDUE BY ${getDaysOverdue(action.dueDate)} DAY${getDaysOverdue(action.dueDate) === 1 ? "" : "S"}`);
           } else if (daysUntilDue <= 7) {
-            reasons.push("Due within 7 days");
+            reasons.push("DUE WITHIN 7 DAYS");
           }
         }
-      }
-
-      if (action.status === "In Progress" && reasons.length > 0) {
-        reasons.push("In progress and attention-worthy");
       }
 
       if (reasons.length > 0) {
@@ -3084,12 +4128,68 @@ export default function Home() {
           reasons,
           statusText: `${action.status} / ${action.priority} / ${action.dueDate ? formatCapturedAt(action.dueDate) : "No due date"}`,
           area: getAreaText(action),
+          attentionRank: action.status === "Blocked" || Boolean(dependencyBlocker) ? 1 : action.dueDate && getDateValue(action.dueDate) < now ? 2 : ["Critical", "High"].includes(action.priority) ? 6 : 8,
+          tieWeight: action.priority === "Critical" ? 2 : action.priority === "High" ? 1 : 0,
           priorityScore: getActionPriorityScore(action),
           sortDate: getDateValue(action.dueDate || action.createdAt),
+          sortDateAscending: Boolean(action.dueDate),
           onOpen: () => {
             setSelectedActionId(action.id);
             setActionEditor(action);
           },
+          dependencyAction: dependencyBlocker
+            ? { label: dependencyBlocker.label, onOpen: dependencyBlocker.onOpen }
+            : undefined,
+        });
+      }
+    });
+
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+    const startOfEightDaysFromNow = new Date(startOfToday);
+    startOfEightDaysFromNow.setDate(startOfEightDaysFromNow.getDate() + 8);
+
+    projects.forEach((project) => {
+      if (!isProjectActive(project)) {
+        return;
+      }
+
+      const reasons: string[] = [];
+      const targetCompletionDate = project.targetCompletionDate ? new Date(`${project.targetCompletionDate}T00:00:00`) : null;
+      const hasTargetCompletionDate = targetCompletionDate && !Number.isNaN(targetCompletionDate.getTime());
+      const isOverdue = Boolean(hasTargetCompletionDate && targetCompletionDate < startOfToday);
+      const isDueSoon = Boolean(hasTargetCompletionDate && targetCompletionDate >= startOfToday && targetCompletionDate < startOfEightDaysFromNow);
+      const isUnassigned = !project.owner.trim() || project.owner.trim().toLowerCase() === "unassigned";
+      const daysOverdue = isOverdue && targetCompletionDate
+        ? Math.max(1, Math.floor((startOfToday.getTime() - targetCompletionDate.getTime()) / (1000 * 60 * 60 * 24)))
+        : 0;
+
+      if (isOverdue) {
+        reasons.push("OVERDUE PROJECT");
+        reasons.push(`${daysOverdue} DAY${daysOverdue === 1 ? "" : "S"} OVERDUE`);
+      }
+      if (isUnassigned) {
+        reasons.push("UNASSIGNED PROJECT");
+      }
+      if (isDueSoon) {
+        reasons.push("DUE SOON");
+      }
+
+      if (reasons.length > 0) {
+        addAttentionItem(reasons[0], {
+          id: project.id,
+          objectType: "Project",
+          title: project.projectName,
+          reason: reasons.join(" • "),
+          reasons,
+          statusText: `${project.status || "No status"} / ${project.targetCompletionDate ? formatCapturedAt(project.targetCompletionDate) : "No target completion date"}`,
+          area: project.area,
+          attentionRank: isOverdue ? 2 : isUnassigned ? 6 : 7,
+          tieWeight: 0,
+          priorityScore: isOverdue ? 180 : isUnassigned ? 90 : 60,
+          sortDate: getDateValue(project.targetCompletionDate || project.startDate),
+          sortDateAscending: Boolean(project.targetCompletionDate),
+          onOpen: () => handleProjectEditOpen(project),
         });
       }
     });
@@ -3097,15 +4197,15 @@ export default function Home() {
     decisionRecords.forEach((decision) => {
       const reasons: string[] = [];
 
-      if (decision.decisionStatus === "Under Review") {
+      if (isDecisionActive && decision.decisionStatus === "Under Review") {
         reasons.push("Under review");
       }
 
-      if (decision.reviewDate) {
+      if (isDecisionActive && decision.reviewDate) {
         const reviewDate = new Date(decision.reviewDate);
 
         if (!Number.isNaN(reviewDate.getTime()) && reviewDate.getTime() <= now) {
-          reasons.push("Review date due or overdue");
+          reasons.push("REVIEW DUE");
         }
       }
 
@@ -3118,8 +4218,11 @@ export default function Home() {
           reasons,
           statusText: `${decision.decisionStatus} / ${decision.reviewDate ? formatCapturedAt(decision.reviewDate) : "No review date"}`,
           area: getAreaText(decision),
+          attentionRank: 5,
+          tieWeight: decision.decisionStatus === "Under Review" ? 1 : 0,
           priorityScore: getDecisionPriorityScore(decision),
           sortDate: getDateValue(decision.reviewDate || decision.createdAt),
+          sortDateAscending: Boolean(decision.reviewDate),
           onOpen: () => {
             setSelectedDecisionId(decision.id);
             setDecisionEditor(decision);
@@ -3131,12 +4234,9 @@ export default function Home() {
     opportunityRecords.forEach((opportunity) => {
       const reasons: string[] = [];
 
-      if (opportunity.status === "Evaluating") {
-        reasons.push("Status: Evaluating");
-      }
-
-      if (["High", "Exceptional"].includes(opportunity.strategicFit)) {
-        reasons.push(`Strategic fit: ${opportunity.strategicFit}`);
+      if (isOpportunityUnderEvaluation(opportunity)) {
+        reasons.push(`STRATEGIC FIT: ${opportunity.strategicFit.toUpperCase()}`);
+        reasons.push("EVALUATING");
       }
 
       if (reasons.length > 0) {
@@ -3148,8 +4248,11 @@ export default function Home() {
           reasons,
           statusText: `${opportunity.status} / ${opportunity.strategicFit}`,
           area: getAreaText(opportunity),
+          attentionRank: 7,
+          tieWeight: opportunity.strategicFit === "Exceptional" ? 2 : 1,
           priorityScore: getOpportunityPriorityScore(opportunity),
           sortDate: getDateValue(opportunity.dateIdentified || opportunity.createdAt),
+          sortDateAscending: false,
           onOpen: () => {
             setSelectedOpportunityId(opportunity.id);
             setOpportunityEditor(opportunity);
@@ -3168,8 +4271,11 @@ export default function Home() {
           reasons: ["Status: Change required"],
           statusText: lesson.status,
           area: getAreaText(lesson),
+          attentionRank: 8,
+          tieWeight: 0,
           priorityScore: getLessonPriorityScore(lesson),
           sortDate: getDateValue(lesson.dateLearned || lesson.createdAt),
+          sortDateAscending: false,
           onOpen: () => {
             setSelectedLessonId(lesson.id);
             setLessonEditor(lesson);
@@ -3188,8 +4294,11 @@ export default function Home() {
           reasons: ["Status: Reviewing"],
           statusText: system.status,
           area: getAreaText(system),
+          attentionRank: 8,
+          tieWeight: 0,
           priorityScore: getSystemPriorityScore(system),
           sortDate: getDateValue(system.lastReviewed || system.createdAt),
+          sortDateAscending: false,
           onOpen: () => {
             setSelectedSystemId(system.id);
             setSystemEditor(system);
@@ -3211,8 +4320,11 @@ export default function Home() {
             reasons: ["Review date due or overdue"],
             statusText: `${sop.status} / ${formatCapturedAt(sop.reviewDate)}`,
             area: getAreaText(sop),
+            attentionRank: 8,
+            tieWeight: 0,
             priorityScore: getSopPriorityScore(sop),
             sortDate: getDateValue(sop.reviewDate || sop.createdAt),
+            sortDateAscending: Boolean(sop.reviewDate),
             onOpen: () => {
               setSelectedSopId(sop.id);
               setSopEditor(sop);
@@ -3229,22 +4341,82 @@ export default function Home() {
   const sortedCommandAttention = Object.fromEntries(
     Object.entries(commandAttention).map(([reason, items]) => [
       reason,
-      [...items].sort((left, right) => {
-        if (right.priorityScore !== left.priorityScore) {
-          return right.priorityScore - left.priorityScore;
-        }
-
-        if (right.sortDate !== left.sortDate) {
-          return right.sortDate - left.sortDate;
-        }
-
-        return left.title.localeCompare(right.title);
-      }),
+      [...items].sort(compareAttentionItems),
     ]),
   ) as Record<string, AttentionItem[]>;
-  const commandAttentionItems = Object.values(sortedCommandAttention).reduce((total, items) => total + items.length, 0);
+  const commandAttentionItemList = Array.from(
+    new Map(
+      Object.values(sortedCommandAttention)
+        .flat()
+        .map((item) => [`${item.objectType}:${item.id}`, item]),
+    ).values(),
+  ).sort(compareAttentionItems);
+  const getAttentionGroup = (item: AttentionItem) => {
+    const isBlockedOrWaiting = item.reasons.some((reason) =>
+      reason === "BLOCKED" || reason.startsWith("BLOCKED BY PROBLEM:") || reason.startsWith("WAITING ON DECISION:"),
+    );
+
+    if (isBlockedOrWaiting) {
+      return "Blocked / Waiting";
+    }
+
+    if ((item.objectType === "Action" && item.reasons.some((reason) => reason.startsWith("OVERDUE BY "))) || (item.objectType === "Project" && item.reasons.includes("OVERDUE PROJECT"))) {
+      return "Urgent / Overdue";
+    }
+
+    if (item.objectType === "Problem" && item.reasons.some((reason) => reason.includes("SEVERITY")) && item.attentionRank === 3) {
+      return "Urgent / Overdue";
+    }
+
+    if (item.objectType === "Decision" && item.reasons.includes("REVIEW DUE")) {
+      return "Urgent / Overdue";
+    }
+
+    if (item.objectType === "Problem") {
+      return "Problems";
+    }
+
+    if (item.objectType === "Action") {
+      return "Actions";
+    }
+
+    if (item.objectType === "Project") {
+      return "Projects";
+    }
+
+    if (item.objectType === "Opportunity") {
+      return "Opportunities";
+    }
+
+    return "Other Attention";
+  };
+  const commandAttentionGroups = ["Blocked / Waiting", "Urgent / Overdue", "Problems", "Actions", "Projects", "Opportunities", "Other Attention"]
+    .map((label) => ({
+      label,
+      items: commandAttentionItemList.filter((item) => getAttentionGroup(item) === label),
+    }))
+    .filter((group) => group.items.length > 0);
+  const commandAttentionItems = commandAttentionItemList.length;
+  const attentionSummaryItems = commandAttentionGroups.map((group) => ({
+    label: group.label,
+    count: group.items.length,
+  }));
+  const getAttentionSummaryLabel = (label: string, count: number) => {
+    if (count !== 1) {
+      return label;
+    }
+
+    return label
+      .replace("Blocked / Waiting", "Blocked / Waiting item")
+      .replace("Problems", "Problem")
+      .replace("Actions", "Action")
+      .replace("Projects", "Project")
+      .replace("Opportunities", "Opportunity")
+      .replace("Decisions", "Decision")
+      .replace("Other Attention", "Other attention item");
+  };
   const overdueActionCount = actionRecords.filter((action) => {
-    if (!action.dueDate) {
+    if (!isActionActive(action) || !action.dueDate) {
       return false;
     }
 
@@ -3252,7 +4424,7 @@ export default function Home() {
     return !Number.isNaN(dueDate.getTime()) && dueDate.getTime() < Date.now();
   }).length;
   const decisionsDueForReviewCount = decisionRecords.filter((decision) => {
-    if (!decision.reviewDate) {
+    if (!isDecisionActive(decision) || !decision.reviewDate) {
       return false;
     }
 
@@ -3260,8 +4432,161 @@ export default function Home() {
     return !Number.isNaN(reviewDate.getTime()) && reviewDate.getTime() <= Date.now();
   }).length;
   const criticalHighProblemCount = problemRecords.filter((problem) =>
-    problem.severity === "Critical" || problem.severity === "High",
+    isProblemUnresolved(problem) &&
+    (problem.severity === "Critical" || problem.severity === "High"),
   ).length;
+
+  const commandRecordGroups: CommandRecordGroup[] = [
+    {
+      label: "Problems",
+      records: problemRecords.map((problem) => ({
+        id: problem.id,
+        objectType: "Problem",
+        title: problem.problemStatement || problem.title,
+        searchText: `${problem.problemStatement || problem.title} ${problem.impact} ${problem.rootCause}`,
+        createdAt: problem.createdAt,
+        operationalDate: "",
+        owner: problem.owner || "Unassigned",
+        status: problem.problemStatus,
+        area: getAreaText(problem),
+        sourceCaptureId: problem.sourceCaptureId,
+        onOpen: () => {
+          setSelectedProblemId(problem.id);
+          setProblemEditor(problem);
+        },
+      })),
+    },
+    {
+      label: "Actions",
+      records: actionRecords.map((action) => ({
+        id: action.id,
+        objectType: "Action",
+        title: action.actionTitle || action.title,
+        searchText: `${action.actionTitle || action.title} ${action.description}`,
+        createdAt: action.createdAt,
+        operationalDate: action.dueDate,
+        owner: getActionOwnerDisplay(action, people),
+        status: action.status,
+        area: getAreaText(action),
+        sourceCaptureId: action.sourceCaptureId,
+        onOpen: () => {
+          setSelectedActionId(action.id);
+          setActionEditor(action);
+        },
+      })),
+    },
+    {
+      label: "Decisions",
+      records: decisionRecords.map((decision) => ({
+        id: decision.id,
+        objectType: "Decision",
+        title: decision.decisionTitle || decision.title,
+        searchText: `${decision.decisionTitle || decision.title} ${decision.decisionStatement} ${decision.context} ${decision.reasoning}`,
+        createdAt: decision.createdAt,
+        operationalDate: decision.reviewDate,
+        owner: decision.decisionMaker || "Unassigned",
+        status: decision.decisionStatus,
+        area: getAreaText(decision),
+        sourceCaptureId: decision.sourceCaptureId,
+        onOpen: () => {
+          setSelectedDecisionId(decision.id);
+          setDecisionEditor(decision);
+        },
+      })),
+    },
+    {
+      label: "Opportunities",
+      records: opportunityRecords.map((opportunity) => ({
+        id: opportunity.id,
+        objectType: "Opportunity",
+        title: opportunity.opportunityTitle || opportunity.title,
+        searchText: `${opportunity.opportunityTitle || opportunity.title} ${opportunity.description} ${opportunity.evidence}`,
+        createdAt: opportunity.createdAt,
+        operationalDate: "",
+        owner: opportunity.owner || "Unassigned",
+        status: opportunity.status,
+        area: getAreaText(opportunity),
+        sourceCaptureId: opportunity.sourceCaptureId,
+        onOpen: () => {
+          setSelectedOpportunityId(opportunity.id);
+          setOpportunityEditor(opportunity);
+        },
+      })),
+    },
+    {
+      label: "Projects",
+      records: projects.map((project) => ({
+        id: project.id,
+        objectType: "Project",
+        title: project.projectName,
+        searchText: `${project.projectName} ${project.owner} ${project.area} ${project.status}`,
+        createdAt: "",
+        operationalDate: project.targetCompletionDate,
+        owner: project.owner || "Unassigned",
+        status: project.status || "No status",
+        area: project.area,
+        sourceCaptureId: "",
+        onOpen: () => handleProjectEditOpen(project),
+      })),
+    },
+    {
+      label: "Lessons",
+      records: lessonRecords.map((lesson) => ({
+        id: lesson.id,
+        objectType: "Lesson",
+        title: lesson.lessonTitle || lesson.title,
+        searchText: `${lesson.lessonTitle || lesson.title} ${lesson.description} ${lesson.whyItMatters} ${lesson.recommendedChange}`,
+        createdAt: lesson.createdAt,
+        operationalDate: "",
+        owner: lesson.owner || "Unassigned",
+        status: lesson.status,
+        area: getAreaText(lesson),
+        sourceCaptureId: lesson.sourceCaptureId,
+        onOpen: () => {
+          setSelectedLessonId(lesson.id);
+          setLessonEditor(lesson);
+        },
+      })),
+    },
+    {
+      label: "Systems",
+      records: systemRecords.map((system) => ({
+        id: system.id,
+        objectType: "System",
+        title: system.systemName || system.title,
+        searchText: `${system.systemName || system.title} ${system.purpose} ${system.process} ${system.outputs}`,
+        createdAt: system.createdAt,
+        operationalDate: "",
+        owner: system.owner || "Unassigned",
+        status: system.status,
+        area: getAreaText(system),
+        sourceCaptureId: system.sourceCaptureId,
+        onOpen: () => {
+          setSelectedSystemId(system.id);
+          setSystemEditor(system);
+        },
+      })),
+    },
+    {
+      label: "SOPs",
+      records: sopRecords.map((sop) => ({
+        id: sop.id,
+        objectType: "SOP",
+        title: sop.sopTitle || sop.title,
+        searchText: `${sop.sopTitle || sop.title} ${sop.purpose} ${sop.procedure} ${sop.qualityStandard}`,
+        createdAt: sop.createdAt,
+        operationalDate: "",
+        owner: sop.owner || "Unassigned",
+        status: sop.status,
+        area: getAreaText(sop),
+        sourceCaptureId: sop.sourceCaptureId,
+        onOpen: () => {
+          setSelectedSopId(sop.id);
+          setSopEditor(sop);
+        },
+      })),
+    },
+  ];
 
   const getCaptureLineage = (captureId?: string) => {
     if (!captureId) {
@@ -3498,8 +4823,17 @@ export default function Home() {
       return;
     }
 
+    const validRelatedProblem = problemRecords.some((problem) => problem.id === actionEditor.relatedProblem)
+      ? actionEditor.relatedProblem
+      : "";
+    const validRelatedDecision = decisionRecords.some((decision) => decision.id === actionEditor.relatedDecision)
+      ? actionEditor.relatedDecision
+      : "";
+
     const updatedAction = normalizeActionRecord({
       ...actionEditor,
+      relatedProblem: validRelatedProblem,
+      relatedDecision: validRelatedDecision,
       status: actionEditor.status,
       priority: actionEditor.priority,
       owner: actionEditor.owner,
@@ -4214,6 +5548,55 @@ export default function Home() {
     setPersonEditor(newPerson);
   };
 
+  const handleProjectEditOpen = (project: ProjectRecord) => {
+    setSelectedProjectId(project.id);
+    setProjectEditor(project);
+  };
+
+  const handleProjectEditorChange = (field: keyof ProjectRecord, value: string) => {
+    if (!projectEditor) {
+      return;
+    }
+
+    setProjectEditor({ ...projectEditor, [field]: value });
+  };
+
+  const handleProjectSave = () => {
+    if (!projectEditor) {
+      return;
+    }
+
+    const nextProject: ProjectRecord = {
+      ...projectEditor,
+      id: projectEditor.id || generateProjectId(),
+      projectName: projectEditor.projectName.trim() || "Untitled project",
+      owner: projectEditor.owner.trim(),
+      area: projectEditor.area.trim() || "Garden Maintenance",
+      startDate: projectEditor.startDate,
+      targetCompletionDate: projectEditor.targetCompletionDate,
+      status: projectEditor.status.trim(),
+    };
+    const isNewProject = !projects.some((project) => project.id === nextProject.id);
+
+    setProjects((currentProjects) =>
+      isNewProject
+        ? [nextProject, ...currentProjects]
+        : currentProjects.map((project) => project.id === nextProject.id ? nextProject : project),
+    );
+    setSelectedProjectId(nextProject.id);
+    setProjectEditor(nextProject);
+  };
+
+  const handleCreateProject = () => {
+    const newProject: ProjectRecord = {
+      ...defaultProjectForm,
+      id: generateProjectId(),
+    };
+
+    setSelectedProjectId(newProject.id);
+    setProjectEditor(newProject);
+  };
+
   return (
     <div className="min-h-screen bg-[#f1efe9] text-[#171717]">
       <div className="flex min-h-screen">
@@ -4244,6 +5627,7 @@ export default function Home() {
                       item === "Actions" ||
                       item === "Decisions" ||
                       item === "Lessons" ||
+                      item === "Projects" ||
                       item === "Systems" ||
                       item === "SOPs" ||
                       item === "People"
@@ -4302,25 +5686,43 @@ export default function Home() {
                 </div>
               </div>
 
+              {attentionSummaryItems.length > 0 ? (
+                <div className="mt-4 flex flex-wrap items-center gap-2" aria-label="Attention composition summary">
+                  {attentionSummaryItems.map((item) => (
+                    <span
+                      key={item.label}
+                      className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]"
+                    >
+                      {item.count} {getAttentionSummaryLabel(item.label, item.count)}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
               {commandAttentionItems === 0 ? (
                 <div className="mt-6 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[15px] text-[#4d4944]">
                   No current items require attention.
                 </div>
               ) : (
                 <div className="mt-6 space-y-5">
-                  {Object.entries(sortedCommandAttention)
-                    .sort(([left], [right]) => left.localeCompare(right))
-                    .map(([reason, items]) => (
-                      <section key={reason} className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                  {commandAttentionGroups.map(({ label, items }) => (
+                      <section key={label} className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
                         <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">
-                          {reason}
+                          {label} <span className="ml-1 text-[#7a726b]">{items.length}</span>
                         </div>
                         <div className="space-y-2">
                           {items.map((item) => (
-                            <button
+                            <div
                               key={`${item.objectType}-${item.id}-${item.reason}`}
-                              type="button"
                               onClick={item.onOpen}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.preventDefault();
+                                  item.onOpen();
+                                }
+                              }}
+                              role="button"
+                              tabIndex={0}
                               aria-label={`Open ${item.objectType}: ${item.title}`}
                               className="block w-full cursor-pointer rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f5f2ee]"
                             >
@@ -4337,6 +5739,9 @@ export default function Home() {
                                   <div className="mt-2 text-[17px] font-medium tracking-[-0.04em] text-[#171717]">
                                     {item.title}
                                   </div>
+                                  <p className="mt-1 text-[12px] leading-5 text-[#5e5953]">
+                                    {getAttentionSummary(item)}
+                                  </p>
                                 </div>
                                 <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
                                   {item.statusText}
@@ -4349,18 +5754,73 @@ export default function Home() {
                                     {item.area}
                                   </span>
                                 ) : null}
+                                {item.objectType === "Project" && item.reasons.includes("UNASSIGNED PROJECT") ? (
+                                  <span className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[#6a3328]">
+                                    Owner: Unassigned
+                                  </span>
+                                ) : null}
                                 <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">
                                   {item.objectType}
                                 </span>
                                 <span className="rounded-full border border-[#cfc8c1] bg-[#f1efe9] px-2 py-1 text-[#2f2b28]">
                                   Open record
                                 </span>
+                                {item.dependencyAction ? (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      item.dependencyAction?.onOpen();
+                                    }}
+                                    className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[#6a3328] hover:bg-[#f1dfd8]"
+                                  >
+                                    {item.dependencyAction.label}
+                                  </button>
+                                ) : null}
                               </div>
-                            </button>
+                            </div>
                           ))}
                         </div>
                       </section>
-                    ))}
+                  ))}
+                </div>
+              )}
+
+              <CommandRecordRegister
+                groups={commandRecordGroups}
+                attentionRecordKeys={commandAttentionItemList.map((item) => `${item.objectType}:${item.id}`)}
+              />
+            </div>
+          ) : activeView === "Projects" ? (
+            <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+              <header className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-4">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#4d4944]">Operational record</p>
+                  <h1 className="mt-2.5 text-[36px] font-semibold tracking-[-0.07em] text-[#171717] sm:text-[42px]">Projects</h1>
+                </div>
+                <button type="button" onClick={handleCreateProject} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Create Project</button>
+              </header>
+
+              {projects.length === 0 ? (
+                <div className="mt-6 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">No Projects yet. Create the first project to establish planned operational work.</div>
+              ) : (
+                <div className="mt-6 space-y-3">
+                  {projects.map((project) => (
+                    <button key={project.id} type="button" onClick={() => handleProjectEditOpen(project)} className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec]">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <h2 className="text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{project.projectName}</h2>
+                        </div>
+                        <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">{project.status || "No status"}</span>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{project.area}</span>
+                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{project.owner || "Unassigned"}</span>
+                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{project.startDate ? `Start ${formatCapturedAt(project.startDate)}` : "No start date"}</span>
+                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{project.targetCompletionDate ? `Target ${formatCapturedAt(project.targetCompletionDate)}` : "No target completion date"}</span>
+                      </div>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
@@ -5242,6 +6702,8 @@ export default function Home() {
         <ActionDetailPanel
           action={actionEditor}
           people={people.filter((person) => person.status === "Active")}
+          problems={problemRecords}
+          decisions={decisionRecords}
           upstream={[
             ...getCaptureLineage(actionEditor.sourceCaptureId),
             ...(actionEditor.relatedProblem
@@ -5433,6 +6895,19 @@ export default function Home() {
           onChange={handleSopEditorChange}
           onSave={handleSopSave}
           onOpenRelatedSystem={() => handleOpenRelatedSystem(sopEditor)}
+        />
+      ) : null}
+
+      {selectedProjectId && projectEditor ? (
+        <ProjectDetailPanel
+          project={projectEditor}
+          people={people}
+          onClose={() => {
+            setSelectedProjectId(null);
+            setProjectEditor(null);
+          }}
+          onChange={handleProjectEditorChange}
+          onSave={handleProjectSave}
         />
       ) : null}
 
