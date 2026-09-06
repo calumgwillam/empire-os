@@ -3695,7 +3695,7 @@ export default function Home() {
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   useEffect(() => {
-    if (feedback?.message !== "Action details saved." && feedback?.message !== "Decision details saved." && feedback?.message !== "Problem details saved.") {
+    if (feedback?.message !== "Action details saved." && feedback?.message !== "Decision details saved." && feedback?.message !== "Problem details saved." && feedback?.message !== "Opportunity details saved.") {
       return;
     }
 
@@ -5821,10 +5821,10 @@ export default function Home() {
         </aside>
 
         <main className="flex-1 bg-[#f3f1ee]">
-          {feedback?.type === "success" && (feedback.message === "Action details saved." || feedback.message === "Decision details saved." || feedback.message === "Problem details saved.") ? (
+          {feedback?.type === "success" && (feedback.message === "Action details saved." || feedback.message === "Decision details saved." || feedback.message === "Problem details saved." || feedback.message === "Opportunity details saved.") ? (
             <div className="mx-auto max-w-6xl px-4 pt-4 sm:px-6 lg:px-8">
               <p aria-live="polite" className="w-fit rounded-lg border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">
-                {feedback.message === "Problem details saved." ? "Problem saved" : feedback.message === "Decision details saved." ? "Decision saved" : "Action saved"}
+                {feedback.message === "Opportunity details saved." ? "Opportunity saved" : feedback.message === "Problem details saved." ? "Problem saved" : feedback.message === "Decision details saved." ? "Decision saved" : "Action saved"}
               </p>
             </div>
           ) : null}
