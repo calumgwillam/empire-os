@@ -1607,9 +1607,20 @@ function ProjectDetailPanel({ project, people, onClose, onChange, onSave }: {
   onChange: (field: keyof ProjectRecord, value: string) => void;
   onSave: () => void;
 }) {
+  const hasInvalidProjectName = !project.projectName.trim();
   const hasInvalidDateOrder = Boolean(
     project.startDate && project.targetCompletionDate && project.targetCompletionDate < project.startDate,
   );
+  const [hasSaved, setHasSaved] = useState(false);
+
+  useEffect(() => {
+    if (!hasSaved) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setHasSaved(false), 1500);
+    return () => window.clearTimeout(timeoutId);
+  }, [hasSaved]);
 
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
@@ -1627,6 +1638,9 @@ function ProjectDetailPanel({ project, people, onClose, onChange, onSave }: {
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Project name</label>
             <input value={project.projectName} onChange={(event) => onChange("projectName", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
           </div>
+          {hasInvalidProjectName ? (
+            <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Project name is required.</p>
+          ) : null}
           <div>
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Owner</label>
             <select value={project.owner} onChange={(event) => onChange("owner", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6">
@@ -1662,7 +1676,7 @@ function ProjectDetailPanel({ project, people, onClose, onChange, onSave }: {
 
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-          <button type="button" onClick={onSave} disabled={hasInvalidDateOrder} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] disabled:cursor-not-allowed disabled:opacity-45">Save project</button>
+          <button type="button" onClick={() => { onSave(); setHasSaved(true); }} disabled={hasInvalidProjectName || hasInvalidDateOrder} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save project"}</button>
         </div>
       </div>
     </div>
@@ -5687,6 +5701,7 @@ export default function Home() {
       return;
     }
 
+    const projectName = projectEditor.projectName.trim();
     const normalizeProjectDate = (value: string) => {
       const dateValue = value.trim();
       if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
@@ -5702,7 +5717,7 @@ export default function Home() {
     const startDate = normalizeProjectDate(projectEditor.startDate);
     const targetCompletionDate = normalizeProjectDate(projectEditor.targetCompletionDate);
 
-    if (startDate && targetCompletionDate && targetCompletionDate < startDate) {
+    if (!projectName || (startDate && targetCompletionDate && targetCompletionDate < startDate)) {
       return;
     }
 
@@ -5715,7 +5730,7 @@ export default function Home() {
     const nextProject: ProjectRecord = {
       ...projectEditor,
       id: projectEditor.id || generateProjectId(),
-      projectName: projectEditor.projectName.trim() || "Untitled project",
+      projectName,
       owner: selectedOwner ? selectedOwner.name : "",
       area: sharedAreaOptions.includes(selectedArea as (typeof sharedAreaOptions)[number]) ? selectedArea : "Garden Maintenance",
       startDate,
