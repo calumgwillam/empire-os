@@ -4021,6 +4021,25 @@ export default function Home() {
     return null;
   };
 
+  const getProjectTargetDateState = (item: AttentionItem) => {
+    if (item.objectType !== "Project" || !item.targetCompletionDate) {
+      return "No target date";
+    }
+
+    const targetCompletionDate = new Date(`${item.targetCompletionDate}T00:00:00`);
+    if (Number.isNaN(targetCompletionDate.getTime())) {
+      return "No target date";
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const daysFromToday = Math.round((targetCompletionDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    if (daysFromToday < 0) return "Overdue";
+    if (daysFromToday === 0) return "Due today";
+    if (daysFromToday <= 7) return "Due soon";
+    return "Due later";
+  };
+
   const getActionDependencyBlocker = (action: ActionRecord) => {
     const relatedProblem = problemRecords.find((problem) => problem.id === action.relatedProblem);
     if (relatedProblem && isProblemUnresolved(relatedProblem)) {
@@ -5808,6 +5827,11 @@ export default function Home() {
                                 {item.objectType === "Project" && item.reasons.includes("UNASSIGNED PROJECT") ? (
                                   <span className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[#6a3328]">
                                     Owner: Unassigned
+                                  </span>
+                                ) : null}
+                                {item.objectType === "Project" ? (
+                                  <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[#5e5953]">
+                                    {getProjectTargetDateState(item)}
                                   </span>
                                 ) : null}
                                 <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">
