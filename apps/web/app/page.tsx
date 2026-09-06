@@ -3980,6 +3980,21 @@ export default function Home() {
     return `${item.objectType} remains ${item.statusText.split(" /")[0].toLowerCase()}.`;
   };
 
+  const getProjectIssueSummary = (item: AttentionItem) => {
+    if (item.objectType !== "Project") {
+      return null;
+    }
+
+    const overdueReason = item.reasons.find((reason) => /^\d+ DAYS? OVERDUE$/.test(reason));
+    const overdueDays = overdueReason?.match(/^\d+/)?.[0];
+    return [
+      item.reasons.includes("BLOCKED") ? "Blocked" : null,
+      overdueDays ? `${overdueDays} day${overdueDays === "1" ? "" : "s"} overdue` : null,
+      item.reasons.includes("UNASSIGNED PROJECT") ? "Unassigned" : null,
+      item.reasons.includes("DUE SOON") ? "Due soon" : null,
+    ].filter(Boolean).join(" • ");
+  };
+
   const getActionDependencyBlocker = (action: ActionRecord) => {
     const relatedProblem = problemRecords.find((problem) => problem.id === action.relatedProblem);
     if (relatedProblem && isProblemUnresolved(relatedProblem)) {
@@ -5741,6 +5756,11 @@ export default function Home() {
                                   <p className="mt-1 text-[12px] leading-5 text-[#5e5953]">
                                     {getAttentionSummary(item)}
                                   </p>
+                                  {item.objectType === "Project" ? (
+                                    <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[#7a726b]">
+                                      {getProjectIssueSummary(item)}
+                                    </div>
+                                  ) : null}
                                 </div>
                                 <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
                                   {item.statusText}
