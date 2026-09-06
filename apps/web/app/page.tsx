@@ -5695,6 +5695,7 @@ export default function Home() {
       person.status === "Active" && person.name === projectEditor.owner.trim(),
     );
     const selectedArea = projectEditor.area.trim();
+    const selectedStatus = projectEditor.status.trim();
 
     const nextProject: ProjectRecord = {
       ...projectEditor,
@@ -5704,7 +5705,7 @@ export default function Home() {
       area: sharedAreaOptions.includes(selectedArea as (typeof sharedAreaOptions)[number]) ? selectedArea : "Garden Maintenance",
       startDate: projectEditor.startDate,
       targetCompletionDate: projectEditor.targetCompletionDate,
-      status: projectEditor.status.trim(),
+      status: projectStatusOptions.includes(selectedStatus as (typeof projectStatusOptions)[number]) ? selectedStatus : "Open",
     };
     const isNewProject = !projects.some((project) => project.id === nextProject.id);
 
