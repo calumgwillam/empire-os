@@ -3923,6 +3923,7 @@ export default function Home() {
 
   const orderAttentionReasons = (reasons: string[]) => {
     const getReasonRank = (reason: string) => {
+      if (reason === "BLOCKED PROJECT") return 1;
       if (reason === "BLOCKED") return 1;
       if (reason.startsWith("OVERDUE BY ")) return 2;
       if (reason.includes("SEVERITY")) return 3;
@@ -3972,7 +3973,7 @@ export default function Home() {
     }
 
     if (item.objectType === "Project") {
-      if (item.reasons.includes("BLOCKED")) return "Project is currently blocked and requires status review.";
+      if (item.reasons.includes("BLOCKED PROJECT")) return "Project is currently blocked and requires status review.";
       if (item.reasons.includes("OVERDUE PROJECT")) return "Project target completion date has passed.";
       if (item.reasons.includes("UNASSIGNED PROJECT")) return "Active project has no assigned owner.";
       if (item.reasons.includes("DUE SOON")) return "Project target completion date is approaching.";
@@ -3989,7 +3990,7 @@ export default function Home() {
     const overdueReason = item.reasons.find((reason) => /^\d+ DAYS? OVERDUE$/.test(reason));
     const overdueDays = overdueReason?.match(/^\d+/)?.[0];
     return [
-      item.reasons.includes("BLOCKED") ? "Blocked" : null,
+      item.reasons.includes("BLOCKED PROJECT") ? "Blocked" : null,
       overdueDays ? `${overdueDays} day${overdueDays === "1" ? "" : "s"} overdue` : null,
       item.reasons.includes("UNASSIGNED PROJECT") ? "Unassigned" : null,
       item.reasons.includes("DUE SOON") ? "Due soon" : null,
@@ -4215,10 +4216,14 @@ export default function Home() {
       const isOverdue = Boolean(hasTargetCompletionDate && targetCompletionDate < startOfToday);
       const isDueSoon = Boolean(hasTargetCompletionDate && targetCompletionDate >= startOfToday && targetCompletionDate < startOfEightDaysFromNow);
       const isUnassigned = !project.owner.trim() || project.owner.trim().toLowerCase() === "unassigned";
+      const isBlocked = project.status.trim().toLowerCase() === "blocked";
       const daysOverdue = isOverdue && targetCompletionDate
         ? Math.max(1, Math.floor((startOfToday.getTime() - targetCompletionDate.getTime()) / (1000 * 60 * 60 * 24)))
         : 0;
 
+      if (isBlocked) {
+        reasons.push("BLOCKED PROJECT");
+      }
       if (isOverdue) {
         reasons.push("OVERDUE PROJECT");
         reasons.push(`${daysOverdue} DAY${daysOverdue === 1 ? "" : "S"} OVERDUE`);
@@ -4231,10 +4236,6 @@ export default function Home() {
       }
 
       if (reasons.length > 0) {
-        if (project.status.trim().toLowerCase() === "blocked" && !reasons.includes("BLOCKED")) {
-          reasons.push("BLOCKED");
-        }
-
         addAttentionItem(reasons[0], {
           id: project.id,
           objectType: "Project",
@@ -4243,7 +4244,7 @@ export default function Home() {
           reasons,
           statusText: `${project.status || "No status"} / ${project.targetCompletionDate ? formatCapturedAt(project.targetCompletionDate) : "No target completion date"}`,
           area: project.area,
-          attentionRank: isOverdue ? 2 : isUnassigned ? 6 : 7,
+          attentionRank: isBlocked ? 1 : isOverdue ? 2 : isUnassigned ? 6 : 7,
           tieWeight: 0,
           priorityScore: isOverdue ? 180 : isUnassigned ? 90 : 60,
           sortDate: getDateValue(project.targetCompletionDate || project.startDate),
@@ -4413,7 +4414,7 @@ export default function Home() {
   ).sort(compareAttentionItems);
   const getAttentionGroup = (item: AttentionItem) => {
     const isBlockedOrWaiting = item.reasons.some((reason) =>
-      (item.objectType !== "Project" && reason === "BLOCKED") || reason.startsWith("BLOCKED BY PROBLEM:") || reason.startsWith("WAITING ON DECISION:"),
+      reason === "BLOCKED PROJECT" || (item.objectType !== "Project" && reason === "BLOCKED") || reason.startsWith("BLOCKED BY PROBLEM:") || reason.startsWith("WAITING ON DECISION:"),
     );
 
     if (isBlockedOrWaiting) {
