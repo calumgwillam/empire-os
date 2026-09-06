@@ -4312,11 +4312,11 @@ export default function Home() {
     decisionRecords.forEach((decision) => {
       const reasons: string[] = [];
 
-      if (isDecisionActive && decision.decisionStatus === "Under Review") {
+      if (isDecisionActive(decision) && decision.decisionStatus === "Under Review") {
         reasons.push("Under review");
       }
 
-      if (isDecisionActive && decision.reviewDate) {
+      if (isDecisionActive(decision) && decision.reviewDate) {
         const reviewDate = new Date(decision.reviewDate);
 
         if (!Number.isNaN(reviewDate.getTime()) && reviewDate.getTime() <= now) {
