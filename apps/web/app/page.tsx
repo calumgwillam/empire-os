@@ -5777,6 +5777,18 @@ export default function Home() {
                                     Assign owner
                                   </button>
                                 ) : null}
+                                {item.objectType === "Project" && (item.reasons.includes("OVERDUE PROJECT") || item.reasons.includes("DUE SOON")) ? (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      item.onOpen();
+                                    }}
+                                    className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[#6a3328] hover:bg-[#f1dfd8]"
+                                  >
+                                    Review date
+                                  </button>
+                                ) : null}
                                 {item.dependencyAction ? (
                                   <button
                                     type="button"
