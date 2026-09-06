@@ -828,6 +828,7 @@ type CommandRecordItem = {
   title: string;
   searchText: string;
   createdAt: string;
+  startDate?: string;
   operationalDate: string;
   owner: string;
   status: string;
@@ -1132,6 +1133,38 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
     Completed: "Completed project",
     Cancelled: "Cancelled project",
   }[status] ?? null);
+  const getProjectTimingDescriptor = (record: CommandRecordItem) => {
+    if (record.objectType !== "Project") {
+      return null;
+    }
+
+    const parseCalendarDate = (value?: string) => {
+      if (!value) return null;
+      const date = new Date(`${value}T00:00:00`);
+      return Number.isNaN(date.getTime()) ? null : date;
+    };
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const targetDate = parseCalendarDate(record.operationalDate);
+    const startDate = parseCalendarDate(record.startDate);
+    const isFinal = ["completed", "cancelled"].includes(record.status.trim().toLowerCase());
+
+    if (targetDate && !isFinal) {
+      const daysUntilTarget = Math.round((targetDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+      if (daysUntilTarget < 0) return `Overdue by ${Math.abs(daysUntilTarget)} day${daysUntilTarget === -1 ? "" : "s"}`;
+      if (daysUntilTarget === 0) return "Due today";
+      return `Due in ${daysUntilTarget} day${daysUntilTarget === 1 ? "" : "s"}`;
+    }
+
+    if (startDate) {
+      const daysFromStart = Math.round((startDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+      if (daysFromStart === 0) return "Starts today";
+      if (daysFromStart > 0) return `Starts in ${daysFromStart} day${daysFromStart === 1 ? "" : "s"}`;
+      return `Started ${Math.abs(daysFromStart)} day${daysFromStart === -1 ? "" : "s"} ago`;
+    }
+
+    return null;
+  };
   const selectedSavedView = savedViews.find((view) => view.id === selectedSavedViewId);
   const orderedSavedViews = [
     ...savedViews.filter((view) => view.pinned),
@@ -1544,6 +1577,9 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
                           <span className="block text-[9px] uppercase tracking-[0.14em] text-[#5e5953]">{record.status}</span>
                           {record.objectType === "Project" && getProjectLifecycleDescriptor(record.status) ? (
                             <span className="mt-0.5 block text-[9px] text-[#7a726b]">{getProjectLifecycleDescriptor(record.status)}</span>
+                          ) : null}
+                          {getProjectTimingDescriptor(record) ? (
+                            <span className="mt-0.5 block text-[9px] text-[#7a726b]">{getProjectTimingDescriptor(record)}</span>
                           ) : null}
                         </div>
                       </div>
@@ -4598,6 +4634,7 @@ export default function Home() {
         title: project.projectName,
         searchText: `${project.projectName} ${project.owner} ${project.area} ${project.status}`,
         createdAt: "",
+        startDate: project.startDate,
         operationalDate: project.targetCompletionDate,
         owner: project.owner || "Unassigned",
         status: project.status || "No status",
