@@ -5765,6 +5765,18 @@ export default function Home() {
                                 <span className="rounded-full border border-[#cfc8c1] bg-[#f1efe9] px-2 py-1 text-[#2f2b28]">
                                   Open record
                                 </span>
+                                {item.objectType === "Project" && item.reasons.includes("UNASSIGNED PROJECT") ? (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      item.onOpen();
+                                    }}
+                                    className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[#6a3328] hover:bg-[#f1dfd8]"
+                                  >
+                                    Assign owner
+                                  </button>
+                                ) : null}
                                 {item.dependencyAction ? (
                                   <button
                                     type="button"
