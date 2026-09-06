@@ -3923,7 +3923,6 @@ export default function Home() {
 
   const orderAttentionReasons = (reasons: string[]) => {
     const getReasonRank = (reason: string) => {
-      if (reason === "BLOCKED PROJECT") return 1;
       if (reason === "BLOCKED") return 1;
       if (reason.startsWith("OVERDUE BY ")) return 2;
       if (reason.includes("SEVERITY")) return 3;
@@ -4458,6 +4457,11 @@ export default function Home() {
     }))
     .filter((group) => group.items.length > 0);
   const commandAttentionItems = commandAttentionItemList.length;
+  const projectAttentionCount = new Set(
+    commandAttentionGroups.flatMap((group) => group.items)
+      .filter((item) => item.objectType === "Project")
+      .map((item) => item.id),
+  ).size;
   const attentionSummaryItems = commandAttentionGroups.map((group) => ({
     label: group.label,
     count: group.items.length,
@@ -5728,7 +5732,7 @@ export default function Home() {
                 </span>
               </header>
 
-              <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Attention items</div>
                   <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{commandAttentionItems}</div>
@@ -5744,6 +5748,10 @@ export default function Home() {
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Critical/high problems</div>
                   <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{criticalHighProblemCount}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Projects requiring attention</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{projectAttentionCount}</div>
                 </div>
               </div>
 
