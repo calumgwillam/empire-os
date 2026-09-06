@@ -3970,20 +3970,11 @@ export default function Home() {
       return "High strategic-fit opportunity is still under evaluation.";
     }
 
-    if (item.objectType === "Project" && item.reasons.includes("BLOCKED")) {
-      return "Project is currently blocked and requires status review.";
-    }
-
-    if (item.objectType === "Project" && item.reasons.includes("OVERDUE PROJECT")) {
-      return "Project target completion date has passed.";
-    }
-
-    if (item.objectType === "Project" && item.reasons.includes("UNASSIGNED PROJECT")) {
-      return "Active project has no assigned owner.";
-    }
-
-    if (item.objectType === "Project" && item.reasons.includes("DUE SOON")) {
-      return "Project target completion date is approaching.";
+    if (item.objectType === "Project") {
+      if (item.reasons.includes("BLOCKED")) return "Project is currently blocked and requires status review.";
+      if (item.reasons.includes("OVERDUE PROJECT")) return "Project target completion date has passed.";
+      if (item.reasons.includes("UNASSIGNED PROJECT")) return "Active project has no assigned owner.";
+      if (item.reasons.includes("DUE SOON")) return "Project target completion date is approaching.";
     }
 
     return `${item.objectType} remains ${item.statusText.split(" /")[0].toLowerCase()}.`;
