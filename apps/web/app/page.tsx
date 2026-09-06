@@ -1607,6 +1607,10 @@ function ProjectDetailPanel({ project, people, onClose, onChange, onSave }: {
   onChange: (field: keyof ProjectRecord, value: string) => void;
   onSave: () => void;
 }) {
+  const hasInvalidDateOrder = Boolean(
+    project.startDate && project.targetCompletionDate && project.targetCompletionDate < project.startDate,
+  );
+
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
@@ -1644,6 +1648,9 @@ function ProjectDetailPanel({ project, people, onClose, onChange, onSave }: {
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Target completion date</label>
             <input type="date" value={project.targetCompletionDate} onChange={(event) => onChange("targetCompletionDate", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
           </div>
+          {hasInvalidDateOrder ? (
+            <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Target completion date must not be before the start date.</p>
+          ) : null}
           <div className="md:col-span-2">
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Status</label>
             <select value={project.status} onChange={(event) => onChange("status", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6">
@@ -1655,7 +1662,7 @@ function ProjectDetailPanel({ project, people, onClose, onChange, onSave }: {
 
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-          <button type="button" onClick={onSave} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1]">Save project</button>
+          <button type="button" onClick={onSave} disabled={hasInvalidDateOrder} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] disabled:cursor-not-allowed disabled:opacity-45">Save project</button>
         </div>
       </div>
     </div>
@@ -5677,6 +5684,10 @@ export default function Home() {
 
   const handleProjectSave = () => {
     if (!projectEditor) {
+      return;
+    }
+
+    if (projectEditor.startDate && projectEditor.targetCompletionDate && projectEditor.targetCompletionDate < projectEditor.startDate) {
       return;
     }
 
