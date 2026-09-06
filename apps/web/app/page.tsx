@@ -1125,6 +1125,13 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
   const totalRecordCount = groups.reduce((total, group) => total + group.records.length, 0);
   const visibleRecordCount = filteredGroups.reduce((total, group) => total + group.records.length, 0);
   const hasActiveFilters = Boolean(normalizedQuery) || selectedType !== allTypeValue || selectedStatus !== "All statuses" || selectedArea !== "All areas" || selectedOwner !== "All owners" || selectedCreatedDate !== "All dates" || selectedOperationalDate !== "All due dates" || sortOrder !== "Default" || attentionOnly;
+  const getProjectLifecycleDescriptor = (status: string) => ({
+    Open: "Open project",
+    "In Progress": "Project in progress",
+    Blocked: "Blocked project",
+    Completed: "Completed project",
+    Cancelled: "Cancelled project",
+  }[status] ?? null);
   const selectedSavedView = savedViews.find((view) => view.id === selectedSavedViewId);
   const orderedSavedViews = [
     ...savedViews.filter((view) => view.pinned),
@@ -1533,7 +1540,12 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
                     >
                       <div className="flex items-start justify-between gap-3">
                         <span className="min-w-0 truncate text-[14px] font-medium text-[#171717]">{record.title}</span>
-                        <span className="shrink-0 text-[9px] uppercase tracking-[0.14em] text-[#5e5953]">{record.status}</span>
+                        <div className="shrink-0 text-right">
+                          <span className="block text-[9px] uppercase tracking-[0.14em] text-[#5e5953]">{record.status}</span>
+                          {record.objectType === "Project" && getProjectLifecycleDescriptor(record.status) ? (
+                            <span className="mt-0.5 block text-[9px] text-[#7a726b]">{getProjectLifecycleDescriptor(record.status)}</span>
+                          ) : null}
+                        </div>
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] uppercase tracking-[0.12em] text-[#6a625d]">
                         {record.area ? <span>{record.area}</span> : null}
