@@ -5694,13 +5694,14 @@ export default function Home() {
     const selectedOwner = people.find((person) =>
       person.status === "Active" && person.name === projectEditor.owner.trim(),
     );
+    const selectedArea = projectEditor.area.trim();
 
     const nextProject: ProjectRecord = {
       ...projectEditor,
       id: projectEditor.id || generateProjectId(),
       projectName: projectEditor.projectName.trim() || "Untitled project",
       owner: selectedOwner ? selectedOwner.name : "",
-      area: projectEditor.area.trim() || "Garden Maintenance",
+      area: sharedAreaOptions.includes(selectedArea as (typeof sharedAreaOptions)[number]) ? selectedArea : "Garden Maintenance",
       startDate: projectEditor.startDate,
       targetCompletionDate: projectEditor.targetCompletionDate,
       status: projectEditor.status.trim(),
