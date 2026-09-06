@@ -5687,7 +5687,22 @@ export default function Home() {
       return;
     }
 
-    if (projectEditor.startDate && projectEditor.targetCompletionDate && projectEditor.targetCompletionDate < projectEditor.startDate) {
+    const normalizeProjectDate = (value: string) => {
+      const dateValue = value.trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+        return "";
+      }
+
+      const parsedDate = new Date(`${dateValue}T00:00:00`);
+      const [year, month, day] = dateValue.split("-").map(Number);
+      return !Number.isNaN(parsedDate.getTime()) && parsedDate.getFullYear() === year && parsedDate.getMonth() === month - 1 && parsedDate.getDate() === day
+        ? dateValue
+        : "";
+    };
+    const startDate = normalizeProjectDate(projectEditor.startDate);
+    const targetCompletionDate = normalizeProjectDate(projectEditor.targetCompletionDate);
+
+    if (startDate && targetCompletionDate && targetCompletionDate < startDate) {
       return;
     }
 
@@ -5703,8 +5718,8 @@ export default function Home() {
       projectName: projectEditor.projectName.trim() || "Untitled project",
       owner: selectedOwner ? selectedOwner.name : "",
       area: sharedAreaOptions.includes(selectedArea as (typeof sharedAreaOptions)[number]) ? selectedArea : "Garden Maintenance",
-      startDate: projectEditor.startDate,
-      targetCompletionDate: projectEditor.targetCompletionDate,
+      startDate,
+      targetCompletionDate,
       status: projectStatusOptions.includes(selectedStatus as (typeof projectStatusOptions)[number]) ? selectedStatus : "Open",
     };
     const isNewProject = !projects.some((project) => project.id === nextProject.id);
