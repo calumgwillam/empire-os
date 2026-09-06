@@ -3749,6 +3749,7 @@ export default function Home() {
     priorityScore: number;
     sortDate: number;
     sortDateAscending: boolean;
+    targetCompletionDate?: string;
     onOpen: () => void;
     dependencyAction?: {
       label: string;
@@ -3995,6 +3996,31 @@ export default function Home() {
     ].filter(Boolean).join(" • ");
   };
 
+  const getProjectAttentionAge = (item: AttentionItem) => {
+    if (item.objectType !== "Project" || !item.targetCompletionDate) {
+      return null;
+    }
+
+    const targetCompletionDate = new Date(`${item.targetCompletionDate}T00:00:00`);
+    if (Number.isNaN(targetCompletionDate.getTime())) {
+      return null;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const daysFromToday = Math.round((targetCompletionDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    if (item.reasons.includes("OVERDUE PROJECT") && daysFromToday < 0) {
+      const days = Math.abs(daysFromToday);
+      return `Overdue for ${days} day${days === 1 ? "" : "s"}`;
+    }
+
+    if (item.reasons.includes("DUE SOON") && daysFromToday >= 0) {
+      return `Due in ${daysFromToday} day${daysFromToday === 1 ? "" : "s"}`;
+    }
+
+    return null;
+  };
+
   const getActionDependencyBlocker = (action: ActionRecord) => {
     const relatedProblem = problemRecords.find((problem) => problem.id === action.relatedProblem);
     if (relatedProblem && isProblemUnresolved(relatedProblem)) {
@@ -4203,6 +4229,7 @@ export default function Home() {
           priorityScore: isOverdue ? 180 : isUnassigned ? 90 : 60,
           sortDate: getDateValue(project.targetCompletionDate || project.startDate),
           sortDateAscending: Boolean(project.targetCompletionDate),
+          targetCompletionDate: project.targetCompletionDate,
           onOpen: () => handleProjectEditOpen(project),
         });
       }
@@ -5759,6 +5786,11 @@ export default function Home() {
                                   {item.objectType === "Project" ? (
                                     <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[#7a726b]">
                                       {getProjectIssueSummary(item)}
+                                    </div>
+                                  ) : null}
+                                  {getProjectAttentionAge(item) ? (
+                                    <div className="mt-1 text-[10px] text-[#7a726b]">
+                                      {getProjectAttentionAge(item)}
                                     </div>
                                   ) : null}
                                 </div>
