@@ -5789,6 +5789,18 @@ export default function Home() {
                                     Review date
                                   </button>
                                 ) : null}
+                                {item.objectType === "Project" && item.statusText.startsWith("Blocked /") ? (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      item.onOpen();
+                                    }}
+                                    className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[#6a3328] hover:bg-[#f1dfd8]"
+                                  >
+                                    Review status
+                                  </button>
+                                ) : null}
                                 {item.dependencyAction ? (
                                   <button
                                     type="button"
