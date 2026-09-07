@@ -15,6 +15,7 @@ const navigation = [
   "Systems",
   "SOPs",
   "Metrics",
+  "Leads",
   "People",
   "Pillars",
 ];
@@ -23,6 +24,7 @@ const STORAGE_KEY = "empire-os-captures";
 const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
 const PERSON_STORAGE_KEY = "empire-os-people";
 const PROJECT_STORAGE_KEY = "empire-os-projects";
+const LEAD_STORAGE_KEY = "empire-os-leads";
 const SAVED_VIEWS_STORAGE_KEY = "empire-os-records-in-motion-views";
 const DEFAULT_SAVED_VIEW_STORAGE_KEY = "empire-os-records-in-motion-default-view";
 
@@ -355,6 +357,58 @@ type ProjectRecord = {
 
 const projectStatusOptions = ["Open", "In Progress", "Blocked", "Completed", "Cancelled"] as const;
 
+const leadStatusOptions = ["New", "Contacted", "Quote Needed", "Quote Sent", "Follow-Up", "Won", "Lost", "On Hold"] as const;
+type LeadStatus = (typeof leadStatusOptions)[number];
+
+const leadSourceOptions = ["Nextdoor", "Facebook Group", "Referral", "Community Page", "Direct Outreach", "Website", "Repeat Customer", "Other"] as const;
+type LeadSource = (typeof leadSourceOptions)[number];
+
+const leadOutcomeOptions = ["", "Won", "Lost", "No Response", "Cancelled"] as const;
+
+type LeadRecord = {
+  id: string;
+  leadName: string;
+  contactName: string;
+  phone: string;
+  email: string;
+  location: string;
+  serviceRequested: string;
+  sourceChannel: LeadSource;
+  dateReceived: string;
+  status: LeadStatus;
+  quoteValue: string;
+  quoteSentDate: string;
+  followUpDate: string;
+  outcome: string;
+  finalJobValue: string;
+  notes: string;
+  owner: string;
+  relatedPillar: string;
+  dateCreated: string;
+};
+
+type LeadFormValues = Omit<LeadRecord, "id" | "dateCreated">;
+
+const defaultLeadForm: LeadFormValues = {
+  leadName: "",
+  contactName: "",
+  phone: "",
+  email: "",
+  location: "",
+  serviceRequested: "",
+  sourceChannel: "Other",
+  dateReceived: "",
+  status: "New",
+  quoteValue: "",
+  quoteSentDate: "",
+  followUpDate: "",
+  outcome: "",
+  finalJobValue: "",
+  notes: "",
+  owner: "",
+  relatedPillar: "Garden Maintenance",
+};
+
 const defaultProjectForm: Omit<ProjectRecord, "id"> = {
   projectName: "",
   owner: "",
@@ -428,6 +482,14 @@ function generateProjectId() {
   }
 
   return `project-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function generateLeadId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return `lead-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function formatCapturedAt(value: string) {
@@ -808,7 +870,7 @@ const destinationDefinitions = [
   },
 ] as const;
 
-type DestinationKey = "Command" | "Capture" | "People" | "Projects" | (typeof destinationDefinitions)[number]["key"];
+type DestinationKey = "Command" | "Capture" | "People" | "Projects" | "Leads" | (typeof destinationDefinitions)[number]["key"];
 
 type RelatedRecordItem = {
   label: string;
@@ -1677,6 +1739,138 @@ function ProjectDetailPanel({ project, people, onClose, onChange, onSave }: {
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
           <button type="button" onClick={() => { onSave(); setHasSaved(true); }} disabled={hasInvalidProjectName || hasInvalidDateOrder} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save project"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LeadDetailPanel({ lead, people, onClose, onChange, onSave }: {
+  lead: LeadRecord;
+  people: PersonRecord[];
+  onClose: () => void;
+  onChange: (field: keyof LeadRecord, value: string) => void;
+  onSave: () => void;
+}) {
+  const hasInvalidLeadName = !lead.leadName.trim();
+  const [hasSaved, setHasSaved] = useState(false);
+
+  useEffect(() => {
+    if (!hasSaved) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setHasSaved(false), 1800);
+    return () => window.clearTimeout(timeoutId);
+  }, [hasSaved]);
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+        <div className="flex items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Lead detail</p>
+            <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{lead.leadName || "New lead"}</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
+        </div>
+
+        {hasSaved ? (
+          <div aria-live="polite" className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">
+            Lead details saved.
+          </div>
+        ) : null}
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Lead name</label>
+            <input value={lead.leadName} onChange={(event) => onChange("leadName", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          {hasInvalidLeadName ? (
+            <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Lead name is required.</p>
+          ) : null}
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Contact name</label>
+            <input value={lead.contactName} onChange={(event) => onChange("contactName", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Phone</label>
+            <input value={lead.phone} onChange={(event) => onChange("phone", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Email</label>
+            <input type="email" value={lead.email} onChange={(event) => onChange("email", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Location</label>
+            <input value={lead.location} onChange={(event) => onChange("location", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Service requested</label>
+            <input value={lead.serviceRequested} onChange={(event) => onChange("serviceRequested", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Source channel</label>
+            <select value={lead.sourceChannel} onChange={(event) => onChange("sourceChannel", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6">
+              {!leadSourceOptions.includes(lead.sourceChannel as LeadSource) && lead.sourceChannel ? <option value={lead.sourceChannel}>{lead.sourceChannel}</option> : null}
+              {leadSourceOptions.map((source) => <option key={source} value={source}>{source}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Date received</label>
+            <input type="date" value={lead.dateReceived} onChange={(event) => onChange("dateReceived", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Status</label>
+            <select value={lead.status} onChange={(event) => onChange("status", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6">
+              {!leadStatusOptions.includes(lead.status as LeadStatus) && lead.status ? <option value={lead.status}>{lead.status}</option> : null}
+              {leadStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Quote value</label>
+            <input value={lead.quoteValue} onChange={(event) => onChange("quoteValue", event.target.value)} placeholder="e.g. 450" className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Quote sent date</label>
+            <input type="date" value={lead.quoteSentDate} onChange={(event) => onChange("quoteSentDate", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Follow-up date</label>
+            <input type="date" value={lead.followUpDate} onChange={(event) => onChange("followUpDate", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Outcome</label>
+            <select value={lead.outcome} onChange={(event) => onChange("outcome", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6">
+              {leadOutcomeOptions.map((outcome) => <option key={outcome || "none"} value={outcome}>{outcome || "Not set"}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Final job value</label>
+            <input value={lead.finalJobValue} onChange={(event) => onChange("finalJobValue", event.target.value)} placeholder="e.g. 450" className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Owner</label>
+            <select value={lead.owner} onChange={(event) => onChange("owner", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6">
+              <option value="">Unassigned</option>
+              {people.filter((person) => person.status === "Active").map((person) => <option key={person.id} value={person.name}>{person.name}</option>)}
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Related pillar / area</label>
+            <select value={lead.relatedPillar} onChange={(event) => onChange("relatedPillar", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6">
+              {sharedAreaOptions.map((area) => <option key={area} value={area}>{area}</option>)}
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Notes</label>
+            <textarea rows={3} value={lead.notes} onChange={(event) => onChange("notes", event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+          <button type="button" onClick={() => { onSave(); setHasSaved(true); }} disabled={hasInvalidLeadName} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save lead"}</button>
         </div>
       </div>
     </div>
@@ -3708,6 +3902,12 @@ export default function Home() {
   const [personSaveState, setPersonSaveState] = useState<"idle" | "saved">("idle");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [projectEditor, setProjectEditor] = useState<ProjectRecord | null>(null);
+  const [leads, setLeads] = useState<LeadRecord[]>([]);
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+  const [leadEditor, setLeadEditor] = useState<LeadRecord | null>(null);
+  const [leadStatusFilter, setLeadStatusFilter] = useState<string>("All statuses");
+  const [leadSourceFilter, setLeadSourceFilter] = useState<string>("All sources");
+  const [leadOwnerFilter, setLeadOwnerFilter] = useState<string>("All owners");
   const [creatingLinkedActionForProblemId, setCreatingLinkedActionForProblemId] = useState<string | null>(null);
   const [creatingLinkedActionForDecisionId, setCreatingLinkedActionForDecisionId] = useState<string | null>(null);
   const [creatingLinkedDecisionForOpportunityId, setCreatingLinkedDecisionForOpportunityId] = useState<string | null>(null);
@@ -3731,6 +3931,7 @@ export default function Home() {
       const storedConversions = window.localStorage.getItem(CONVERSION_STORAGE_KEY);
       const storedPeople = window.localStorage.getItem(PERSON_STORAGE_KEY);
       const storedProjects = window.localStorage.getItem(PROJECT_STORAGE_KEY);
+      const storedLeads = window.localStorage.getItem(LEAD_STORAGE_KEY);
 
       if (storedCaptures) {
         const parsedCaptures = JSON.parse(storedCaptures);
@@ -3769,6 +3970,14 @@ export default function Home() {
 
         if (Array.isArray(parsedProjects)) {
           setProjects(parsedProjects);
+        }
+      }
+
+      if (storedLeads) {
+        const parsedLeads = JSON.parse(storedLeads);
+
+        if (Array.isArray(parsedLeads)) {
+          setLeads(parsedLeads);
         }
       }
     } catch {
@@ -3811,6 +4020,14 @@ export default function Home() {
     }
   }, [projects]);
 
+  useEffect(() => {
+    if (leads.length === 0) {
+      window.localStorage.removeItem(LEAD_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(LEAD_STORAGE_KEY, JSON.stringify(leads));
+    }
+  }, [leads]);
+
   const orderedCaptures = [...captures].sort(
     (first, second) =>
       new Date(second.capturedAt).getTime() - new Date(first.capturedAt).getTime(),
@@ -3819,6 +4036,21 @@ export default function Home() {
   const orderedPeople = [...people].sort(
     (first, second) => new Date(second.dateCreated).getTime() - new Date(first.dateCreated).getTime(),
   );
+
+  const orderedLeads = [...leads].sort(
+    (first, second) => new Date(second.dateCreated).getTime() - new Date(first.dateCreated).getTime(),
+  );
+
+  const leadOwnerFilterOptions = Array.from(
+    new Set(orderedLeads.map((lead) => lead.owner.trim() || "Unassigned")),
+  ).sort();
+
+  const filteredLeads = orderedLeads.filter((lead) => {
+    const matchesStatus = leadStatusFilter === "All statuses" || lead.status === leadStatusFilter;
+    const matchesSource = leadSourceFilter === "All sources" || lead.sourceChannel === leadSourceFilter;
+    const matchesOwner = leadOwnerFilter === "All owners" || (lead.owner.trim() || "Unassigned") === leadOwnerFilter;
+    return matchesStatus && matchesSource && matchesOwner;
+  });
 
   const getConvertedRecordsByType = (targetType: CaptureConversionRecord["targetType"]) =>
     [...conversions]
@@ -5805,6 +6037,84 @@ export default function Home() {
     setProjectEditor(newProject);
   };
 
+  const handleLeadEditOpen = (lead: LeadRecord) => {
+    setSelectedLeadId(lead.id);
+    setLeadEditor(lead);
+  };
+
+  const handleLeadEditorChange = (field: keyof LeadRecord, value: string) => {
+    if (!leadEditor) {
+      return;
+    }
+
+    setLeadEditor({ ...leadEditor, [field]: value });
+  };
+
+  const handleLeadSave = () => {
+    if (!leadEditor) {
+      return;
+    }
+
+    const leadName = leadEditor.leadName.trim();
+    if (!leadName) {
+      return;
+    }
+
+    const selectedOwner = people.find((person) =>
+      person.status === "Active" && person.name === leadEditor.owner.trim(),
+    );
+    const selectedStatus = leadEditor.status.trim();
+    const selectedSource = leadEditor.sourceChannel.trim();
+    const selectedPillar = leadEditor.relatedPillar.trim();
+
+    const nextLead: LeadRecord = {
+      ...leadEditor,
+      id: leadEditor.id || generateLeadId(),
+      leadName,
+      contactName: leadEditor.contactName.trim(),
+      phone: leadEditor.phone.trim(),
+      email: leadEditor.email.trim(),
+      location: leadEditor.location.trim(),
+      serviceRequested: leadEditor.serviceRequested.trim(),
+      sourceChannel: leadSourceOptions.includes(selectedSource as LeadSource) ? (selectedSource as LeadSource) : "Other",
+      dateReceived: leadEditor.dateReceived,
+      status: leadStatusOptions.includes(selectedStatus as LeadStatus) ? (selectedStatus as LeadStatus) : "New",
+      quoteValue: leadEditor.quoteValue.trim(),
+      quoteSentDate: leadEditor.quoteSentDate,
+      followUpDate: leadEditor.followUpDate,
+      outcome: leadEditor.outcome.trim(),
+      finalJobValue: leadEditor.finalJobValue.trim(),
+      notes: leadEditor.notes.trim(),
+      owner: selectedOwner ? selectedOwner.name : leadEditor.owner.trim(),
+      relatedPillar: sharedAreaOptions.includes(selectedPillar as (typeof sharedAreaOptions)[number]) ? selectedPillar : "Garden Maintenance",
+      dateCreated: leadEditor.dateCreated || new Date().toISOString(),
+    };
+    const isNewLead = !leads.some((lead) => lead.id === nextLead.id);
+
+    setLeads((currentLeads) =>
+      isNewLead
+        ? [nextLead, ...currentLeads]
+        : currentLeads.map((lead) => lead.id === nextLead.id ? nextLead : lead),
+    );
+    setSelectedLeadId(nextLead.id);
+    setLeadEditor(nextLead);
+    setFeedback({
+      type: "success",
+      message: isNewLead ? "Lead created." : "Lead details saved.",
+    });
+  };
+
+  const handleCreateLead = () => {
+    const newLead: LeadRecord = {
+      ...defaultLeadForm,
+      id: generateLeadId(),
+      dateCreated: new Date().toISOString(),
+    };
+
+    setSelectedLeadId(newLead.id);
+    setLeadEditor(newLead);
+  };
+
   return (
     <div className="min-h-screen bg-[#f1efe9] text-[#171717]">
       <div className="flex min-h-screen">
@@ -5838,6 +6148,7 @@ export default function Home() {
                       item === "Projects" ||
                       item === "Systems" ||
                       item === "SOPs" ||
+                      item === "Leads" ||
                       item === "People"
                     ) {
                       setActiveView(item === "Command" ? "Command" : item);
@@ -6092,6 +6403,67 @@ export default function Home() {
                     </button>
                   ))}
                 </div>
+              )}
+            </div>
+          ) : activeView === "Leads" ? (
+            <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+              <header className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-4">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#4d4944]">Lead tracking</p>
+                  <h1 className="mt-2.5 text-[36px] font-semibold tracking-[-0.07em] text-[#171717] sm:text-[42px]">Leads</h1>
+                </div>
+                <button type="button" onClick={handleCreateLead} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Create Lead</button>
+              </header>
+
+              <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
+                Lead records track incoming work from first contact through quote, follow-up and outcome so no potential job disappears into messages.
+              </p>
+
+              {orderedLeads.length === 0 ? (
+                <div className="mt-6 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">No Leads yet. Create the first lead to start tracking incoming work.</div>
+              ) : (
+                <>
+                  <div className="mt-6 flex flex-wrap items-center gap-2">
+                    <select value={leadStatusFilter} onChange={(event) => setLeadStatusFilter(event.target.value)} className="rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28] outline-none transition focus:border-[#171717]">
+                      <option value="All statuses">All statuses</option>
+                      {leadStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+                    </select>
+                    <select value={leadSourceFilter} onChange={(event) => setLeadSourceFilter(event.target.value)} className="rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28] outline-none transition focus:border-[#171717]">
+                      <option value="All sources">All sources</option>
+                      {leadSourceOptions.map((source) => <option key={source} value={source}>{source}</option>)}
+                    </select>
+                    <select value={leadOwnerFilter} onChange={(event) => setLeadOwnerFilter(event.target.value)} className="rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28] outline-none transition focus:border-[#171717]">
+                      <option value="All owners">All owners</option>
+                      {leadOwnerFilterOptions.map((owner) => <option key={owner} value={owner}>{owner}</option>)}
+                    </select>
+                    <span className="text-[11px] text-[#5d584f]">{filteredLeads.length} of {orderedLeads.length} lead{orderedLeads.length === 1 ? "" : "s"}</span>
+                  </div>
+
+                  {filteredLeads.length === 0 ? (
+                    <div className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">No leads match the selected filters.</div>
+                  ) : (
+                    <div className="mt-4 space-y-3">
+                      {filteredLeads.map((lead) => (
+                        <button key={lead.id} type="button" onClick={() => handleLeadEditOpen(lead)} className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec]">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0 flex-1">
+                              <h2 className="text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{lead.leadName}</h2>
+                              <p className="mt-2 text-[14px] leading-6 text-[#424039]">{lead.serviceRequested || "Service not specified"}</p>
+                            </div>
+                            <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">{lead.status}</span>
+                          </div>
+                          <div className="mt-4 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{lead.sourceChannel}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{lead.quoteValue ? `Quote ${lead.quoteValue}` : "No quote value"}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{lead.followUpDate ? `Follow-up ${formatCapturedAt(lead.followUpDate)}` : "No follow-up"}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{lead.owner || "Unassigned"}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1.5">{lead.relatedPillar}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           ) : activeView === "People" ? (
@@ -7178,6 +7550,19 @@ export default function Home() {
           }}
           onChange={handleProjectEditorChange}
           onSave={handleProjectSave}
+        />
+      ) : null}
+
+      {selectedLeadId && leadEditor ? (
+        <LeadDetailPanel
+          lead={leadEditor}
+          people={people}
+          onClose={() => {
+            setSelectedLeadId(null);
+            setLeadEditor(null);
+          }}
+          onChange={handleLeadEditorChange}
+          onSave={handleLeadSave}
         />
       ) : null}
 
