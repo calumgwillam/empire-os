@@ -394,6 +394,7 @@ type LeadRecord = {
   owner: string;
   relatedPillar: string;
   dateCreated: string;
+  archived?: boolean;
 };
 
 type LeadFormValues = Omit<LeadRecord, "id" | "dateCreated">;
@@ -1984,12 +1985,13 @@ function ProjectLinkSection({ title, objectType, sectionKey, options, linkedIds,
   );
 }
 
-function LeadDetailPanel({ lead, people, onClose, onChange, onSave }: {
+function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveToggle }: {
   lead: LeadRecord;
   people: PersonRecord[];
   onClose: () => void;
   onChange: (field: keyof LeadRecord, value: string) => void;
   onSave: () => void;
+  onArchiveToggle: (lead: LeadRecord, archived: boolean) => void;
 }) {
   const hasInvalidLeadName = !lead.leadName.trim();
   const [hasSaved, setHasSaved] = useState(false);
@@ -2010,6 +2012,9 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave }: {
           <div>
             <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Lead detail</p>
             <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{lead.leadName || "New lead"}</h3>
+            {lead.archived ? (
+              <span className="mt-2 inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">Archived</span>
+            ) : null}
           </div>
           <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
         </div>
@@ -2107,9 +2112,22 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave }: {
           </div>
         </div>
 
-        <div className="mt-6 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-          <button type="button" onClick={() => { onSave(); setHasSaved(true); }} disabled={hasInvalidLeadName} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save lead"}</button>
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            {lead.id ? (
+              <button
+                type="button"
+                onClick={() => onArchiveToggle(lead, !lead.archived)}
+                className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28] hover:border-[#171717]"
+              >
+                {lead.archived ? "Restore lead" : "Archive lead"}
+              </button>
+            ) : null}
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+            <button type="button" onClick={() => { onSave(); setHasSaved(true); }} disabled={hasInvalidLeadName} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save lead"}</button>
+          </div>
         </div>
       </div>
     </div>
@@ -4449,6 +4467,7 @@ export default function Home() {
   const [leadStatusFilter, setLeadStatusFilter] = useState<string>("All statuses");
   const [leadSourceFilter, setLeadSourceFilter] = useState<string>("All sources");
   const [leadOwnerFilter, setLeadOwnerFilter] = useState<string>("All owners");
+  const [showArchivedLeads, setShowArchivedLeads] = useState<boolean>(false);
   const [cashPosition, setCashPosition] = useState<CashPositionRecord>(defaultCashPosition);
   const [incomeRecords, setIncomeRecords] = useState<IncomeRecord[]>([]);
   const [expenseRecords, setExpenseRecords] = useState<ExpenseRecord[]>([]);
@@ -4653,7 +4672,14 @@ export default function Home() {
     (first, second) => new Date(second.dateCreated).getTime() - new Date(first.dateCreated).getTime(),
   );
 
-  const orderedLeads = [...leads].sort(
+  const activeLeads = leads.filter((lead) => !lead.archived);
+  const archivedLeads = leads.filter((lead) => lead.archived);
+
+  const orderedLeads = [...activeLeads].sort(
+    (first, second) => new Date(second.dateCreated).getTime() - new Date(first.dateCreated).getTime(),
+  );
+
+  const orderedArchivedLeads = [...archivedLeads].sort(
     (first, second) => new Date(second.dateCreated).getTime() - new Date(first.dateCreated).getTime(),
   );
 
@@ -4809,20 +4835,20 @@ export default function Home() {
   const isProjectActive = (project: ProjectRecord) =>
     !["completed", "closed", "final", "cancelled", "canceled"].includes(project.status.trim().toLowerCase());
 
-  const metricsLeadsGenerated = leads.length;
+  const metricsLeadsGenerated = activeLeads.length;
   const metricsLeadsBySource = leadSourceOptions
-    .map((source) => ({ source, count: leads.filter((lead) => lead.sourceChannel === source).length }))
+    .map((source) => ({ source, count: activeLeads.filter((lead) => lead.sourceChannel === source).length }))
     .filter((entry) => entry.count > 0);
-  const metricsJobsWon = leads.filter((lead) => lead.status === "Won").length;
-  const metricsQuotesSent = leads.filter((lead) => lead.status === "Quote Sent" || lead.status === "Follow-Up" || lead.status === "Won" || Boolean(lead.quoteSentDate)).length;
+  const metricsJobsWon = activeLeads.filter((lead) => lead.status === "Won").length;
+  const metricsQuotesSent = activeLeads.filter((lead) => lead.status === "Quote Sent" || lead.status === "Follow-Up" || lead.status === "Won" || Boolean(lead.quoteSentDate)).length;
   const metricsLeadToJobConversion = metricsLeadsGenerated === 0 ? 0 : (metricsJobsWon / metricsLeadsGenerated) * 100;
   const wonLeadsValue = (lead: LeadRecord) => parseFinanceAmount(lead.finalJobValue) || parseFinanceAmount(lead.quoteValue);
-  const metricsRevenueFromWonLeads = leads
+  const metricsRevenueFromWonLeads = activeLeads
     .filter((lead) => lead.status === "Won")
     .reduce((total, lead) => total + wonLeadsValue(lead), 0);
   const metricsAverageJobValue = metricsJobsWon === 0
     ? 0
-    : leads.filter((lead) => lead.status === "Won").reduce((total, lead) => total + wonLeadsValue(lead), 0) / metricsJobsWon;
+    : activeLeads.filter((lead) => lead.status === "Won").reduce((total, lead) => total + wonLeadsValue(lead), 0) / metricsJobsWon;
 
   const metricsOpenActions = actionRecords.filter((action) => action.status === "Open").length;
   const metricsInProgressActions = actionRecords.filter((action) => action.status === "In Progress").length;
@@ -4833,9 +4859,9 @@ export default function Home() {
   const metricsOpenOpportunities = opportunityRecords.filter((opportunity) => opportunity.status === "New" || opportunity.status === "Evaluating" || opportunity.status === "On Hold").length;
   const metricsApprovedOpportunities = opportunityRecords.filter((opportunity) => opportunity.status === "Approved").length;
   const metricsActiveDecisions = decisionRecords.filter((decision) => isDecisionActive(decision)).length;
-  const metricsLeadsAwaitingFollowUp = leads.filter((lead) => lead.status === "Follow-Up").length;
+  const metricsLeadsAwaitingFollowUp = activeLeads.filter((lead) => lead.status === "Follow-Up").length;
   const metricsWonLeads = metricsJobsWon;
-  const metricsLostLeads = leads.filter((lead) => lead.status === "Lost").length;
+  const metricsLostLeads = activeLeads.filter((lead) => lead.status === "Lost").length;
 
   const formatMetricPercent = (value: number) => `${value.toFixed(0)}%`;
 
@@ -6843,6 +6869,22 @@ export default function Home() {
     setLeadEditor(newLead);
   };
 
+  const handleLeadArchiveToggle = (lead: LeadRecord, archived: boolean) => {
+    setLeads((currentLeads) =>
+      currentLeads.map((entry) => entry.id === lead.id ? { ...entry, archived } : entry),
+    );
+
+    if (selectedLeadId === lead.id) {
+      setSelectedLeadId(null);
+      setLeadEditor(null);
+    }
+
+    setFeedback({
+      type: "success",
+      message: archived ? "Lead archived." : "Lead restored.",
+    });
+  };
+
   const handleCashPositionOpen = () => {
     setCashPositionEditor({ ...cashPosition });
   };
@@ -7306,8 +7348,67 @@ export default function Home() {
                 Lead records track incoming work from first contact through quote, follow-up and outcome so no potential job disappears into messages.
               </p>
 
-              {orderedLeads.length === 0 ? (
-                <div className="mt-6 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">No Leads yet. Create the first lead to start tracking incoming work.</div>
+              <div className="mt-6 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowArchivedLeads(false)}
+                  className={[
+                    "rounded-lg border px-2.5 py-1.5 text-[11px] transition",
+                    !showArchivedLeads
+                      ? "border-[#171717] bg-[#171717] text-[#f7f4f1]"
+                      : "border-[#cfc8c1] bg-white text-[#2f2b28] hover:border-[#171717]",
+                  ].join(" ")}
+                >
+                  Active ({orderedLeads.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowArchivedLeads(true)}
+                  className={[
+                    "rounded-lg border px-2.5 py-1.5 text-[11px] transition",
+                    showArchivedLeads
+                      ? "border-[#171717] bg-[#171717] text-[#f7f4f1]"
+                      : "border-[#cfc8c1] bg-white text-[#2f2b28] hover:border-[#171717]",
+                  ].join(" ")}
+                >
+                  Archived ({archivedLeads.length})
+                </button>
+              </div>
+
+              {showArchivedLeads ? (
+                orderedArchivedLeads.length === 0 ? (
+                  <div className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">No archived leads.</div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {orderedArchivedLeads.map((lead) => (
+                      <div key={lead.id} className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f4f0ec] px-4 py-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <button type="button" onClick={() => handleLeadEditOpen(lead)} className="min-w-0 flex-1 text-left">
+                            <h2 className="text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{lead.leadName}</h2>
+                            <p className="mt-2 text-[14px] leading-6 text-[#424039]">{lead.serviceRequested || "Service not specified"}</p>
+                          </button>
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">{lead.status}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleLeadArchiveToggle(lead, false)}
+                              className="rounded-lg border border-[#171717] bg-white px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-[#171717] hover:bg-[#f1eee9]"
+                            >
+                              Restore
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-4 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{lead.sourceChannel}</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{lead.owner || "Unassigned"}</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1.5">{lead.relatedPillar}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              ) : orderedLeads.length === 0 ? (
+                <div className="mt-6 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">No active leads yet. Create the first lead to start tracking incoming work.</div>
               ) : (
                 <>
                   <div className="mt-6 flex flex-wrap items-center gap-2">
@@ -8664,6 +8765,7 @@ export default function Home() {
           }}
           onChange={handleLeadEditorChange}
           onSave={handleLeadSave}
+          onArchiveToggle={handleLeadArchiveToggle}
         />
       ) : null}
 
