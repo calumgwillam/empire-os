@@ -3908,6 +3908,9 @@ export default function Home() {
   const isDecisionActive = (decision: DecisionRecord) =>
     ["Draft", "Active", "Under Review"].includes(decision.decisionStatus);
 
+  const isDecisionNotYetActionable = (decision: DecisionRecord) =>
+    ["Draft", "Under Review"].includes(decision.decisionStatus);
+
   const isOpportunityUnderEvaluation = (opportunity: OpportunityRecord) =>
     opportunity.status === "Evaluating" && ["High", "Exceptional"].includes(opportunity.strategicFit);
 
@@ -4132,7 +4135,7 @@ export default function Home() {
     }
 
     const relatedDecision = decisionRecords.find((decision) => decision.id === action.relatedDecision);
-    if (relatedDecision && isDecisionActive(relatedDecision)) {
+    if (relatedDecision && isDecisionNotYetActionable(relatedDecision)) {
       return {
         reason: `WAITING ON DECISION: ${relatedDecision.decisionTitle || relatedDecision.title}`,
         label: "Open decision",
