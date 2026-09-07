@@ -353,6 +353,10 @@ type ProjectRecord = {
   startDate: string;
   targetCompletionDate: string;
   status: string;
+  relatedActionIds?: string[];
+  relatedDecisionIds?: string[];
+  relatedSystemIds?: string[];
+  relatedSopIds?: string[];
 };
 
 const projectStatusOptions = ["Open", "In Progress", "Blocked", "Completed", "Cancelled"] as const;
@@ -416,6 +420,10 @@ const defaultProjectForm: Omit<ProjectRecord, "id"> = {
   startDate: "",
   targetCompletionDate: "",
   status: "Open",
+  relatedActionIds: [],
+  relatedDecisionIds: [],
+  relatedSystemIds: [],
+  relatedSopIds: [],
 };
 
 const defaultPersonForm: PersonFormValues = {
@@ -1662,12 +1670,23 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
   );
 }
 
-function ProjectDetailPanel({ project, people, onClose, onChange, onSave }: {
+type ProjectLinkOption = { id: string; title: string };
+
+type ProjectLinkSectionKey = "relatedActionIds" | "relatedDecisionIds" | "relatedSystemIds" | "relatedSopIds";
+
+function ProjectDetailPanel({ project, people, actions, decisions, systems, sops, onClose, onChange, onSave, onAddLink, onRemoveLink, onOpenRecord }: {
   project: ProjectRecord;
   people: PersonRecord[];
+  actions: ActionRecord[];
+  decisions: DecisionRecord[];
+  systems: SystemRecord[];
+  sops: SopRecord[];
   onClose: () => void;
   onChange: (field: keyof ProjectRecord, value: string) => void;
   onSave: () => void;
+  onAddLink: (field: ProjectLinkSectionKey, id: string) => void;
+  onRemoveLink: (field: ProjectLinkSectionKey, id: string) => void;
+  onOpenRecord: (objectType: "Action" | "Decision" | "System" | "SOP", id: string) => void;
 }) {
   const hasInvalidProjectName = !project.projectName.trim();
   const hasInvalidDateOrder = Boolean(
@@ -1736,10 +1755,124 @@ function ProjectDetailPanel({ project, people, onClose, onChange, onSave }: {
           </div>
         </div>
 
+        <ProjectLinkSection
+          title="Related Actions"
+          objectType="Action"
+          sectionKey="relatedActionIds"
+          options={actions.map((action) => ({ id: action.id, title: action.actionTitle || action.title }))}
+          linkedIds={project.relatedActionIds ?? []}
+          onAddLink={onAddLink}
+          onRemoveLink={onRemoveLink}
+          onOpenRecord={onOpenRecord}
+        />
+        <ProjectLinkSection
+          title="Related Decisions"
+          objectType="Decision"
+          sectionKey="relatedDecisionIds"
+          options={decisions.map((decision) => ({ id: decision.id, title: decision.decisionTitle || decision.title }))}
+          linkedIds={project.relatedDecisionIds ?? []}
+          onAddLink={onAddLink}
+          onRemoveLink={onRemoveLink}
+          onOpenRecord={onOpenRecord}
+        />
+        <ProjectLinkSection
+          title="Related Systems"
+          objectType="System"
+          sectionKey="relatedSystemIds"
+          options={systems.map((system) => ({ id: system.id, title: system.systemName || system.title }))}
+          linkedIds={project.relatedSystemIds ?? []}
+          onAddLink={onAddLink}
+          onRemoveLink={onRemoveLink}
+          onOpenRecord={onOpenRecord}
+        />
+        <ProjectLinkSection
+          title="Related SOPs"
+          objectType="SOP"
+          sectionKey="relatedSopIds"
+          options={sops.map((sop) => ({ id: sop.id, title: sop.sopTitle || sop.title }))}
+          linkedIds={project.relatedSopIds ?? []}
+          onAddLink={onAddLink}
+          onRemoveLink={onRemoveLink}
+          onOpenRecord={onOpenRecord}
+        />
+
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
           <button type="button" onClick={() => { onSave(); setHasSaved(true); }} disabled={hasInvalidProjectName || hasInvalidDateOrder} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save project"}</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectLinkSection({ title, objectType, sectionKey, options, linkedIds, onAddLink, onRemoveLink, onOpenRecord }: {
+  title: string;
+  objectType: "Action" | "Decision" | "System" | "SOP";
+  sectionKey: ProjectLinkSectionKey;
+  options: ProjectLinkOption[];
+  linkedIds: string[];
+  onAddLink: (field: ProjectLinkSectionKey, id: string) => void;
+  onRemoveLink: (field: ProjectLinkSectionKey, id: string) => void;
+  onOpenRecord: (objectType: "Action" | "Decision" | "System" | "SOP", id: string) => void;
+}) {
+  const [pendingId, setPendingId] = useState("");
+  const linkedSet = new Set(linkedIds);
+  const linkedOptions = options.filter((option) => linkedSet.has(option.id));
+  const availableOptions = options.filter((option) => !linkedSet.has(option.id));
+
+  return (
+    <div className="mt-6 rounded-xl border border-[#d3cbc3] bg-[#f1eee9] p-3">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">{title}</div>
+      <div className="mt-3 space-y-2">
+        {linkedOptions.length === 0 ? (
+          <div className="text-[12px] text-[#4d4944]">No linked {objectType.toLowerCase()}s yet.</div>
+        ) : (
+          linkedOptions.map((option) => (
+            <div key={option.id} className="flex items-center justify-between gap-2 rounded-lg border border-[#d3cbc3] bg-white px-3 py-2">
+              <button
+                type="button"
+                onClick={() => onOpenRecord(objectType, option.id)}
+                className="min-w-0 flex-1 truncate text-left text-[12px] font-medium text-[#171717] hover:underline"
+              >
+                {option.title}
+              </button>
+              <button
+                type="button"
+                onClick={() => onRemoveLink(sectionKey, option.id)}
+                aria-label={`Remove linked ${objectType}: ${option.title}`}
+                className="shrink-0 text-[10px] uppercase tracking-[0.14em] text-[#4d4944] hover:text-[#6a3328]"
+              >
+                Remove
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <select
+          value={pendingId}
+          onChange={(event) => setPendingId(event.target.value)}
+          className="w-full rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none transition focus:border-[#171717]"
+        >
+          <option value="">Select {objectType.toLowerCase()} to link</option>
+          {availableOptions.map((option) => (
+            <option key={option.id} value={option.id}>{option.title}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => {
+            if (!pendingId) {
+              return;
+            }
+            onAddLink(sectionKey, pendingId);
+            setPendingId("");
+          }}
+          disabled={!pendingId}
+          className="shrink-0 rounded-lg border border-[#171717] bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#171717] disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Link
+        </button>
       </div>
     </div>
   );
@@ -5975,6 +6108,56 @@ export default function Home() {
     setProjectEditor({ ...projectEditor, [field]: value });
   };
 
+  const handleProjectAddLink = (field: ProjectLinkSectionKey, id: string) => {
+    if (!projectEditor || !id) {
+      return;
+    }
+
+    const current = projectEditor[field] ?? [];
+    if (current.includes(id)) {
+      return;
+    }
+
+    setProjectEditor({ ...projectEditor, [field]: [...current, id] });
+  };
+
+  const handleProjectRemoveLink = (field: ProjectLinkSectionKey, id: string) => {
+    if (!projectEditor) {
+      return;
+    }
+
+    const current = projectEditor[field] ?? [];
+    setProjectEditor({ ...projectEditor, [field]: current.filter((entry) => entry !== id) });
+  };
+
+  const handleProjectOpenRecord = (objectType: "Action" | "Decision" | "System" | "SOP", id: string) => {
+    if (objectType === "Action") {
+      const record = actionRecords.find((action) => action.id === id);
+      if (record) {
+        handleActionEditOpen(record);
+      }
+      return;
+    }
+    if (objectType === "Decision") {
+      const record = decisionRecords.find((decision) => decision.id === id);
+      if (record) {
+        handleDecisionEditOpen(record);
+      }
+      return;
+    }
+    if (objectType === "System") {
+      const record = systemRecords.find((system) => system.id === id);
+      if (record) {
+        handleSystemEditOpen(record);
+      }
+      return;
+    }
+    const record = sopRecords.find((sop) => sop.id === id);
+    if (record) {
+      handleSopEditOpen(record);
+    }
+  };
+
   const handleProjectSave = () => {
     if (!projectEditor) {
       return;
@@ -6015,6 +6198,10 @@ export default function Home() {
       startDate,
       targetCompletionDate,
       status: projectStatusOptions.includes(selectedStatus as (typeof projectStatusOptions)[number]) ? selectedStatus : "Open",
+      relatedActionIds: projectEditor.relatedActionIds ?? [],
+      relatedDecisionIds: projectEditor.relatedDecisionIds ?? [],
+      relatedSystemIds: projectEditor.relatedSystemIds ?? [],
+      relatedSopIds: projectEditor.relatedSopIds ?? [],
     };
     const isNewProject = !projects.some((project) => project.id === nextProject.id);
 
@@ -7544,12 +7731,19 @@ export default function Home() {
         <ProjectDetailPanel
           project={projectEditor}
           people={people}
+          actions={actionRecords}
+          decisions={decisionRecords}
+          systems={systemRecords}
+          sops={sopRecords}
           onClose={() => {
             setSelectedProjectId(null);
             setProjectEditor(null);
           }}
           onChange={handleProjectEditorChange}
           onSave={handleProjectSave}
+          onAddLink={handleProjectAddLink}
+          onRemoveLink={handleProjectRemoveLink}
+          onOpenRecord={handleProjectOpenRecord}
         />
       ) : null}
 
