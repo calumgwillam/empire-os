@@ -4442,8 +4442,8 @@ export default function Home() {
     if (item.objectType === "Project") {
       if (item.reasons.includes("BLOCKED PROJECT")) return "Project is currently blocked and requires status review.";
       if (item.reasons.includes("OVERDUE PROJECT")) return "Project target completion date has passed.";
-      if (item.reasons.includes("UNASSIGNED PROJECT")) return "Active project has no assigned owner.";
-      if (item.reasons.includes("DUE SOON")) return "Project target completion date is approaching.";
+      if (item.reasons.includes("DUE WITHIN 7 DAYS")) return "Project target completion date is approaching.";
+      if (item.reasons.includes("PAST START DATE • NOT STARTED")) return "Project start date has passed and work has not started.";
     }
 
     return `${item.objectType} remains ${item.statusText.split(" /")[0].toLowerCase()}.`;
@@ -4459,8 +4459,8 @@ export default function Home() {
     return [
       item.reasons.includes("BLOCKED PROJECT") ? "Blocked" : null,
       overdueDays ? `${overdueDays} day${overdueDays === "1" ? "" : "s"} overdue` : null,
-      item.reasons.includes("UNASSIGNED PROJECT") ? "Unassigned" : null,
-      item.reasons.includes("DUE SOON") ? "Due soon" : null,
+      item.reasons.includes("DUE WITHIN 7 DAYS") ? "Due soon" : null,
+      item.reasons.includes("PAST START DATE • NOT STARTED") ? "Past start date" : null,
     ].filter(Boolean).join(" • ");
   };
 
@@ -4482,7 +4482,7 @@ export default function Home() {
       return `Overdue for ${days} day${days === 1 ? "" : "s"}`;
     }
 
-    if (item.reasons.includes("DUE SOON") && daysFromToday >= 0) {
+    if (item.reasons.includes("DUE WITHIN 7 DAYS") && daysFromToday >= 0) {
       return `Due in ${daysFromToday} day${daysFromToday === 1 ? "" : "s"}`;
     }
 
@@ -4677,13 +4677,19 @@ export default function Home() {
         return;
       }
 
+      const status = project.status.trim().toLowerCase();
+      const isBlocked = status === "blocked";
+      const isInProgress = status === "in progress";
+      const isOpen = status === "open";
+
       const reasons: string[] = [];
       const targetCompletionDate = project.targetCompletionDate ? new Date(`${project.targetCompletionDate}T00:00:00`) : null;
       const hasTargetCompletionDate = targetCompletionDate && !Number.isNaN(targetCompletionDate.getTime());
-      const isOverdue = Boolean(hasTargetCompletionDate && targetCompletionDate < startOfToday);
-      const isDueSoon = Boolean(hasTargetCompletionDate && targetCompletionDate >= startOfToday && targetCompletionDate < startOfEightDaysFromNow);
-      const isUnassigned = !project.owner.trim() || project.owner.trim().toLowerCase() === "unassigned";
-      const isBlocked = project.status.trim().toLowerCase() === "blocked";
+      const startDate = project.startDate ? new Date(`${project.startDate}T00:00:00`) : null;
+      const hasStartDate = startDate && !Number.isNaN(startDate.getTime());
+      const isOverdue = Boolean(isInProgress && hasTargetCompletionDate && targetCompletionDate < startOfToday);
+      const isDueSoon = Boolean(isInProgress && hasTargetCompletionDate && targetCompletionDate >= startOfToday && targetCompletionDate < startOfEightDaysFromNow);
+      const isPastStartNotStarted = Boolean(isOpen && hasStartDate && startDate < startOfToday);
       const daysOverdue = isOverdue && targetCompletionDate
         ? Math.max(1, Math.floor((startOfToday.getTime() - targetCompletionDate.getTime()) / (1000 * 60 * 60 * 24)))
         : 0;
@@ -4695,11 +4701,11 @@ export default function Home() {
         reasons.push("OVERDUE PROJECT");
         reasons.push(`${daysOverdue} DAY${daysOverdue === 1 ? "" : "S"} OVERDUE`);
       }
-      if (isUnassigned) {
-        reasons.push("UNASSIGNED PROJECT");
-      }
       if (isDueSoon) {
-        reasons.push("DUE SOON");
+        reasons.push("DUE WITHIN 7 DAYS");
+      }
+      if (isPastStartNotStarted) {
+        reasons.push("PAST START DATE • NOT STARTED");
       }
 
       if (reasons.length > 0) {
@@ -4711,9 +4717,9 @@ export default function Home() {
           reasons,
           statusText: `${project.status || "No status"} / ${project.targetCompletionDate ? formatCapturedAt(project.targetCompletionDate) : "No target completion date"}`,
           area: project.area,
-          attentionRank: isBlocked ? 1 : isOverdue ? 2 : isUnassigned ? 6 : 7,
+          attentionRank: isBlocked ? 1 : isOverdue ? 2 : isDueSoon ? 3 : 4,
           tieWeight: 0,
-          priorityScore: isOverdue ? 180 : isUnassigned ? 90 : 60,
+          priorityScore: isOverdue ? 180 : isDueSoon ? 120 : 60,
           sortDate: getDateValue(project.targetCompletionDate || project.startDate),
           sortDateAscending: Boolean(project.targetCompletionDate),
           targetCompletionDate: project.targetCompletionDate,
@@ -6481,9 +6487,9 @@ export default function Home() {
                                     {item.area}
                                   </span>
                                 ) : null}
-                                {item.objectType === "Project" && item.reasons.includes("UNASSIGNED PROJECT") ? (
+                                {item.objectType === "Project" && item.reasons.includes("PAST START DATE • NOT STARTED") ? (
                                   <span className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[#6a3328]">
-                                    Owner: Unassigned
+                                    Not started
                                   </span>
                                 ) : null}
                                 {item.objectType === "Project" ? (
@@ -6497,19 +6503,7 @@ export default function Home() {
                                 <span className="rounded-full border border-[#cfc8c1] bg-[#f1efe9] px-2 py-1 text-[#2f2b28]">
                                   Open record
                                 </span>
-                                {item.objectType === "Project" && item.reasons.includes("UNASSIGNED PROJECT") ? (
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      item.onOpen();
-                                    }}
-                                    className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[#6a3328] hover:bg-[#f1dfd8]"
-                                  >
-                                    Assign owner
-                                  </button>
-                                ) : null}
-                                {item.objectType === "Project" && (item.reasons.includes("OVERDUE PROJECT") || item.reasons.includes("DUE SOON")) ? (
+                                {item.objectType === "Project" && (item.reasons.includes("OVERDUE PROJECT") || item.reasons.includes("DUE WITHIN 7 DAYS") || item.reasons.includes("PAST START DATE • NOT STARTED")) ? (
                                   <button
                                     type="button"
                                     onClick={(event) => {
