@@ -2046,8 +2046,29 @@ type ActionDetailPanelProps = {
 
 function ActionDetailPanel({ action, people, problems, decisions, upstream, downstream, onClose, onChange, onOwnerChange, onSave, onOpenRelatedProblem, onOpenRelatedDecision }: ActionDetailPanelProps) {
   const isCompleted = action.status === "Completed";
-  const ownerOptions = [{ id: "unassigned", name: "Unassigned" }, ...people.filter((person) => person.status === "Active")];
-  const selectedOwnerValue = getActionOwnerValue(action, people);
+  const activePeople = people.filter((person) => person.status === "Active");
+  const savedOwner = action.owner?.trim() ?? "";
+  const savedOwnerMatchesActivePerson = activePeople.some(
+    (person) => person.name.trim().toLowerCase() === savedOwner.toLowerCase(),
+  );
+  const calumAvailableFromActivePerson = activePeople.some(
+    (person) => person.name.trim().toLowerCase() === "calum",
+  );
+  const calumIsSavedOwner = savedOwner.toLowerCase() === "calum";
+  const ownerOptions = [
+    { id: "unassigned", name: "Unassigned" },
+    ...activePeople,
+    ...(!calumAvailableFromActivePerson && !calumIsSavedOwner
+      ? [{ id: "named-owner:Calum", name: "Calum" }]
+      : []),
+    ...(savedOwner && !savedOwnerMatchesActivePerson && savedOwner.toLowerCase() !== "unassigned"
+      ? [{ id: `legacy-owner:${savedOwner}`, name: savedOwner }]
+      : []),
+  ];
+  const selectedOwnerValue =
+    getActionOwnerValue(action, people) === "unassigned" && savedOwner && !savedOwnerMatchesActivePerson && savedOwner.toLowerCase() !== "unassigned"
+      ? `legacy-owner:${savedOwner}`
+      : getActionOwnerValue(action, people);
   const ownerDisplay = getActionOwnerDisplay(action, people);
   const selectedProblemValue = problems.some((problem) => problem.id === action.relatedProblem) ? action.relatedProblem : "";
   const selectedDecisionValue = decisions.some((decision) => decision.id === action.relatedDecision) ? action.relatedDecision : "";
@@ -4953,6 +4974,16 @@ export default function Home() {
 
   const handleActionOwnerChange = (personId: string) => {
     if (!actionEditor) {
+      return;
+    }
+
+    if (personId.startsWith("named-owner:") || personId.startsWith("legacy-owner:")) {
+      const ownerName = personId.slice(personId.indexOf(":") + 1);
+      setActionEditor({
+        ...actionEditor,
+        ownerPersonId: "",
+        owner: ownerName,
+      });
       return;
     }
 
