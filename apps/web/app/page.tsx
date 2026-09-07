@@ -2409,6 +2409,15 @@ function CommitmentDetailPanel({ commitment, onClose, onChange, onSave }: {
   );
 }
 
+function MetricCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">{label}</div>
+      <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{value}</div>
+    </div>
+  );
+}
+
 function RelatedRecordsPanel({ upstream, downstream }: RelatedRecordsPanelProps) {
   const renderItems = (items: RelatedRecordItem[]) => {
     if (items.length === 0) {
@@ -4799,6 +4808,36 @@ export default function Home() {
 
   const isProjectActive = (project: ProjectRecord) =>
     !["completed", "closed", "final", "cancelled", "canceled"].includes(project.status.trim().toLowerCase());
+
+  const metricsLeadsGenerated = leads.length;
+  const metricsLeadsBySource = leadSourceOptions
+    .map((source) => ({ source, count: leads.filter((lead) => lead.sourceChannel === source).length }))
+    .filter((entry) => entry.count > 0);
+  const metricsJobsWon = leads.filter((lead) => lead.status === "Won").length;
+  const metricsQuotesSent = leads.filter((lead) => lead.status === "Quote Sent" || lead.status === "Follow-Up" || lead.status === "Won" || Boolean(lead.quoteSentDate)).length;
+  const metricsLeadToJobConversion = metricsLeadsGenerated === 0 ? 0 : (metricsJobsWon / metricsLeadsGenerated) * 100;
+  const wonLeadsValue = (lead: LeadRecord) => parseFinanceAmount(lead.finalJobValue) || parseFinanceAmount(lead.quoteValue);
+  const metricsRevenueFromWonLeads = leads
+    .filter((lead) => lead.status === "Won")
+    .reduce((total, lead) => total + wonLeadsValue(lead), 0);
+  const metricsAverageJobValue = metricsJobsWon === 0
+    ? 0
+    : leads.filter((lead) => lead.status === "Won").reduce((total, lead) => total + wonLeadsValue(lead), 0) / metricsJobsWon;
+
+  const metricsOpenActions = actionRecords.filter((action) => action.status === "Open").length;
+  const metricsInProgressActions = actionRecords.filter((action) => action.status === "In Progress").length;
+  const metricsCompletedActions = actionRecords.filter((action) => action.status === "Completed").length;
+  const metricsActiveProjects = projects.filter((project) => isProjectActive(project)).length;
+  const metricsBlockedProjects = projects.filter((project) => project.status.trim().toLowerCase() === "blocked").length;
+
+  const metricsOpenOpportunities = opportunityRecords.filter((opportunity) => opportunity.status === "New" || opportunity.status === "Evaluating" || opportunity.status === "On Hold").length;
+  const metricsApprovedOpportunities = opportunityRecords.filter((opportunity) => opportunity.status === "Approved").length;
+  const metricsActiveDecisions = decisionRecords.filter((decision) => isDecisionActive(decision)).length;
+  const metricsLeadsAwaitingFollowUp = leads.filter((lead) => lead.status === "Follow-Up").length;
+  const metricsWonLeads = metricsJobsWon;
+  const metricsLostLeads = leads.filter((lead) => lead.status === "Lost").length;
+
+  const formatMetricPercent = (value: number) => `${value.toFixed(0)}%`;
 
   const getDaysOverdue = (dateValue: string) => {
     const dueDate = getDateValue(dateValue);
@@ -7456,12 +7495,70 @@ export default function Home() {
               </header>
 
               <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
-                Metrics will track the key numbers that show whether each part of the business is healthy, improving or falling behind.
+                A live read-only dashboard derived from current Empire OS records, showing whether each part of the business is healthy, improving or falling behind.
               </p>
 
-              <div className="mt-6 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">
-                No metrics are configured yet. Define the measures that matter and they will be tracked here.
-              </div>
+              <section className="mt-7">
+                <h2 className="border-b border-[#d7d1ca] pb-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Marketing</h2>
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <MetricCard label="Leads generated" value={String(metricsLeadsGenerated)} />
+                  <MetricCard label="Quotes sent" value={String(metricsQuotesSent)} />
+                  <MetricCard label="Jobs won" value={String(metricsJobsWon)} />
+                  <MetricCard label="Lead-to-job conversion" value={formatMetricPercent(metricsLeadToJobConversion)} />
+                  <MetricCard label="Revenue from won leads" value={formatFinanceAmount(metricsRevenueFromWonLeads)} />
+                  <MetricCard label="Average job value" value={formatFinanceAmount(metricsAverageJobValue)} />
+                </div>
+                <div className="mt-3 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Leads by source</div>
+                  {metricsLeadsBySource.length === 0 ? (
+                    <div className="mt-2 text-[12px] text-[#4d4944]">No leads recorded yet.</div>
+                  ) : (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {metricsLeadsBySource.map((entry) => (
+                        <span key={entry.source} className="rounded-full border border-[#d3cbc3] bg-white px-2.5 py-1.5 text-[10px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                          {entry.source}: {entry.count}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="mt-8">
+                <h2 className="border-b border-[#d7d1ca] pb-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Operations</h2>
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  <MetricCard label="Open actions" value={String(metricsOpenActions)} />
+                  <MetricCard label="In-progress actions" value={String(metricsInProgressActions)} />
+                  <MetricCard label="Overdue actions" value={String(overdueActionCount)} />
+                  <MetricCard label="Completed actions" value={String(metricsCompletedActions)} />
+                  <MetricCard label="Active projects" value={String(metricsActiveProjects)} />
+                  <MetricCard label="Blocked projects" value={String(metricsBlockedProjects)} />
+                </div>
+              </section>
+
+              <section className="mt-8">
+                <h2 className="border-b border-[#d7d1ca] pb-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Finance</h2>
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  <MetricCard label="Total received income" value={formatFinanceAmount(totalReceivedIncome)} />
+                  <MetricCard label="Total paid expenses" value={formatFinanceAmount(totalPaidExpenses)} />
+                  <MetricCard label="Net cash movement" value={formatFinanceAmount(netCashMovement)} />
+                  <MetricCard label="Reserved tax" value={formatFinanceAmount(reservedTaxAmount)} />
+                  <MetricCard label="Safety buffer" value={formatFinanceAmount(safetyBufferAmount)} />
+                  <MetricCard label="Available operating cash" value={formatFinanceAmount(availableOperatingCash)} />
+                </div>
+              </section>
+
+              <section className="mt-8">
+                <h2 className="border-b border-[#d7d1ca] pb-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Growth / Pipeline</h2>
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  <MetricCard label="Open opportunities" value={String(metricsOpenOpportunities)} />
+                  <MetricCard label="Approved opportunities" value={String(metricsApprovedOpportunities)} />
+                  <MetricCard label="Active decisions" value={String(metricsActiveDecisions)} />
+                  <MetricCard label="Leads awaiting follow-up" value={String(metricsLeadsAwaitingFollowUp)} />
+                  <MetricCard label="Won leads" value={String(metricsWonLeads)} />
+                  <MetricCard label="Lost leads" value={String(metricsLostLeads)} />
+                </div>
+              </section>
             </div>
           ) : activeView === "People" ? (
             <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
