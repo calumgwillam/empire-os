@@ -16,6 +16,7 @@ const navigation = [
   "SOPs",
   "Metrics",
   "Leads",
+  "Finance",
   "People",
   "Pillars",
 ];
@@ -25,6 +26,10 @@ const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
 const PERSON_STORAGE_KEY = "empire-os-people";
 const PROJECT_STORAGE_KEY = "empire-os-projects";
 const LEAD_STORAGE_KEY = "empire-os-leads";
+const CASH_POSITION_STORAGE_KEY = "empire-os-cash-position";
+const INCOME_STORAGE_KEY = "empire-os-income-records";
+const EXPENSE_STORAGE_KEY = "empire-os-expense-records";
+const COMMITMENT_STORAGE_KEY = "empire-os-financial-commitments";
 const SAVED_VIEWS_STORAGE_KEY = "empire-os-records-in-motion-views";
 const DEFAULT_SAVED_VIEW_STORAGE_KEY = "empire-os-records-in-motion-default-view";
 
@@ -413,6 +418,99 @@ const defaultLeadForm: LeadFormValues = {
   relatedPillar: "Garden Maintenance",
 };
 
+const incomeStatusOptions = ["Expected", "Received"] as const;
+type IncomeStatus = (typeof incomeStatusOptions)[number];
+
+const expenseStatusOptions = ["Planned", "Paid"] as const;
+type ExpenseStatus = (typeof expenseStatusOptions)[number];
+
+const expenseCategoryOptions = ["Materials", "Equipment", "Fuel", "Labour", "Subcontractor", "Insurance", "Marketing", "Software", "Vehicle", "Other"] as const;
+
+const commitmentTypeOptions = ["Loan", "Lease", "Subscription", "Tax", "Supplier", "Insurance", "Other"] as const;
+const commitmentStatusOptions = ["Upcoming", "Due", "Paid", "Overdue", "Cancelled"] as const;
+
+type CashPositionRecord = {
+  currentCash: string;
+  reservedTax: string;
+  safetyBuffer: string;
+  lastUpdated: string;
+};
+
+type IncomeRecord = {
+  id: string;
+  date: string;
+  description: string;
+  customerSource: string;
+  amount: string;
+  area: string;
+  status: IncomeStatus;
+  notes: string;
+  dateCreated: string;
+};
+
+type ExpenseRecord = {
+  id: string;
+  date: string;
+  description: string;
+  supplier: string;
+  amount: string;
+  category: string;
+  area: string;
+  status: ExpenseStatus;
+  notes: string;
+  dateCreated: string;
+};
+
+type CommitmentRecord = {
+  id: string;
+  commitmentName: string;
+  amount: string;
+  dueDate: string;
+  type: string;
+  status: string;
+  relatedPillar: string;
+  notes: string;
+  dateCreated: string;
+};
+
+const defaultCashPosition: CashPositionRecord = {
+  currentCash: "",
+  reservedTax: "",
+  safetyBuffer: "",
+  lastUpdated: "",
+};
+
+const defaultIncomeForm: Omit<IncomeRecord, "id" | "dateCreated"> = {
+  date: "",
+  description: "",
+  customerSource: "",
+  amount: "",
+  area: "Garden Maintenance",
+  status: "Expected",
+  notes: "",
+};
+
+const defaultExpenseForm: Omit<ExpenseRecord, "id" | "dateCreated"> = {
+  date: "",
+  description: "",
+  supplier: "",
+  amount: "",
+  category: "Materials",
+  area: "Garden Maintenance",
+  status: "Planned",
+  notes: "",
+};
+
+const defaultCommitmentForm: Omit<CommitmentRecord, "id" | "dateCreated"> = {
+  commitmentName: "",
+  amount: "",
+  dueDate: "",
+  type: "Other",
+  status: "Upcoming",
+  relatedPillar: "Garden Maintenance",
+  notes: "",
+};
+
 const defaultProjectForm: Omit<ProjectRecord, "id"> = {
   projectName: "",
   owner: "",
@@ -498,6 +596,14 @@ function generateLeadId() {
   }
 
   return `lead-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function generateFinanceRecordId(prefix: string) {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function formatCapturedAt(value: string) {
@@ -878,7 +984,7 @@ const destinationDefinitions = [
   },
 ] as const;
 
-type DestinationKey = "Command" | "Capture" | "People" | "Projects" | "Leads" | (typeof destinationDefinitions)[number]["key"];
+type DestinationKey = "Command" | "Capture" | "People" | "Projects" | "Leads" | "Finance" | (typeof destinationDefinitions)[number]["key"];
 
 type RelatedRecordItem = {
   label: string;
@@ -2004,6 +2110,299 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave }: {
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
           <button type="button" onClick={() => { onSave(); setHasSaved(true); }} disabled={hasInvalidLeadName} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save lead"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function useFinanceSavedFeedback(): [boolean, () => void] {
+  const [hasSaved, setHasSaved] = useState(false);
+
+  useEffect(() => {
+    if (!hasSaved) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setHasSaved(false), 1800);
+    return () => window.clearTimeout(timeoutId);
+  }, [hasSaved]);
+
+  return [hasSaved, () => setHasSaved(true)];
+}
+
+const financeFieldClass = "w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6";
+const financeLabelClass = "mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]";
+
+function CashPositionPanel({ value, onClose, onChange, onSave }: {
+  value: CashPositionRecord;
+  onClose: () => void;
+  onChange: (field: keyof CashPositionRecord, value: string) => void;
+  onSave: () => void;
+}) {
+  const [hasSaved, markSaved] = useFinanceSavedFeedback();
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
+      <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+        <div className="flex items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Finance</p>
+            <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">Cash position</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
+        </div>
+
+        {hasSaved ? (
+          <div aria-live="polite" className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">Cash position saved.</div>
+        ) : null}
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div>
+            <label className={financeLabelClass}>Current business cash</label>
+            <input value={value.currentCash} onChange={(event) => onChange("currentCash", event.target.value)} placeholder="e.g. 12500" className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Reserved tax</label>
+            <input value={value.reservedTax} onChange={(event) => onChange("reservedTax", event.target.value)} placeholder="e.g. 2500" className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Emergency / safety buffer</label>
+            <input value={value.safetyBuffer} onChange={(event) => onChange("safetyBuffer", event.target.value)} placeholder="e.g. 3000" className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Last updated date</label>
+            <input type="date" value={value.lastUpdated} onChange={(event) => onChange("lastUpdated", event.target.value)} className={financeFieldClass} />
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+          <button type="button" onClick={() => { onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save cash position"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IncomeDetailPanel({ income, onClose, onChange, onSave }: {
+  income: IncomeRecord;
+  onClose: () => void;
+  onChange: (field: keyof IncomeRecord, value: string) => void;
+  onSave: () => void;
+}) {
+  const hasInvalidDescription = !income.description.trim();
+  const [hasSaved, markSaved] = useFinanceSavedFeedback();
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+        <div className="flex items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Income</p>
+            <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{income.description || "New income record"}</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
+        </div>
+
+        {hasSaved ? (
+          <div aria-live="polite" className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">Income record saved.</div>
+        ) : null}
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Description</label>
+            <input value={income.description} onChange={(event) => onChange("description", event.target.value)} className={financeFieldClass} />
+          </div>
+          {hasInvalidDescription ? (
+            <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Description is required.</p>
+          ) : null}
+          <div>
+            <label className={financeLabelClass}>Date</label>
+            <input type="date" value={income.date} onChange={(event) => onChange("date", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Customer / source</label>
+            <input value={income.customerSource} onChange={(event) => onChange("customerSource", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Amount</label>
+            <input value={income.amount} onChange={(event) => onChange("amount", event.target.value)} placeholder="e.g. 850" className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Pillar / area</label>
+            <select value={income.area} onChange={(event) => onChange("area", event.target.value)} className={financeFieldClass}>
+              {sharedAreaOptions.map((area) => <option key={area} value={area}>{area}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Status</label>
+            <select value={income.status} onChange={(event) => onChange("status", event.target.value)} className={financeFieldClass}>
+              {incomeStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Notes</label>
+            <textarea rows={3} value={income.notes} onChange={(event) => onChange("notes", event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+          <button type="button" onClick={() => { onSave(); markSaved(); }} disabled={hasInvalidDescription} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save income"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExpenseDetailPanel({ expense, onClose, onChange, onSave }: {
+  expense: ExpenseRecord;
+  onClose: () => void;
+  onChange: (field: keyof ExpenseRecord, value: string) => void;
+  onSave: () => void;
+}) {
+  const hasInvalidDescription = !expense.description.trim();
+  const [hasSaved, markSaved] = useFinanceSavedFeedback();
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+        <div className="flex items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Expense</p>
+            <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{expense.description || "New expense record"}</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
+        </div>
+
+        {hasSaved ? (
+          <div aria-live="polite" className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">Expense record saved.</div>
+        ) : null}
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Description</label>
+            <input value={expense.description} onChange={(event) => onChange("description", event.target.value)} className={financeFieldClass} />
+          </div>
+          {hasInvalidDescription ? (
+            <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Description is required.</p>
+          ) : null}
+          <div>
+            <label className={financeLabelClass}>Date</label>
+            <input type="date" value={expense.date} onChange={(event) => onChange("date", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Supplier / payee</label>
+            <input value={expense.supplier} onChange={(event) => onChange("supplier", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Amount</label>
+            <input value={expense.amount} onChange={(event) => onChange("amount", event.target.value)} placeholder="e.g. 220" className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Category</label>
+            <select value={expense.category} onChange={(event) => onChange("category", event.target.value)} className={financeFieldClass}>
+              {!expenseCategoryOptions.includes(expense.category as (typeof expenseCategoryOptions)[number]) && expense.category ? <option value={expense.category}>{expense.category}</option> : null}
+              {expenseCategoryOptions.map((category) => <option key={category} value={category}>{category}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Pillar / area</label>
+            <select value={expense.area} onChange={(event) => onChange("area", event.target.value)} className={financeFieldClass}>
+              {sharedAreaOptions.map((area) => <option key={area} value={area}>{area}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Status</label>
+            <select value={expense.status} onChange={(event) => onChange("status", event.target.value)} className={financeFieldClass}>
+              {expenseStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Notes</label>
+            <textarea rows={3} value={expense.notes} onChange={(event) => onChange("notes", event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+          <button type="button" onClick={() => { onSave(); markSaved(); }} disabled={hasInvalidDescription} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save expense"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CommitmentDetailPanel({ commitment, onClose, onChange, onSave }: {
+  commitment: CommitmentRecord;
+  onClose: () => void;
+  onChange: (field: keyof CommitmentRecord, value: string) => void;
+  onSave: () => void;
+}) {
+  const hasInvalidName = !commitment.commitmentName.trim();
+  const [hasSaved, markSaved] = useFinanceSavedFeedback();
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+        <div className="flex items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Financial commitment</p>
+            <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{commitment.commitmentName || "New commitment"}</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
+        </div>
+
+        {hasSaved ? (
+          <div aria-live="polite" className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">Commitment saved.</div>
+        ) : null}
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Commitment name</label>
+            <input value={commitment.commitmentName} onChange={(event) => onChange("commitmentName", event.target.value)} className={financeFieldClass} />
+          </div>
+          {hasInvalidName ? (
+            <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Commitment name is required.</p>
+          ) : null}
+          <div>
+            <label className={financeLabelClass}>Amount</label>
+            <input value={commitment.amount} onChange={(event) => onChange("amount", event.target.value)} placeholder="e.g. 480" className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Due date</label>
+            <input type="date" value={commitment.dueDate} onChange={(event) => onChange("dueDate", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Type</label>
+            <select value={commitment.type} onChange={(event) => onChange("type", event.target.value)} className={financeFieldClass}>
+              {!commitmentTypeOptions.includes(commitment.type as (typeof commitmentTypeOptions)[number]) && commitment.type ? <option value={commitment.type}>{commitment.type}</option> : null}
+              {commitmentTypeOptions.map((type) => <option key={type} value={type}>{type}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Status</label>
+            <select value={commitment.status} onChange={(event) => onChange("status", event.target.value)} className={financeFieldClass}>
+              {!commitmentStatusOptions.includes(commitment.status as (typeof commitmentStatusOptions)[number]) && commitment.status ? <option value={commitment.status}>{commitment.status}</option> : null}
+              {commitmentStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Related pillar / area</label>
+            <select value={commitment.relatedPillar} onChange={(event) => onChange("relatedPillar", event.target.value)} className={financeFieldClass}>
+              {sharedAreaOptions.map((area) => <option key={area} value={area}>{area}</option>)}
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Notes</label>
+            <textarea rows={3} value={commitment.notes} onChange={(event) => onChange("notes", event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+          <button type="button" onClick={() => { onSave(); markSaved(); }} disabled={hasInvalidName} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save commitment"}</button>
         </div>
       </div>
     </div>
@@ -4041,6 +4440,17 @@ export default function Home() {
   const [leadStatusFilter, setLeadStatusFilter] = useState<string>("All statuses");
   const [leadSourceFilter, setLeadSourceFilter] = useState<string>("All sources");
   const [leadOwnerFilter, setLeadOwnerFilter] = useState<string>("All owners");
+  const [cashPosition, setCashPosition] = useState<CashPositionRecord>(defaultCashPosition);
+  const [incomeRecords, setIncomeRecords] = useState<IncomeRecord[]>([]);
+  const [expenseRecords, setExpenseRecords] = useState<ExpenseRecord[]>([]);
+  const [commitmentRecords, setCommitmentRecords] = useState<CommitmentRecord[]>([]);
+  const [cashPositionEditor, setCashPositionEditor] = useState<CashPositionRecord | null>(null);
+  const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
+  const [incomeEditor, setIncomeEditor] = useState<IncomeRecord | null>(null);
+  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
+  const [expenseEditor, setExpenseEditor] = useState<ExpenseRecord | null>(null);
+  const [selectedCommitmentId, setSelectedCommitmentId] = useState<string | null>(null);
+  const [commitmentEditor, setCommitmentEditor] = useState<CommitmentRecord | null>(null);
   const [creatingLinkedActionForProblemId, setCreatingLinkedActionForProblemId] = useState<string | null>(null);
   const [creatingLinkedActionForDecisionId, setCreatingLinkedActionForDecisionId] = useState<string | null>(null);
   const [creatingLinkedDecisionForOpportunityId, setCreatingLinkedDecisionForOpportunityId] = useState<string | null>(null);
@@ -4065,6 +4475,10 @@ export default function Home() {
       const storedPeople = window.localStorage.getItem(PERSON_STORAGE_KEY);
       const storedProjects = window.localStorage.getItem(PROJECT_STORAGE_KEY);
       const storedLeads = window.localStorage.getItem(LEAD_STORAGE_KEY);
+      const storedCashPosition = window.localStorage.getItem(CASH_POSITION_STORAGE_KEY);
+      const storedIncome = window.localStorage.getItem(INCOME_STORAGE_KEY);
+      const storedExpenses = window.localStorage.getItem(EXPENSE_STORAGE_KEY);
+      const storedCommitments = window.localStorage.getItem(COMMITMENT_STORAGE_KEY);
 
       if (storedCaptures) {
         const parsedCaptures = JSON.parse(storedCaptures);
@@ -4111,6 +4525,38 @@ export default function Home() {
 
         if (Array.isArray(parsedLeads)) {
           setLeads(parsedLeads);
+        }
+      }
+
+      if (storedCashPosition) {
+        const parsedCashPosition = JSON.parse(storedCashPosition);
+
+        if (parsedCashPosition && typeof parsedCashPosition === "object") {
+          setCashPosition({ ...defaultCashPosition, ...parsedCashPosition });
+        }
+      }
+
+      if (storedIncome) {
+        const parsedIncome = JSON.parse(storedIncome);
+
+        if (Array.isArray(parsedIncome)) {
+          setIncomeRecords(parsedIncome);
+        }
+      }
+
+      if (storedExpenses) {
+        const parsedExpenses = JSON.parse(storedExpenses);
+
+        if (Array.isArray(parsedExpenses)) {
+          setExpenseRecords(parsedExpenses);
+        }
+      }
+
+      if (storedCommitments) {
+        const parsedCommitments = JSON.parse(storedCommitments);
+
+        if (Array.isArray(parsedCommitments)) {
+          setCommitmentRecords(parsedCommitments);
         }
       }
     } catch {
@@ -4161,6 +4607,34 @@ export default function Home() {
     }
   }, [leads]);
 
+  useEffect(() => {
+    window.localStorage.setItem(CASH_POSITION_STORAGE_KEY, JSON.stringify(cashPosition));
+  }, [cashPosition]);
+
+  useEffect(() => {
+    if (incomeRecords.length === 0) {
+      window.localStorage.removeItem(INCOME_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(INCOME_STORAGE_KEY, JSON.stringify(incomeRecords));
+    }
+  }, [incomeRecords]);
+
+  useEffect(() => {
+    if (expenseRecords.length === 0) {
+      window.localStorage.removeItem(EXPENSE_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(EXPENSE_STORAGE_KEY, JSON.stringify(expenseRecords));
+    }
+  }, [expenseRecords]);
+
+  useEffect(() => {
+    if (commitmentRecords.length === 0) {
+      window.localStorage.removeItem(COMMITMENT_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(COMMITMENT_STORAGE_KEY, JSON.stringify(commitmentRecords));
+    }
+  }, [commitmentRecords]);
+
   const orderedCaptures = [...captures].sort(
     (first, second) =>
       new Date(second.capturedAt).getTime() - new Date(first.capturedAt).getTime(),
@@ -4184,6 +4658,28 @@ export default function Home() {
     const matchesOwner = leadOwnerFilter === "All owners" || (lead.owner.trim() || "Unassigned") === leadOwnerFilter;
     return matchesStatus && matchesSource && matchesOwner;
   });
+
+  const parseFinanceAmount = (value: string) => {
+    const parsed = parseFloat(value.replace(/[^0-9.\-]/g, ""));
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
+  const formatFinanceAmount = (value: number) =>
+    value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const orderedIncome = [...incomeRecords].sort((a, b) => (b.date || b.dateCreated).localeCompare(a.date || a.dateCreated));
+  const orderedExpenses = [...expenseRecords].sort((a, b) => (b.date || b.dateCreated).localeCompare(a.date || a.dateCreated));
+  const orderedCommitments = [...commitmentRecords].sort((a, b) => (a.dueDate || a.dateCreated).localeCompare(b.dueDate || b.dateCreated));
+
+  const totalReceivedIncome = incomeRecords
+    .filter((record) => record.status === "Received")
+    .reduce((total, record) => total + parseFinanceAmount(record.amount), 0);
+  const totalPaidExpenses = expenseRecords
+    .filter((record) => record.status === "Paid")
+    .reduce((total, record) => total + parseFinanceAmount(record.amount), 0);
+  const netCashMovement = totalReceivedIncome - totalPaidExpenses;
+  const reservedTaxAmount = parseFinanceAmount(cashPosition.reservedTax);
+  const safetyBufferAmount = parseFinanceAmount(cashPosition.safetyBuffer);
+  const availableOperatingCash = parseFinanceAmount(cashPosition.currentCash) - reservedTaxAmount - safetyBufferAmount;
 
   const getConvertedRecordsByType = (targetType: CaptureConversionRecord["targetType"]) =>
     [...conversions]
@@ -6308,6 +6804,175 @@ export default function Home() {
     setLeadEditor(newLead);
   };
 
+  const handleCashPositionOpen = () => {
+    setCashPositionEditor({ ...cashPosition });
+  };
+
+  const handleCashPositionChange = (field: keyof CashPositionRecord, value: string) => {
+    if (!cashPositionEditor) {
+      return;
+    }
+
+    setCashPositionEditor({ ...cashPositionEditor, [field]: value });
+  };
+
+  const handleCashPositionSave = () => {
+    if (!cashPositionEditor) {
+      return;
+    }
+
+    setCashPosition({
+      ...cashPositionEditor,
+      lastUpdated: cashPositionEditor.lastUpdated || new Date().toISOString().slice(0, 10),
+    });
+    setFeedback({ type: "success", message: "Cash position saved." });
+  };
+
+  const handleIncomeEditOpen = (income: IncomeRecord) => {
+    setSelectedIncomeId(income.id);
+    setIncomeEditor(income);
+  };
+
+  const handleIncomeEditorChange = (field: keyof IncomeRecord, value: string) => {
+    if (!incomeEditor) {
+      return;
+    }
+
+    setIncomeEditor({ ...incomeEditor, [field]: value });
+  };
+
+  const handleIncomeSave = () => {
+    if (!incomeEditor || !incomeEditor.description.trim()) {
+      return;
+    }
+
+    const nextIncome: IncomeRecord = {
+      ...incomeEditor,
+      id: incomeEditor.id || generateFinanceRecordId("income"),
+      description: incomeEditor.description.trim(),
+      customerSource: incomeEditor.customerSource.trim(),
+      amount: incomeEditor.amount.trim(),
+      status: incomeStatusOptions.includes(incomeEditor.status as IncomeStatus) ? incomeEditor.status : "Expected",
+      notes: incomeEditor.notes.trim(),
+      dateCreated: incomeEditor.dateCreated || new Date().toISOString(),
+    };
+    const isNew = !incomeRecords.some((record) => record.id === nextIncome.id);
+
+    setIncomeRecords((current) =>
+      isNew ? [nextIncome, ...current] : current.map((record) => record.id === nextIncome.id ? nextIncome : record),
+    );
+    setSelectedIncomeId(nextIncome.id);
+    setIncomeEditor(nextIncome);
+    setFeedback({ type: "success", message: isNew ? "Income record created." : "Income record saved." });
+  };
+
+  const handleCreateIncome = () => {
+    const newIncome: IncomeRecord = {
+      ...defaultIncomeForm,
+      id: generateFinanceRecordId("income"),
+      dateCreated: new Date().toISOString(),
+    };
+
+    setSelectedIncomeId(newIncome.id);
+    setIncomeEditor(newIncome);
+  };
+
+  const handleExpenseEditOpen = (expense: ExpenseRecord) => {
+    setSelectedExpenseId(expense.id);
+    setExpenseEditor(expense);
+  };
+
+  const handleExpenseEditorChange = (field: keyof ExpenseRecord, value: string) => {
+    if (!expenseEditor) {
+      return;
+    }
+
+    setExpenseEditor({ ...expenseEditor, [field]: value });
+  };
+
+  const handleExpenseSave = () => {
+    if (!expenseEditor || !expenseEditor.description.trim()) {
+      return;
+    }
+
+    const nextExpense: ExpenseRecord = {
+      ...expenseEditor,
+      id: expenseEditor.id || generateFinanceRecordId("expense"),
+      description: expenseEditor.description.trim(),
+      supplier: expenseEditor.supplier.trim(),
+      amount: expenseEditor.amount.trim(),
+      status: expenseStatusOptions.includes(expenseEditor.status as ExpenseStatus) ? expenseEditor.status : "Planned",
+      notes: expenseEditor.notes.trim(),
+      dateCreated: expenseEditor.dateCreated || new Date().toISOString(),
+    };
+    const isNew = !expenseRecords.some((record) => record.id === nextExpense.id);
+
+    setExpenseRecords((current) =>
+      isNew ? [nextExpense, ...current] : current.map((record) => record.id === nextExpense.id ? nextExpense : record),
+    );
+    setSelectedExpenseId(nextExpense.id);
+    setExpenseEditor(nextExpense);
+    setFeedback({ type: "success", message: isNew ? "Expense record created." : "Expense record saved." });
+  };
+
+  const handleCreateExpense = () => {
+    const newExpense: ExpenseRecord = {
+      ...defaultExpenseForm,
+      id: generateFinanceRecordId("expense"),
+      dateCreated: new Date().toISOString(),
+    };
+
+    setSelectedExpenseId(newExpense.id);
+    setExpenseEditor(newExpense);
+  };
+
+  const handleCommitmentEditOpen = (commitment: CommitmentRecord) => {
+    setSelectedCommitmentId(commitment.id);
+    setCommitmentEditor(commitment);
+  };
+
+  const handleCommitmentEditorChange = (field: keyof CommitmentRecord, value: string) => {
+    if (!commitmentEditor) {
+      return;
+    }
+
+    setCommitmentEditor({ ...commitmentEditor, [field]: value });
+  };
+
+  const handleCommitmentSave = () => {
+    if (!commitmentEditor || !commitmentEditor.commitmentName.trim()) {
+      return;
+    }
+
+    const nextCommitment: CommitmentRecord = {
+      ...commitmentEditor,
+      id: commitmentEditor.id || generateFinanceRecordId("commitment"),
+      commitmentName: commitmentEditor.commitmentName.trim(),
+      amount: commitmentEditor.amount.trim(),
+      notes: commitmentEditor.notes.trim(),
+      dateCreated: commitmentEditor.dateCreated || new Date().toISOString(),
+    };
+    const isNew = !commitmentRecords.some((record) => record.id === nextCommitment.id);
+
+    setCommitmentRecords((current) =>
+      isNew ? [nextCommitment, ...current] : current.map((record) => record.id === nextCommitment.id ? nextCommitment : record),
+    );
+    setSelectedCommitmentId(nextCommitment.id);
+    setCommitmentEditor(nextCommitment);
+    setFeedback({ type: "success", message: isNew ? "Commitment created." : "Commitment saved." });
+  };
+
+  const handleCreateCommitment = () => {
+    const newCommitment: CommitmentRecord = {
+      ...defaultCommitmentForm,
+      id: generateFinanceRecordId("commitment"),
+      dateCreated: new Date().toISOString(),
+    };
+
+    setSelectedCommitmentId(newCommitment.id);
+    setCommitmentEditor(newCommitment);
+  };
+
   return (
     <div className="min-h-screen bg-[#f1efe9] text-[#171717]">
       <div className="flex min-h-screen">
@@ -6342,6 +7007,7 @@ export default function Home() {
                       item === "Systems" ||
                       item === "SOPs" ||
                       item === "Leads" ||
+                      item === "Finance" ||
                       item === "People"
                     ) {
                       setActiveView(item === "Command" ? "Command" : item);
@@ -6646,6 +7312,138 @@ export default function Home() {
                   )}
                 </>
               )}
+            </div>
+          ) : activeView === "Finance" ? (
+            <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+              <header className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-4">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#4d4944]">Financial operations</p>
+                  <h1 className="mt-2.5 text-[36px] font-semibold tracking-[-0.07em] text-[#171717] sm:text-[42px]">Finance</h1>
+                </div>
+                <button type="button" onClick={handleCashPositionOpen} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Update cash position</button>
+              </header>
+
+              <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
+                Track cash position, income, expenses and financial commitments so the business always knows its real operating position.
+              </p>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Total received income</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(totalReceivedIncome)}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Total paid expenses</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(totalPaidExpenses)}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Net cash movement</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(netCashMovement)}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Reserved tax</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(reservedTaxAmount)}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Safety buffer</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(safetyBufferAmount)}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Available operating cash</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(availableOperatingCash)}</div>
+                  {cashPosition.lastUpdated ? (
+                    <div className="mt-1 text-[10px] text-[#5d584f]">Updated {formatCapturedAt(cashPosition.lastUpdated)}</div>
+                  ) : null}
+                </div>
+              </div>
+
+              <section className="mt-8">
+                <div className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-2.5">
+                  <h2 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Income records</h2>
+                  <button type="button" onClick={handleCreateIncome} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Add income</button>
+                </div>
+                {orderedIncome.length === 0 ? (
+                  <div className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-6 text-[14px] text-[#4d4944]">No income records yet.</div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {orderedIncome.map((income) => (
+                      <button key={income.id} type="button" onClick={() => handleIncomeEditOpen(income)} className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec]">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0 flex-1">
+                            <h3 className="text-[16px] font-medium tracking-[-0.03em] text-[#171717]">{income.description}</h3>
+                            <p className="mt-1 text-[13px] text-[#424039]">{income.customerSource || "Source not specified"}</p>
+                          </div>
+                          <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">{income.status}</span>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{formatFinanceAmount(parseFinanceAmount(income.amount))}</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{income.date ? formatCapturedAt(income.date) : "No date"}</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1.5">{income.area}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="mt-8">
+                <div className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-2.5">
+                  <h2 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Expense records</h2>
+                  <button type="button" onClick={handleCreateExpense} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Add expense</button>
+                </div>
+                {orderedExpenses.length === 0 ? (
+                  <div className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-6 text-[14px] text-[#4d4944]">No expense records yet.</div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {orderedExpenses.map((expense) => (
+                      <button key={expense.id} type="button" onClick={() => handleExpenseEditOpen(expense)} className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec]">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0 flex-1">
+                            <h3 className="text-[16px] font-medium tracking-[-0.03em] text-[#171717]">{expense.description}</h3>
+                            <p className="mt-1 text-[13px] text-[#424039]">{expense.supplier || "Payee not specified"}</p>
+                          </div>
+                          <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">{expense.status}</span>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{formatFinanceAmount(parseFinanceAmount(expense.amount))}</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{expense.category}</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{expense.date ? formatCapturedAt(expense.date) : "No date"}</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1.5">{expense.area}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="mt-8">
+                <div className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-2.5">
+                  <h2 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Financial commitments</h2>
+                  <button type="button" onClick={handleCreateCommitment} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Add commitment</button>
+                </div>
+                {orderedCommitments.length === 0 ? (
+                  <div className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-6 text-[14px] text-[#4d4944]">No financial commitments yet.</div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {orderedCommitments.map((commitment) => (
+                      <button key={commitment.id} type="button" onClick={() => handleCommitmentEditOpen(commitment)} className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec]">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0 flex-1">
+                            <h3 className="text-[16px] font-medium tracking-[-0.03em] text-[#171717]">{commitment.commitmentName}</h3>
+                            <p className="mt-1 text-[13px] text-[#424039]">{commitment.type}</p>
+                          </div>
+                          <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">{commitment.status}</span>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{formatFinanceAmount(parseFinanceAmount(commitment.amount))}</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{commitment.dueDate ? `Due ${formatCapturedAt(commitment.dueDate)}` : "No due date"}</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1.5">{commitment.relatedPillar}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
             </div>
           ) : activeView === "People" ? (
             <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
@@ -7751,6 +8549,51 @@ export default function Home() {
           }}
           onChange={handleLeadEditorChange}
           onSave={handleLeadSave}
+        />
+      ) : null}
+
+      {cashPositionEditor ? (
+        <CashPositionPanel
+          value={cashPositionEditor}
+          onClose={() => setCashPositionEditor(null)}
+          onChange={handleCashPositionChange}
+          onSave={handleCashPositionSave}
+        />
+      ) : null}
+
+      {selectedIncomeId && incomeEditor ? (
+        <IncomeDetailPanel
+          income={incomeEditor}
+          onClose={() => {
+            setSelectedIncomeId(null);
+            setIncomeEditor(null);
+          }}
+          onChange={handleIncomeEditorChange}
+          onSave={handleIncomeSave}
+        />
+      ) : null}
+
+      {selectedExpenseId && expenseEditor ? (
+        <ExpenseDetailPanel
+          expense={expenseEditor}
+          onClose={() => {
+            setSelectedExpenseId(null);
+            setExpenseEditor(null);
+          }}
+          onChange={handleExpenseEditorChange}
+          onSave={handleExpenseSave}
+        />
+      ) : null}
+
+      {selectedCommitmentId && commitmentEditor ? (
+        <CommitmentDetailPanel
+          commitment={commitmentEditor}
+          onClose={() => {
+            setSelectedCommitmentId(null);
+            setCommitmentEditor(null);
+          }}
+          onChange={handleCommitmentEditorChange}
+          onSave={handleCommitmentSave}
         />
       ) : null}
 
