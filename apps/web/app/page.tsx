@@ -984,7 +984,7 @@ const destinationDefinitions = [
   },
 ] as const;
 
-type DestinationKey = "Command" | "Capture" | "People" | "Projects" | "Leads" | "Finance" | (typeof destinationDefinitions)[number]["key"];
+type DestinationKey = "Command" | "Capture" | "People" | "Projects" | "Leads" | "Finance" | "Metrics" | (typeof destinationDefinitions)[number]["key"];
 
 type RelatedRecordItem = {
   label: string;
@@ -7008,6 +7008,7 @@ export default function Home() {
                       item === "SOPs" ||
                       item === "Leads" ||
                       item === "Finance" ||
+                      item === "Metrics" ||
                       item === "People"
                     ) {
                       setActiveView(item === "Command" ? "Command" : item);
@@ -7444,6 +7445,23 @@ export default function Home() {
                   </div>
                 )}
               </section>
+            </div>
+          ) : activeView === "Metrics" ? (
+            <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+              <header className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-4">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#4d4944]">Measurement</p>
+                  <h1 className="mt-2.5 text-[36px] font-semibold tracking-[-0.07em] text-[#171717] sm:text-[42px]">Metrics</h1>
+                </div>
+              </header>
+
+              <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
+                Metrics will track the key numbers that show whether each part of the business is healthy, improving or falling behind.
+              </p>
+
+              <div className="mt-6 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">
+                No metrics are configured yet. Define the measures that matter and they will be tracked here.
+              </div>
             </div>
           ) : activeView === "People" ? (
             <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
