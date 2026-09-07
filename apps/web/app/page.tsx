@@ -3705,6 +3705,7 @@ export default function Home() {
   const [sopEditor, setSopEditor] = useState<SopRecord | null>(null);
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
   const [personEditor, setPersonEditor] = useState<PersonRecord | null>(null);
+  const [personSaveState, setPersonSaveState] = useState<"idle" | "saved">("idle");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [projectEditor, setProjectEditor] = useState<ProjectRecord | null>(null);
   const [creatingLinkedActionForProblemId, setCreatingLinkedActionForProblemId] = useState<string | null>(null);
@@ -5657,6 +5658,7 @@ export default function Home() {
   const handlePersonEditOpen = (person: PersonRecord) => {
     setSelectedPersonId(person.id);
     setPersonEditor(person);
+    setPersonSaveState("idle");
   };
 
   const handlePersonEditorChange = (
@@ -5667,6 +5669,7 @@ export default function Home() {
       return;
     }
 
+    setPersonSaveState("idle");
     setPersonEditor({
       ...personEditor,
       [field]: value,
@@ -5707,8 +5710,8 @@ export default function Home() {
         : currentPeople.map((person) => person.id === nextPerson.id ? nextPerson : person),
     );
 
-    setSelectedPersonId(nextPerson.id);
-    setPersonEditor(nextPerson);
+    setPersonSaveState("saved");
+    window.setTimeout(() => setPersonSaveState("idle"), 1800);
     setFeedback({
       type: "success",
       message: isNewPerson ? "Person created." : "Person details saved.",
@@ -5724,6 +5727,7 @@ export default function Home() {
 
     setSelectedPersonId(newPerson.id);
     setPersonEditor(newPerson);
+    setPersonSaveState("idle");
   };
 
   const handleProjectEditOpen = (project: ProjectRecord) => {
@@ -7192,12 +7196,22 @@ export default function Home() {
                 onClick={() => {
                   setSelectedPersonId(null);
                   setPersonEditor(null);
+                  setPersonSaveState("idle");
                 }}
                 className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]"
               >
                 Close
               </button>
             </div>
+
+            {personSaveState === "saved" ? (
+              <div
+                aria-live="polite"
+                className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]"
+              >
+                Person details saved.
+              </div>
+            ) : null}
 
             <div className="mt-5 grid gap-4 md:grid-cols-2">
               <div>
@@ -7359,6 +7373,7 @@ export default function Home() {
                 onClick={() => {
                   setSelectedPersonId(null);
                   setPersonEditor(null);
+                  setPersonSaveState("idle");
                 }}
                 className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]"
               >
@@ -7369,7 +7384,7 @@ export default function Home() {
                 onClick={handlePersonSave}
                 className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1]"
               >
-                Save person
+                {personSaveState === "saved" ? "Saved" : "Save person"}
               </button>
             </div>
           </div>
