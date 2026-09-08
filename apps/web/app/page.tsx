@@ -2455,7 +2455,7 @@ type TodayBriefStep = {
   hint: string;
 };
 
-function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsClear, freshness, freshnessIsClear, progress, deskIsClear, onOpenStep }: {
+function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsClear, freshness, freshnessIsClear, growth, growthIsClear, progress, deskIsClear, onOpenStep }: {
   posture: string;
   postureIsClear: boolean;
   steps: TodayBriefStep[];
@@ -2463,6 +2463,8 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
   delegationIsClear: boolean;
   freshness: string;
   freshnessIsClear: boolean;
+  growth: string;
+  growthIsClear: boolean;
   progress: string;
   deskIsClear: boolean;
   onOpenStep: (stepLabel: string) => void;
@@ -2517,6 +2519,10 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
 
       <div className={`mt-3 rounded-xl border px-3 py-2.5 text-[12px] leading-5 ${freshnessIsClear ? "border-[#d3cbc3] bg-white text-[#2f2b28]" : "border-[#c9b8a3] bg-[#f5efe6] text-[#2f2b28]"}`}>
         <span className="font-medium text-[#171717]">Trust the picture:</span> {freshness}
+      </div>
+
+      <div className={`mt-3 rounded-xl border px-3 py-2.5 text-[12px] leading-5 ${growthIsClear ? "border-[#d3cbc3] bg-white text-[#2f2b28]" : "border-[#b8c4a3] bg-[#f1f4ea] text-[#2f2b28]"}`}>
+        <span className="font-medium text-[#171717]">Growth:</span> {growth}
       </div>
     </div>
   );
@@ -5756,6 +5762,72 @@ export default function Home() {
     };
   })();
 
+  const growthAttention = (() => {
+    const now = Date.now();
+    const dayMs = 1000 * 60 * 60 * 24;
+    const ageDays = (dateText?: string) => {
+      const value = getDateValue(dateText);
+      return value > 0 ? Math.floor((now - value) / dayMs) : 0;
+    };
+
+    const opportunityThresholdDays = 14;
+    const stalledOpportunities = opportunityRecords
+      .filter((opportunity) =>
+        ["High", "Exceptional"].includes(opportunity.strategicFit) &&
+        ["New", "Evaluating"].includes(opportunity.status) &&
+        ageDays(opportunity.dateIdentified || opportunity.createdAt) >= opportunityThresholdDays &&
+        !decisionRecords.some((decision) => decision.relatedOpportunity === opportunity.id && isDecisionActive(decision)),
+      )
+      .map((opportunity) => ({
+        id: opportunity.id,
+        title: opportunity.opportunityTitle || opportunity.title,
+        strategicFit: opportunity.strategicFit,
+        status: opportunity.status,
+        area: getAreaText(opportunity) || "Unassigned",
+        ageDays: ageDays(opportunity.dateIdentified || opportunity.createdAt),
+        estimatedUpside: parseFinanceAmount(opportunity.estimatedUpside),
+      }));
+
+    const newLeadThresholdDays = 7;
+    const stalledLeads = activeLeads
+      .filter((lead) => !["Won", "Lost"].includes(lead.status))
+      .map((lead) => {
+        const quoteAmount = parseFinanceAmount(lead.quoteValue);
+        const followUpTime = getDateValue(lead.followUpDate);
+        const receivedAge = ageDays(lead.dateReceived || lead.dateCreated);
+
+        if (lead.status === "Quote Sent" && !lead.followUpDate) {
+          return { lead, quoteAmount, reason: "Quote sent with no follow-up scheduled", ageDays: ageDays(lead.quoteSentDate || lead.dateReceived || lead.dateCreated) };
+        }
+        if (lead.status === "Quote Sent" && followUpTime > 0 && followUpTime < now) {
+          return { lead, quoteAmount, reason: "Follow-up date passed with no resolution", ageDays: ageDays(lead.followUpDate) };
+        }
+        if (lead.status === "New" && receivedAge >= newLeadThresholdDays) {
+          return { lead, quoteAmount, reason: "New lead with no contact progress", ageDays: receivedAge };
+        }
+        return null;
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+      .map((entry) => ({
+        id: entry.lead.id,
+        title: entry.lead.leadName,
+        status: entry.lead.status,
+        area: entry.lead.relatedPillar || "Unassigned",
+        quoteValue: entry.quoteAmount,
+        reason: entry.reason,
+        ageDays: entry.ageDays,
+      }));
+
+    const stalledQuoteValue = stalledLeads.reduce((sum, item) => sum + item.quoteValue, 0);
+
+    return {
+      stalledOpportunities,
+      stalledLeads,
+      stalledQuoteValue,
+      count: stalledOpportunities.length + stalledLeads.length,
+    };
+  })();
+
   const selectedAccountability = selectedAccountabilityKey === "unassigned"
     ? unassignedAccountability
     : personAccountabilitySummaries.find((entry) => entry.person.id === selectedAccountabilityKey) ?? null;
@@ -6668,6 +6740,32 @@ export default function Home() {
       });
     });
 
+    growthAttention.stalledOpportunities.forEach((item) => {
+      push({
+        key: `Opportunity:${item.id}`,
+        objectType: "Opportunity",
+        id: item.id,
+        title: item.title,
+        area: item.area,
+        score: item.strategicFit === "Exceptional" ? 290 : 250,
+        tier: 3,
+        reason: `This is a ${item.strategicFit.toLowerCase()}-fit opportunity that has been idle for ${item.ageDays} days with no decision progressing it — strategic upside is quietly decaying.`,
+      });
+    });
+
+    growthAttention.stalledLeads.forEach((item) => {
+      push({
+        key: `Lead:${item.id}`,
+        objectType: "Lead",
+        id: item.id,
+        title: item.title,
+        area: item.area,
+        score: item.quoteValue >= 1000 ? 240 : 180,
+        tier: 3,
+        reason: `${item.reason}${item.quoteValue > 0 ? ` — ${formatFinanceAmount(item.quoteValue)} in potential revenue is waiting.` : "."} Stalled pipeline is silent revenue loss.`,
+      });
+    });
+
     commandAttentionItemList
       .filter((item) => !item.reasons.some((reason) => reason === "BLOCKED PROJECT" || reason === "BLOCKED" || reason.startsWith("BLOCKED BY PROBLEM:") || reason === "STALE PROJECT" || reason === "STALE PROJECT • TARGET APPROACHING" || reason === "STALE IN-PROGRESS ACTION"))
       .forEach((item) => {
@@ -6769,6 +6867,15 @@ export default function Home() {
       ? "The operating picture looks current — no stale active records detected."
       : `${staleCount} active record${staleCount === 1 ? "" : "s"} may be stale — the operating picture needs review.`;
 
+    const growthParts: string[] = [];
+    if (growthAttention.stalledOpportunities.length > 0) growthParts.push(`${growthAttention.stalledOpportunities.length} high-fit opportunit${growthAttention.stalledOpportunities.length === 1 ? "y" : "ies"} idle`);
+    if (growthAttention.stalledLeads.length > 0) growthParts.push(`${growthAttention.stalledLeads.length} lead${growthAttention.stalledLeads.length === 1 ? "" : "s"} stalled`);
+    if (growthAttention.stalledQuoteValue > 0) growthParts.push(`${formatFinanceAmount(growthAttention.stalledQuoteValue)} in quotes awaiting movement`);
+    const growth = growthParts.length > 0
+      ? growthParts.join(" • ")
+      : "Growth pipeline is moving — no stalled high-fit opportunities or leads.";
+    const growthIsClear = growthParts.length === 0;
+
     const outstandingRecordKeys = new Set<string>();
     empireDecisionQueue.founderAuthorityItems.forEach((item) => outstandingRecordKeys.add(`${item.objectType}:${item.id}`));
     decisionTrackRecord.reviewsDue.forEach((decision) => outstandingRecordKeys.add(`Decision:${decision.id}`));
@@ -6782,6 +6889,8 @@ export default function Home() {
     if (cashAttention.buffer) outstandingRecordKeys.add("Finance:cash-buffer");
     cashAttention.overdueCommitments.forEach((item) => outstandingRecordKeys.add(`Finance:commitment:${item.id}`));
     cashAttention.overdueExpectedIncome.forEach((item) => outstandingRecordKeys.add(`Finance:income:${item.id}`));
+    growthAttention.stalledOpportunities.forEach((item) => outstandingRecordKeys.add(`Opportunity:${item.id}`));
+    growthAttention.stalledLeads.forEach((item) => outstandingRecordKeys.add(`Lead:${item.id}`));
     const outstandingCount = outstandingRecordKeys.size;
 
     return {
@@ -6792,6 +6901,8 @@ export default function Home() {
       delegationIsClear: delegationGapCount === 0,
       freshness,
       freshnessIsClear: staleCount === 0,
+      growth,
+      growthIsClear,
       outstandingCount,
     };
   })();
@@ -6844,6 +6955,15 @@ export default function Home() {
   });
   cashAttention.overdueExpectedIncome.forEach((item) => {
     attentionSnapshot[`finance:income:${item.id}`] = "Finance attention";
+  });
+  growthAttention.stalledOpportunities.forEach((item) => {
+    attentionSnapshot[`growth:Opportunity:${item.id}`] = "Growth";
+  });
+  growthAttention.stalledLeads.forEach((item) => {
+    if (ownershipRecordKeys.has(`Lead:${item.id}`)) {
+      return;
+    }
+    attentionSnapshot[`growth:Lead:${item.id}`] = "Growth";
   });
 
   const [clearedThisSession, setClearedThisSession] = useState<{ total: number; byCategory: Record<string, number> }>({ total: 0, byCategory: {} });
@@ -8822,6 +8942,8 @@ export default function Home() {
                   delegationIsClear={todayBrief.delegationIsClear}
                   freshness={todayBrief.freshness}
                   freshnessIsClear={todayBrief.freshnessIsClear}
+                  growth={todayBrief.growth}
+                  growthIsClear={todayBrief.growthIsClear}
                   progress={todayProgressText}
                   deskIsClear={deskIsClear}
                   onOpenStep={handleOpenTodayStep}
@@ -8910,6 +9032,55 @@ export default function Home() {
                       >
                         <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
                         <div className="mt-0.5 text-[11px] text-[#4d4944]">{item.detail}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {growthAttention.count > 0 ? (
+                <div className="mt-4 rounded-2xl border border-[#b8c4a3] bg-[#f1f4ea] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Growth attention</div>
+                    <span className="rounded-full border border-[#4d5a2f] bg-[#eef2e3] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#4d5a2f]">
+                      {growthAttention.count} item{growthAttention.count === 1 ? "" : "s"}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 space-y-2">
+                    {growthAttention.stalledOpportunities.map((item) => (
+                      <button
+                        key={`growth-opp-${item.id}`}
+                        type="button"
+                        onClick={() => handleOpenAttentionRecord("Opportunity", item.id)}
+                        className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full border border-[#4d5a2f] bg-[#eef2e3] px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-[#4d5a2f]">Stalled high-fit opportunity</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{item.status}</span>
+                        </div>
+                        <div className="mt-1.5 text-[13px] font-medium text-[#171717]">{item.title}</div>
+                        <div className="mt-0.5 text-[11px] text-[#4d4944]">
+                          {item.strategicFit} fit • idle {item.ageDays} day{item.ageDays === 1 ? "" : "s"}{item.estimatedUpside > 0 ? ` • est. upside ${formatFinanceAmount(item.estimatedUpside)}` : ""} • {item.area}
+                        </div>
+                      </button>
+                    ))}
+
+                    {growthAttention.stalledLeads.map((item) => (
+                      <button
+                        key={`growth-lead-${item.id}`}
+                        type="button"
+                        onClick={() => handleOpenAttentionRecord("Lead", item.id)}
+                        className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full border border-[#4d5a2f] bg-[#eef2e3] px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-[#4d5a2f]">Stalled lead</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{item.status}</span>
+                        </div>
+                        <div className="mt-1.5 text-[13px] font-medium text-[#171717]">{item.title}</div>
+                        <div className="mt-0.5 text-[11px] text-[#4d4944]">
+                          {item.reason}{item.quoteValue > 0 ? ` • quote ${formatFinanceAmount(item.quoteValue)}` : ""} • {item.area}
+                        </div>
                       </button>
                     ))}
                   </div>
