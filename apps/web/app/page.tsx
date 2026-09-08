@@ -6660,6 +6660,162 @@ export default function Home() {
     item.reasons.some((reason) => reason === "STALE PROJECT" || reason === "STALE PROJECT • TARGET APPROACHING" || reason === "STALE IN-PROGRESS ACTION"),
   );
 
+  const correlationLayer = (() => {
+    type SignalledRecord = {
+      recordKey: string;
+      objectType: string;
+      id: string;
+      title: string;
+      area: string;
+      signals: Set<string>;
+      baseScore: number;
+    };
+
+    const signalled = new Map<string, SignalledRecord>();
+    const addSignal = (recordKey: string, objectType: string, id: string, title: string, area: string, signal: string, baseScore: number) => {
+      const existing = signalled.get(recordKey);
+      if (existing) {
+        existing.signals.add(signal);
+        existing.baseScore = Math.max(existing.baseScore, baseScore);
+      } else {
+        signalled.set(recordKey, { recordKey, objectType, id, title, area, signals: new Set([signal]), baseScore });
+      }
+    };
+
+    empireDecisionQueue.founderAuthorityItems.forEach((item) =>
+      addSignal(`${item.objectType}:${item.id}`, item.objectType, item.id, item.title, item.pillar, "founder authority", 400));
+
+    commandAttentionItemList
+      .filter((item) => item.reasons.some((reason) => reason === "BLOCKED PROJECT" || reason === "BLOCKED" || reason.startsWith("BLOCKED BY PROBLEM:")))
+      .forEach((item) => addSignal(`${item.objectType}:${item.id}`, item.objectType, item.id, item.title, item.area, "blocked", 360 + item.priorityScore));
+
+    commandAttentionItemList
+      .filter((item) => item.reasons.some((reason) => reason.startsWith("OVERDUE")))
+      .forEach((item) => addSignal(`${item.objectType}:${item.id}`, item.objectType, item.id, item.title, item.area, "overdue", 200 + item.priorityScore));
+
+    decisionTrackRecord.reviewsDue.forEach((decision) =>
+      addSignal(`Decision:${decision.id}`, "Decision", decision.id, decision.decisionTitle || decision.title, getAreaText(decision) || "Unassigned", "review due", 300));
+
+    decisionsWithoutExecution.forEach((decision) =>
+      addSignal(`Decision:${decision.id}`, "Decision", decision.id, decision.title, decision.area, "no execution path", 280));
+
+    recurringProblemLearning.gaps.forEach((problem) =>
+      addSignal(`Problem:${problem.id}`, "Problem", problem.id, problem.title, problem.area, "learning not captured", 240));
+
+    staleUnownedWork.forEach((item) =>
+      addSignal(item.key, item.objectType, item.id, item.title, item.area, "no valid owner", item.score));
+
+    staleRecords.forEach((item) =>
+      addSignal(`${item.objectType}:${item.id}`, item.objectType, item.id, item.title, item.area, "stale record", 230));
+
+    growthAttention.stalledOpportunities.forEach((item) =>
+      addSignal(`Opportunity:${item.id}`, "Opportunity", item.id, item.title, item.area, "opportunity stalled", item.strategicFit === "Exceptional" ? 290 : 250));
+
+    growthAttention.stalledLeads.forEach((item) =>
+      addSignal(`Lead:${item.id}`, "Lead", item.id, item.title, item.area, "lead stalled", item.quoteValue >= 1000 ? 240 : 180));
+
+    if (cashAttention.buffer) {
+      addSignal("Finance:cash-buffer", "Finance", "cash-buffer", cashAttention.buffer.title, "Finance", "cash buffer pressure", cashAttention.buffer.severity === "critical" ? 380 : 300);
+    }
+    cashAttention.overdueCommitments.forEach((item) =>
+      addSignal(`Finance:commitment:${item.id}`, "Finance", `commitment:${item.id}`, item.title, "Finance", "overdue commitment", 310));
+    cashAttention.overdueExpectedIncome.forEach((item) =>
+      addSignal(`Finance:income:${item.id}`, "Finance", `income:${item.id}`, item.title, "Finance", "expected income overdue", 260));
+
+    const recordById = (key: string) => {
+      const [objectType, ...rest] = key.split(":");
+      const id = rest.join(":");
+      return { objectType, id };
+    };
+
+    const adjacency = new Map<string, Set<string>>();
+    const link = (a: string, b: string) => {
+      if (a === b) return;
+      if (!adjacency.has(a)) adjacency.set(a, new Set());
+      if (!adjacency.has(b)) adjacency.set(b, new Set());
+      adjacency.get(a)!.add(b);
+      adjacency.get(b)!.add(a);
+    };
+
+    actionRecords.forEach((action) => {
+      if (action.relatedProblem) link(`Action:${action.id}`, `Problem:${action.relatedProblem}`);
+      if (action.relatedDecision) link(`Action:${action.id}`, `Decision:${action.relatedDecision}`);
+      if (action.relatedOpportunity) link(`Action:${action.id}`, `Opportunity:${action.relatedOpportunity}`);
+    });
+    decisionRecords.forEach((decision) => {
+      if (decision.relatedOpportunity) link(`Decision:${decision.id}`, `Opportunity:${decision.relatedOpportunity}`);
+    });
+    lessonRecords.forEach((lesson) => {
+      if (lesson.relatedProblem) link(`Lesson:${lesson.id}`, `Problem:${lesson.relatedProblem}`);
+      if (lesson.relatedDecision) link(`Lesson:${lesson.id}`, `Decision:${lesson.relatedDecision}`);
+      if (lesson.relatedProject) link(`Lesson:${lesson.id}`, `Project:${lesson.relatedProject}`);
+    });
+    projects.forEach((project) => {
+      (project.relatedActionIds || []).forEach((actionId) => link(`Project:${project.id}`, `Action:${actionId}`));
+      (project.relatedDecisionIds || []).forEach((decisionId) => link(`Project:${project.id}`, `Decision:${decisionId}`));
+    });
+
+    const visited = new Set<string>();
+    const clusters: Array<{
+      clusterKey: string;
+      title: string;
+      records: SignalledRecord[];
+      categories: Set<string>;
+      recordCount: number;
+      topScore: number;
+    }> = [];
+
+    signalled.forEach((record, recordKey) => {
+      if (visited.has(recordKey)) return;
+
+      const component: SignalledRecord[] = [];
+      const queue = [recordKey];
+      visited.add(recordKey);
+
+      while (queue.length > 0) {
+        const current = queue.pop()!;
+        const currentRecord = signalled.get(current);
+        if (currentRecord) {
+          component.push(currentRecord);
+        }
+        const neighbours = adjacency.get(current);
+        if (neighbours) {
+          neighbours.forEach((neighbour) => {
+            if (!visited.has(neighbour) && signalled.has(neighbour)) {
+              visited.add(neighbour);
+              queue.push(neighbour);
+            }
+          });
+        }
+      }
+
+      const categories = new Set<string>();
+      component.forEach((item) => item.signals.forEach((signal) => categories.add(signal)));
+
+      const root = component.reduce((best, item) => (item.baseScore > best.baseScore ? item : best), component[0]);
+
+      clusters.push({
+        clusterKey: `cluster:${root.recordKey}`,
+        title: root.title,
+        records: component,
+        categories,
+        recordCount: component.length,
+        topScore: root.baseScore,
+      });
+    });
+
+    const convergentRisks = clusters
+      .filter((cluster) => cluster.categories.size >= 3 && cluster.recordCount >= 2)
+      .sort((a, b) => b.categories.size - a.categories.size || b.recordCount - a.recordCount || b.topScore - a.topScore);
+
+    const clusterByRecordKey = new Map<string, (typeof clusters)[number]>();
+    clusters.forEach((cluster) => {
+      cluster.records.forEach((record) => clusterByRecordKey.set(record.recordKey, cluster));
+    });
+
+    return { signalled, clusters, convergentRisks, clusterByRecordKey };
+  })();
+
   const founderFocusList = (() => {
     type FocusCandidate = {
       key: string;
@@ -6672,201 +6828,51 @@ export default function Home() {
       reason: string;
     };
 
+    const recordsInConvergentClusters = new Set<string>();
+    correlationLayer.convergentRisks.forEach((cluster) => {
+      cluster.records.forEach((record) => recordsInConvergentClusters.add(record.recordKey));
+    });
+
     const candidates: FocusCandidate[] = [];
-    const push = (candidate: FocusCandidate) => {
-      candidates.push(candidate);
-    };
 
-    empireDecisionQueue.founderAuthorityItems.forEach((item) => {
-      push({
-        key: `${item.objectType}:${item.id}`,
-        objectType: item.objectType,
-        id: item.id,
-        title: item.title,
-        area: item.pillar,
-        score: 400,
+    correlationLayer.convergentRisks.forEach((cluster) => {
+      const root = cluster.records.reduce((best, item) => (item.baseScore > best.baseScore ? item : best), cluster.records[0]);
+      const categoryList = [...cluster.categories].join(", ");
+      candidates.push({
+        key: cluster.clusterKey,
+        objectType: root.objectType,
+        id: root.id,
+        title: cluster.title,
+        area: root.area,
+        score: 420 + cluster.categories.size * 10 + cluster.recordCount,
         tier: 1,
-        reason: "This requires founder authority — blocked work or a high-stakes call that nothing can move past until you decide.",
+        reason: `Convergent risk — one situation is generating ${cluster.categories.size} kinds of signal (${categoryList}) across ${cluster.recordCount} linked records, so it is systemic rather than isolated.`,
       });
     });
 
-    commandAttentionItemList
-      .filter((item) => item.reasons.some((reason) => reason === "BLOCKED PROJECT" || reason === "BLOCKED" || reason.startsWith("BLOCKED BY PROBLEM:")))
-      .forEach((item) => {
-        push({
-          key: `${item.objectType}:${item.id}`,
-          objectType: item.objectType,
-          id: item.id,
-          title: item.title,
-          area: item.area,
-          score: 360 + item.priorityScore,
-          tier: 1,
-          reason: "This is blocked on the critical path, so everything downstream is waiting on it.",
-        });
-      });
-
-    decisionTrackRecord.reviewsDue.forEach((decision) => {
-      push({
-        key: `Decision:${decision.id}`,
-        objectType: "Decision",
-        id: decision.id,
-        title: decision.decisionTitle || decision.title,
-        area: getAreaText(decision) || "Unassigned",
-        score: 300,
-        tier: 2,
-        reason: "This decision is overdue for review — the current path may be stale and is shaping execution without being checked.",
-      });
-    });
-
-    decisionsWithoutExecution.forEach((decision) => {
-      push({
-        key: `Decision:${decision.id}`,
-        objectType: "Decision",
-        id: decision.id,
-        title: decision.title,
-        area: decision.area,
-        score: 280,
-        tier: 2,
-        reason: "This decision is active but has no open execution path, so it currently exists on paper only.",
-      });
-    });
-
-    recurringProblemLearning.gaps.forEach((problem) => {
-      push({
-        key: `Problem:${problem.id}`,
-        objectType: "Problem",
-        id: problem.id,
-        title: problem.title,
-        area: problem.area,
-        score: 240,
-        tier: 3,
-        reason: "This problem keeps coming back and the fix has not been captured as a lesson, system or SOP — so the business will pay for it again.",
-      });
-    });
-
-    staleUnownedWork.forEach((item) => {
-      push({
-        key: item.key,
-        objectType: item.objectType,
-        id: item.id,
-        title: item.title,
-        area: item.area,
-        score: item.score,
-        tier: 2,
-        reason: `${item.gapLabel} — this has been sitting for ${item.staleDays} day${item.staleDays === 1 ? "" : "s"} with no valid active owner, so it is dropped work, not just unassigned.`,
-      });
-    });
-
-    if (cashAttention.buffer) {
-      push({
-        key: cashAttention.buffer.key,
-        objectType: "Finance",
-        id: "cash-buffer",
-        title: cashAttention.buffer.title,
-        area: "Finance",
-        score: cashAttention.buffer.severity === "critical" ? 380 : 300,
-        tier: 1,
-        reason: `${cashAttention.buffer.detail} Cash pressure can stall the whole operation even when everything operational is green.`,
-      });
-    }
-
-    cashAttention.overdueCommitments.forEach((item) => {
-      push({
-        key: item.key,
-        objectType: "Finance",
-        id: `commitment:${item.id}`,
-        title: item.title,
-        area: "Finance",
-        score: 310,
-        tier: 2,
-        reason: `${item.detail} An overdue financial commitment is a hard obligation that will not resolve itself.`,
-      });
-    });
-
-    cashAttention.overdueExpectedIncome.forEach((item) => {
-      push({
-        key: item.key,
-        objectType: "Finance",
-        id: `income:${item.id}`,
-        title: item.title,
-        area: "Finance",
-        score: 260,
-        tier: 2,
-        reason: `${item.detail} Cash the business is owed but has not collected quietly erodes runway.`,
-      });
-    });
-
-    staleRecords.forEach((item) => {
-      const isProject = item.objectType === "Project";
-      const targetApproaching = item.reasons.includes("STALE PROJECT • TARGET APPROACHING");
-      push({
-        key: `${item.objectType}:${item.id}`,
-        objectType: item.objectType,
-        id: item.id,
-        title: item.title,
-        area: item.area,
-        score: targetApproaching ? 270 : 230,
-        tier: 3,
-        reason: isProject
-          ? targetApproaching
-            ? "This project is still marked active but has not moved in weeks, and its target date is close — the picture may be stale and it could fail silently."
-            : "This project is still marked active but has not moved in weeks, so the operating picture may no longer reflect reality."
-          : "This action has been sitting In Progress for over two weeks without resolving, so it is likely stalled rather than genuinely progressing.",
-      });
-    });
-
-    growthAttention.stalledOpportunities.forEach((item) => {
-      push({
-        key: `Opportunity:${item.id}`,
-        objectType: "Opportunity",
-        id: item.id,
-        title: item.title,
-        area: item.area,
-        score: item.strategicFit === "Exceptional" ? 290 : 250,
-        tier: 3,
-        reason: `This is a ${item.strategicFit.toLowerCase()}-fit opportunity that has been idle for ${item.ageDays} days with no decision progressing it — strategic upside is quietly decaying.`,
-      });
-    });
-
-    growthAttention.stalledLeads.forEach((item) => {
-      push({
-        key: `Lead:${item.id}`,
-        objectType: "Lead",
-        id: item.id,
-        title: item.title,
-        area: item.area,
-        score: item.quoteValue >= 1000 ? 240 : 180,
-        tier: 3,
-        reason: `${item.reason}${item.quoteValue > 0 ? ` — ${formatFinanceAmount(item.quoteValue)} in potential revenue is waiting.` : "."} Stalled pipeline is silent revenue loss.`,
-      });
-    });
-
-    commandAttentionItemList
-      .filter((item) => !item.reasons.some((reason) => reason === "BLOCKED PROJECT" || reason === "BLOCKED" || reason.startsWith("BLOCKED BY PROBLEM:") || reason === "STALE PROJECT" || reason === "STALE PROJECT • TARGET APPROACHING" || reason === "STALE IN-PROGRESS ACTION"))
-      .forEach((item) => {
-        push({
-          key: `${item.objectType}:${item.id}`,
-          objectType: item.objectType,
-          id: item.id,
-          title: item.title,
-          area: item.area,
-          score: 100 + item.priorityScore,
-          tier: 4,
-          reason: item.reasons[0]
-            ? `Flagged in Command: ${item.reasons[0].toLowerCase()}.`
-            : "This is a high-priority item surfaced in Command.",
-        });
-      });
-
-    const bestByKey = new Map<string, FocusCandidate>();
-    candidates.forEach((candidate) => {
-      const existing = bestByKey.get(candidate.key);
-      if (!existing || candidate.score > existing.score) {
-        bestByKey.set(candidate.key, candidate);
+    correlationLayer.signalled.forEach((record, recordKey) => {
+      if (recordsInConvergentClusters.has(recordKey)) {
+        return;
       }
+
+      const signalList = [...record.signals];
+      const combinedReason = signalList.length > 1
+        ? `Needs attention for ${signalList.length} reasons: ${signalList.join(", ")}.`
+        : `Needs attention: ${signalList[0]}.`;
+
+      candidates.push({
+        key: recordKey,
+        objectType: record.objectType,
+        id: record.id,
+        title: record.title,
+        area: record.area,
+        score: record.baseScore + (signalList.length - 1) * 40,
+        tier: record.baseScore >= 360 ? 1 : record.baseScore >= 240 ? 2 : 3,
+        reason: combinedReason,
+      });
     });
 
-    return [...bestByKey.values()]
+    return candidates
       .sort((a, b) => b.score - a.score)
       .slice(0, 3);
   })();
@@ -6968,6 +6974,10 @@ export default function Home() {
     growthAttention.stalledLeads.forEach((item) => outstandingRecordKeys.add(`Lead:${item.id}`));
     const outstandingCount = outstandingRecordKeys.size;
 
+    const outstandingSituationCount = correlationLayer.clusters.filter((cluster) =>
+      cluster.records.some((record) => outstandingRecordKeys.has(record.recordKey)),
+    ).length;
+
     return {
       posture,
       postureIsClear: postureParts.length === 0,
@@ -6979,6 +6989,7 @@ export default function Home() {
       growth,
       growthIsClear,
       outstandingCount,
+      outstandingSituationCount,
       authorityCount,
       reviewDueCount,
       ownershipGapCount,
@@ -7095,7 +7106,7 @@ export default function Home() {
 
   const todayProgressText = clearedThisSession.total === 0 && todayBrief.outstandingCount === 0
     ? "Nothing on the desk."
-    : `Today: ${clearedThisSession.total} cleared • ${todayBrief.outstandingCount} still outstanding${clearedCategoryBreakdown ? ` (${clearedCategoryBreakdown})` : ""}`;
+    : `Today: ${clearedThisSession.total} cleared • ${todayBrief.outstandingSituationCount} situation${todayBrief.outstandingSituationCount === 1 ? "" : "s"} outstanding${todayBrief.outstandingSituationCount !== todayBrief.outstandingCount ? ` across ${todayBrief.outstandingCount} records` : ""}${clearedCategoryBreakdown ? ` (${clearedCategoryBreakdown})` : ""}`;
 
   const todaySnapshotDate = new Date().toISOString().slice(0, 10);
   const cashIsConfigured = cashPosition.currentCash.trim() !== "" || cashPosition.safetyBuffer.trim() !== "";
@@ -9582,6 +9593,54 @@ export default function Home() {
                             <div><span className="font-medium text-[#171717]">Critical/high problems:</span> {pillar.criticalProblems.length}</div>
                             <div><span className="font-medium text-[#171717]">Overdue actions:</span> {pillar.overdueActions.length}</div>
                             <div><span className="font-medium text-[#171717]">Active decisions:</span> {pillar.activeDecisions.length}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section className="rounded-2xl border border-[#6a3328] bg-[#f9f7f4] p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Convergent risk</div>
+                    <span className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#6a3328]">
+                      {correlationLayer.convergentRisks.length} situation{correlationLayer.convergentRisks.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+
+                  <p className="mb-3 max-w-3xl text-[13px] leading-5 text-[#524d49]">
+                    These are single underlying situations generating signals across three or more categories at once — recurring problem, blocked work, overdue decision, cash or growth pressure touching the same linked records. They are systemic, not isolated, and deserve founder attention first.
+                  </p>
+
+                  {correlationLayer.convergentRisks.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
+                      No situation is currently generating signals across three or more categories at once.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {correlationLayer.convergentRisks.map((cluster) => (
+                        <div key={cluster.clusterKey} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#6a3328]">Convergent risk</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{cluster.recordCount} records</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{cluster.categories.size} categories</span>
+                          </div>
+                          <div className="mt-2 text-[16px] font-medium tracking-[-0.04em] text-[#171717]">{cluster.title}</div>
+                          <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
+                            <span className="font-medium text-[#171717]">Why this is systemic:</span> one linked situation is producing {[...cluster.categories].join(", ")} at the same time, so fixing one symptom will not clear it.
+                          </div>
+                          <div className="mt-2.5 space-y-1">
+                            {cluster.records.map((record) => (
+                              <button
+                                key={record.recordKey}
+                                type="button"
+                                onClick={() => handleOpenAttentionRecord(record.objectType, record.id)}
+                                className="block w-full rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] px-2.5 py-2 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                              >
+                                <div className="text-[13px] font-medium text-[#171717]">{record.title}</div>
+                                <div className="mt-0.5 text-[11px] text-[#4d4944]">{record.objectType} • {[...record.signals].join(", ")}</div>
+                              </button>
+                            ))}
                           </div>
                         </div>
                       ))}
