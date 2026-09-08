@@ -985,7 +985,7 @@ const destinationDefinitions = [
   },
 ] as const;
 
-type DestinationKey = "Command" | "Capture" | "People" | "Projects" | "Leads" | "Finance" | "Metrics" | (typeof destinationDefinitions)[number]["key"];
+type DestinationKey = "Command" | "Capture" | "People" | "Projects" | "Leads" | "Finance" | "Metrics" | "Pillars" | (typeof destinationDefinitions)[number]["key"];
 
 type RelatedRecordItem = {
   label: string;
@@ -2433,6 +2433,39 @@ function MetricCard({ label, value }: { label: string; value: string }) {
       <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">{label}</div>
       <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{value}</div>
     </div>
+  );
+}
+
+function PillarCard({ pillar, summary, onSelect }: { pillar: string; summary: { activeProjects: number; blockedProjects: number; openActions: number; openProblems: number; openOpportunities: number; leadsWaiting: number; wonLeadValue: number; priorityScore: number; }; onSelect: (pillar: string) => void; }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(pillar)}
+      className="w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Business pillar</div>
+          <div className="mt-2 text-[24px] font-semibold tracking-[-0.05em] text-[#171717]">{pillar}</div>
+        </div>
+        <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">
+          Priority {summary.priorityScore}
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <MetricCard label="Active projects" value={String(summary.activeProjects)} />
+        <MetricCard label="Blocked projects" value={String(summary.blockedProjects)} />
+        <MetricCard label="Open actions" value={String(summary.openActions)} />
+        <MetricCard label="Open problems" value={String(summary.openProblems)} />
+        <MetricCard label="Open opportunities" value={String(summary.openOpportunities)} />
+        <MetricCard label="Leads awaiting follow-up" value={String(summary.leadsWaiting)} />
+      </div>
+
+      <div className="mt-4 rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#2f2b28]">
+        Won lead value: {summary.wonLeadValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      </div>
+    </button>
   );
 }
 
@@ -4485,6 +4518,7 @@ export default function Home() {
   const [creatingLinkedSystemForLessonId, setCreatingLinkedSystemForLessonId] = useState<string | null>(null);
   const [creatingLinkedSopForSystemId, setCreatingLinkedSopForSystemId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<DestinationKey>("Capture");
+  const [selectedPillar, setSelectedPillar] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   useEffect(() => {
@@ -4855,6 +4889,118 @@ export default function Home() {
   const metricsCompletedActions = actionRecords.filter((action) => action.status === "Completed").length;
   const metricsActiveProjects = projects.filter((project) => isProjectActive(project)).length;
   const metricsBlockedProjects = projects.filter((project) => project.status.trim().toLowerCase() === "blocked").length;
+
+  const pillarOptions = ["Garden Maintenance", "Hard Landscape Construction", "Excavation"] as const;
+  const pillarSummaries = pillarOptions.map((pillar) => {
+    const pillarProjects = projects.filter((project) => project.area === pillar && isProjectActive(project));
+    const pillarActions = actionRecords.filter((action) => action.relatedPillar === pillar && isActionActive(action));
+    const pillarProblems = problemRecords.filter((problem) => getAreaText(problem) === pillar && isProblemUnresolved(problem));
+    const pillarOpportunities = opportunityRecords.filter((opportunity) => (opportunity.relatedPillar || opportunity.relatedArea || "") === pillar && ["New", "Evaluating", "On Hold"].includes(opportunity.status));
+    const pillarLeads = activeLeads.filter((lead) => (lead.relatedPillar || "") === pillar);
+    const pillarFollowUpLeads = pillarLeads.filter((lead) => lead.status === "Follow-Up");
+    const pillarWonLeadsValue = pillarLeads
+      .filter((lead) => lead.status === "Won")
+      .reduce((total, lead) => total + wonLeadsValue(lead), 0);
+
+    const priorityScore = (
+      pillarProblems.length * 6 +
+      pillarActions.filter((action) => action.status === "Blocked").length * 8 +
+      pillarActions.filter((action) => action.dueDate && new Date(action.dueDate).getTime() <= Date.now()).length * 3 +
+      pillarProjects.filter((project) => project.status.trim().toLowerCase() === "blocked").length * 5 +
+      pillarFollowUpLeads.length * 2 +
+      pillarOpportunities.length * 2
+    );
+
+    return {
+      pillar,
+      activeProjects: pillarProjects.length,
+      blockedProjects: pillarProjects.filter((project) => project.status.trim().toLowerCase() === "blocked").length,
+      openActions: pillarActions.length,
+      openProblems: pillarProblems.length,
+      openOpportunities: pillarOpportunities.length,
+      leadsWaiting: pillarFollowUpLeads.length,
+      wonLeadValue: pillarWonLeadsValue,
+      priorityScore,
+    };
+  });
+
+  const selectedPillarDetail = selectedPillar ? (() => {
+    const blockedProjects = projects.filter((project) => project.area === selectedPillar && project.status.trim().toLowerCase() === "blocked");
+    const overdueActions = actionRecords.filter((action) => action.relatedPillar === selectedPillar &&
+      action.status !== "Completed" &&
+      action.status !== "Cancelled" &&
+      action.dueDate &&
+      new Date(action.dueDate).getTime() <= Date.now());
+    const unresolvedProblems = problemRecords.filter((problem) => getAreaText(problem) === selectedPillar && isProblemUnresolved(problem));
+    const openOpportunities = opportunityRecords.filter((opportunity) =>
+      (opportunity.relatedPillar || opportunity.relatedArea || "") === selectedPillar &&
+      ["New", "Evaluating", "On Hold"].includes(opportunity.status),
+    );
+    const followUpLeads = activeLeads.filter((lead) => (lead.relatedPillar || "") === selectedPillar && lead.status === "Follow-Up");
+
+    const sections = [
+      {
+        label: "Blocked projects",
+        items: blockedProjects.map((project) => ({
+          id: project.id,
+          title: project.projectName,
+          meta: `${project.owner} • ${project.status}`,
+          why: project.targetCompletionDate
+            ? `This project is blocked and has a target completion of ${project.targetCompletionDate}. That keeps delivery and revenue timing uncertain for this pillar.`
+            : "This project is blocked, which means work is stalled and the pillar is carrying execution risk until it is resolved.",
+        })),
+      },
+      {
+        label: "Overdue actions",
+        items: overdueActions.map((action) => ({
+          id: action.id,
+          title: action.actionTitle,
+          meta: `${action.owner || "Unassigned"} • ${action.status} • ${action.priority}`,
+          why: action.dueDate
+            ? `The due date was ${action.dueDate}. This action is overdue and is now creating execution drag for the current workstream.`
+            : "This action is still active but has no clear deadline, so it is at risk of slipping and delaying dependent work.",
+        })),
+      },
+      {
+        label: "Unresolved problems",
+        items: unresolvedProblems.map((problem) => ({
+          id: problem.id,
+          title: problem.problemStatement,
+          meta: `${problem.severity} • ${problem.problemStatus} • ${problem.owner || "Unassigned"}`,
+          why: problem.severity === "Critical" || problem.severity === "High"
+            ? `This problem is ${problem.severity.toLowerCase()} and still ${problem.problemStatus.toLowerCase()}. It is materially affecting quality, safety, or delivery reliability.`
+            : `This problem is still ${problem.problemStatus.toLowerCase()} and remains unresolved, so it is likely reducing productivity or increasing rework in this pillar.`,
+        })),
+      },
+      {
+        label: "Open opportunities",
+        items: openOpportunities.map((opportunity) => ({
+          id: opportunity.id,
+          title: opportunity.opportunityTitle,
+          meta: `${opportunity.status} • ${opportunity.strategicFit} fit • ${opportunity.owner || "Unassigned"}`,
+          why: opportunity.status === "Evaluating" || opportunity.status === "On Hold"
+            ? `This opportunity is still ${opportunity.status.toLowerCase()} and is not yet converted into revenue. It is a live growth lever that needs a decision or follow-through.`
+            : `This opportunity is still active, and the current status means it needs attention before it slips or is lost to competitors.`,
+        })),
+      },
+      {
+        label: "Leads needing follow-up",
+        items: followUpLeads.map((lead) => ({
+          id: lead.id,
+          title: lead.leadName,
+          meta: `${lead.serviceRequested} • ${lead.owner || "Unassigned"} • ${lead.followUpDate || "Follow-up date not set"}`,
+          why: lead.followUpDate
+            ? `The follow-up date was ${lead.followUpDate}. This lead is waiting for a response, so momentum is at risk of stalling into lost opportunity.`
+            : "This lead is marked for follow-up and is still waiting for a response, which means the deal is not yet moving forward.",
+        })),
+      },
+    ];
+
+    return {
+      pillar: selectedPillar,
+      sections,
+    };
+  })() : null;
 
   const metricsOpenOpportunities = opportunityRecords.filter((opportunity) => opportunity.status === "New" || opportunity.status === "Evaluating" || opportunity.status === "On Hold").length;
   const metricsApprovedOpportunities = opportunityRecords.filter((opportunity) => opportunity.status === "Approved").length;
@@ -7090,6 +7236,7 @@ export default function Home() {
                       item === "Leads" ||
                       item === "Finance" ||
                       item === "Metrics" ||
+                      item === "Pillars" ||
                       item === "People"
                     ) {
                       setActiveView(item === "Command" ? "Command" : item);
@@ -7660,6 +7807,72 @@ export default function Home() {
                   <MetricCard label="Lost leads" value={String(metricsLostLeads)} />
                 </div>
               </section>
+            </div>
+          ) : activeView === "Pillars" ? (
+            <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+              <header className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-4">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#4d4944]">Founder focus</p>
+                  <h1 className="mt-2.5 text-[36px] font-semibold tracking-[-0.07em] text-[#171717] sm:text-[42px]">Pillars</h1>
+                </div>
+                {selectedPillar ? (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPillar(null)}
+                    className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]"
+                  >
+                    Back to overview
+                  </button>
+                ) : null}
+              </header>
+
+              <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
+                This view shows where the core business is strongest, under pressure, or needs founder attention across Garden Maintenance, Hard Landscape Construction, and Excavation.
+              </p>
+
+              {selectedPillar && selectedPillarDetail ? (
+                <div className="mt-6">
+                  <div className="mb-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Selected pillar</div>
+                    <div className="mt-2 text-[30px] font-semibold tracking-[-0.06em] text-[#171717]">{selectedPillarDetail.pillar}</div>
+                  </div>
+
+                  <div className="space-y-5">
+                    {selectedPillarDetail.sections.map((section) => (
+                      <section key={section.label} className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                        <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">
+                          {section.label}
+                          <span className="ml-2 text-[#7a726b]">{section.items.length}</span>
+                        </div>
+
+                        {section.items.length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
+                            No current items in this category.
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {section.items.map((item) => (
+                              <div key={`${section.label}-${item.id}`} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                                <div className="text-[16px] font-medium tracking-[-0.04em] text-[#171717]">{item.title}</div>
+                                <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">{item.meta}</div>
+                                <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
+                                  <span className="font-medium text-[#171717]">Why this matters now:</span> {item.why}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-6 grid gap-4 xl:grid-cols-3">
+                  {pillarSummaries.map((summary) => (
+                    <PillarCard key={summary.pillar} pillar={summary.pillar} summary={summary} onSelect={setSelectedPillar} />
+                  ))}
+                </div>
+              )}
             </div>
           ) : activeView === "People" ? (
             <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
