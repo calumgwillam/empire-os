@@ -5899,6 +5899,67 @@ export default function Home() {
     };
   })();
 
+  const capitalAllocation = (() => {
+    const liveStatuses = ["New", "Evaluating", "On Hold", "Approved"];
+
+    const liveOpportunities = opportunityRecords
+      .filter((opportunity) => liveStatuses.includes(opportunity.status))
+      .map((opportunity) => {
+        const upside = parseFinanceAmount(opportunity.estimatedUpside);
+        const capital = parseFinanceAmount(opportunity.requiredCapital);
+        const hasUpside = upside > 0;
+        const hasCapital = capital > 0;
+        const efficiency = hasUpside && hasCapital ? upside / capital : null;
+        const fitRank = opportunity.strategicFit === "Exceptional" ? 4 : opportunity.strategicFit === "High" ? 3 : opportunity.strategicFit === "Medium" ? 2 : 1;
+
+        return {
+          id: opportunity.id,
+          title: opportunity.opportunityTitle || opportunity.title,
+          status: opportunity.status,
+          strategicFit: opportunity.strategicFit,
+          fitRank,
+          area: opportunity.relatedPillar || opportunity.relatedArea || "Unassigned",
+          upside: hasUpside ? upside : null,
+          capital: hasCapital ? capital : null,
+          requiredTime: opportunity.requiredTime?.trim() || "",
+          efficiency,
+        };
+      })
+      .sort((a, b) =>
+        b.fitRank - a.fitRank ||
+        (b.efficiency ?? -1) - (a.efficiency ?? -1) ||
+        (b.upside ?? 0) - (a.upside ?? 0),
+      );
+
+    const cashConfigured = cashPosition.currentCash.trim() !== "" || cashPosition.safetyBuffer.trim() !== "";
+    const deployableCash = cashConfigured ? Math.max(0, availableOperatingCash) : null;
+    const highFitWithCapital = liveOpportunities.filter((opp) => opp.fitRank >= 3 && opp.capital !== null);
+    const highFitOpportunityCount = liveOpportunities.filter((opp) => opp.fitRank >= 3).length;
+    const highFitCapitalRequired = highFitWithCapital.length === 0
+      ? null
+      : highFitWithCapital.reduce((sum, opp) => sum + (opp.capital ?? 0), 0);
+
+    const pillarReturn = pillarOptions.map((pillar) => {
+      const wonValue = activeLeads
+        .filter((lead) => (lead.relatedPillar || "") === pillar && lead.status === "Won")
+        .reduce((total, lead) => total + wonLeadsValue(lead), 0);
+      const liveCount = liveOpportunities.filter((opp) => opp.area === pillar).length;
+      const wonPerLiveOpportunity = liveCount > 0 && wonValue > 0 ? wonValue / liveCount : null;
+      return { pillar, wonValue, liveCount, wonPerLiveOpportunity };
+    });
+    const totalWonValue = pillarReturn.reduce((sum, p) => sum + p.wonValue, 0);
+
+    return {
+      liveOpportunities,
+      deployableCash,
+      cashConfigured,
+      highFitCapitalRequired,
+      highFitOpportunityCount,
+      pillarReturn,
+      totalWonValue,
+    };
+  })();
+
   const isBlankOwnerText = (ownerValue?: string) => {
     const text = (ownerValue || "").trim();
     return text === "" || text.toLowerCase() === "unassigned";
@@ -9882,6 +9943,114 @@ export default function Home() {
                       No decisions reviewed yet. When a decision is due, open it, record the actual outcome and rating, and set the final status.
                     </div>
                   ) : null}
+                </section>
+
+                <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                  <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Capital allocation</div>
+
+                  <p className="mb-3 max-w-3xl text-[13px] leading-5 text-[#524d49]">
+                    Live opportunities lined up against deployable cash. Capital efficiency and time are shown as separate dimensions — no composite score, and affordability here is not a recommendation to spend.
+                  </p>
+
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Deployable cash</div>
+                      <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">
+                        {capitalAllocation.cashConfigured && capitalAllocation.deployableCash !== null ? formatFinanceAmount(capitalAllocation.deployableCash) : "—"}
+                      </div>
+                      <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
+                        {capitalAllocation.cashConfigured
+                          ? "Available operating cash above the protected safety buffer."
+                          : "Cash position is not configured, so deployable cash above buffer cannot be derived safely."}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Capital required (high-fit)</div>
+                      <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">
+                        {capitalAllocation.highFitCapitalRequired !== null ? formatFinanceAmount(capitalAllocation.highFitCapitalRequired) : "—"}
+                      </div>
+                      <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
+                        {capitalAllocation.highFitCapitalRequired !== null
+                          ? "Total stated required capital across live High/Exceptional-fit opportunities with a valid capital figure."
+                          : capitalAllocation.highFitOpportunityCount > 0
+                            ? "Not enough data — capital requirements have not yet been stated for the live high-fit opportunities."
+                            : "No live high-fit opportunities."}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Live opportunities</div>
+                      <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">
+                        {capitalAllocation.liveOpportunities.length}
+                      </div>
+                      <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
+                        New, Evaluating, On Hold or Approved — not yet decided or completed.
+                      </div>
+                    </div>
+                  </div>
+
+                  {capitalAllocation.liveOpportunities.length === 0 ? (
+                    <div className="mt-3 rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
+                      No live opportunities to allocate against.
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-2">
+                      {capitalAllocation.liveOpportunities.map((opp, index) => {
+                        const affordable = capitalAllocation.deployableCash !== null && opp.capital !== null && opp.capital <= capitalAllocation.deployableCash;
+                        return (
+                          <button
+                            key={opp.id}
+                            type="button"
+                            onClick={() => handleOpenAttentionRecord("Opportunity", opp.id)}
+                            className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">#{index + 1}</span>
+                              <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{opp.strategicFit} fit</span>
+                              <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{opp.status}</span>
+                              {opp.capital !== null && capitalAllocation.deployableCash !== null ? (
+                                <span className={`rounded-full border px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] ${affordable ? "border-[#2f5d3a] bg-[#eef4ee] text-[#2f5d3a]" : "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"}`}>
+                                  {affordable ? "Within deployable cash" : "Exceeds deployable cash"}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-1.5 text-[15px] font-medium tracking-[-0.04em] text-[#171717]">{opp.title}</div>
+                            <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] leading-4 text-[#4d4944]">
+                              <span><span className="font-medium text-[#171717]">Upside:</span> {opp.upside !== null ? formatFinanceAmount(opp.upside) : "Not stated"}</span>
+                              <span><span className="font-medium text-[#171717]">Capital:</span> {opp.capital !== null ? formatFinanceAmount(opp.capital) : "Not stated"}</span>
+                              <span><span className="font-medium text-[#171717]">Time:</span> {opp.requiredTime || "Not stated"}</span>
+                              <span><span className="font-medium text-[#171717]">Pillar:</span> {opp.area}</span>
+                            </div>
+                            <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
+                              {opp.efficiency !== null
+                                ? `≈ £${opp.efficiency.toFixed(2)} estimated upside per £1 required.`
+                                : opp.capital === null
+                                  ? "No capital requirement stated — capital efficiency N/A."
+                                  : "No valid upside figure — capital efficiency N/A."}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div className="mt-4">
+                    <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Historical won value by pillar <span className="normal-case tracking-normal text-[#7a726b]">(current evidence only — not proof of future return)</span></div>
+                    {capitalAllocation.totalWonValue === 0 && capitalAllocation.pillarReturn.every((p) => p.liveCount === 0) ? (
+                      <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-3 text-[12px] text-[#4d4944]">
+                        Insufficient evidence — too little won-value or live-opportunity history to compare pillars.
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {capitalAllocation.pillarReturn.map((p) => (
+                          <span key={p.pillar} className="rounded-full border border-[#d3cbc3] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28]">
+                            {p.pillar}: {formatFinanceAmount(p.wonValue)} won • {p.liveCount} live{p.wonPerLiveOpportunity !== null ? ` • ${formatFinanceAmount(p.wonPerLiveOpportunity)}/live` : ""}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </section>
 
                 <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
