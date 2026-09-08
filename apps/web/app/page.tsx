@@ -4507,6 +4507,12 @@ function DecisionDetailPanel({ decision, linkedActions, linkedLessons, upstream,
           </button>
         </div>
 
+        {["Active", "Under Review"].includes(decision.decisionStatus) && !linkedActions.some((action) => ["Open", "In Progress", "Blocked"].includes(action.status)) ? (
+          <div className="mt-3 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] px-3 py-2.5 text-[12px] text-[#2f2b28]">
+            <span className="font-medium text-[#171717]">No execution path.</span> This decision has no active execution path. Create a linked action so it becomes someone&apos;s work.
+          </div>
+        ) : null}
+
         <div className="mt-6 rounded-xl border border-[#d3cbc3] bg-[#f1eee9] p-3">
           <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Linked Actions</div>
           <div className="mt-3 space-y-2">
@@ -5254,6 +5260,34 @@ export default function Home() {
       unresolvedRecurring,
       gaps,
     };
+  })();
+
+  const decisionsWithoutExecution = (() => {
+    const openActionStatuses = ["Open", "In Progress", "Blocked"];
+
+    return decisionRecords
+      .filter((decision) => ["Active", "Under Review"].includes(decision.decisionStatus))
+      .map((decision) => {
+        const linked = actionRecords.filter((action) => action.relatedDecision === decision.id);
+        const openLinked = linked.filter((action) => openActionStatuses.includes(action.status));
+
+        if (openLinked.length > 0) {
+          return null;
+        }
+
+        return {
+          id: decision.id,
+          objectType: "Decision" as const,
+          title: decision.decisionTitle || decision.title,
+          status: decision.decisionStatus,
+          area: getAreaText(decision) || "Unassigned",
+          owner: decision.decisionMaker || "Unassigned",
+          reason: linked.length === 0
+            ? "No linked actions"
+            : "All linked actions are closed while decision remains active",
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
   })();
 
   const selectedPillarDetail = selectedPillar ? (() => {
@@ -8360,6 +8394,47 @@ export default function Home() {
                           </button>
                         );
                       })}
+                    </div>
+                  )}
+                </section>
+
+                <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Decisions without execution</div>
+                    <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">
+                      {decisionsWithoutExecution.length} gap{decisionsWithoutExecution.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+
+                  <p className="mb-3 max-w-3xl text-[13px] leading-5 text-[#524d49]">
+                    An active or under-review decision with no open linked action exists on paper only. Create a linked action so the decision becomes someone&apos;s work.
+                  </p>
+
+                  {decisionsWithoutExecution.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
+                      Every active decision has an open execution path.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {decisionsWithoutExecution.map((decision) => (
+                        <button
+                          key={`no-exec-${decision.id}`}
+                          type="button"
+                          onClick={() => handleOpenAttentionRecord("Decision", decision.id)}
+                          className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#6a3328]">
+                              {decision.reason}
+                            </span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{decision.status}</span>
+                          </div>
+                          <div className="mt-2 text-[16px] font-medium tracking-[-0.04em] text-[#171717]">{decision.title}</div>
+                          <div className="mt-1 text-[11px] text-[#4d4944]">
+                            {decision.area} • {decision.owner}
+                          </div>
+                        </button>
+                      ))}
                     </div>
                   )}
                 </section>
