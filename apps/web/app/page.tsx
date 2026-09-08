@@ -2441,6 +2441,56 @@ function MetricCard({ label, value }: { label: string; value: string }) {
   );
 }
 
+type FocusListItem = {
+  objectType: string;
+  id: string;
+  title: string;
+  area: string;
+  reason: string;
+};
+
+function FounderFocusList({ items, onOpen }: { items: FocusListItem[]; onOpen: (objectType: string, id: string) => void }) {
+  const rankLabels = ["Why this is first", "Why this is second", "Why this is third"];
+
+  return (
+    <div className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Founder focus — top {items.length} for today</div>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
+          Nothing requires founder attention right now. The queues below stay visible for review.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item, index) => (
+            <button
+              key={`focus-${item.objectType}-${item.id}`}
+              type="button"
+              onClick={() => onOpen(item.objectType, item.id)}
+              className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#171717] text-[10px] font-semibold text-[#f7f4f1]">{index + 1}</span>
+                <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{item.objectType}</span>
+                {item.area ? (
+                  <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{item.area}</span>
+                ) : null}
+                <span className="rounded-full border border-[#cfc8c1] bg-[#f1efe9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">Open record</span>
+              </div>
+              <div className="mt-2 text-[16px] font-medium tracking-[-0.04em] text-[#171717]">{item.title}</div>
+              <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
+                <span className="font-medium text-[#171717]">{rankLabels[index] || "Why this ranks here"}:</span> {item.reason}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PillarCard({ pillar, summary, onSelect }: { pillar: string; summary: { activeProjects: number; blockedProjects: number; openActions: number; openProblems: number; openOpportunities: number; leadsWaiting: number; wonLeadValue: number; priorityScore: number; }; onSelect: (pillar: string) => void; }) {
   return (
     <button
@@ -6156,6 +6206,121 @@ export default function Home() {
         .map((item) => [`${item.objectType}:${item.id}`, item]),
     ).values(),
   ).sort(compareAttentionItems);
+
+  const founderFocusList = (() => {
+    type FocusCandidate = {
+      key: string;
+      objectType: string;
+      id: string;
+      title: string;
+      area: string;
+      score: number;
+      tier: number;
+      reason: string;
+    };
+
+    const candidates: FocusCandidate[] = [];
+    const push = (candidate: FocusCandidate) => {
+      candidates.push(candidate);
+    };
+
+    empireDecisionQueue.founderAuthorityItems.forEach((item) => {
+      push({
+        key: `${item.objectType}:${item.id}`,
+        objectType: item.objectType,
+        id: item.id,
+        title: item.title,
+        area: item.pillar,
+        score: 400,
+        tier: 1,
+        reason: "This requires founder authority — blocked work or a high-stakes call that nothing can move past until you decide.",
+      });
+    });
+
+    commandAttentionItemList
+      .filter((item) => item.reasons.some((reason) => reason === "BLOCKED PROJECT" || reason === "BLOCKED" || reason.startsWith("BLOCKED BY PROBLEM:")))
+      .forEach((item) => {
+        push({
+          key: `${item.objectType}:${item.id}`,
+          objectType: item.objectType,
+          id: item.id,
+          title: item.title,
+          area: item.area,
+          score: 360 + item.priorityScore,
+          tier: 1,
+          reason: "This is blocked on the critical path, so everything downstream is waiting on it.",
+        });
+      });
+
+    decisionTrackRecord.reviewsDue.forEach((decision) => {
+      push({
+        key: `Decision:${decision.id}`,
+        objectType: "Decision",
+        id: decision.id,
+        title: decision.decisionTitle || decision.title,
+        area: getAreaText(decision) || "Unassigned",
+        score: 300,
+        tier: 2,
+        reason: "This decision is overdue for review — the current path may be stale and is shaping execution without being checked.",
+      });
+    });
+
+    decisionsWithoutExecution.forEach((decision) => {
+      push({
+        key: `Decision:${decision.id}`,
+        objectType: "Decision",
+        id: decision.id,
+        title: decision.title,
+        area: decision.area,
+        score: 280,
+        tier: 2,
+        reason: "This decision is active but has no open execution path, so it currently exists on paper only.",
+      });
+    });
+
+    recurringProblemLearning.gaps.forEach((problem) => {
+      push({
+        key: `Problem:${problem.id}`,
+        objectType: "Problem",
+        id: problem.id,
+        title: problem.title,
+        area: problem.area,
+        score: 240,
+        tier: 3,
+        reason: "This problem keeps coming back and the fix has not been captured as a lesson, system or SOP — so the business will pay for it again.",
+      });
+    });
+
+    commandAttentionItemList
+      .filter((item) => !item.reasons.some((reason) => reason === "BLOCKED PROJECT" || reason === "BLOCKED" || reason.startsWith("BLOCKED BY PROBLEM:")))
+      .forEach((item) => {
+        push({
+          key: `${item.objectType}:${item.id}`,
+          objectType: item.objectType,
+          id: item.id,
+          title: item.title,
+          area: item.area,
+          score: 100 + item.priorityScore,
+          tier: 4,
+          reason: item.reasons[0]
+            ? `Flagged in Command: ${item.reasons[0].toLowerCase()}.`
+            : "This is a high-priority item surfaced in Command.",
+        });
+      });
+
+    const bestByKey = new Map<string, FocusCandidate>();
+    candidates.forEach((candidate) => {
+      const existing = bestByKey.get(candidate.key);
+      if (!existing || candidate.score > existing.score) {
+        bestByKey.set(candidate.key, candidate);
+      }
+    });
+
+    return [...bestByKey.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+  })();
+
   const getAttentionGroup = (item: AttentionItem) => {
     const isBlockedOrWaiting = item.reasons.some((reason) =>
       reason === "BLOCKED PROJECT" || (item.objectType !== "Project" && reason === "BLOCKED") || reason.startsWith("BLOCKED BY PROBLEM:") || reason.startsWith("WAITING ON DECISION:"),
@@ -8005,6 +8170,10 @@ export default function Home() {
                 </span>
               </header>
 
+              <div className="mt-5">
+                <FounderFocusList items={founderFocusList} onOpen={handleOpenAttentionRecord} />
+              </div>
+
               <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Attention items</div>
@@ -8184,6 +8353,10 @@ export default function Home() {
               <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
                 This view brings together the founder-facing decisions, risk signals, and escalation points already represented across the operating records.
               </p>
+
+              <div className="mt-6">
+                <FounderFocusList items={founderFocusList} onOpen={handleOpenAttentionRecord} />
+              </div>
 
               <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
