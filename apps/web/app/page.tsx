@@ -2598,16 +2598,19 @@ function ConvertedDestinationView({ title, description, records }: ConvertedDest
 type ProblemDetailPanelProps = {
   problem: ProblemRecord;
   linkedActions: ActionRecord[];
+  linkedLessons: LessonRecord[];
   upstream: RelatedRecordItem[];
   downstream: RelatedRecordItem[];
   onClose: () => void;
   onChange: (field: keyof Omit<ProblemRecord, "id" | "sourceCaptureId" | "targetType" | "createdAt" | "title" | "originalRawNote" | "relatedArea" | "importance" | "status">, value: string) => void;
   onSave: () => void;
   onCreateLinkedAction: () => void;
+  onCreateLinkedLesson: () => void;
   onOpenLinkedAction: (action: ActionRecord) => void;
+  onOpenLinkedLesson: (lesson: LessonRecord) => void;
 };
 
-function ProblemDetailPanel({ problem, linkedActions, upstream, downstream, onClose, onChange, onSave, onCreateLinkedAction, onOpenLinkedAction }: ProblemDetailPanelProps) {
+function ProblemDetailPanel({ problem, linkedActions, linkedLessons, upstream, downstream, onClose, onChange, onSave, onCreateLinkedAction, onCreateLinkedLesson, onOpenLinkedAction, onOpenLinkedLesson }: ProblemDetailPanelProps) {
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
@@ -2782,6 +2785,15 @@ function ProblemDetailPanel({ problem, linkedActions, upstream, downstream, onCl
           >
             Create linked Action
           </button>
+          {(problem.problemStatus === "Resolved" || problem.problemStatus === "Closed") ? (
+            <button
+              type="button"
+              onClick={onCreateLinkedLesson}
+              className="rounded-lg border border-[#171717] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#171717]"
+            >
+              Create lesson from problem
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onSave}
@@ -2792,21 +2804,21 @@ function ProblemDetailPanel({ problem, linkedActions, upstream, downstream, onCl
         </div>
 
         <div className="mt-6 rounded-xl border border-[#d3cbc3] bg-[#f1eee9] p-3">
-          <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Linked Actions</div>
+          <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Linked Lessons</div>
           <div className="mt-3 space-y-2">
-            {linkedActions.length === 0 ? (
-              <div className="text-[12px] text-[#4d4944]">No linked actions yet.</div>
+            {linkedLessons.length === 0 ? (
+              <div className="text-[12px] text-[#4d4944]">No linked lessons yet.</div>
             ) : (
-              linkedActions.map((action) => (
+              linkedLessons.map((lesson) => (
                 <button
-                  key={action.id}
+                  key={lesson.id}
                   type="button"
-                  onClick={() => onOpenLinkedAction(action)}
+                  onClick={() => onOpenLinkedLesson(lesson)}
                   className="block w-full rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-left text-[12px] text-[#171717] hover:border-[#171717]"
                 >
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-medium">{action.actionTitle}</span>
-                    <span className="text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{action.status}</span>
+                    <span className="font-medium">{lesson.lessonTitle}</span>
+                    <span className="text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{lesson.status}</span>
                   </div>
                 </button>
               ))
@@ -4597,6 +4609,7 @@ export default function Home() {
   const [creatingLinkedDecisionForOpportunityId, setCreatingLinkedDecisionForOpportunityId] = useState<string | null>(null);
   const [creatingLinkedSystemForLessonId, setCreatingLinkedSystemForLessonId] = useState<string | null>(null);
   const [creatingLinkedLessonForDecisionId, setCreatingLinkedLessonForDecisionId] = useState<string | null>(null);
+  const [creatingLinkedLessonForProblemId, setCreatingLinkedLessonForProblemId] = useState<string | null>(null);
   const [creatingLinkedSopForSystemId, setCreatingLinkedSopForSystemId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<DestinationKey>("Capture");
   const [selectedPillar, setSelectedPillar] = useState<string | null>(null);
@@ -5203,6 +5216,46 @@ export default function Home() {
     };
   })();
 
+  const recurringProblemLearning = (() => {
+    const isRecurring = (problem: ProblemRecord) =>
+      problem.frequency === "Recurring" || problem.frequency === "Persistent";
+
+    const recurringProblems = problemRecords.filter((problem) => isRecurring(problem));
+    const unresolvedRecurring = recurringProblems.filter((problem) => isProblemUnresolved(problem));
+
+    const learningCapturedFor = (problem: ProblemRecord) => {
+      const linkedLessons = lessonRecords.filter((lesson) => lesson.relatedProblem === problem.id);
+      if (linkedLessons.length > 0) {
+        return true;
+      }
+      const linkedLessonIds = new Set(linkedLessons.map((lesson) => lesson.id));
+      const linkedSystems = systemRecords.filter((system) => linkedLessonIds.has(system.relatedLesson));
+      if (linkedSystems.length > 0) {
+        return true;
+      }
+      const linkedSystemIds = new Set(linkedSystems.map((system) => system.id));
+      return sopRecords.some((sop) => linkedSystemIds.has(sop.relatedSystem));
+    };
+
+    const gaps = recurringProblems
+      .filter((problem) => !learningCapturedFor(problem))
+      .map((problem) => ({
+        id: problem.id,
+        objectType: "Problem" as const,
+        title: problem.problemStatement || problem.title,
+        frequency: problem.frequency,
+        severity: problem.severity,
+        status: problem.problemStatus,
+        area: getAreaText(problem) || "Unassigned",
+        owner: problem.owner || "Unassigned",
+      }));
+
+    return {
+      unresolvedRecurring,
+      gaps,
+    };
+  })();
+
   const selectedPillarDetail = selectedPillar ? (() => {
     const blockedProjects = projects.filter((project) => project.area === selectedPillar && project.status.trim().toLowerCase() === "blocked");
     const overdueActions = actionRecords.filter((action) => action.relatedPillar === selectedPillar &&
@@ -5754,6 +5807,12 @@ export default function Home() {
       const reasons: string[] = [];
 
       const isUnresolved = isProblemUnresolved(problem);
+      const isRecurring = problem.frequency === "Recurring" || problem.frequency === "Persistent";
+
+      if (isUnresolved && isRecurring) {
+        reasons.push("RECURRING PROBLEM");
+        reasons.push(problem.frequency.toUpperCase());
+      }
 
       if (isUnresolved && ["Critical", "High"].includes(problem.severity)) {
         reasons.push(`${problem.severity.toUpperCase()} SEVERITY`);
@@ -5767,11 +5826,11 @@ export default function Home() {
           title: problem.problemStatement || problem.title,
           reason: reasons.join(" • "),
           reasons,
-          statusText: `${problem.severity} / ${problem.problemStatus}`,
+          statusText: `${problem.severity} / ${problem.frequency} / ${problem.problemStatus}`,
           area: getAreaText(problem),
-          attentionRank: problem.severity === "Critical" ? 3 : 4,
-          tieWeight: problem.severity === "Critical" ? 2 : 1,
-          priorityScore: getProblemPriorityScore(problem),
+          attentionRank: isRecurring ? 2 : problem.severity === "Critical" ? 3 : 4,
+          tieWeight: isRecurring ? 3 : problem.severity === "Critical" ? 2 : 1,
+          priorityScore: getProblemPriorityScore(problem) + (isRecurring ? 120 : 0),
           sortDate: getDateValue(problem.createdAt),
           sortDateAscending: false,
           onOpen: () => {
@@ -7280,6 +7339,72 @@ export default function Home() {
     });
   };
 
+  const handleCreateLinkedLessonFromProblem = (problem: ProblemRecord) => {
+    if (creatingLinkedLessonForProblemId === problem.id) {
+      return;
+    }
+
+    const existingLesson = lessonRecords.find((lesson) => lesson.relatedProblem === problem.id);
+    if (existingLesson) {
+      setSelectedLessonId(existingLesson.id);
+      setLessonEditor(existingLesson);
+      setFeedback({
+        type: "success",
+        message: "A linked Lesson already exists for this Problem.",
+      });
+      return;
+    }
+
+    setCreatingLinkedLessonForProblemId(problem.id);
+
+    const rootCauseText = problem.rootCause ? ` Root cause: ${problem.rootCause}.` : "";
+    const resolutionText = problem.resolution ? ` Resolution: ${problem.resolution}.` : "";
+
+    const createdLesson = normalizeLessonRecord({
+      id: generateConversionId(),
+      sourceCaptureId: problem.sourceCaptureId,
+      targetType: "Convert to Lesson",
+      createdAt: new Date().toISOString(),
+      title: problem.problemStatement || problem.title,
+      originalRawNote: problem.originalRawNote || problem.problemStatement || problem.title,
+      relatedArea: problem.relatedArea || problem.relatedPillar || "",
+      importance: problem.importance,
+      status: "New",
+      lessonTitle: `From problem: ${problem.problemStatement || problem.title}`,
+      lessonDescription: `Problem: ${problem.problemStatement || problem.title}.${rootCauseText}${resolutionText}`.trim(),
+      sourceEvent: `Problem (${problem.frequency}): ${problem.problemStatement || problem.title}`,
+      dateLearned: new Date().toISOString(),
+      relatedPillar: problem.relatedPillar || problem.relatedArea || "",
+      whyItMatters: `This was a ${problem.frequency.toLowerCase()} problem (${problem.severity.toLowerCase()} severity). Capturing the fix prevents the business from re-learning it.`,
+      recommendedChange: problem.resolution || "",
+      relatedProblem: problem.id,
+      relatedProject: "",
+      relatedDecision: "",
+      relatedSystem: "",
+      owner: problem.owner || "",
+      lessonStatus: "New",
+      relatedCapture: problem.sourceCaptureId,
+    });
+
+    setConversions((currentConversions) => [
+      {
+        ...createdLesson,
+        relatedProblem: problem.id,
+        relatedCapture: problem.sourceCaptureId,
+        relatedPillar: problem.relatedPillar || problem.relatedArea,
+      },
+      ...currentConversions,
+    ]);
+
+    setSelectedLessonId(createdLesson.id);
+    setLessonEditor(createdLesson);
+    setCreatingLinkedLessonForProblemId(null);
+    setFeedback({
+      type: "success",
+      message: "Linked Lesson created from the Problem.",
+    });
+  };
+
   const handleOpenRelatedLesson = (system: SystemRecord) => {
     const linkedLesson = lessonRecords.find((lesson) => lesson.id === system.relatedLesson);
 
@@ -8184,6 +8309,57 @@ export default function Home() {
                           </div>
                         </div>
                       ))}
+                    </div>
+                  )}
+                </section>
+
+                <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Problems that keep coming back</div>
+                    <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">
+                      {recurringProblemLearning.gaps.length} learning gap{recurringProblemLearning.gaps.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+
+                  <p className="mb-3 max-w-3xl text-[13px] leading-5 text-[#524d49]">
+                    Recurring or persistent problems are evidence of a weak system, not a one-off event. Resolve them into a Lesson, System or SOP so the fix becomes institutional rather than relearned.
+                  </p>
+
+                  {recurringProblemLearning.unresolvedRecurring.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
+                      No recurring or persistent problems are currently unresolved.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {recurringProblemLearning.unresolvedRecurring.map((problem) => {
+                        const gap = recurringProblemLearning.gaps.some((entry) => entry.id === problem.id);
+                        return (
+                          <button
+                            key={`recurring-${problem.id}`}
+                            type="button"
+                            onClick={() => handleOpenAttentionRecord("Problem", problem.id)}
+                            className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{problem.frequency}</span>
+                              <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{problem.severity}</span>
+                              {gap ? (
+                                <span className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#6a3328]">
+                                  Learning not yet captured
+                                </span>
+                              ) : (
+                                <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">
+                                  Learning captured
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-2 text-[16px] font-medium tracking-[-0.04em] text-[#171717]">{problem.problemStatement || problem.title}</div>
+                            <div className="mt-1 text-[11px] text-[#4d4944]">
+                              {(getAreaText(problem) || "Unassigned")} • {problem.owner || "Unassigned"} • {problem.problemStatus}
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </section>
@@ -9679,15 +9855,26 @@ export default function Home() {
         <ProblemDetailPanel
           problem={problemEditor}
           linkedActions={actionRecords.filter((action) => action.relatedProblem === problemEditor.id)}
+          linkedLessons={lessonRecords.filter((lesson) => lesson.relatedProblem === problemEditor.id)}
           upstream={getCaptureLineage(problemEditor.sourceCaptureId)}
-          downstream={actionRecords
-            .filter((action) => action.relatedProblem === problemEditor.id)
-            .map((action) => ({
-              label: "Action",
-              title: action.actionTitle,
-              id: action.id,
-              onClick: () => handleActionEditOpen(action),
-            }))}
+          downstream={[
+            ...actionRecords
+              .filter((action) => action.relatedProblem === problemEditor.id)
+              .map((action) => ({
+                label: "Action",
+                title: action.actionTitle,
+                id: action.id,
+                onClick: () => handleActionEditOpen(action),
+              })),
+            ...lessonRecords
+              .filter((lesson) => lesson.relatedProblem === problemEditor.id)
+              .map((lesson) => ({
+                label: "Lesson",
+                title: lesson.lessonTitle,
+                id: lesson.id,
+                onClick: () => handleLessonEditOpen(lesson),
+              })),
+          ]}
           onClose={() => {
             setSelectedProblemId(null);
             setProblemEditor(null);
@@ -9695,7 +9882,9 @@ export default function Home() {
           onChange={handleProblemEditorChange}
           onSave={handleProblemSave}
           onCreateLinkedAction={() => handleCreateLinkedAction(problemEditor)}
+          onCreateLinkedLesson={() => handleCreateLinkedLessonFromProblem(problemEditor)}
           onOpenLinkedAction={(action) => handleActionEditOpen(action)}
+          onOpenLinkedLesson={(lesson) => handleLessonEditOpen(lesson)}
         />
       ) : null}
 
