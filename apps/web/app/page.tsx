@@ -454,6 +454,7 @@ type DailyPostureSnapshot = {
   growthStallCount: number;
   outstandingCount: number;
   availableOperatingCash: number | null;
+  outstandingKeys?: Array<{ key: string; title: string; objectType: string; category: string }>;
 };
 
 type IncomeRecord = {
@@ -2476,7 +2477,21 @@ type TrendItem = {
   direction: "up" | "down" | "flat";
 };
 
-function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsClear, freshness, freshnessIsClear, growth, growthIsClear, progress, deskIsClear, trendItems, sevenDayShape, onOpenStep }: {
+type PostureChangeItem = {
+  key: string;
+  title: string;
+  objectType: string;
+  category: string;
+};
+
+type PostureChange = {
+  hasBaseline: boolean;
+  newSincePrevious: PostureChangeItem[];
+  movedAgainst: Array<{ label: string; text: string }>;
+  resolvedSincePrevious: PostureChangeItem[];
+};
+
+function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsClear, freshness, freshnessIsClear, growth, growthIsClear, progress, deskIsClear, trendItems, sevenDayShape, postureChange, onOpenRecord, onOpenStep }: {
   posture: string;
   postureIsClear: boolean;
   steps: TodayBriefStep[];
@@ -2490,6 +2505,8 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
   deskIsClear: boolean;
   trendItems: TrendItem[];
   sevenDayShape: string;
+  postureChange: PostureChange;
+  onOpenRecord: (objectType: string, id: string) => void;
   onOpenStep: (stepLabel: string) => void;
 }) {
   return (
@@ -2573,6 +2590,67 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
           ) : null}
         </div>
       ) : null}
+
+      <div className="mt-3 rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+        {!postureChange.hasBaseline ? (
+          <div className="text-[11px] leading-5 text-[#4d4944]">
+            <span className="font-medium text-[#171717]">Change since last snapshot:</span> No previous day recorded yet — tomorrow&apos;s brief will show what is new, what moved against you, and what resolved.
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            <div>
+              <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">New since previous snapshot</div>
+              {postureChange.newSincePrevious.length === 0 ? (
+                <div className="mt-1 text-[11px] text-[#4d4944]">Nothing new appeared.</div>
+              ) : (
+                <div className="mt-1 space-y-1">
+                  {postureChange.newSincePrevious.map((item) => (
+                    <button
+                      key={`new-${item.key}`}
+                      type="button"
+                      onClick={() => onOpenRecord(item.objectType, item.key.slice(item.key.indexOf(":") + 1))}
+                      className="block w-full rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] px-2.5 py-1.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                    >
+                      <div className="text-[12px] font-medium text-[#171717]">{item.title}</div>
+                      <div className="text-[10px] uppercase tracking-[0.1em] text-[#4d4944]">{item.objectType} • {item.category}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Moved against you</div>
+              {postureChange.movedAgainst.length === 0 ? (
+                <div className="mt-1 text-[11px] text-[#4d4944]">Nothing deteriorated.</div>
+              ) : (
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                  {postureChange.movedAgainst.map((item) => (
+                    <span key={item.label} className="text-[11px] leading-5 text-[#6a3328]">
+                      <span className="font-medium text-[#171717]">{item.label}:</span> {item.text}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Resolved since previous snapshot</div>
+              {postureChange.resolvedSincePrevious.length === 0 ? (
+                <div className="mt-1 text-[11px] text-[#4d4944]">Nothing resolved since the previous snapshot.</div>
+              ) : (
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                  {postureChange.resolvedSincePrevious.map((item) => (
+                    <span key={`resolved-${item.key}`} className="text-[11px] leading-5 text-[#2f5d3a]">
+                      {item.title}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -4921,6 +4999,16 @@ export default function Home() {
               growthStallCount: typeof entry.growthStallCount === "number" ? entry.growthStallCount : 0,
               outstandingCount: typeof entry.outstandingCount === "number" ? entry.outstandingCount : 0,
               availableOperatingCash: typeof entry.availableOperatingCash === "number" ? entry.availableOperatingCash : null,
+              outstandingKeys: Array.isArray(entry.outstandingKeys)
+                ? entry.outstandingKeys
+                    .filter((k: unknown) => k && typeof k === "object" && typeof (k as { key?: unknown }).key === "string")
+                    .map((k: { key: string; title?: unknown; objectType?: unknown; category?: unknown }) => ({
+                      key: k.key,
+                      title: typeof k.title === "string" ? k.title : k.key,
+                      objectType: typeof k.objectType === "string" ? k.objectType : "Record",
+                      category: typeof k.category === "string" ? k.category : "attention",
+                    }))
+                : [],
             }))
             .sort((a, b) => a.date.localeCompare(b.date));
           setDailyPostureSnapshots(normalised);
@@ -6978,6 +7066,18 @@ export default function Home() {
       cluster.records.some((record) => outstandingRecordKeys.has(record.recordKey)),
     ).length;
 
+    const outstandingKeys = [...outstandingRecordKeys].map((key) => {
+      const signalled = correlationLayer.signalled.get(key);
+      const separatorIndex = key.indexOf(":");
+      const objectType = separatorIndex >= 0 ? key.slice(0, separatorIndex) : key;
+      return {
+        key,
+        title: signalled?.title || key,
+        objectType: signalled?.objectType || objectType,
+        category: signalled ? [...signalled.signals].join(", ") : "attention",
+      };
+    });
+
     return {
       posture,
       postureIsClear: postureParts.length === 0,
@@ -6990,6 +7090,7 @@ export default function Home() {
       growthIsClear,
       outstandingCount,
       outstandingSituationCount,
+      outstandingKeys,
       authorityCount,
       reviewDueCount,
       ownershipGapCount,
@@ -7122,6 +7223,7 @@ export default function Home() {
     growthStallCount: todayBrief.growthStallCount,
     outstandingCount: todayBrief.outstandingCount,
     availableOperatingCash: cashIsConfigured ? availableOperatingCash : null,
+    outstandingKeys: todayBrief.outstandingKeys,
   };
 
   const todaySnapshotJson = JSON.stringify(todaySnapshot);
@@ -7158,6 +7260,59 @@ export default function Home() {
       .filter((entry) => entry.date < todaySnapshotDate)
       .sort((a, b) => b.date.localeCompare(a.date));
     return earlier[0] || null;
+  })();
+
+  const postureChange = (() => {
+    const currentKeys = new Map(todayBrief.outstandingKeys.map((item) => [item.key, item]));
+    const previousKeys = new Map((previousDaySnapshot?.outstandingKeys || []).map((item) => [item.key, item]));
+
+    const resolveTitle = (key: string, item?: { title: string; objectType: string; category: string }) => {
+      if (item) {
+        return item;
+      }
+      const signalled = correlationLayer.signalled.get(key);
+      if (signalled) {
+        return { title: signalled.title, objectType: signalled.objectType, category: [...signalled.signals].join(", ") };
+      }
+      const separatorIndex = key.indexOf(":");
+      const objectType = separatorIndex >= 0 ? key.slice(0, separatorIndex) : "Record";
+      return { title: key, objectType, category: "attention" };
+    };
+
+    const newSincePrevious = [...currentKeys.entries()]
+      .filter(([key]) => !previousKeys.has(key))
+      .map(([key, item]) => ({ key, ...resolveTitle(key, item) }));
+
+    const resolvedSincePrevious = [...previousKeys.keys()]
+      .filter((key) => !currentKeys.has(key))
+      .map((key) => ({ key, ...resolveTitle(key, previousKeys.get(key)) }));
+
+    const movedAgainst: Array<{ label: string; text: string }> = [];
+    if (previousDaySnapshot) {
+      const worsened = (label: string, currentValue: number, previousValue: number) => {
+        if (currentValue > previousValue) {
+          movedAgainst.push({ label, text: `${previousValue} → ${currentValue}` });
+        }
+      };
+      worsened("Ownership gaps", todayBrief.ownershipGapCount, previousDaySnapshot.ownershipGapCount);
+      worsened("Decision reviews", todayBrief.reviewDueCount, previousDaySnapshot.decisionReviewsDue);
+      worsened("Execution gaps", todayBrief.executionGapCount, previousDaySnapshot.executionGapCount);
+      worsened("Learning gaps", todayBrief.learningGapCount, previousDaySnapshot.learningGapCount);
+      worsened("Stale records", todayBrief.staleCount, previousDaySnapshot.staleRecordCount);
+      worsened("Finance attention", todayBrief.financeCount, previousDaySnapshot.financeAttentionCount);
+      worsened("Growth stalls", todayBrief.growthStallCount, previousDaySnapshot.growthStallCount);
+
+      if (todaySnapshot.availableOperatingCash !== null && previousDaySnapshot.availableOperatingCash !== null && todaySnapshot.availableOperatingCash < previousDaySnapshot.availableOperatingCash) {
+        movedAgainst.push({ label: "Operating cash", text: `${formatFinanceAmount(previousDaySnapshot.availableOperatingCash)} → ${formatFinanceAmount(todaySnapshot.availableOperatingCash)}` });
+      }
+    }
+
+    return {
+      hasBaseline: previousDaySnapshot !== null,
+      newSincePrevious,
+      movedAgainst,
+      resolvedSincePrevious,
+    };
   })();
 
   const trendItems = (() => {
@@ -9149,6 +9304,8 @@ export default function Home() {
                   deskIsClear={deskIsClear}
                   trendItems={trendItems}
                   sevenDayShape={sevenDayShape}
+                  postureChange={postureChange}
+                  onOpenRecord={handleOpenAttentionRecord}
                   onOpenStep={handleOpenTodayStep}
                 />
               </div>
