@@ -5088,6 +5088,7 @@ export default function Home() {
 
       return {
         id: item.id,
+        objectType: "problemStatement" in item ? "Problem" : "actionTitle" in item ? "Action" : "Project",
         title: "problemStatement" in item ? item.problemStatement : "actionTitle" in item ? item.actionTitle : item.projectName,
         kind: "problemStatement" in item ? "Cross-pillar problem" : "actionTitle" in item ? "Cross-pillar action" : "Cross-pillar project",
         owner,
@@ -5107,6 +5108,7 @@ export default function Home() {
       .slice(0, 6)
       .map((action) => ({
         id: action.id,
+        objectType: "Action",
         title: action.actionTitle,
         pillar: action.relatedPillar || "Unassigned",
         owner: action.owner || "Unassigned",
@@ -5121,6 +5123,7 @@ export default function Home() {
     const founderAuthorityItems = [
       ...projects.filter((project) => project.status.trim().toLowerCase() === "blocked" && project.area && pillarOptions.includes(project.area as (typeof pillarOptions)[number])).map((project) => ({
         id: project.id,
+        objectType: "Project",
         title: project.projectName,
         pillar: project.area,
         owner: project.owner || "Unassigned",
@@ -5133,6 +5136,7 @@ export default function Home() {
         .filter((opportunity) => ["Evaluating", "Approved"].includes(opportunity.status) && ["High", "Exceptional"].includes(opportunity.strategicFit))
         .map((opportunity) => ({
           id: opportunity.id,
+          objectType: "Opportunity",
           title: opportunity.opportunityTitle,
           pillar: opportunity.relatedPillar || opportunity.relatedArea || "Unassigned",
           owner: opportunity.owner || "Unassigned",
@@ -5218,6 +5222,7 @@ export default function Home() {
         label: "Blocked projects",
         items: blockedProjects.map((project) => ({
           id: project.id,
+          objectType: "Project",
           title: project.projectName,
           meta: `${project.owner} • ${project.status}`,
           why: project.targetCompletionDate
@@ -5229,6 +5234,7 @@ export default function Home() {
         label: "Overdue actions",
         items: overdueActions.map((action) => ({
           id: action.id,
+          objectType: "Action",
           title: action.actionTitle,
           meta: `${action.owner || "Unassigned"} • ${action.status} • ${action.priority}`,
           why: action.dueDate
@@ -5240,6 +5246,7 @@ export default function Home() {
         label: "Unresolved problems",
         items: unresolvedProblems.map((problem) => ({
           id: problem.id,
+          objectType: "Problem",
           title: problem.problemStatement,
           meta: `${problem.severity} • ${problem.problemStatus} • ${problem.owner || "Unassigned"}`,
           why: problem.severity === "Critical" || problem.severity === "High"
@@ -5251,6 +5258,7 @@ export default function Home() {
         label: "Open opportunities",
         items: openOpportunities.map((opportunity) => ({
           id: opportunity.id,
+          objectType: "Opportunity",
           title: opportunity.opportunityTitle,
           meta: `${opportunity.status} • ${opportunity.strategicFit} fit • ${opportunity.owner || "Unassigned"}`,
           why: opportunity.status === "Evaluating" || opportunity.status === "On Hold"
@@ -5262,6 +5270,7 @@ export default function Home() {
         label: "Leads needing follow-up",
         items: followUpLeads.map((lead) => ({
           id: lead.id,
+          objectType: "Lead",
           title: lead.leadName,
           meta: `${lead.serviceRequested} • ${lead.owner || "Unassigned"} • ${lead.followUpDate || "Follow-up date not set"}`,
           why: lead.followUpDate
@@ -5365,6 +5374,7 @@ export default function Home() {
         label: "Overdue actions",
         items: snapshot.overdueActions.map((action) => ({
           id: action.id,
+          objectType: "Action",
           title: action.actionTitle,
           meta: `${action.status} • ${action.priority} priority • Due ${action.dueDate || "not set"}`,
           why: hasOwner
@@ -5376,6 +5386,7 @@ export default function Home() {
         label: "Blocked actions",
         items: snapshot.blockedActions.map((action) => ({
           id: action.id,
+          objectType: "Action",
           title: action.actionTitle,
           meta: `${action.priority} priority • Due ${action.dueDate || "not set"}`,
           why: `This action is blocked ${ownerPhrase}, which means progress depends on removing a dependency before anything else can move.`,
@@ -5385,6 +5396,7 @@ export default function Home() {
         label: "Blocked projects",
         items: snapshot.blockedProjects.map((project) => ({
           id: project.id,
+          objectType: "Project",
           title: project.projectName,
           meta: `${project.area || "No area"} • Target ${project.targetCompletionDate || "not set"}`,
           why: `This project is blocked ${ownerPhrase}, so delivery and revenue timing are uncertain until it is unblocked.`,
@@ -5394,6 +5406,7 @@ export default function Home() {
         label: "Decisions waiting on them",
         items: snapshot.waitingDecisions.map((decision) => ({
           id: decision.id,
+          objectType: "Decision",
           title: decision.decisionTitle,
           meta: `${decision.decisionStatus} • ${decision.riskLevel} risk • Review ${decision.reviewDate || "not set"}`,
           why: decision.decisionStatus === "Draft"
@@ -5407,6 +5420,7 @@ export default function Home() {
         label: "Leads needing follow-up",
         items: snapshot.followUpLeads.map((lead) => ({
           id: lead.id,
+          objectType: "Lead",
           title: lead.leadName,
           meta: `${lead.status} • ${lead.serviceRequested} • Follow-up ${lead.followUpDate || "not set"}`,
           why: lead.followUpDate && new Date(lead.followUpDate).getTime() <= Date.now()
@@ -5418,6 +5432,7 @@ export default function Home() {
         label: "Unresolved problems",
         items: snapshot.unresolvedProblems.map((problem) => ({
           id: problem.id,
+          objectType: "Problem",
           title: problem.problemStatement,
           meta: `${problem.severity} severity • ${problem.problemStatus}`,
           why: `This problem is still ${problem.problemStatus.toLowerCase()} ${ownerPhrase}, so it continues to affect quality, time or delivery until resolved.`,
@@ -5427,6 +5442,7 @@ export default function Home() {
         label: "Active projects",
         items: snapshot.otherActiveProjects.map((project) => ({
           id: project.id,
+          objectType: "Project",
           title: project.projectName,
           meta: `${project.status} • ${project.area || "No area"} • Target ${project.targetCompletionDate || "not set"}`,
           why: `This project is active ${ownerPhrase} and forms part of the current delivery load.`,
@@ -5436,6 +5452,7 @@ export default function Home() {
         label: "Other open actions",
         items: snapshot.otherOpenActions.map((action) => ({
           id: action.id,
+          objectType: "Action",
           title: action.actionTitle,
           meta: `${action.status} • ${action.priority} priority • Due ${action.dueDate || "not set"}`,
           why: `This action is part of the current workload ${ownerPhrase} and is proceeding inside normal ownership.`,
@@ -5445,6 +5462,7 @@ export default function Home() {
         label: "Other pipeline leads",
         items: snapshot.otherPipelineLeads.map((lead) => ({
           id: lead.id,
+          objectType: "Lead",
           title: lead.leadName,
           meta: `${lead.status} • ${lead.serviceRequested}`,
           why: `This lead is in the pipeline ${ownerPhrase} and is progressing without an immediate follow-up risk.`,
@@ -6829,6 +6847,31 @@ export default function Home() {
     setOpportunityEditor(opportunity);
   };
 
+  const handleOpenAttentionRecord = (objectType: string, id: string) => {
+    if (objectType === "Decision") {
+      const record = decisionRecords.find((item) => item.id === id);
+      if (record) handleDecisionEditOpen(record);
+    } else if (objectType === "Action") {
+      const record = actionRecords.find((item) => item.id === id);
+      if (record) handleActionEditOpen(record);
+    } else if (objectType === "Problem") {
+      const record = problemRecords.find((item) => item.id === id);
+      if (record) handleProblemEditOpen(record);
+    } else if (objectType === "Opportunity") {
+      const record = opportunityRecords.find((item) => item.id === id);
+      if (record) handleOpportunityEditOpen(record);
+    } else if (objectType === "Project") {
+      const record = projects.find((item) => item.id === id);
+      if (record) handleProjectEditOpen(record);
+    } else if (objectType === "Lead") {
+      const record = leads.find((item) => item.id === id);
+      if (record) handleLeadEditOpen(record);
+    } else if (objectType === "Lesson") {
+      const record = lessonRecords.find((item) => item.id === id);
+      if (record) handleLessonEditOpen(record);
+    }
+  };
+
   const handleOpportunityEditorChange = (
     field: keyof OpportunityRecord,
     value: string,
@@ -8010,10 +8053,16 @@ export default function Home() {
                   ) : (
                     <div className="space-y-2">
                       {empireDecisionQueue.founderReviewQueue.map((item) => (
-                        <div key={`${item.kind}-${item.id}`} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                        <button
+                          key={`${item.kind}-${item.id}`}
+                          type="button"
+                          onClick={() => handleOpenAttentionRecord(item.kind, item.id)}
+                          className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                        >
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{item.kind}</span>
                             <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{item.pillar}</span>
+                            <span className="rounded-full border border-[#cfc8c1] bg-[#f1efe9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">Open record</span>
                           </div>
                           <div className="mt-2 text-[17px] font-medium tracking-[-0.04em] text-[#171717]">{item.title}</div>
                           <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
@@ -8023,7 +8072,7 @@ export default function Home() {
                             <div className="mt-1"><span className="font-medium text-[#171717]">Founder intervention:</span> {item.founderIntervention}</div>
                             <div className="mt-1"><span className="font-medium text-[#171717]">Delegation:</span> {item.delegationAction}</div>
                           </div>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -8046,6 +8095,27 @@ export default function Home() {
                       value={`${decisionTrackRecord.ratings.worked} / ${decisionTrackRecord.ratings.failed}`}
                     />
                   </div>
+
+                  {decisionTrackRecord.reviewsDue.length > 0 ? (
+                    <div className="mt-4">
+                      <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Reviews due now</div>
+                      <div className="space-y-2">
+                        {decisionTrackRecord.reviewsDue.map((decision) => (
+                          <button
+                            key={`review-due-${decision.id}`}
+                            type="button"
+                            onClick={() => handleOpenAttentionRecord("Decision", decision.id)}
+                            className="block w-full rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                          >
+                            <div className="text-[13px] font-medium text-[#171717]">{decision.decisionTitle}</div>
+                            <div className="mt-1 text-[11px] text-[#4d4944]">
+                              {decision.decisionMaker || "Unassigned"} • {decision.decisionStatus} • Review {decision.reviewDate ? decision.reviewDate.slice(0, 10) : "not set"}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
 
                   {decisionTrackRecord.reviewedDecisions.length > 0 ? (
                     <div className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -8126,14 +8196,19 @@ export default function Home() {
                     ) : (
                       <div className="space-y-2">
                         {empireDecisionQueue.crossPillarIssues.map((issue) => (
-                          <div key={`${issue.kind}-${issue.id}`} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                          <button
+                            key={`${issue.kind}-${issue.id}`}
+                            type="button"
+                            onClick={() => handleOpenAttentionRecord(issue.objectType, issue.id)}
+                            className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                          >
                             <div className="text-[15px] font-medium tracking-[-0.04em] text-[#171717]">{issue.title}</div>
                             <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">{issue.kind} • {issue.area}</div>
                             <div className="mt-2 text-[12px] leading-5 text-[#524d49]">{issue.why}</div>
                             <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
                               <span className="font-medium text-[#171717]">Owner:</span> {issue.owner}
                             </div>
-                          </div>
+                          </button>
                         ))}
                       </div>
                     )}
@@ -8149,10 +8224,15 @@ export default function Home() {
                         ) : (
                           <div className="mt-2 space-y-2">
                             {empireDecisionQueue.delegateItems.map((item) => (
-                              <div key={`delegate-${item.id}`} className="rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] px-2.5 py-2">
+                              <button
+                                key={`delegate-${item.id}`}
+                                type="button"
+                                onClick={() => handleOpenAttentionRecord(item.objectType, item.id)}
+                                className="block w-full rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] px-2.5 py-2 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                              >
                                 <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
                                 <div className="mt-1 text-[11px] text-[#4d4944]">{item.pillar} • {item.owner}</div>
-                              </div>
+                              </button>
                             ))}
                           </div>
                         )}
@@ -8165,10 +8245,15 @@ export default function Home() {
                         ) : (
                           <div className="mt-2 space-y-2">
                             {empireDecisionQueue.founderAuthorityItems.map((item) => (
-                              <div key={`founder-${item.id}`} className="rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] px-2.5 py-2">
+                              <button
+                                key={`founder-${item.id}`}
+                                type="button"
+                                onClick={() => handleOpenAttentionRecord(item.objectType, item.id)}
+                                className="block w-full rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] px-2.5 py-2 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                              >
                                 <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
                                 <div className="mt-1 text-[11px] text-[#4d4944]">{item.pillar} • {item.owner}</div>
-                              </div>
+                              </button>
                             ))}
                           </div>
                         )}
@@ -8582,13 +8667,23 @@ export default function Home() {
                         ) : (
                           <div className="space-y-2">
                             {section.items.map((item) => (
-                              <div key={`${section.label}-${item.id}`} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
-                                <div className="text-[16px] font-medium tracking-[-0.04em] text-[#171717]">{item.title}</div>
+                              <button
+                                key={`${section.label}-${item.id}`}
+                                type="button"
+                                onClick={() => handleOpenAttentionRecord(item.objectType, item.id)}
+                                className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="text-[16px] font-medium tracking-[-0.04em] text-[#171717]">{item.title}</div>
+                                  <span className="mt-0.5 shrink-0 rounded-full border border-[#cfc8c1] bg-[#f1efe9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">
+                                    Open record
+                                  </span>
+                                </div>
                                 <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">{item.meta}</div>
                                 <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
                                   <span className="font-medium text-[#171717]">Why this matters now:</span> {item.why}
                                 </div>
-                              </div>
+                              </button>
                             ))}
                           </div>
                         )}
@@ -8689,13 +8784,23 @@ export default function Home() {
                         ) : (
                           <div className="space-y-2">
                             {section.items.map((item) => (
-                              <div key={`${section.label}-${item.id}`} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
-                                <div className="text-[16px] font-medium tracking-[-0.04em] text-[#171717]">{item.title}</div>
+                              <button
+                                key={`${section.label}-${item.id}`}
+                                type="button"
+                                onClick={() => handleOpenAttentionRecord(item.objectType, item.id)}
+                                className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="text-[16px] font-medium tracking-[-0.04em] text-[#171717]">{item.title}</div>
+                                  <span className="mt-0.5 shrink-0 rounded-full border border-[#cfc8c1] bg-[#f1efe9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">
+                                    Open record
+                                  </span>
+                                </div>
                                 <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">{item.meta}</div>
                                 <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
                                   <span className="font-medium text-[#171717]">Why this matters now:</span> {item.why}
                                 </div>
-                              </div>
+                              </button>
                             ))}
                           </div>
                         )}
