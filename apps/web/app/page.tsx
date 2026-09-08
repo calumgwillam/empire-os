@@ -4520,6 +4520,7 @@ export default function Home() {
   const [creatingLinkedSopForSystemId, setCreatingLinkedSopForSystemId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<DestinationKey>("Capture");
   const [selectedPillar, setSelectedPillar] = useState<string | null>(null);
+  const [selectedAccountabilityKey, setSelectedAccountabilityKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   useEffect(() => {
@@ -5147,6 +5148,184 @@ export default function Home() {
       pillar: selectedPillar,
       sections,
     };
+  })() : null;
+
+  const buildAccountabilitySnapshot = (person: PersonRecord | null) => {
+    const personName = person?.name ?? "";
+    const isBlankOwner = (ownerValue?: string) => {
+      const text = (ownerValue || "").trim();
+      return text === "" || text.toLowerCase() === "unassigned";
+    };
+    const ownsByName = (ownerValue?: string) =>
+      person !== null && personName.trim() !== "" && !isBlankOwner(ownerValue) && (ownerValue || "").trim().toLowerCase() === personName.trim().toLowerCase();
+
+    const isOwnedAction = (action: ActionRecord) => {
+      if (person === null) {
+        return !action.ownerPersonId && isBlankOwner(action.owner);
+      }
+
+      if (action.ownerPersonId) {
+        return action.ownerPersonId === person.id;
+      }
+
+      return ownsByName(action.owner);
+    };
+    const isOwnedProject = (project: ProjectRecord) => (person === null ? isBlankOwner(project.owner) : ownsByName(project.owner));
+    const isOwnedLead = (lead: LeadRecord) => (person === null ? isBlankOwner(lead.owner) : ownsByName(lead.owner));
+    const isOwnedProblem = (problem: ProblemRecord) => (person === null ? isBlankOwner(problem.owner) : ownsByName(problem.owner));
+    const isOwnedDecision = (decision: DecisionRecord) => (person === null ? isBlankOwner(decision.decisionMaker) : ownsByName(decision.decisionMaker));
+
+    const ownedActions = actionRecords.filter((action) => isActionActive(action) && isOwnedAction(action));
+    const overdueActions = ownedActions.filter((action) => Boolean(action.dueDate) && new Date(action.dueDate).getTime() <= Date.now());
+    const blockedActions = ownedActions.filter((action) => action.status === "Blocked");
+    const otherOpenActions = ownedActions.filter((action) => !overdueActions.includes(action) && !blockedActions.includes(action));
+    const ownedActiveProjects = projects.filter((project) => isProjectActive(project) && isOwnedProject(project));
+    const ownedBlockedProjects = ownedActiveProjects.filter((project) => project.status.trim().toLowerCase() === "blocked");
+    const ownedOtherProjects = ownedActiveProjects.filter((project) => project.status.trim().toLowerCase() !== "blocked");
+    const pipelineLeads = activeLeads.filter((lead) => isOwnedLead(lead) && !["Won", "Lost"].includes(lead.status));
+    const followUpLeads = pipelineLeads.filter((lead) =>
+      lead.status === "Follow-Up" || (Boolean(lead.followUpDate) && new Date(lead.followUpDate).getTime() <= Date.now()),
+    );
+    const otherPipelineLeads = pipelineLeads.filter((lead) => !followUpLeads.includes(lead));
+    const waitingDecisions = decisionRecords.filter((decision) =>
+      isOwnedDecision(decision) && (
+        ["Draft", "Under Review"].includes(decision.decisionStatus) ||
+        (decision.decisionStatus === "Active" && Boolean(decision.reviewDate) && new Date(decision.reviewDate).getTime() <= Date.now())
+      ),
+    );
+    const ownedUnresolvedProblems = problemRecords.filter((problem) => isProblemUnresolved(problem) && isOwnedProblem(problem));
+
+    const blockedCount = blockedActions.length + ownedBlockedProjects.length;
+    const carriedCount = ownedActions.length + ownedActiveProjects.length + pipelineLeads.length + waitingDecisions.length + ownedUnresolvedProblems.length;
+    const attentionCount = overdueActions.length + blockedCount + followUpLeads.length + waitingDecisions.length;
+
+    return {
+      person,
+      ownerLabel: person ? person.name : "Unassigned",
+      ownedActions,
+      overdueActions,
+      blockedActions,
+      otherOpenActions,
+      activeProjects: ownedActiveProjects,
+      blockedProjects: ownedBlockedProjects,
+      otherActiveProjects: ownedOtherProjects,
+      pipelineLeads,
+      followUpLeads,
+      otherPipelineLeads,
+      waitingDecisions,
+      unresolvedProblems: ownedUnresolvedProblems,
+      blockedCount,
+      carriedCount,
+      attentionCount,
+    };
+  };
+
+  const personAccountabilitySummaries = orderedPeople.map((person) => ({ ...buildAccountabilitySnapshot(person), person }));
+  const unassignedAccountability = buildAccountabilitySnapshot(null);
+  const selectedAccountability = selectedAccountabilityKey === "unassigned"
+    ? unassignedAccountability
+    : personAccountabilitySummaries.find((entry) => entry.person.id === selectedAccountabilityKey) ?? null;
+  const selectedAccountabilityPerson = selectedAccountability?.person ?? null;
+
+  const selectedAccountabilityDetail = selectedAccountability ? (() => {
+    const snapshot = selectedAccountability;
+    const ownerLabel = snapshot.ownerLabel;
+    const hasOwner = snapshot.person !== null;
+    const ownerPhrase = hasOwner ? `with ${ownerLabel}` : "without a named owner";
+
+    const sections = [
+      {
+        label: "Overdue actions",
+        items: snapshot.overdueActions.map((action) => ({
+          id: action.id,
+          title: action.actionTitle,
+          meta: `${action.status} • ${action.priority} priority • Due ${action.dueDate || "not set"}`,
+          why: hasOwner
+            ? `The due date was ${action.dueDate}. This is still ${action.status.toLowerCase()} and sits ${ownerPhrase}, so delegated delivery is slipping and needs a reset on timing, scope or support.`
+            : `The due date was ${action.dueDate}. This action is overdue and has no owner, so it will keep slipping until it is assigned.`,
+        })),
+      },
+      {
+        label: "Blocked actions",
+        items: snapshot.blockedActions.map((action) => ({
+          id: action.id,
+          title: action.actionTitle,
+          meta: `${action.priority} priority • Due ${action.dueDate || "not set"}`,
+          why: `This action is blocked ${ownerPhrase}, which means progress depends on removing a dependency before anything else can move.`,
+        })),
+      },
+      {
+        label: "Blocked projects",
+        items: snapshot.blockedProjects.map((project) => ({
+          id: project.id,
+          title: project.projectName,
+          meta: `${project.area || "No area"} • Target ${project.targetCompletionDate || "not set"}`,
+          why: `This project is blocked ${ownerPhrase}, so delivery and revenue timing are uncertain until it is unblocked.`,
+        })),
+      },
+      {
+        label: "Decisions waiting on them",
+        items: snapshot.waitingDecisions.map((decision) => ({
+          id: decision.id,
+          title: decision.decisionTitle,
+          meta: `${decision.decisionStatus} • ${decision.riskLevel} risk • Review ${decision.reviewDate || "not set"}`,
+          why: decision.decisionStatus === "Draft"
+            ? `This decision is still in draft ${ownerPhrase}, so execution is waiting on a choice that has not been finished.`
+            : decision.decisionStatus === "Under Review"
+              ? `This decision is under review ${ownerPhrase} and needs a conclusion so work can proceed on a settled basis.`
+              : `The review date of ${decision.reviewDate} has passed ${ownerPhrase}, so the decision may be stale and needs confirmation or reversal.`,
+        })),
+      },
+      {
+        label: "Leads needing follow-up",
+        items: snapshot.followUpLeads.map((lead) => ({
+          id: lead.id,
+          title: lead.leadName,
+          meta: `${lead.status} • ${lead.serviceRequested} • Follow-up ${lead.followUpDate || "not set"}`,
+          why: lead.followUpDate && new Date(lead.followUpDate).getTime() <= Date.now()
+            ? `The follow-up date was ${lead.followUpDate}. This lead is going stale ${ownerPhrase}, and slow response risks losing the work.`
+            : `This lead is marked Follow-Up ${ownerPhrase}, so momentum depends on the next contact happening soon.`,
+        })),
+      },
+      {
+        label: "Unresolved problems",
+        items: snapshot.unresolvedProblems.map((problem) => ({
+          id: problem.id,
+          title: problem.problemStatement,
+          meta: `${problem.severity} severity • ${problem.problemStatus}`,
+          why: `This problem is still ${problem.problemStatus.toLowerCase()} ${ownerPhrase}, so it continues to affect quality, time or delivery until resolved.`,
+        })),
+      },
+      {
+        label: "Active projects",
+        items: snapshot.otherActiveProjects.map((project) => ({
+          id: project.id,
+          title: project.projectName,
+          meta: `${project.status} • ${project.area || "No area"} • Target ${project.targetCompletionDate || "not set"}`,
+          why: `This project is active ${ownerPhrase} and forms part of the current delivery load.`,
+        })),
+      },
+      {
+        label: "Other open actions",
+        items: snapshot.otherOpenActions.map((action) => ({
+          id: action.id,
+          title: action.actionTitle,
+          meta: `${action.status} • ${action.priority} priority • Due ${action.dueDate || "not set"}`,
+          why: `This action is part of the current workload ${ownerPhrase} and is proceeding inside normal ownership.`,
+        })),
+      },
+      {
+        label: "Other pipeline leads",
+        items: snapshot.otherPipelineLeads.map((lead) => ({
+          id: lead.id,
+          title: lead.leadName,
+          meta: `${lead.status} • ${lead.serviceRequested}`,
+          why: `This lead is in the pipeline ${ownerPhrase} and is progressing without an immediate follow-up risk.`,
+        })),
+      },
+    ];
+
+    return { ownerLabel, hasOwner, sections };
   })() : null;
 
   const metricsOpenOpportunities = opportunityRecords.filter((opportunity) => opportunity.status === "New" || opportunity.status === "Evaluating" || opportunity.status === "On Hold").length;
@@ -8176,62 +8355,178 @@ export default function Home() {
                     People
                   </h1>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleCreatePerson}
-                  className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]"
-                >
-                  Create Person
-                </button>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {selectedAccountability ? (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedAccountabilityKey(null)}
+                      className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#171717] transition hover:border-[#171717]"
+                    >
+                      Back to overview
+                    </button>
+                  ) : null}
+                  {selectedAccountabilityPerson ? (
+                    <button
+                      type="button"
+                      onClick={() => handlePersonEditOpen(selectedAccountabilityPerson)}
+                      className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]"
+                    >
+                      Edit person
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={handleCreatePerson}
+                    className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]"
+                  >
+                    Create Person
+                  </button>
+                </div>
               </header>
 
               <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
-                People records provide a structured foundation for names, roles, authority, skills, accountability and access level without replacing the broader operating model.
+                People records provide a structured foundation for names, roles, authority, skills, accountability and access level. Each card shows what that person currently carries across actions, projects, leads, decisions and problems, so delegated work stays visible.
               </p>
 
-              {orderedPeople.length === 0 ? (
-                <div className="mt-6 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">
-                  No people yet. Create the first person record to establish the People foundation.
+              {selectedAccountability && selectedAccountabilityDetail ? (
+                <div className="mt-6">
+                  <div className="mb-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">
+                      {selectedAccountabilityDetail.hasOwner ? "Accountability view" : "Accountability gap"}
+                    </div>
+                    <div className="mt-2 text-[30px] font-semibold tracking-[-0.06em] text-[#171717]">{selectedAccountabilityDetail.ownerLabel}</div>
+                    {selectedAccountability.person ? (
+                      <div className="mt-1 text-[12px] text-[#4d4944]">
+                        {selectedAccountability.person.role || "Role not specified"} • {selectedAccountability.person.pillar} • {selectedAccountability.person.status}
+                      </div>
+                    ) : (
+                      <div className="mt-1 text-[12px] text-[#4d4944]">
+                        Active work with no named owner. Assign each item to a person to close this accountability gap.
+                      </div>
+                    )}
+                    <div className="mt-3 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                      <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Carrying {selectedAccountability.carriedCount}</span>
+                      <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{selectedAccountability.attentionCount} need attention</span>
+                      <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{selectedAccountability.overdueActions.length} overdue</span>
+                      <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{selectedAccountability.blockedCount} blocked</span>
+                      <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{selectedAccountability.followUpLeads.length} follow-ups</span>
+                      <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{selectedAccountability.waitingDecisions.length} decisions waiting</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-5">
+                    {selectedAccountabilityDetail.sections.map((section) => (
+                      <section key={section.label} className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                        <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">
+                          {section.label}
+                          <span className="ml-2 text-[#7a726b]">{section.items.length}</span>
+                        </div>
+
+                        {section.items.length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
+                            No current items in this category.
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {section.items.map((item) => (
+                              <div key={`${section.label}-${item.id}`} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                                <div className="text-[16px] font-medium tracking-[-0.04em] text-[#171717]">{item.title}</div>
+                                <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">{item.meta}</div>
+                                <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
+                                  <span className="font-medium text-[#171717]">Why this matters now:</span> {item.why}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                    ))}
+                  </div>
                 </div>
               ) : (
-                <div className="mt-6 space-y-3">
-                  {orderedPeople.map((person) => (
-                    <button
-                      key={person.id}
-                      type="button"
-                      onClick={() => handlePersonEditOpen(person)}
-                      className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec]"
-                    >
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="min-w-0 flex-1">
-                          <h2 className="text-[20px] font-medium tracking-[-0.05em] text-[#171717]">
-                            {person.name}
-                          </h2>
-                          <p className="mt-2 text-[14px] leading-6 text-[#424039]">
-                            {person.role || "Role not specified"}
-                          </p>
-                        </div>
-                        <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">
-                          {person.status}
-                        </span>
-                      </div>
+                <div className="mt-6">
+                  {orderedPeople.length === 0 ? (
+                    <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">
+                      No people yet. Create the first person record to establish the People foundation.
+                    </div>
+                  ) : (
+                    <div className="grid gap-4 xl:grid-cols-3">
+                      {personAccountabilitySummaries.map((summary) => (
+                        <button
+                          key={summary.person.id}
+                          type="button"
+                          onClick={() => setSelectedAccountabilityKey(summary.person.id)}
+                          className="w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">{summary.person.role || "Role not specified"}</div>
+                              <div className="mt-2 text-[24px] font-semibold tracking-[-0.05em] text-[#171717]">{summary.person.name}</div>
+                            </div>
+                            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">
+                              {summary.person.status}
+                            </span>
+                          </div>
 
-                      <div className="mt-4 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
-                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">
-                          {person.pillar}
-                        </span>
-                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">
-                          {person.accessLevel}
-                        </span>
-                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">
-                          {person.manager || "No manager"}
-                        </span>
-                        <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1.5">
-                          {formatCapturedAt(person.dateCreated)}
-                        </span>
+                          <div className="mt-1 text-[11px] text-[#4d4944]">{summary.person.pillar}</div>
+
+                          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                            <MetricCard label="Carrying" value={String(summary.carriedCount)} />
+                            <MetricCard label="Overdue actions" value={String(summary.overdueActions.length)} />
+                            <MetricCard label="Blocked" value={String(summary.blockedCount)} />
+                            <MetricCard label="Follow-ups" value={String(summary.followUpLeads.length)} />
+                            <MetricCard label="Decisions waiting" value={String(summary.waitingDecisions.length)} />
+                            <MetricCard label="Open problems" value={String(summary.unresolvedProblems.length)} />
+                          </div>
+
+                          <div className="mt-4 rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#2f2b28]">
+                            {summary.attentionCount > 0
+                              ? `${summary.attentionCount} item${summary.attentionCount === 1 ? "" : "s"} need${summary.attentionCount === 1 ? "s" : ""} attention — check overdue, blocked, follow-up and decision items.`
+                              : summary.carriedCount > 0
+                                ? "Carrying active work with nothing overdue or blocked."
+                                : "No active work assigned."}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="mt-4">
+                    {unassignedAccountability.carriedCount === 0 ? (
+                      <div className="rounded-2xl border border-dashed border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-[13px] text-[#4d4944]">
+                        No unassigned active work. Every active action, project, problem and pipeline lead has a named owner.
                       </div>
-                    </button>
-                  ))}
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedAccountabilityKey("unassigned")}
+                        className="w-full rounded-2xl border border-[#c9b8a3] bg-[#f5efe6] p-4 text-left transition hover:border-[#171717]"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Accountability gap</div>
+                            <div className="mt-2 text-[24px] font-semibold tracking-[-0.05em] text-[#171717]">Unassigned</div>
+                          </div>
+                          <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">
+                            {unassignedAccountability.carriedCount} item{unassignedAccountability.carriedCount === 1 ? "" : "s"}
+                          </span>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+                          <MetricCard label="Open actions" value={String(unassignedAccountability.ownedActions.length)} />
+                          <MetricCard label="Overdue" value={String(unassignedAccountability.overdueActions.length)} />
+                          <MetricCard label="Blocked" value={String(unassignedAccountability.blockedCount)} />
+                          <MetricCard label="Projects" value={String(unassignedAccountability.activeProjects.length)} />
+                          <MetricCard label="Pipeline leads" value={String(unassignedAccountability.pipelineLeads.length)} />
+                          <MetricCard label="Problems" value={String(unassignedAccountability.unresolvedProblems.length)} />
+                        </div>
+
+                        <div className="mt-4 rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#2f2b28]">
+                          This work has no named owner. Assign it to close the accountability gap.
+                        </div>
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
