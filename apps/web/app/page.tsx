@@ -2449,6 +2449,60 @@ type FocusListItem = {
   reason: string;
 };
 
+type TodayBriefStep = {
+  label: string;
+  count: number;
+  hint: string;
+};
+
+function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsClear, onOpenStep }: {
+  posture: string;
+  postureIsClear: boolean;
+  steps: TodayBriefStep[];
+  delegation: string;
+  delegationIsClear: boolean;
+  onOpenStep: (stepLabel: string) => void;
+}) {
+  return (
+    <div className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
+      <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Today — founder brief</div>
+
+      <div className={`mt-3 rounded-xl border px-3 py-2.5 text-[13px] leading-5 ${postureIsClear ? "border-[#d3cbc3] bg-white text-[#2f2b28]" : "border-[#c9b8a3] bg-[#f5efe6] text-[#2f2b28]"}`}>
+        {posture}
+      </div>
+
+      <div className="mt-4 space-y-1.5">
+        {steps.map((step, index) => {
+          const clear = step.count === 0;
+          return (
+            <button
+              key={step.label}
+              type="button"
+              onClick={() => onOpenStep(step.label)}
+              className="flex w-full items-center gap-3 rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+            >
+              <span className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold ${clear ? "border border-[#d3cbc3] bg-[#f1eee9] text-[#4d4944]" : "bg-[#171717] text-[#f7f4f1]"}`}>
+                {index + 1}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] font-medium text-[#171717]">{step.label}</span>
+                <span className="mt-0.5 block text-[11px] text-[#4d4944]">{clear ? "Clear" : step.hint}</span>
+              </span>
+              <span className={`shrink-0 rounded-full border px-2 py-1 text-[9px] uppercase tracking-[0.14em] ${clear ? "border-[#d3cbc3] bg-[#f1eee9] text-[#4d4944]" : "border-[#cfc8c1] bg-[#f9f7f4] text-[#2f2b28]"}`}>
+                {clear ? "Done" : step.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className={`mt-4 rounded-xl border px-3 py-2.5 text-[12px] leading-5 ${delegationIsClear ? "border-[#d3cbc3] bg-white text-[#2f2b28]" : "border-[#c9b8a3] bg-[#f5efe6] text-[#2f2b28]"}`}>
+        <span className="font-medium text-[#171717]">Today&apos;s delegation:</span> {delegation}
+      </div>
+    </div>
+  );
+}
+
 function FounderFocusList({ items, onOpen }: { items: FocusListItem[]; onOpen: (objectType: string, id: string) => void }) {
   const rankLabels = ["Why this is first", "Why this is second", "Why this is third"];
 
@@ -6477,6 +6531,69 @@ export default function Home() {
       .slice(0, 3);
   })();
 
+  const todayBrief = (() => {
+    const authorityCount = empireDecisionQueue.founderAuthorityItems.length;
+    const reviewDueCount = decisionTrackRecord.reviewsDue.length;
+    const ownershipGapCount = staleUnownedWork.length;
+    const learningGapCount = recurringProblemLearning.gaps.length;
+    const executionGapCount = decisionsWithoutExecution.length;
+    const focusCount = founderFocusList.length;
+    const delegationGapCount = unassignedAccountability.carriedCount;
+
+    const postureParts: string[] = [];
+    if (authorityCount > 0) postureParts.push(`${authorityCount} need${authorityCount === 1 ? "s" : ""} your authority`);
+    if (reviewDueCount > 0) postureParts.push(`${reviewDueCount} decision review${reviewDueCount === 1 ? "" : "s"} overdue`);
+    if (ownershipGapCount > 0) postureParts.push(`${ownershipGapCount} ownership gap${ownershipGapCount === 1 ? "" : "s"}`);
+    if (learningGapCount > 0) postureParts.push(`${learningGapCount} recurring problem${learningGapCount === 1 ? "" : "s"} not yet captured as learning`);
+    if (executionGapCount > 0) postureParts.push(`${executionGapCount} decision${executionGapCount === 1 ? "" : "s"} without an execution path`);
+
+    const posture = postureParts.length > 0
+      ? postureParts.join(" • ")
+      : "Nothing needs founder authority, review, ownership triage or learning capture right now.";
+
+    const steps = [
+      {
+        label: "Clear founder focus",
+        count: focusCount,
+        hint: "Work the ranked top items first.",
+      },
+      {
+        label: "Fix ownership gaps",
+        count: delegationGapCount,
+        hint: "Assign a valid active owner to dropped or ghost-owned work.",
+      },
+      {
+        label: "Complete decision reviews",
+        count: reviewDueCount,
+        hint: "Record outcomes and ratings so decisions stop drifting.",
+      },
+      {
+        label: "Restore execution paths",
+        count: executionGapCount,
+        hint: "Give each active decision an open linked action.",
+      },
+      {
+        label: "Close recurring-learning gaps",
+        count: learningGapCount,
+        hint: "Turn repeat problems into a lesson, system or SOP.",
+      },
+    ];
+
+    const peopleWithAttention = personAccountabilitySummaries.filter((entry) => entry.attentionCount > 0);
+
+    const delegation = delegationGapCount === 0
+      ? "Delegation hygiene is clear — every active work item has a valid active owner."
+      : `${delegationGapCount} active item${delegationGapCount === 1 ? "" : "s"} lack${delegationGapCount === 1 ? "s" : ""} a valid active owner. ${peopleWithAttention.length} ${peopleWithAttention.length === 1 ? "person is" : "people are"} carrying attention items.`;
+
+    return {
+      posture,
+      postureIsClear: postureParts.length === 0,
+      steps,
+      delegation,
+      delegationIsClear: delegationGapCount === 0,
+    };
+  })();
+
   const getAttentionGroup = (item: AttentionItem) => {
     const isBlockedOrWaiting = item.reasons.some((reason) =>
       reason === "BLOCKED PROJECT" || (item.objectType !== "Project" && reason === "BLOCKED") || reason.startsWith("BLOCKED BY PROBLEM:") || reason.startsWith("WAITING ON DECISION:"),
@@ -7283,6 +7400,52 @@ export default function Home() {
     } else if (objectType === "Lesson") {
       const record = lessonRecords.find((item) => item.id === id);
       if (record) handleLessonEditOpen(record);
+    }
+  };
+
+  const handleOpenTodayStep = (stepLabel: string) => {
+    if (stepLabel === "Clear founder focus") {
+      const first = founderFocusList[0];
+      if (first) {
+        handleOpenAttentionRecord(first.objectType, first.id);
+      }
+      return;
+    }
+
+    if (stepLabel === "Fix ownership gaps") {
+      setActiveView("People");
+      setSelectedAccountabilityKey("unassigned");
+      return;
+    }
+
+    if (stepLabel === "Complete decision reviews") {
+      const first = decisionTrackRecord.reviewsDue[0];
+      if (first) {
+        handleOpenAttentionRecord("Decision", first.id);
+      } else {
+        setActiveView("Decisions");
+      }
+      return;
+    }
+
+    if (stepLabel === "Restore execution paths") {
+      const first = decisionsWithoutExecution[0];
+      if (first) {
+        handleOpenAttentionRecord("Decision", first.id);
+      } else {
+        setActiveView("Decisions");
+      }
+      return;
+    }
+
+    if (stepLabel === "Close recurring-learning gaps") {
+      const first = recurringProblemLearning.gaps[0];
+      if (first) {
+        handleOpenAttentionRecord("Problem", first.id);
+      } else {
+        setActiveView("Problems");
+      }
+      return;
     }
   };
 
@@ -8325,6 +8488,17 @@ export default function Home() {
                   {commandAttentionItems} item{commandAttentionItems === 1 ? "" : "s"}
                 </span>
               </header>
+
+              <div className="mt-5">
+                <TodayBrief
+                  posture={todayBrief.posture}
+                  postureIsClear={todayBrief.postureIsClear}
+                  steps={todayBrief.steps}
+                  delegation={todayBrief.delegation}
+                  delegationIsClear={todayBrief.delegationIsClear}
+                  onOpenStep={handleOpenTodayStep}
+                />
+              </div>
 
               <div className="mt-5">
                 <FounderFocusList items={founderFocusList} onOpen={handleOpenAttentionRecord} />
