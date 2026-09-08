@@ -5683,6 +5683,60 @@ export default function Home() {
     return items.sort((a, b) => b.score - a.score || b.staleDays - a.staleDays);
   })();
 
+  const cashAttention = (() => {
+    const now = Date.now();
+    const isPast = (dateText?: string) => {
+      if (!dateText) return false;
+      const parsed = new Date(dateText).getTime();
+      return !Number.isNaN(parsed) && parsed < now;
+    };
+
+    const cashConfigured = cashPosition.currentCash.trim() !== "" || cashPosition.safetyBuffer.trim() !== "";
+    const bufferBreached = cashConfigured && availableOperatingCash < 0;
+    const bufferPressured = cashConfigured && !bufferBreached && availableOperatingCash === 0;
+
+    const buffer = cashConfigured && (bufferBreached || bufferPressured)
+      ? {
+          key: "Finance:cash-buffer",
+          title: bufferBreached ? "Cash below safety buffer" : "Cash at safety buffer",
+          detail: bufferBreached
+            ? `Available operating cash is ${formatFinanceAmount(availableOperatingCash)}, below the safety buffer of ${formatFinanceAmount(safetyBufferAmount)}.`
+            : `Available operating cash is exactly at the safety buffer of ${formatFinanceAmount(safetyBufferAmount)}.`,
+          severity: bufferBreached ? "critical" : "high",
+        }
+      : null;
+
+    const overdueCommitments = commitmentRecords
+      .filter((commitment) => commitment.status !== "Paid" && commitment.status !== "Cancelled" && (commitment.status === "Overdue" || isPast(commitment.dueDate)))
+      .map((commitment) => ({
+        key: `Finance:commitment:${commitment.id}`,
+        id: commitment.id,
+        title: commitment.commitmentName,
+        amount: parseFinanceAmount(commitment.amount),
+        dueDate: commitment.dueDate,
+        detail: `${commitment.type} commitment of ${formatFinanceAmount(parseFinanceAmount(commitment.amount))} was due ${commitment.dueDate || "—"} and is not paid.`,
+      }));
+
+    const overdueExpectedIncome = incomeRecords
+      .filter((income) => income.status === "Expected" && isPast(income.date))
+      .map((income) => ({
+        key: `Finance:income:${income.id}`,
+        id: income.id,
+        title: income.description || income.customerSource || "Expected income",
+        amount: parseFinanceAmount(income.amount),
+        date: income.date,
+        detail: `Expected income of ${formatFinanceAmount(parseFinanceAmount(income.amount))} was due ${income.date || "—"} and has not been received.`,
+      }));
+
+    return {
+      buffer,
+      overdueCommitments,
+      overdueExpectedIncome,
+      count: (buffer ? 1 : 0) + overdueCommitments.length + overdueExpectedIncome.length,
+      totalOverdueAmount: overdueCommitments.reduce((sum, item) => sum + item.amount, 0) + overdueExpectedIncome.reduce((sum, item) => sum + item.amount, 0),
+    };
+  })();
+
   const selectedAccountability = selectedAccountabilityKey === "unassigned"
     ? unassignedAccountability
     : personAccountabilitySummaries.find((entry) => entry.person.id === selectedAccountabilityKey) ?? null;
@@ -6501,6 +6555,45 @@ export default function Home() {
       });
     });
 
+    if (cashAttention.buffer) {
+      push({
+        key: cashAttention.buffer.key,
+        objectType: "Finance",
+        id: "cash-buffer",
+        title: cashAttention.buffer.title,
+        area: "Finance",
+        score: cashAttention.buffer.severity === "critical" ? 380 : 300,
+        tier: 1,
+        reason: `${cashAttention.buffer.detail} Cash pressure can stall the whole operation even when everything operational is green.`,
+      });
+    }
+
+    cashAttention.overdueCommitments.forEach((item) => {
+      push({
+        key: item.key,
+        objectType: "Finance",
+        id: `commitment:${item.id}`,
+        title: item.title,
+        area: "Finance",
+        score: 310,
+        tier: 2,
+        reason: `${item.detail} An overdue financial commitment is a hard obligation that will not resolve itself.`,
+      });
+    });
+
+    cashAttention.overdueExpectedIncome.forEach((item) => {
+      push({
+        key: item.key,
+        objectType: "Finance",
+        id: `income:${item.id}`,
+        title: item.title,
+        area: "Finance",
+        score: 260,
+        tier: 2,
+        reason: `${item.detail} Cash the business is owed but has not collected quietly erodes runway.`,
+      });
+    });
+
     commandAttentionItemList
       .filter((item) => !item.reasons.some((reason) => reason === "BLOCKED PROJECT" || reason === "BLOCKED" || reason.startsWith("BLOCKED BY PROBLEM:")))
       .forEach((item) => {
@@ -6539,6 +6632,7 @@ export default function Home() {
     const executionGapCount = decisionsWithoutExecution.length;
     const focusCount = founderFocusList.length;
     const delegationGapCount = unassignedAccountability.carriedCount;
+    const financeCount = cashAttention.count;
 
     const postureParts: string[] = [];
     if (authorityCount > 0) postureParts.push(`${authorityCount} need${authorityCount === 1 ? "s" : ""} your authority`);
@@ -6546,10 +6640,13 @@ export default function Home() {
     if (ownershipGapCount > 0) postureParts.push(`${ownershipGapCount} ownership gap${ownershipGapCount === 1 ? "" : "s"}`);
     if (learningGapCount > 0) postureParts.push(`${learningGapCount} recurring problem${learningGapCount === 1 ? "" : "s"} not yet captured as learning`);
     if (executionGapCount > 0) postureParts.push(`${executionGapCount} decision${executionGapCount === 1 ? "" : "s"} without an execution path`);
+    if (cashAttention.buffer) postureParts.push("cash buffer pressure");
+    if (cashAttention.overdueCommitments.length > 0) postureParts.push(`${cashAttention.overdueCommitments.length} overdue commitment${cashAttention.overdueCommitments.length === 1 ? "" : "s"}`);
+    if (cashAttention.overdueExpectedIncome.length > 0) postureParts.push(`${cashAttention.overdueExpectedIncome.length} expected income overdue`);
 
     const posture = postureParts.length > 0
       ? postureParts.join(" • ")
-      : "Nothing needs founder authority, review, ownership triage or learning capture right now.";
+      : "Nothing needs founder authority, review, ownership triage, learning capture or cash attention right now.";
 
     const steps = [
       {
@@ -6576,6 +6673,11 @@ export default function Home() {
         label: "Close recurring-learning gaps",
         count: learningGapCount,
         hint: "Turn repeat problems into a lesson, system or SOP.",
+      },
+      {
+        label: "Clear cash attention",
+        count: financeCount,
+        hint: "Address cash buffer pressure, overdue commitments and overdue expected income.",
       },
     ];
 
@@ -7400,6 +7502,17 @@ export default function Home() {
     } else if (objectType === "Lesson") {
       const record = lessonRecords.find((item) => item.id === id);
       if (record) handleLessonEditOpen(record);
+    } else if (objectType === "Finance") {
+      setActiveView("Finance");
+      if (id === "cash-buffer") {
+        handleCashPositionOpen();
+      } else if (id.startsWith("commitment:")) {
+        const record = commitmentRecords.find((item) => item.id === id.slice("commitment:".length));
+        if (record) handleCommitmentEditOpen(record);
+      } else if (id.startsWith("income:")) {
+        const record = incomeRecords.find((item) => item.id === id.slice("income:".length));
+        if (record) handleIncomeEditOpen(record);
+      }
     }
   };
 
@@ -7444,6 +7557,19 @@ export default function Home() {
         handleOpenAttentionRecord("Problem", first.id);
       } else {
         setActiveView("Problems");
+      }
+      return;
+    }
+
+    if (stepLabel === "Clear cash attention") {
+      if (cashAttention.buffer) {
+        handleOpenAttentionRecord("Finance", "cash-buffer");
+      } else if (cashAttention.overdueCommitments.length > 0) {
+        handleOpenAttentionRecord("Finance", `commitment:${cashAttention.overdueCommitments[0].id}`);
+      } else if (cashAttention.overdueExpectedIncome.length > 0) {
+        handleOpenAttentionRecord("Finance", `income:${cashAttention.overdueExpectedIncome[0].id}`);
+      } else {
+        setActiveView("Finance");
       }
       return;
     }
@@ -8537,6 +8663,54 @@ export default function Home() {
                       {item.count} {getAttentionSummaryLabel(item.label, item.count)}
                     </span>
                   ))}
+                </div>
+              ) : null}
+
+              {cashAttention.count > 0 ? (
+                <div className="mt-4 rounded-2xl border border-[#c9b8a3] bg-[#f5efe6] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Cash attention</div>
+                    <span className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#6a3328]">
+                      {cashAttention.count} item{cashAttention.count === 1 ? "" : "s"}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 space-y-2">
+                    {cashAttention.buffer ? (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenAttentionRecord("Finance", "cash-buffer")}
+                        className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                      >
+                        <div className="text-[13px] font-medium text-[#171717]">{cashAttention.buffer.title}</div>
+                        <div className="mt-0.5 text-[11px] text-[#4d4944]">{cashAttention.buffer.detail}</div>
+                      </button>
+                    ) : null}
+
+                    {cashAttention.overdueCommitments.map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => handleOpenAttentionRecord("Finance", `commitment:${item.id}`)}
+                        className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                      >
+                        <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
+                        <div className="mt-0.5 text-[11px] text-[#4d4944]">{item.detail}</div>
+                      </button>
+                    ))}
+
+                    {cashAttention.overdueExpectedIncome.map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => handleOpenAttentionRecord("Finance", `income:${item.id}`)}
+                        className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                      >
+                        <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
+                        <div className="mt-0.5 text-[11px] text-[#4d4944]">{item.detail}</div>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               ) : null}
 
