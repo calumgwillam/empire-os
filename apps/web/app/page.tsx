@@ -5429,12 +5429,25 @@ export default function Home() {
       const text = (ownerValue || "").trim();
       return text === "" || text.toLowerCase() === "unassigned";
     };
+    const matchesActivePerson = (ownerValue?: string) => {
+      const text = (ownerValue || "").trim();
+      if (text === "") {
+        return false;
+      }
+      return orderedPeople.some((entry) => entry.status === "Active" && entry.name.trim().toLowerCase() === text.toLowerCase());
+    };
     const ownsByName = (ownerValue?: string) =>
       person !== null && personName.trim() !== "" && !isBlankOwner(ownerValue) && (ownerValue || "").trim().toLowerCase() === personName.trim().toLowerCase();
 
     const isOwnedAction = (action: ActionRecord) => {
       if (person === null) {
-        return !action.ownerPersonId && isBlankOwner(action.owner);
+        if (action.ownerPersonId) {
+          const activeOwner = orderedPeople.find((entry) => entry.id === action.ownerPersonId && entry.status === "Active");
+          if (activeOwner) {
+            return false;
+          }
+        }
+        return isBlankOwner(action.owner) || !matchesActivePerson(action.owner);
       }
 
       if (action.ownerPersonId) {
@@ -5443,9 +5456,9 @@ export default function Home() {
 
       return ownsByName(action.owner);
     };
-    const isOwnedProject = (project: ProjectRecord) => (person === null ? isBlankOwner(project.owner) : ownsByName(project.owner));
-    const isOwnedLead = (lead: LeadRecord) => (person === null ? isBlankOwner(lead.owner) : ownsByName(lead.owner));
-    const isOwnedProblem = (problem: ProblemRecord) => (person === null ? isBlankOwner(problem.owner) : ownsByName(problem.owner));
+    const isOwnedProject = (project: ProjectRecord) => (person === null ? (isBlankOwner(project.owner) || !matchesActivePerson(project.owner)) : ownsByName(project.owner));
+    const isOwnedLead = (lead: LeadRecord) => (person === null ? (isBlankOwner(lead.owner) || !matchesActivePerson(lead.owner)) : ownsByName(lead.owner));
+    const isOwnedProblem = (problem: ProblemRecord) => (person === null ? (isBlankOwner(problem.owner) || !matchesActivePerson(problem.owner)) : ownsByName(problem.owner));
     const isOwnedDecision = (decision: DecisionRecord) => (person === null ? isBlankOwner(decision.decisionMaker) : ownsByName(decision.decisionMaker));
 
     const ownedActions = actionRecords.filter((action) => isActionActive(action) && isOwnedAction(action));
@@ -5472,21 +5485,41 @@ export default function Home() {
     const carriedCount = ownedActions.length + ownedActiveProjects.length + pipelineLeads.length + waitingDecisions.length + ownedUnresolvedProblems.length;
     const attentionCount = overdueActions.length + blockedCount + followUpLeads.length + waitingDecisions.length;
 
+    const sortByRiskThenAge = <T extends { dueDate?: string; createdAt?: string; priority?: string; severity?: string; targetCompletionDate?: string }>(items: T[]): T[] => {
+      const riskWeight = (item: T) => {
+        const level = (item.priority || item.severity || "").toLowerCase();
+        if (level === "critical") return 4;
+        if (level === "high") return 3;
+        if (level === "medium") return 2;
+        return 1;
+      };
+      const ageValue = (item: T) => {
+        const dateText = item.dueDate || item.targetCompletionDate || item.createdAt || "";
+        const parsed = dateText ? new Date(dateText).getTime() : 0;
+        return Number.isNaN(parsed) ? 0 : parsed;
+      };
+      return [...items].sort((a, b) => {
+        const riskDiff = riskWeight(b) - riskWeight(a);
+        if (riskDiff !== 0) return riskDiff;
+        return ageValue(a) - ageValue(b);
+      });
+    };
+
     return {
       person,
       ownerLabel: person ? person.name : "Unassigned",
-      ownedActions,
-      overdueActions,
-      blockedActions,
-      otherOpenActions,
-      activeProjects: ownedActiveProjects,
-      blockedProjects: ownedBlockedProjects,
-      otherActiveProjects: ownedOtherProjects,
+      ownedActions: sortByRiskThenAge(ownedActions),
+      overdueActions: sortByRiskThenAge(overdueActions),
+      blockedActions: sortByRiskThenAge(blockedActions),
+      otherOpenActions: sortByRiskThenAge(otherOpenActions),
+      activeProjects: sortByRiskThenAge(ownedActiveProjects),
+      blockedProjects: sortByRiskThenAge(ownedBlockedProjects),
+      otherActiveProjects: sortByRiskThenAge(ownedOtherProjects),
       pipelineLeads,
       followUpLeads,
       otherPipelineLeads,
       waitingDecisions,
-      unresolvedProblems: ownedUnresolvedProblems,
+      unresolvedProblems: sortByRiskThenAge(ownedUnresolvedProblems),
       blockedCount,
       carriedCount,
       attentionCount,
@@ -5495,6 +5528,107 @@ export default function Home() {
 
   const personAccountabilitySummaries = orderedPeople.map((person) => ({ ...buildAccountabilitySnapshot(person), person }));
   const unassignedAccountability = buildAccountabilitySnapshot(null);
+
+  const isBlankOwnerText = (ownerValue?: string) => {
+    const text = (ownerValue || "").trim();
+    return text === "" || text.toLowerCase() === "unassigned";
+  };
+  const ownershipGapLabel = (ownerValue?: string) => (isBlankOwnerText(ownerValue) ? "Unassigned" : "Invalid / inactive owner");
+
+  const staleUnownedWork = (() => {
+    const now = Date.now();
+    const staleThresholdMs = 1000 * 60 * 60 * 24 * 7;
+    const ageMs = (dateText?: string) => {
+      if (!dateText) return 0;
+      const parsed = new Date(dateText).getTime();
+      return Number.isNaN(parsed) ? 0 : now - parsed;
+    };
+    const isStale = (dateText?: string) => {
+      const ms = ageMs(dateText);
+      return ms > staleThresholdMs;
+    };
+    const movementDate = (record: { dueDate?: string; createdAt?: string; targetCompletionDate?: string }) =>
+      record.dueDate || record.targetCompletionDate || record.createdAt;
+
+    const items: Array<{
+      key: string;
+      objectType: string;
+      id: string;
+      title: string;
+      area: string;
+      owner: string;
+      gapLabel: string;
+      staleDays: number;
+      score: number;
+    }> = [];
+
+    unassignedAccountability.ownedActions.forEach((action) => {
+      const moved = movementDate(action);
+      if (!isStale(moved)) return;
+      items.push({
+        key: `Action:${action.id}`,
+        objectType: "Action",
+        id: action.id,
+        title: action.actionTitle,
+        area: action.relatedPillar || "Unassigned",
+        owner: action.owner || "Unassigned",
+        gapLabel: ownershipGapLabel(action.owner),
+        staleDays: Math.max(1, Math.floor(ageMs(moved) / (1000 * 60 * 60 * 24))),
+        score: 320 + (action.priority === "Critical" ? 40 : action.priority === "High" ? 20 : 0),
+      });
+    });
+
+    unassignedAccountability.unresolvedProblems.forEach((problem) => {
+      const moved = movementDate(problem);
+      if (!isStale(moved)) return;
+      items.push({
+        key: `Problem:${problem.id}`,
+        objectType: "Problem",
+        id: problem.id,
+        title: problem.problemStatement,
+        area: getAreaText(problem) || "Unassigned",
+        owner: problem.owner || "Unassigned",
+        gapLabel: ownershipGapLabel(problem.owner),
+        staleDays: Math.max(1, Math.floor(ageMs(moved) / (1000 * 60 * 60 * 24))),
+        score: 320 + (problem.severity === "Critical" ? 40 : problem.severity === "High" ? 20 : 0),
+      });
+    });
+
+    unassignedAccountability.activeProjects.forEach((project) => {
+      const moved = movementDate(project);
+      if (!isStale(moved)) return;
+      items.push({
+        key: `Project:${project.id}`,
+        objectType: "Project",
+        id: project.id,
+        title: project.projectName,
+        area: project.area || "Unassigned",
+        owner: project.owner || "Unassigned",
+        gapLabel: ownershipGapLabel(project.owner),
+        staleDays: Math.max(1, Math.floor(ageMs(moved) / (1000 * 60 * 60 * 24))),
+        score: 330,
+      });
+    });
+
+    unassignedAccountability.pipelineLeads.forEach((lead) => {
+      const moved = lead.followUpDate || lead.dateReceived || lead.dateCreated;
+      if (!isStale(moved)) return;
+      items.push({
+        key: `Lead:${lead.id}`,
+        objectType: "Lead",
+        id: lead.id,
+        title: lead.leadName,
+        area: lead.relatedPillar || "Unassigned",
+        owner: lead.owner || "Unassigned",
+        gapLabel: ownershipGapLabel(lead.owner),
+        staleDays: Math.max(1, Math.floor(ageMs(moved) / (1000 * 60 * 60 * 24))),
+        score: 300,
+      });
+    });
+
+    return items.sort((a, b) => b.score - a.score || b.staleDays - a.staleDays);
+  })();
+
   const selectedAccountability = selectedAccountabilityKey === "unassigned"
     ? unassignedAccountability
     : personAccountabilitySummaries.find((entry) => entry.person.id === selectedAccountabilityKey) ?? null;
@@ -5505,6 +5639,7 @@ export default function Home() {
     const ownerLabel = snapshot.ownerLabel;
     const hasOwner = snapshot.person !== null;
     const ownerPhrase = hasOwner ? `with ${ownerLabel}` : "without a named owner";
+    const gapMeta = (ownerValue?: string) => (hasOwner ? "" : `${ownershipGapLabel(ownerValue)} • `);
 
     const sections = [
       {
@@ -5513,7 +5648,7 @@ export default function Home() {
           id: action.id,
           objectType: "Action",
           title: action.actionTitle,
-          meta: `${action.status} • ${action.priority} priority • Due ${action.dueDate || "not set"}`,
+          meta: `${gapMeta(action.owner)}${action.status} • ${action.priority} priority • Due ${action.dueDate || "not set"}`,
           why: hasOwner
             ? `The due date was ${action.dueDate}. This is still ${action.status.toLowerCase()} and sits ${ownerPhrase}, so delegated delivery is slipping and needs a reset on timing, scope or support.`
             : `The due date was ${action.dueDate}. This action is overdue and has no owner, so it will keep slipping until it is assigned.`,
@@ -5525,7 +5660,7 @@ export default function Home() {
           id: action.id,
           objectType: "Action",
           title: action.actionTitle,
-          meta: `${action.priority} priority • Due ${action.dueDate || "not set"}`,
+          meta: `${gapMeta(action.owner)}${action.priority} priority • Due ${action.dueDate || "not set"}`,
           why: `This action is blocked ${ownerPhrase}, which means progress depends on removing a dependency before anything else can move.`,
         })),
       },
@@ -5535,7 +5670,7 @@ export default function Home() {
           id: project.id,
           objectType: "Project",
           title: project.projectName,
-          meta: `${project.area || "No area"} • Target ${project.targetCompletionDate || "not set"}`,
+          meta: `${gapMeta(project.owner)}${project.area || "No area"} • Target ${project.targetCompletionDate || "not set"}`,
           why: `This project is blocked ${ownerPhrase}, so delivery and revenue timing are uncertain until it is unblocked.`,
         })),
       },
@@ -5559,7 +5694,7 @@ export default function Home() {
           id: lead.id,
           objectType: "Lead",
           title: lead.leadName,
-          meta: `${lead.status} • ${lead.serviceRequested} • Follow-up ${lead.followUpDate || "not set"}`,
+          meta: `${gapMeta(lead.owner)}${lead.status} • ${lead.serviceRequested} • Follow-up ${lead.followUpDate || "not set"}`,
           why: lead.followUpDate && new Date(lead.followUpDate).getTime() <= Date.now()
             ? `The follow-up date was ${lead.followUpDate}. This lead is going stale ${ownerPhrase}, and slow response risks losing the work.`
             : `This lead is marked Follow-Up ${ownerPhrase}, so momentum depends on the next contact happening soon.`,
@@ -5571,8 +5706,10 @@ export default function Home() {
           id: problem.id,
           objectType: "Problem",
           title: problem.problemStatement,
-          meta: `${problem.severity} severity • ${problem.problemStatus}`,
-          why: `This problem is still ${problem.problemStatus.toLowerCase()} ${ownerPhrase}, so it continues to affect quality, time or delivery until resolved.`,
+          meta: `${gapMeta(problem.owner)}${problem.severity} severity • ${problem.problemStatus}`,
+          why: hasOwner
+            ? `This problem is still ${problem.problemStatus.toLowerCase()} ${ownerPhrase}, so it continues to affect quality, time or delivery until resolved.`
+            : `This problem is still ${problem.problemStatus.toLowerCase()} but has no valid active owner, so accountability for resolving it is not established.`,
         })),
       },
       {
@@ -5581,8 +5718,10 @@ export default function Home() {
           id: project.id,
           objectType: "Project",
           title: project.projectName,
-          meta: `${project.status} • ${project.area || "No area"} • Target ${project.targetCompletionDate || "not set"}`,
-          why: `This project is active ${ownerPhrase} and forms part of the current delivery load.`,
+          meta: `${gapMeta(project.owner)}${project.status} • ${project.area || "No area"} • Target ${project.targetCompletionDate || "not set"}`,
+          why: hasOwner
+            ? `This project is active ${ownerPhrase} and forms part of the current delivery load.`
+            : "This project is active but has no valid active owner, so accountability for its delivery is not established.",
         })),
       },
       {
@@ -5591,8 +5730,10 @@ export default function Home() {
           id: action.id,
           objectType: "Action",
           title: action.actionTitle,
-          meta: `${action.status} • ${action.priority} priority • Due ${action.dueDate || "not set"}`,
-          why: `This action is part of the current workload ${ownerPhrase} and is proceeding inside normal ownership.`,
+          meta: `${gapMeta(action.owner)}${action.status} • ${action.priority} priority • Due ${action.dueDate || "not set"}`,
+          why: hasOwner
+            ? `This action is part of the current workload ${ownerPhrase} and is proceeding inside normal ownership.`
+            : "This action is active but has no valid active owner, so accountability for it is not established.",
         })),
       },
       {
@@ -5601,8 +5742,10 @@ export default function Home() {
           id: lead.id,
           objectType: "Lead",
           title: lead.leadName,
-          meta: `${lead.status} • ${lead.serviceRequested}`,
-          why: `This lead is in the pipeline ${ownerPhrase} and is progressing without an immediate follow-up risk.`,
+          meta: `${gapMeta(lead.owner)}${lead.status} • ${lead.serviceRequested}`,
+          why: hasOwner
+            ? `This lead is in the pipeline ${ownerPhrase} and is progressing without an immediate follow-up risk.`
+            : "This lead is in the pipeline but has no valid active owner, so accountability for progressing it is not established.",
         })),
       },
     ];
@@ -6288,6 +6431,19 @@ export default function Home() {
         score: 240,
         tier: 3,
         reason: "This problem keeps coming back and the fix has not been captured as a lesson, system or SOP — so the business will pay for it again.",
+      });
+    });
+
+    staleUnownedWork.forEach((item) => {
+      push({
+        key: item.key,
+        objectType: item.objectType,
+        id: item.id,
+        title: item.title,
+        area: item.area,
+        score: item.score,
+        tier: 2,
+        reason: `${item.gapLabel} — this has been sitting for ${item.staleDays} day${item.staleDays === 1 ? "" : "s"} with no valid active owner, so it is dropped work, not just unassigned.`,
       });
     });
 
@@ -9180,7 +9336,7 @@ export default function Home() {
                       </div>
                     ) : (
                       <div className="mt-1 text-[12px] text-[#4d4944]">
-                        Active work with no named owner. Assign each item to a person to close this accountability gap.
+                        Active work with no valid active owner — blank or assigned to a name that isn&apos;t an active person. Assign each item to a real person to close this accountability gap.
                       </div>
                     )}
                     <div className="mt-3 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
@@ -9283,7 +9439,7 @@ export default function Home() {
                   <div className="mt-4">
                     {unassignedAccountability.carriedCount === 0 ? (
                       <div className="rounded-2xl border border-dashed border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-[13px] text-[#4d4944]">
-                        No unassigned active work. Every active action, project, problem and pipeline lead has a named owner.
+                        No unassigned or ghost-owned active work. Every active action, project, problem and pipeline lead has a valid active owner.
                       </div>
                     ) : (
                       <button
@@ -9311,7 +9467,7 @@ export default function Home() {
                         </div>
 
                         <div className="mt-4 rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#2f2b28]">
-                          This work has no named owner. Assign it to close the accountability gap.
+                          This work has no valid active owner (blank or an unrecognised/inactive name). Assign it to close the accountability gap.
                         </div>
                       </button>
                     )}
