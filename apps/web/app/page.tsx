@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 const navigation = [
   "Empire OS",
@@ -2455,7 +2455,7 @@ type TodayBriefStep = {
   hint: string;
 };
 
-function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsClear, freshness, freshnessIsClear, onOpenStep }: {
+function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsClear, freshness, freshnessIsClear, progress, deskIsClear, onOpenStep }: {
   posture: string;
   postureIsClear: boolean;
   steps: TodayBriefStep[];
@@ -2463,11 +2463,24 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
   delegationIsClear: boolean;
   freshness: string;
   freshnessIsClear: boolean;
+  progress: string;
+  deskIsClear: boolean;
   onOpenStep: (stepLabel: string) => void;
 }) {
   return (
     <div className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
-      <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Today — founder brief</div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Today — founder brief</div>
+        {deskIsClear ? (
+          <span className="rounded-full border border-[#2f5d3a] bg-[#eef4ee] px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.14em] text-[#2f5d3a]">
+            Desk is clear
+          </span>
+        ) : null}
+      </div>
+
+      <div className="mt-3 text-[12px] font-medium text-[#2f2b28]">
+        {progress}
+      </div>
 
       <div className={`mt-3 rounded-xl border px-3 py-2.5 text-[13px] leading-5 ${postureIsClear ? "border-[#d3cbc3] bg-white text-[#2f2b28]" : "border-[#c9b8a3] bg-[#f5efe6] text-[#2f2b28]"}`}>
         {posture}
@@ -6688,7 +6701,10 @@ export default function Home() {
   const todayBrief = (() => {
     const authorityCount = empireDecisionQueue.founderAuthorityItems.length;
     const reviewDueCount = decisionTrackRecord.reviewsDue.length;
-    const ownershipGapCount = staleUnownedWork.length;
+    const ownershipGapCount = unassignedAccountability.ownedActions.length
+      + unassignedAccountability.activeProjects.length
+      + unassignedAccountability.pipelineLeads.length
+      + unassignedAccountability.unresolvedProblems.length;
     const learningGapCount = recurringProblemLearning.gaps.length;
     const executionGapCount = decisionsWithoutExecution.length;
     const focusCount = founderFocusList.length;
@@ -6753,6 +6769,21 @@ export default function Home() {
       ? "The operating picture looks current — no stale active records detected."
       : `${staleCount} active record${staleCount === 1 ? "" : "s"} may be stale — the operating picture needs review.`;
 
+    const outstandingRecordKeys = new Set<string>();
+    empireDecisionQueue.founderAuthorityItems.forEach((item) => outstandingRecordKeys.add(`${item.objectType}:${item.id}`));
+    decisionTrackRecord.reviewsDue.forEach((decision) => outstandingRecordKeys.add(`Decision:${decision.id}`));
+    unassignedAccountability.ownedActions.forEach((action) => outstandingRecordKeys.add(`Action:${action.id}`));
+    unassignedAccountability.activeProjects.forEach((project) => outstandingRecordKeys.add(`Project:${project.id}`));
+    unassignedAccountability.pipelineLeads.forEach((lead) => outstandingRecordKeys.add(`Lead:${lead.id}`));
+    unassignedAccountability.unresolvedProblems.forEach((problem) => outstandingRecordKeys.add(`Problem:${problem.id}`));
+    decisionsWithoutExecution.forEach((decision) => outstandingRecordKeys.add(`Decision:${decision.id}`));
+    recurringProblemLearning.gaps.forEach((problem) => outstandingRecordKeys.add(`Problem:${problem.id}`));
+    staleRecords.forEach((item) => outstandingRecordKeys.add(`${item.objectType}:${item.id}`));
+    if (cashAttention.buffer) outstandingRecordKeys.add("Finance:cash-buffer");
+    cashAttention.overdueCommitments.forEach((item) => outstandingRecordKeys.add(`Finance:commitment:${item.id}`));
+    cashAttention.overdueExpectedIncome.forEach((item) => outstandingRecordKeys.add(`Finance:income:${item.id}`));
+    const outstandingCount = outstandingRecordKeys.size;
+
     return {
       posture,
       postureIsClear: postureParts.length === 0,
@@ -6761,8 +6792,107 @@ export default function Home() {
       delegationIsClear: delegationGapCount === 0,
       freshness,
       freshnessIsClear: staleCount === 0,
+      outstandingCount,
     };
   })();
+
+  const deskIsClear = founderFocusList.length === 0 && todayBrief.outstandingCount === 0;
+
+  const attentionSnapshot: Record<string, string> = {};
+
+  empireDecisionQueue.founderAuthorityItems.forEach((item) => {
+    attentionSnapshot[`authority:${item.objectType}:${item.id}`] = "Founder authority";
+  });
+  decisionTrackRecord.reviewsDue.forEach((decision) => {
+    attentionSnapshot[`review:Decision:${decision.id}`] = "Decision review";
+  });
+  const ownershipRecordKeys = new Set<string>();
+  unassignedAccountability.ownedActions.forEach((action) => {
+    attentionSnapshot[`ownership:Action:${action.id}`] = "Ownership gap";
+    ownershipRecordKeys.add(`Action:${action.id}`);
+  });
+  unassignedAccountability.activeProjects.forEach((project) => {
+    attentionSnapshot[`ownership:Project:${project.id}`] = "Ownership gap";
+    ownershipRecordKeys.add(`Project:${project.id}`);
+  });
+  unassignedAccountability.pipelineLeads.forEach((lead) => {
+    attentionSnapshot[`ownership:Lead:${lead.id}`] = "Ownership gap";
+    ownershipRecordKeys.add(`Lead:${lead.id}`);
+  });
+  unassignedAccountability.unresolvedProblems.forEach((problem) => {
+    attentionSnapshot[`ownership:Problem:${problem.id}`] = "Ownership gap";
+    ownershipRecordKeys.add(`Problem:${problem.id}`);
+  });
+  decisionsWithoutExecution.forEach((decision) => {
+    attentionSnapshot[`execution:Decision:${decision.id}`] = "Execution gap";
+  });
+  recurringProblemLearning.gaps.forEach((problem) => {
+    attentionSnapshot[`learning:Problem:${problem.id}`] = "Recurring-learning gap";
+  });
+  staleRecords.forEach((item) => {
+    const recordKey = `${item.objectType}:${item.id}`;
+    if (ownershipRecordKeys.has(recordKey)) {
+      return;
+    }
+    attentionSnapshot[`stale:${item.objectType}:${item.id}`] = "Stale record";
+  });
+  if (cashAttention.buffer) {
+    attentionSnapshot["finance:cash-buffer"] = "Finance attention";
+  }
+  cashAttention.overdueCommitments.forEach((item) => {
+    attentionSnapshot[`finance:commitment:${item.id}`] = "Finance attention";
+  });
+  cashAttention.overdueExpectedIncome.forEach((item) => {
+    attentionSnapshot[`finance:income:${item.id}`] = "Finance attention";
+  });
+
+  const [clearedThisSession, setClearedThisSession] = useState<{ total: number; byCategory: Record<string, number> }>({ total: 0, byCategory: {} });
+  const previousAttentionSnapshotRef = useRef<Record<string, string> | null>(null);
+  const clearedKeysRef = useRef<Set<string>>(new Set());
+
+  const attentionSnapshotJson = JSON.stringify(attentionSnapshot);
+
+  useEffect(() => {
+    const currentSnapshot = JSON.parse(attentionSnapshotJson) as Record<string, string>;
+    const currentKeys = new Set(Object.keys(currentSnapshot));
+
+    if (previousAttentionSnapshotRef.current === null) {
+      previousAttentionSnapshotRef.current = currentSnapshot;
+      return;
+    }
+
+    const previousSnapshot = previousAttentionSnapshotRef.current;
+    const previousKeys = new Set(Object.keys(previousSnapshot));
+    const newlyCleared: Array<{ key: string; category: string }> = [];
+
+    previousKeys.forEach((key) => {
+      if (!currentKeys.has(key) && !clearedKeysRef.current.has(key)) {
+        newlyCleared.push({ key, category: previousSnapshot[key] || "Founder authority" });
+      }
+    });
+
+    if (newlyCleared.length > 0) {
+      setClearedThisSession((current) => {
+        const byCategory = { ...current.byCategory };
+        newlyCleared.forEach(({ key, category }) => {
+          clearedKeysRef.current.add(key);
+          byCategory[category] = (byCategory[category] || 0) + 1;
+        });
+        return { total: current.total + newlyCleared.length, byCategory };
+      });
+    }
+
+    previousAttentionSnapshotRef.current = currentSnapshot;
+  }, [attentionSnapshotJson]);
+
+  const clearedCategoryBreakdown = Object.entries(clearedThisSession.byCategory)
+    .sort((a, b) => b[1] - a[1])
+    .map(([category, count]) => `${count} ${category.toLowerCase()}`)
+    .join(" • ");
+
+  const todayProgressText = clearedThisSession.total === 0 && todayBrief.outstandingCount === 0
+    ? "Nothing on the desk."
+    : `Today: ${clearedThisSession.total} cleared • ${todayBrief.outstandingCount} still outstanding${clearedCategoryBreakdown ? ` (${clearedCategoryBreakdown})` : ""}`;
 
   const getAttentionGroup = (item: AttentionItem) => {
     const isBlockedOrWaiting = item.reasons.some((reason) =>
@@ -8692,6 +8822,8 @@ export default function Home() {
                   delegationIsClear={todayBrief.delegationIsClear}
                   freshness={todayBrief.freshness}
                   freshnessIsClear={todayBrief.freshnessIsClear}
+                  progress={todayProgressText}
+                  deskIsClear={deskIsClear}
                   onOpenStep={handleOpenTodayStep}
                 />
               </div>
