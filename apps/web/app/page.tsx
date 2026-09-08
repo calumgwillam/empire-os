@@ -5,6 +5,7 @@ import { FormEvent, useEffect, useState } from "react";
 const navigation = [
   "Empire OS",
   "Command",
+  "Empire",
   "Capture",
   "Problems",
   "Opportunities",
@@ -985,7 +986,7 @@ const destinationDefinitions = [
   },
 ] as const;
 
-type DestinationKey = "Command" | "Capture" | "People" | "Projects" | "Leads" | "Finance" | "Metrics" | "Pillars" | (typeof destinationDefinitions)[number]["key"];
+type DestinationKey = "Command" | "Empire" | "Capture" | "People" | "Projects" | "Leads" | "Finance" | "Metrics" | "Pillars" | (typeof destinationDefinitions)[number]["key"];
 
 type RelatedRecordItem = {
   label: string;
@@ -4924,6 +4925,152 @@ export default function Home() {
     };
   });
 
+  const empireDecisionQueue = (() => {
+    const founderReviewQueue = [
+      ...decisionRecords
+        .filter((decision) => ["Draft", "Active", "Under Review"].includes(decision.decisionStatus))
+        .map((decision) => ({
+          id: decision.id,
+          kind: "Decision" as const,
+          title: decision.decisionTitle,
+          pillar: getAreaText(decision) || "Unassigned",
+          owner: decision.decisionMaker || "Unassigned",
+          whatIsChanging: decision.decisionStatement || "No decision statement recorded.",
+          whyItMatters: decision.reviewDate && new Date(decision.reviewDate).getTime() <= Date.now()
+            ? `This decision is overdue for review, so the current path may be stale or unchallenged.`
+            : decision.riskLevel === "High" || decision.riskLevel === "Critical"
+              ? `This decision carries ${decision.riskLevel.toLowerCase()} risk and should be checked before it becomes a delivery issue.`
+              : "This decision is active and still shaping execution or resource allocation.",
+          founderIntervention: decision.decisionStatus === "Under Review" || decision.riskLevel === "High" || decision.riskLevel === "Critical" ? "Yes" : "Maybe",
+          delegationAction: decision.decisionStatus === "Draft" ? "Delegate for drafting and owner review" : "Escalate if risk increases",
+        })),
+      ...problemRecords
+        .filter((problem) => isProblemUnresolved(problem) && (problem.severity === "High" || problem.severity === "Critical" || problem.problemStatus === "Action required"))
+        .map((problem) => ({
+          id: problem.id,
+          kind: "Problem" as const,
+          title: problem.problemStatement,
+          pillar: getAreaText(problem) || "Unassigned",
+          owner: problem.owner || "Unassigned",
+          whatIsChanging: `${problem.severity} severity problem still requiring action.`,
+          whyItMatters: `This issue remains ${problem.problemStatus.toLowerCase()}, so quality, time, or delivery is still being affected.`,
+          founderIntervention: problem.severity === "Critical" ? "Yes" : "Maybe",
+          delegationAction: problem.severity === "High" || problem.severity === "Critical" ? "Escalate to direct owner and review urgency" : "Delegate to operational owner",
+        })),
+      ...actionRecords
+        .filter((action) => action.status === "Blocked" || (action.status === "Open" && action.priority === "Critical"))
+        .map((action) => ({
+          id: action.id,
+          kind: "Action" as const,
+          title: action.actionTitle,
+          pillar: action.relatedPillar || "Unassigned",
+          owner: action.owner || "Unassigned",
+          whatIsChanging: action.status === "Blocked" ? "This dependency is blocked and preventing progress." : "This critical action is still open and needs immediate movement.",
+          whyItMatters: action.dueDate && new Date(action.dueDate).getTime() <= Date.now()
+            ? `The due date of ${action.dueDate} has passed, so momentum is slipping and downstream work is delayed.`
+            : "This item is critical to the current operating plan and should not sit unresolved.",
+          founderIntervention: action.status === "Blocked" || action.priority === "Critical" ? "Yes" : "Maybe",
+          delegationAction: action.status === "Blocked" ? "Escalate and remove dependency" : "Delegate with clear owner follow-up",
+        })),
+    ];
+
+    const riskByPillar = pillarOptions.map((pillar) => {
+      const criticalProblems = problemRecords.filter((problem) => getAreaText(problem) === pillar && (problem.severity === "Critical" || problem.severity === "High") && isProblemUnresolved(problem));
+      const blockedProjects = projects.filter((project) => project.area === pillar && project.status.trim().toLowerCase() === "blocked");
+      const overdueActions = actionRecords.filter((action) => action.relatedPillar === pillar && action.dueDate && new Date(action.dueDate).getTime() <= Date.now() && isActionActive(action));
+      const activeDecisions = decisionRecords.filter((decision) => getAreaText(decision) === pillar && ["Active", "Under Review"].includes(decision.decisionStatus));
+      const riskScore = criticalProblems.length * 4 + blockedProjects.length * 3 + overdueActions.length * 2 + activeDecisions.length;
+
+      return {
+        pillar,
+        riskScore,
+        criticalProblems,
+        blockedProjects,
+        overdueActions,
+        activeDecisions,
+      };
+    }).filter((item) => item.riskScore > 0 || item.activeDecisions.length > 0 || item.blockedProjects.length > 0 || item.criticalProblems.length > 0);
+
+    const crossPillarIssues = [
+      ...problemRecords.filter((problem) => {
+        const area = getAreaText(problem);
+        return area && !pillarOptions.includes(area as (typeof pillarOptions)[number]) && isProblemUnresolved(problem);
+      }),
+      ...actionRecords.filter((action) => {
+        const area = action.relatedPillar || "";
+        return !pillarOptions.includes(area as (typeof pillarOptions)[number]) && isActionActive(action);
+      }),
+      ...projects.filter((project) => project.area && !pillarOptions.includes(project.area as (typeof pillarOptions)[number]) && isProjectActive(project)),
+    ].slice(0, 8).map((item) => {
+      const owner = "owner" in item ? item.owner || "Unassigned" : "Unassigned";
+      const area = "relatedPillar" in item ? (item.relatedPillar || "General") : "area" in item ? item.area : "General";
+
+      return {
+        id: item.id,
+        title: "problemStatement" in item ? item.problemStatement : "actionTitle" in item ? item.actionTitle : item.projectName,
+        kind: "problemStatement" in item ? "Cross-pillar problem" : "actionTitle" in item ? "Cross-pillar action" : "Cross-pillar project",
+        owner,
+        area,
+        why: "problemStatement" in item
+          ? `This issue is unresolved and affects work outside the three core pillars, which can slow delivery across the wider operation.`
+          : "actionTitle" in item
+            ? "This action is still active and can create dependency drag across more than one business stream."
+            : "This project is active outside the core pillar list and may be creating execution pressure or resource contention.",
+        founderIntervention: "Maybe",
+        delegationAction: "Delegate to the accountable lead with founder review if it becomes material",
+      };
+    });
+
+    const delegateItems = actionRecords
+      .filter((action) => action.status === "Open" && action.priority !== "Critical" && (!action.dueDate || new Date(action.dueDate).getTime() > Date.now() + 1000 * 60 * 60 * 24 * 30))
+      .slice(0, 6)
+      .map((action) => ({
+        id: action.id,
+        title: action.actionTitle,
+        pillar: action.relatedPillar || "Unassigned",
+        owner: action.owner || "Unassigned",
+        whatIsChanging: "The work is still active but does not require founder-level attention yet.",
+        whyItMatters: action.dueDate
+          ? `The next deadline is ${action.dueDate}, which gives enough runway for standard operational management.`
+          : "This action is live and should remain inside normal operational ownership.",
+        founderIntervention: "No",
+        delegationAction: "Delegate to the assigned owner for routine delivery",
+      }));
+
+    const founderAuthorityItems = [
+      ...projects.filter((project) => project.status.trim().toLowerCase() === "blocked" && project.area && pillarOptions.includes(project.area as (typeof pillarOptions)[number])).map((project) => ({
+        id: project.id,
+        title: project.projectName,
+        pillar: project.area,
+        owner: project.owner || "Unassigned",
+        whatIsChanging: "This project is blocked and needs a decision on sequencing, resourcing or scope.",
+        whyItMatters: "A blocked project is preventing delivery, revenue timing or plan confidence in this pillar.",
+        founderIntervention: "Yes",
+        delegationAction: "Escalate to founder or executive decision on how to unblock",
+      })),
+      ...opportunityRecords
+        .filter((opportunity) => ["Evaluating", "Approved"].includes(opportunity.status) && ["High", "Exceptional"].includes(opportunity.strategicFit))
+        .map((opportunity) => ({
+          id: opportunity.id,
+          title: opportunity.opportunityTitle,
+          pillar: opportunity.relatedPillar || opportunity.relatedArea || "Unassigned",
+          owner: opportunity.owner || "Unassigned",
+          whatIsChanging: `This opportunity is still being evaluated for ${opportunity.strategicFit.toLowerCase()} strategic fit.`,
+          whyItMatters: "This item could materially change revenue or allocation, so it needs a deliberate decision rather than casual drift.",
+          founderIntervention: "Yes",
+          delegationAction: "Escalate to founder approval or strategic decision",
+        })),
+    ].slice(0, 8);
+
+    return {
+      founderReviewQueue,
+      riskByPillar,
+      crossPillarIssues,
+      delegateItems,
+      founderAuthorityItems,
+    };
+  })();
+
   const selectedPillarDetail = selectedPillar ? (() => {
     const blockedProjects = projects.filter((project) => project.area === selectedPillar && project.status.trim().toLowerCase() === "blocked");
     const overdueActions = actionRecords.filter((action) => action.relatedPillar === selectedPillar &&
@@ -7224,6 +7371,7 @@ export default function Home() {
                   onClick={() => {
                     if (
                       item === "Command" ||
+                      item === "Empire" ||
                       item === "Capture" ||
                       item === "Problems" ||
                       item === "Opportunities" ||
@@ -7239,7 +7387,7 @@ export default function Home() {
                       item === "Pillars" ||
                       item === "People"
                     ) {
-                      setActiveView(item === "Command" ? "Command" : item);
+                      setActiveView(item as DestinationKey);
                     }
                   }}
                   className={[
@@ -7447,6 +7595,149 @@ export default function Home() {
                 groups={commandRecordGroups}
                 attentionRecordKeys={commandAttentionItemList.map((item) => `${item.objectType}:${item.id}`)}
               />
+            </div>
+          ) : activeView === "Empire" ? (
+            <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+              <header className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-4">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#4d4944]">Empire layer</p>
+                  <h1 className="mt-2.5 text-[36px] font-semibold tracking-[-0.07em] text-[#171717] sm:text-[42px]">Empire</h1>
+                </div>
+              </header>
+
+              <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
+                This view brings together the founder-facing decisions, risk signals, and escalation points already represented across the operating records.
+              </p>
+
+              <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Founder review queue</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{empireDecisionQueue.founderReviewQueue.length}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Pillars at risk</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{empireDecisionQueue.riskByPillar.length}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Cross-pillar issues</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{empireDecisionQueue.crossPillarIssues.length}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Delegate to owner</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{empireDecisionQueue.delegateItems.length}</div>
+                </div>
+              </div>
+
+              <div className="mt-8 space-y-6">
+                <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                  <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Founder review queue</div>
+                  {empireDecisionQueue.founderReviewQueue.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">No items currently require founder review.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {empireDecisionQueue.founderReviewQueue.map((item) => (
+                        <div key={`${item.kind}-${item.id}`} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{item.kind}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{item.pillar}</span>
+                          </div>
+                          <div className="mt-2 text-[17px] font-medium tracking-[-0.04em] text-[#171717]">{item.title}</div>
+                          <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
+                            <div><span className="font-medium text-[#171717]">What is changing:</span> {item.whatIsChanging}</div>
+                            <div className="mt-1"><span className="font-medium text-[#171717]">Why it matters:</span> {item.whyItMatters}</div>
+                            <div className="mt-1"><span className="font-medium text-[#171717]">Owner:</span> {item.owner}</div>
+                            <div className="mt-1"><span className="font-medium text-[#171717]">Founder intervention:</span> {item.founderIntervention}</div>
+                            <div className="mt-1"><span className="font-medium text-[#171717]">Delegation:</span> {item.delegationAction}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                  <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Current risks by pillar</div>
+                  {empireDecisionQueue.riskByPillar.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">No pillar risks are currently active.</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {empireDecisionQueue.riskByPillar.map((pillar) => (
+                        <div key={pillar.pillar} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-[17px] font-medium tracking-[-0.04em] text-[#171717]">{pillar.pillar}</div>
+                            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">Risk {pillar.riskScore}</span>
+                          </div>
+                          <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
+                            <div><span className="font-medium text-[#171717]">Blocked projects:</span> {pillar.blockedProjects.length}</div>
+                            <div><span className="font-medium text-[#171717]">Critical/high problems:</span> {pillar.criticalProblems.length}</div>
+                            <div><span className="font-medium text-[#171717]">Overdue actions:</span> {pillar.overdueActions.length}</div>
+                            <div><span className="font-medium text-[#171717]">Active decisions:</span> {pillar.activeDecisions.length}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                    <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Cross-pillar issues</div>
+                    {empireDecisionQueue.crossPillarIssues.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">No cross-pillar issues are currently flagged.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {empireDecisionQueue.crossPillarIssues.map((issue) => (
+                          <div key={`${issue.kind}-${issue.id}`} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                            <div className="text-[15px] font-medium tracking-[-0.04em] text-[#171717]">{issue.title}</div>
+                            <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">{issue.kind} • {issue.area}</div>
+                            <div className="mt-2 text-[12px] leading-5 text-[#524d49]">{issue.why}</div>
+                            <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
+                              <span className="font-medium text-[#171717]">Owner:</span> {issue.owner}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                    <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Delegation vs founder authority</div>
+                    <div className="space-y-4">
+                      <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                        <div className="text-[12px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Should be delegated</div>
+                        {empireDecisionQueue.delegateItems.length === 0 ? (
+                          <div className="mt-2 text-[12px] text-[#4d4944]">No routine items are ready for delegation.</div>
+                        ) : (
+                          <div className="mt-2 space-y-2">
+                            {empireDecisionQueue.delegateItems.map((item) => (
+                              <div key={`delegate-${item.id}`} className="rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] px-2.5 py-2">
+                                <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
+                                <div className="mt-1 text-[11px] text-[#4d4944]">{item.pillar} • {item.owner}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                        <div className="text-[12px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Requires founder authority</div>
+                        {empireDecisionQueue.founderAuthorityItems.length === 0 ? (
+                          <div className="mt-2 text-[12px] text-[#4d4944]">No current items clearly require founder authority.</div>
+                        ) : (
+                          <div className="mt-2 space-y-2">
+                            {empireDecisionQueue.founderAuthorityItems.map((item) => (
+                              <div key={`founder-${item.id}`} className="rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] px-2.5 py-2">
+                                <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
+                                <div className="mt-1 text-[11px] text-[#4d4944]">{item.pillar} • {item.owner}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
             </div>
           ) : activeView === "Projects" ? (
             <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
