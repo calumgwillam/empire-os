@@ -454,6 +454,9 @@ type DailyPostureSnapshot = {
   growthStallCount: number;
   outstandingCount: number;
   availableOperatingCash: number | null;
+  delegationQualityPct?: number | null;
+  avgOpenDecisionDays?: number | null;
+  selfSufficiencyPct?: number | null;
   outstandingKeys?: Array<{ key: string; title: string; objectType: string; category: string }>;
 };
 
@@ -4999,6 +5002,9 @@ export default function Home() {
               growthStallCount: typeof entry.growthStallCount === "number" ? entry.growthStallCount : 0,
               outstandingCount: typeof entry.outstandingCount === "number" ? entry.outstandingCount : 0,
               availableOperatingCash: typeof entry.availableOperatingCash === "number" ? entry.availableOperatingCash : null,
+              delegationQualityPct: typeof entry.delegationQualityPct === "number" ? entry.delegationQualityPct : null,
+              avgOpenDecisionDays: typeof entry.avgOpenDecisionDays === "number" ? entry.avgOpenDecisionDays : null,
+              selfSufficiencyPct: typeof entry.selfSufficiencyPct === "number" ? entry.selfSufficiencyPct : null,
               outstandingKeys: Array.isArray(entry.outstandingKeys)
                 ? entry.outstandingKeys
                     .filter((k: unknown) => k && typeof k === "object" && typeof (k as { key?: unknown }).key === "string")
@@ -5770,6 +5776,128 @@ export default function Home() {
 
   const personAccountabilitySummaries = orderedPeople.map((person) => ({ ...buildAccountabilitySnapshot(person), person }));
   const unassignedAccountability = buildAccountabilitySnapshot(null);
+
+  const organisationalHealth = (() => {
+    const founderPerson = orderedPeople.find((person) => person.accessLevel === "Founder" && person.status === "Active") || null;
+
+    const activeActions = actionRecords.filter((action) => isActionActive(action));
+    const activeProjects = projects.filter((project) => isProjectActive(project));
+    const pipelineLeadsAll = activeLeads.filter((lead) => !["Won", "Lost"].includes(lead.status));
+    const unresolvedProblems = problemRecords.filter((problem) => isProblemUnresolved(problem));
+
+    const totalWork = activeActions.length + activeProjects.length + pipelineLeadsAll.length + unresolvedProblems.length;
+
+    const founderNames = new Set<string>();
+    if (founderPerson) {
+      founderNames.add(founderPerson.name.trim().toLowerCase());
+    }
+
+    const hasValidOwner = (ownerText: string | undefined, ownerPersonId?: string) => {
+      if (ownerPersonId) {
+        const owner = orderedPeople.find((person) => person.id === ownerPersonId && person.status === "Active");
+        if (owner) return owner.name.trim().toLowerCase();
+      }
+      const text = (ownerText || "").trim();
+      if (!text || text.toLowerCase() === "unassigned") return null;
+      const matched = orderedPeople.find((person) => person.status === "Active" && person.name.trim().toLowerCase() === text.toLowerCase());
+      return matched ? matched.name.trim().toLowerCase() : null;
+    };
+
+    let validOwned = 0;
+    let founderOwned = 0;
+    let stalledOrRiskyDelegated = 0;
+    const ownerLoad = new Map<string, number>();
+
+    const tallyWork = (ownerText: string | undefined, ownerPersonId: string | undefined, isRisky: boolean) => {
+      const ownerKey = hasValidOwner(ownerText, ownerPersonId);
+      if (!ownerKey) return;
+      validOwned += 1;
+      ownerLoad.set(ownerKey, (ownerLoad.get(ownerKey) || 0) + 1);
+      if (founderNames.has(ownerKey)) {
+        founderOwned += 1;
+      } else if (isRisky) {
+        stalledOrRiskyDelegated += 1;
+      }
+    };
+
+    const nowMs = Date.now();
+    activeActions.forEach((action) => {
+      const isRisky = action.status === "Blocked" || (Boolean(action.dueDate) && new Date(action.dueDate).getTime() < nowMs);
+      tallyWork(action.owner, action.ownerPersonId, isRisky);
+    });
+    activeProjects.forEach((project) => {
+      const isRisky = project.status.trim().toLowerCase() === "blocked" || (Boolean(project.targetCompletionDate) && new Date(project.targetCompletionDate).getTime() < nowMs);
+      tallyWork(project.owner, undefined, isRisky);
+    });
+    pipelineLeadsAll.forEach((lead) => {
+      const isRisky = (lead.status === "Quote Sent" && !lead.followUpDate) || (Boolean(lead.followUpDate) && new Date(lead.followUpDate).getTime() < nowMs);
+      tallyWork(lead.owner, undefined, isRisky);
+    });
+    unresolvedProblems.forEach((problem) => {
+      const isRisky = problem.severity === "Critical" || problem.severity === "High";
+      tallyWork(problem.owner, undefined, isRisky);
+    });
+
+    const pctValidOwner = totalWork === 0 ? null : Math.round((validOwned / totalWork) * 100);
+    const pctNonFounder = validOwned === 0 ? null : Math.round(((validOwned - founderOwned) / validOwned) * 100);
+    const delegatedCount = validOwned - founderOwned;
+    const pctDelegatedStalled = delegatedCount === 0 ? null : Math.round((stalledOrRiskyDelegated / delegatedCount) * 100);
+
+    let topOwnerShare: number | null = null;
+    if (validOwned > 0 && ownerLoad.size > 0) {
+      const maxLoad = Math.max(...ownerLoad.values());
+      topOwnerShare = Math.round((maxLoad / validOwned) * 100);
+    }
+
+    const delegationComponentsPresent = [pctValidOwner, pctNonFounder, pctDelegatedStalled, topOwnerShare].filter((v) => v !== null).length;
+    const delegationScore = delegationComponentsPresent < 3 || totalWork === 0
+      ? null
+      : Math.round((pctValidOwner ?? 0) * 0.5 + (pctNonFounder ?? 0) * 0.3 + (100 - (pctDelegatedStalled ?? 0)) * 0.2);
+    const delegationQuality = (() => {
+      if (totalWork === 0) return { label: "No active work", tone: "clear" as const };
+      if (delegationComponentsPresent < 3) return { label: "Insufficient data", tone: "neutral" as const };
+      const score = delegationScore ?? 0;
+      if (score >= 80) return { label: "Strong", tone: "clear" as const };
+      if (score >= 60) return { label: "Adequate", tone: "neutral" as const };
+      return { label: "Needs attention", tone: "warn" as const };
+    })();
+
+    const openDecisions = decisionRecords.filter((decision) => ["Active", "Under Review"].includes(decision.decisionStatus));
+    const openDecisionAges = openDecisions
+      .map((decision) => {
+        const start = getDateValue(decision.decisionDate || decision.createdAt);
+        return start > 0 ? Math.floor((nowMs - start) / (1000 * 60 * 60 * 24)) : null;
+      })
+      .filter((days): days is number => days !== null);
+    const avgOpenDecisionDays = openDecisionAges.length === 0 ? null : Math.round(openDecisionAges.reduce((a, b) => a + b, 0) / openDecisionAges.length);
+
+    const closedDecisions = decisionRecords.filter((decision) => ["Completed", "Reversed"].includes(decision.decisionStatus));
+    const closedLatencies = closedDecisions
+      .map((decision) => {
+        const start = getDateValue(decision.decisionDate || decision.createdAt);
+        const end = getDateValue(decision.reviewDate) || nowMs;
+        return start > 0 && end > start ? Math.floor((end - start) / (1000 * 60 * 60 * 24)) : null;
+      })
+      .filter((days): days is number => days !== null);
+    const avgClosedDecisionDays = closedLatencies.length === 0 ? null : Math.round(closedLatencies.reduce((a, b) => a + b, 0) / closedLatencies.length);
+
+    const selfSufficiencyPct = totalWork === 0 ? null : pctNonFounder;
+
+    return {
+      totalWork,
+      pctValidOwner,
+      pctNonFounder,
+      pctDelegatedStalled,
+      topOwnerShare,
+      delegationQuality,
+      delegationScore,
+      openDecisionCount: openDecisions.length,
+      avgOpenDecisionDays,
+      closedDecisionCount: closedDecisions.length,
+      avgClosedDecisionDays,
+      selfSufficiencyPct,
+    };
+  })();
 
   const isBlankOwnerText = (ownerValue?: string) => {
     const text = (ownerValue || "").trim();
@@ -7223,6 +7351,9 @@ export default function Home() {
     growthStallCount: todayBrief.growthStallCount,
     outstandingCount: todayBrief.outstandingCount,
     availableOperatingCash: cashIsConfigured ? availableOperatingCash : null,
+    delegationQualityPct: organisationalHealth.delegationScore,
+    avgOpenDecisionDays: organisationalHealth.avgOpenDecisionDays,
+    selfSufficiencyPct: organisationalHealth.selfSufficiencyPct,
     outstandingKeys: todayBrief.outstandingKeys,
   };
 
@@ -7260,6 +7391,26 @@ export default function Home() {
       .filter((entry) => entry.date < todaySnapshotDate)
       .sort((a, b) => b.date.localeCompare(a.date));
     return earlier[0] || null;
+  })();
+
+  const healthTrend = (() => {
+    if (!previousDaySnapshot) {
+      return { delegation: null as string | null, latency: null as string | null, selfSufficiency: null as string | null };
+    }
+
+    const trendText = (current: number | null, previous: number | null | undefined, lowerIsBetter: boolean, unit: string) => {
+      if (current === null || previous === null || previous === undefined || current === previous) {
+        return null;
+      }
+      const improved = lowerIsBetter ? current < previous : current > previous;
+      return `${current}${unit} ${improved ? "↑" : "↓"} vs ${previous}${unit} ${improved ? "(improving)" : "(worsening)"}`;
+    };
+
+    return {
+      delegation: trendText(organisationalHealth.delegationScore, previousDaySnapshot.delegationQualityPct, false, ""),
+      latency: trendText(organisationalHealth.avgOpenDecisionDays, previousDaySnapshot.avgOpenDecisionDays, true, "d"),
+      selfSufficiency: trendText(organisationalHealth.selfSufficiencyPct, previousDaySnapshot.selfSufficiencyPct, false, "%"),
+    };
   })();
 
   const postureChange = (() => {
@@ -9729,6 +9880,72 @@ export default function Home() {
                   {decisionTrackRecord.reviewedDecisions.length === 0 && decisionTrackRecord.reviewsDue.length === 0 ? (
                     <div className="mt-4 rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
                       No decisions reviewed yet. When a decision is due, open it, record the actual outcome and rating, and set the final status.
+                    </div>
+                  ) : null}
+                </section>
+
+                <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                  <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Organisational health &amp; self-sufficiency</div>
+
+                  <p className="mb-3 max-w-3xl text-[13px] leading-5 text-[#524d49]">
+                    Whether the business can run without the founder carrying it. These are derived from current ownership, delegation and decision records — not targets.
+                  </p>
+
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Delegation quality</div>
+                      <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">{organisationalHealth.delegationQuality.label}</div>
+                      <div className="mt-1.5 space-y-0.5 text-[11px] leading-4 text-[#4d4944]">
+                        {organisationalHealth.pctValidOwner !== null ? <div>{organisationalHealth.pctValidOwner}% valid owner</div> : null}
+                        {organisationalHealth.pctNonFounder !== null ? <div>{organisationalHealth.pctNonFounder}% not founder-owned</div> : null}
+                        <div>{organisationalHealth.pctDelegatedStalled !== null ? `${organisationalHealth.pctDelegatedStalled}% of delegated work stalled / at risk` : "No delegated work — stalled share N/A"}</div>
+                        {organisationalHealth.topOwnerShare !== null ? <div>Top owner carries {organisationalHealth.topOwnerShare}%</div> : null}
+                      </div>
+                      {healthTrend.delegation ? <div className="mt-1.5 text-[10px] text-[#4d4944]">{healthTrend.delegation}</div> : null}
+                    </div>
+
+                    <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Flows without founder</div>
+                      <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">
+                        {organisationalHealth.selfSufficiencyPct === null ? "—" : `${organisationalHealth.selfSufficiencyPct}%`}
+                      </div>
+                      <div className="mt-1.5 text-[11px] leading-4 text-[#4d4944]">
+                        {organisationalHealth.selfSufficiencyPct === null
+                          ? "No active work to measure."
+                          : `${organisationalHealth.selfSufficiencyPct}% of actively owned work is owned by someone other than the founder.`}
+                      </div>
+                      {healthTrend.selfSufficiency ? <div className="mt-1.5 text-[10px] text-[#4d4944]">{healthTrend.selfSufficiency}</div> : null}
+                    </div>
+
+                    <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Avg open decision age</div>
+                      <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">
+                        {organisationalHealth.avgOpenDecisionDays === null ? "—" : `${organisationalHealth.avgOpenDecisionDays}d`}
+                      </div>
+                      <div className="mt-1.5 text-[11px] leading-4 text-[#4d4944]">
+                        {organisationalHealth.avgOpenDecisionDays === null
+                          ? "No open decisions to measure."
+                          : `${organisationalHealth.openDecisionCount} open decision${organisationalHealth.openDecisionCount === 1 ? "" : "s"}, average age.`}
+                      </div>
+                      {healthTrend.latency ? <div className="mt-1.5 text-[10px] text-[#4d4944]">{healthTrend.latency}</div> : null}
+                    </div>
+
+                    <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Avg time to close decisions</div>
+                      <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">
+                        {organisationalHealth.avgClosedDecisionDays === null ? "—" : `${organisationalHealth.avgClosedDecisionDays}d`}
+                      </div>
+                      <div className="mt-1.5 text-[11px] leading-4 text-[#4d4944]">
+                        {organisationalHealth.avgClosedDecisionDays === null
+                          ? "No closed decisions yet."
+                          : `Across ${organisationalHealth.closedDecisionCount} closed decision${organisationalHealth.closedDecisionCount === 1 ? "" : "s"}.`}
+                      </div>
+                    </div>
+                  </div>
+
+                  {organisationalHealth.delegationQuality.label === "Insufficient data" ? (
+                    <div className="mt-3 rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-2.5 text-[12px] text-[#4d4944]">
+                      Limited data — delegation quality is indicative only until more active work has valid owners.
                     </div>
                   ) : null}
                 </section>
