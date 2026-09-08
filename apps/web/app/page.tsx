@@ -2455,12 +2455,14 @@ type TodayBriefStep = {
   hint: string;
 };
 
-function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsClear, onOpenStep }: {
+function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsClear, freshness, freshnessIsClear, onOpenStep }: {
   posture: string;
   postureIsClear: boolean;
   steps: TodayBriefStep[];
   delegation: string;
   delegationIsClear: boolean;
+  freshness: string;
+  freshnessIsClear: boolean;
   onOpenStep: (stepLabel: string) => void;
 }) {
   return (
@@ -2498,6 +2500,10 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
 
       <div className={`mt-4 rounded-xl border px-3 py-2.5 text-[12px] leading-5 ${delegationIsClear ? "border-[#d3cbc3] bg-white text-[#2f2b28]" : "border-[#c9b8a3] bg-[#f5efe6] text-[#2f2b28]"}`}>
         <span className="font-medium text-[#171717]">Today&apos;s delegation:</span> {delegation}
+      </div>
+
+      <div className={`mt-3 rounded-xl border px-3 py-2.5 text-[12px] leading-5 ${freshnessIsClear ? "border-[#d3cbc3] bg-white text-[#2f2b28]" : "border-[#c9b8a3] bg-[#f5efe6] text-[#2f2b28]"}`}>
+        <span className="font-medium text-[#171717]">Trust the picture:</span> {freshness}
       </div>
     </div>
   );
@@ -6214,6 +6220,17 @@ export default function Home() {
         }
       }
 
+      const isAlreadyFlagged = reasons.length > 0;
+      if (!isAlreadyFlagged && action.status === "In Progress") {
+        const referenceTime = getDateValue(action.dueDate) || getDateValue(action.createdDate || action.createdAt);
+        if (referenceTime > 0) {
+          const daysSinceReference = Math.floor((now - referenceTime) / (1000 * 60 * 60 * 24));
+          if (daysSinceReference >= 14) {
+            reasons.push("STALE IN-PROGRESS ACTION");
+          }
+        }
+      }
+
       if (reasons.length > 0) {
         addAttentionItem(reasons[0], {
           id: action.id,
@@ -6223,9 +6240,9 @@ export default function Home() {
           reasons,
           statusText: `${action.status} / ${action.priority} / ${action.dueDate ? formatCapturedAt(action.dueDate) : "No due date"}`,
           area: getAreaText(action),
-          attentionRank: action.status === "Blocked" || Boolean(dependencyBlocker) ? 1 : action.dueDate && getDateValue(action.dueDate) < now ? 2 : ["Critical", "High"].includes(action.priority) ? 6 : 8,
+          attentionRank: action.status === "Blocked" || Boolean(dependencyBlocker) ? 1 : action.dueDate && getDateValue(action.dueDate) < now ? 2 : ["Critical", "High"].includes(action.priority) ? 6 : reasons[0] === "STALE IN-PROGRESS ACTION" ? 7 : 8,
           tieWeight: action.priority === "Critical" ? 2 : action.priority === "High" ? 1 : 0,
-          priorityScore: getActionPriorityScore(action),
+          priorityScore: reasons[0] === "STALE IN-PROGRESS ACTION" ? 65 : getActionPriorityScore(action),
           sortDate: getDateValue(action.dueDate || action.createdAt),
           sortDateAscending: Boolean(action.dueDate),
           onOpen: () => {
@@ -6266,6 +6283,24 @@ export default function Home() {
         ? Math.max(1, Math.floor((startOfToday.getTime() - targetCompletionDate.getTime()) / (1000 * 60 * 60 * 24)))
         : 0;
 
+      const referenceDate = getDateValue(project.targetCompletionDate || project.startDate);
+      const daysSinceReference = referenceDate ? Math.floor((now - referenceDate) / (1000 * 60 * 60 * 24)) : 0;
+      const isStaleActive = Boolean(
+        (isOpen || isInProgress) &&
+        !isBlocked &&
+        !isOverdue &&
+        referenceDate > 0 &&
+        daysSinceReference >= 21,
+      );
+      const isStaleApproaching = Boolean(
+        isStaleActive &&
+        isInProgress &&
+        hasTargetCompletionDate &&
+        targetCompletionDate &&
+        targetCompletionDate >= startOfToday &&
+        (targetCompletionDate.getTime() - startOfToday.getTime()) / (1000 * 60 * 60 * 24) <= 14,
+      );
+
       if (isBlocked) {
         reasons.push("BLOCKED PROJECT");
       }
@@ -6279,6 +6314,9 @@ export default function Home() {
       if (isPastStartNotStarted) {
         reasons.push("PAST START DATE • NOT STARTED");
       }
+      if (isStaleActive) {
+        reasons.push(isStaleApproaching ? "STALE PROJECT • TARGET APPROACHING" : "STALE PROJECT");
+      }
 
       if (reasons.length > 0) {
         addAttentionItem(reasons[0], {
@@ -6289,9 +6327,9 @@ export default function Home() {
           reasons,
           statusText: `${project.status || "No status"} / ${project.targetCompletionDate ? formatCapturedAt(project.targetCompletionDate) : "No target completion date"}`,
           area: project.area,
-          attentionRank: isBlocked ? 1 : isOverdue ? 2 : isDueSoon ? 3 : 4,
+          attentionRank: isBlocked ? 1 : isOverdue ? 2 : isDueSoon ? 3 : isStaleActive ? 5 : 4,
           tieWeight: 0,
-          priorityScore: isOverdue ? 180 : isDueSoon ? 120 : 60,
+          priorityScore: isOverdue ? 180 : isDueSoon ? 120 : isStaleActive ? 70 : 60,
           sortDate: getDateValue(project.targetCompletionDate || project.startDate),
           sortDateAscending: Boolean(project.targetCompletionDate),
           targetCompletionDate: project.targetCompletionDate,
@@ -6458,6 +6496,10 @@ export default function Home() {
     ).values(),
   ).sort(compareAttentionItems);
 
+  const staleRecords = commandAttentionItemList.filter((item) =>
+    item.reasons.some((reason) => reason === "STALE PROJECT" || reason === "STALE PROJECT • TARGET APPROACHING" || reason === "STALE IN-PROGRESS ACTION"),
+  );
+
   const founderFocusList = (() => {
     type FocusCandidate = {
       key: string;
@@ -6594,8 +6636,27 @@ export default function Home() {
       });
     });
 
+    staleRecords.forEach((item) => {
+      const isProject = item.objectType === "Project";
+      const targetApproaching = item.reasons.includes("STALE PROJECT • TARGET APPROACHING");
+      push({
+        key: `${item.objectType}:${item.id}`,
+        objectType: item.objectType,
+        id: item.id,
+        title: item.title,
+        area: item.area,
+        score: targetApproaching ? 270 : 230,
+        tier: 3,
+        reason: isProject
+          ? targetApproaching
+            ? "This project is still marked active but has not moved in weeks, and its target date is close — the picture may be stale and it could fail silently."
+            : "This project is still marked active but has not moved in weeks, so the operating picture may no longer reflect reality."
+          : "This action has been sitting In Progress for over two weeks without resolving, so it is likely stalled rather than genuinely progressing.",
+      });
+    });
+
     commandAttentionItemList
-      .filter((item) => !item.reasons.some((reason) => reason === "BLOCKED PROJECT" || reason === "BLOCKED" || reason.startsWith("BLOCKED BY PROBLEM:")))
+      .filter((item) => !item.reasons.some((reason) => reason === "BLOCKED PROJECT" || reason === "BLOCKED" || reason.startsWith("BLOCKED BY PROBLEM:") || reason === "STALE PROJECT" || reason === "STALE PROJECT • TARGET APPROACHING" || reason === "STALE IN-PROGRESS ACTION"))
       .forEach((item) => {
         push({
           key: `${item.objectType}:${item.id}`,
@@ -6687,12 +6748,19 @@ export default function Home() {
       ? "Delegation hygiene is clear — every active work item has a valid active owner."
       : `${delegationGapCount} active item${delegationGapCount === 1 ? "" : "s"} lack${delegationGapCount === 1 ? "s" : ""} a valid active owner. ${peopleWithAttention.length} ${peopleWithAttention.length === 1 ? "person is" : "people are"} carrying attention items.`;
 
+    const staleCount = staleRecords.length;
+    const freshness = staleCount === 0
+      ? "The operating picture looks current — no stale active records detected."
+      : `${staleCount} active record${staleCount === 1 ? "" : "s"} may be stale — the operating picture needs review.`;
+
     return {
       posture,
       postureIsClear: postureParts.length === 0,
       steps,
       delegation,
       delegationIsClear: delegationGapCount === 0,
+      freshness,
+      freshnessIsClear: staleCount === 0,
     };
   })();
 
@@ -8622,6 +8690,8 @@ export default function Home() {
                   steps={todayBrief.steps}
                   delegation={todayBrief.delegation}
                   delegationIsClear={todayBrief.delegationIsClear}
+                  freshness={todayBrief.freshness}
+                  freshnessIsClear={todayBrief.freshnessIsClear}
                   onOpenStep={handleOpenTodayStep}
                 />
               </div>
