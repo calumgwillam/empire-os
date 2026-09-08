@@ -33,6 +33,7 @@ const EXPENSE_STORAGE_KEY = "empire-os-expense-records";
 const COMMITMENT_STORAGE_KEY = "empire-os-financial-commitments";
 const SAVED_VIEWS_STORAGE_KEY = "empire-os-records-in-motion-views";
 const DEFAULT_SAVED_VIEW_STORAGE_KEY = "empire-os-records-in-motion-default-view";
+const DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY = "empire-os-daily-posture-snapshots";
 
 const sharedAreaOptions = [
   "Garden Maintenance",
@@ -439,6 +440,20 @@ type CashPositionRecord = {
   reservedTax: string;
   safetyBuffer: string;
   lastUpdated: string;
+};
+
+type DailyPostureSnapshot = {
+  date: string;
+  focusCount: number;
+  ownershipGapCount: number;
+  decisionReviewsDue: number;
+  executionGapCount: number;
+  learningGapCount: number;
+  staleRecordCount: number;
+  financeAttentionCount: number;
+  growthStallCount: number;
+  outstandingCount: number;
+  availableOperatingCash: number | null;
 };
 
 type IncomeRecord = {
@@ -2455,7 +2470,13 @@ type TodayBriefStep = {
   hint: string;
 };
 
-function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsClear, freshness, freshnessIsClear, growth, growthIsClear, progress, deskIsClear, onOpenStep }: {
+type TrendItem = {
+  label: string;
+  text: string;
+  direction: "up" | "down" | "flat";
+};
+
+function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsClear, freshness, freshnessIsClear, growth, growthIsClear, progress, deskIsClear, trendItems, sevenDayShape, onOpenStep }: {
   posture: string;
   postureIsClear: boolean;
   steps: TodayBriefStep[];
@@ -2467,6 +2488,8 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
   growthIsClear: boolean;
   progress: string;
   deskIsClear: boolean;
+  trendItems: TrendItem[];
+  sevenDayShape: string;
   onOpenStep: (stepLabel: string) => void;
 }) {
   return (
@@ -2524,6 +2547,32 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
       <div className={`mt-3 rounded-xl border px-3 py-2.5 text-[12px] leading-5 ${growthIsClear ? "border-[#d3cbc3] bg-white text-[#2f2b28]" : "border-[#b8c4a3] bg-[#f1f4ea] text-[#2f2b28]"}`}>
         <span className="font-medium text-[#171717]">Growth:</span> {growth}
       </div>
+
+      {trendItems.length > 0 || sevenDayShape ? (
+        <div className="mt-3 rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          {trendItems.length > 0 ? (
+            <div className="flex flex-wrap gap-x-3 gap-y-1">
+              {trendItems.map((item) => {
+                const improved = item.direction === "flat" ? null : item.label === "Operating cash" ? item.direction === "up" : item.direction === "down";
+                const colorClass = improved === null ? "text-[#4d4944]" : improved ? "text-[#2f5d3a]" : "text-[#6a3328]";
+                return (
+                  <span key={item.label} className="text-[11px] leading-5 text-[#4d4944]">
+                    <span className="font-medium text-[#171717]">{item.label}:</span>{" "}
+                    <span className={colorClass}>
+                      {item.text}
+                    </span>
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
+          {sevenDayShape ? (
+            <div className="mt-1.5 text-[11px] leading-5 text-[#4d4944]">
+              <span className="font-medium text-[#171717]">Outstanding over recent days:</span> {sevenDayShape}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -4732,6 +4781,7 @@ export default function Home() {
   const [incomeRecords, setIncomeRecords] = useState<IncomeRecord[]>([]);
   const [expenseRecords, setExpenseRecords] = useState<ExpenseRecord[]>([]);
   const [commitmentRecords, setCommitmentRecords] = useState<CommitmentRecord[]>([]);
+  const [dailyPostureSnapshots, setDailyPostureSnapshots] = useState<DailyPostureSnapshot[]>([]);
   const [cashPositionEditor, setCashPositionEditor] = useState<CashPositionRecord | null>(null);
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
   const [incomeEditor, setIncomeEditor] = useState<IncomeRecord | null>(null);
@@ -4849,6 +4899,31 @@ export default function Home() {
 
         if (Array.isArray(parsedCommitments)) {
           setCommitmentRecords(parsedCommitments);
+        }
+      }
+
+      const storedSnapshots = window.localStorage.getItem(DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY);
+      if (storedSnapshots) {
+        const parsedSnapshots = JSON.parse(storedSnapshots);
+
+        if (Array.isArray(parsedSnapshots)) {
+          const normalised = parsedSnapshots
+            .filter((entry) => entry && typeof entry === "object" && typeof entry.date === "string")
+            .map((entry) => ({
+              date: entry.date,
+              focusCount: typeof entry.focusCount === "number" ? entry.focusCount : 0,
+              ownershipGapCount: typeof entry.ownershipGapCount === "number" ? entry.ownershipGapCount : 0,
+              decisionReviewsDue: typeof entry.decisionReviewsDue === "number" ? entry.decisionReviewsDue : 0,
+              executionGapCount: typeof entry.executionGapCount === "number" ? entry.executionGapCount : 0,
+              learningGapCount: typeof entry.learningGapCount === "number" ? entry.learningGapCount : 0,
+              staleRecordCount: typeof entry.staleRecordCount === "number" ? entry.staleRecordCount : 0,
+              financeAttentionCount: typeof entry.financeAttentionCount === "number" ? entry.financeAttentionCount : 0,
+              growthStallCount: typeof entry.growthStallCount === "number" ? entry.growthStallCount : 0,
+              outstandingCount: typeof entry.outstandingCount === "number" ? entry.outstandingCount : 0,
+              availableOperatingCash: typeof entry.availableOperatingCash === "number" ? entry.availableOperatingCash : null,
+            }))
+            .sort((a, b) => a.date.localeCompare(b.date));
+          setDailyPostureSnapshots(normalised);
         }
       }
     } catch {
@@ -6904,6 +6979,14 @@ export default function Home() {
       growth,
       growthIsClear,
       outstandingCount,
+      authorityCount,
+      reviewDueCount,
+      ownershipGapCount,
+      learningGapCount,
+      executionGapCount,
+      staleCount,
+      financeCount,
+      growthStallCount: growthAttention.count,
     };
   })();
 
@@ -7013,6 +7096,113 @@ export default function Home() {
   const todayProgressText = clearedThisSession.total === 0 && todayBrief.outstandingCount === 0
     ? "Nothing on the desk."
     : `Today: ${clearedThisSession.total} cleared • ${todayBrief.outstandingCount} still outstanding${clearedCategoryBreakdown ? ` (${clearedCategoryBreakdown})` : ""}`;
+
+  const todaySnapshotDate = new Date().toISOString().slice(0, 10);
+  const cashIsConfigured = cashPosition.currentCash.trim() !== "" || cashPosition.safetyBuffer.trim() !== "";
+  const todaySnapshot: DailyPostureSnapshot = {
+    date: todaySnapshotDate,
+    focusCount: founderFocusList.length,
+    ownershipGapCount: todayBrief.ownershipGapCount,
+    decisionReviewsDue: todayBrief.reviewDueCount,
+    executionGapCount: todayBrief.executionGapCount,
+    learningGapCount: todayBrief.learningGapCount,
+    staleRecordCount: todayBrief.staleCount,
+    financeAttentionCount: todayBrief.financeCount,
+    growthStallCount: todayBrief.growthStallCount,
+    outstandingCount: todayBrief.outstandingCount,
+    availableOperatingCash: cashIsConfigured ? availableOperatingCash : null,
+  };
+
+  const todaySnapshotJson = JSON.stringify(todaySnapshot);
+  const snapshotsLoadedRef = useRef(false);
+
+  useEffect(() => {
+    if (!snapshotsLoadedRef.current) {
+      snapshotsLoadedRef.current = true;
+      return;
+    }
+
+    setDailyPostureSnapshots((current) => {
+      const existingTodayIndex = current.findIndex((entry) => entry.date === todaySnapshotDate);
+
+      if (existingTodayIndex >= 0) {
+        const existing = current[existingTodayIndex];
+        if (JSON.stringify(existing) === todaySnapshotJson) {
+          return current;
+        }
+        const next = [...current];
+        next[existingTodayIndex] = todaySnapshot;
+        window.localStorage.setItem(DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, JSON.stringify(next));
+        return next;
+      }
+
+      const next = [...current, todaySnapshot].sort((a, b) => a.date.localeCompare(b.date));
+      window.localStorage.setItem(DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, [todaySnapshotJson, todaySnapshotDate]);
+
+  const previousDaySnapshot = (() => {
+    const earlier = dailyPostureSnapshots
+      .filter((entry) => entry.date < todaySnapshotDate)
+      .sort((a, b) => b.date.localeCompare(a.date));
+    return earlier[0] || null;
+  })();
+
+  const trendItems = (() => {
+    if (!previousDaySnapshot) {
+      return [] as Array<{ label: string; text: string; direction: "up" | "down" | "flat" }>;
+    }
+
+    const gapItem = (label: string, currentValue: number, previousValue: number) => {
+      if (currentValue === previousValue) {
+        return { label, text: `${currentValue} → unchanged`, direction: "flat" as const };
+      }
+      const improved = currentValue < previousValue;
+      return {
+        label,
+        text: `${currentValue} ${improved ? "↓" : "↑"} from ${previousValue}`,
+        direction: improved ? ("down" as const) : ("up" as const),
+      };
+    };
+
+    const items = [
+      gapItem("Ownership gaps", todayBrief.ownershipGapCount, previousDaySnapshot.ownershipGapCount),
+      gapItem("Decision reviews", todayBrief.reviewDueCount, previousDaySnapshot.decisionReviewsDue),
+      gapItem("Execution gaps", todayBrief.executionGapCount, previousDaySnapshot.executionGapCount),
+      gapItem("Learning gaps", todayBrief.learningGapCount, previousDaySnapshot.learningGapCount),
+      gapItem("Stale records", todayBrief.staleCount, previousDaySnapshot.staleRecordCount),
+      gapItem("Finance attention", todayBrief.financeCount, previousDaySnapshot.financeAttentionCount),
+      gapItem("Growth stalls", todayBrief.growthStallCount, previousDaySnapshot.growthStallCount),
+    ];
+
+    if (todaySnapshot.availableOperatingCash !== null && previousDaySnapshot.availableOperatingCash !== null) {
+      const currentCash = todaySnapshot.availableOperatingCash;
+      const previousCash = previousDaySnapshot.availableOperatingCash;
+      if (currentCash === previousCash) {
+        items.push({ label: "Operating cash", text: `${formatFinanceAmount(currentCash)} → unchanged`, direction: "flat" });
+      } else {
+        const improved = currentCash > previousCash;
+        items.push({
+          label: "Operating cash",
+          text: `${formatFinanceAmount(currentCash)} ${improved ? "↑" : "↓"} from ${formatFinanceAmount(previousCash)}`,
+          direction: improved ? "up" : "down",
+        });
+      }
+    }
+
+    return items;
+  })();
+
+  const sevenDayShape = (() => {
+    const recent = [...dailyPostureSnapshots]
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .slice(-7);
+    if (recent.length === 0) {
+      return "";
+    }
+    return recent.map((entry) => entry.outstandingCount).join(" → ");
+  })();
 
   const getAttentionGroup = (item: AttentionItem) => {
     const isBlockedOrWaiting = item.reasons.some((reason) =>
@@ -8946,6 +9136,8 @@ export default function Home() {
                   growthIsClear={todayBrief.growthIsClear}
                   progress={todayProgressText}
                   deskIsClear={deskIsClear}
+                  trendItems={trendItems}
+                  sevenDayShape={sevenDayShape}
                   onOpenStep={handleOpenTodayStep}
                 />
               </div>
