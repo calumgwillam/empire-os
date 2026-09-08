@@ -121,6 +121,7 @@ type CaptureConversionRecord = {
   riskLevel?: string;
   reviewDate?: string;
   actualOutcome?: string;
+  outcomeRating?: string;
   lessons?: string;
   decisionStatus?: string;
   opportunityTitle?: string;
@@ -218,6 +219,7 @@ type ActionRecord = CaptureConversionRecord & {
 
 const decisionRiskOptions = ["Low", "Medium", "High", "Critical"] as const;
 const decisionStatusOptions = ["Draft", "Active", "Under Review", "Completed", "Reversed"] as const;
+const decisionOutcomeRatingOptions = ["", "Worked", "Partially worked", "Failed"] as const;
 
 type DecisionRiskLevel = (typeof decisionRiskOptions)[number];
 type DecisionStatus = (typeof decisionStatusOptions)[number];
@@ -236,6 +238,7 @@ type DecisionRecord = CaptureConversionRecord & {
   riskLevel: DecisionRiskLevel;
   reviewDate: string;
   actualOutcome: string;
+  outcomeRating: string;
   lessons: string;
   decisionStatus: DecisionStatus;
   relatedOpportunity: string;
@@ -777,6 +780,7 @@ function normalizeDecisionRecord(record: CaptureConversionRecord): DecisionRecor
     riskLevel: (record.riskLevel as DecisionRiskLevel | undefined) ?? "Medium",
     reviewDate: record.reviewDate?.trim() || "",
     actualOutcome: record.actualOutcome?.trim() || "",
+    outcomeRating: record.outcomeRating?.trim() || "",
     lessons: record.lessons?.trim() || "",
     status: decisionStatus,
     decisionStatus,
@@ -4179,17 +4183,20 @@ function SopDetailPanel({ sop, upstream, downstream, onClose, onChange, onSave, 
 type DecisionDetailPanelProps = {
   decision: DecisionRecord;
   linkedActions: ActionRecord[];
+  linkedLessons: LessonRecord[];
   upstream: RelatedRecordItem[];
   downstream: RelatedRecordItem[];
   onClose: () => void;
   onChange: (field: keyof DecisionRecord, value: string) => void;
   onSave: () => void;
   onCreateLinkedAction: () => void;
+  onCreateLinkedLesson: () => void;
   onOpenLinkedAction: (action: ActionRecord) => void;
+  onOpenLinkedLesson: (lesson: LessonRecord) => void;
   onOpenRelatedOpportunity?: () => void;
 };
 
-function DecisionDetailPanel({ decision, linkedActions, upstream, downstream, onClose, onChange, onSave, onCreateLinkedAction, onOpenLinkedAction, onOpenRelatedOpportunity }: DecisionDetailPanelProps) {
+function DecisionDetailPanel({ decision, linkedActions, linkedLessons, upstream, downstream, onClose, onChange, onSave, onCreateLinkedAction, onCreateLinkedLesson, onOpenLinkedAction, onOpenLinkedLesson, onOpenRelatedOpportunity }: DecisionDetailPanelProps) {
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
@@ -4369,16 +4376,56 @@ function DecisionDetailPanel({ decision, linkedActions, upstream, downstream, on
             />
           </div>
 
-          <div className="md:col-span-2">
-            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
-              Actual outcome
-            </label>
-            <textarea
-              rows={3}
-              value={decision.actualOutcome}
-              onChange={(event) => onChange("actualOutcome", event.target.value)}
-              className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
-            />
+          <div className="md:col-span-2 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] p-4">
+            <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">
+              Formal review
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Outcome rating
+                </label>
+                <select
+                  value={decision.outcomeRating}
+                  onChange={(event) => onChange("outcomeRating", event.target.value)}
+                  className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                >
+                  {decisionOutcomeRatingOptions.map((option) => (
+                    <option key={option} value={option}>{option || "Not yet rated"}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                  Final status
+                </label>
+                <select
+                  value={decision.decisionStatus}
+                  onChange={(event) => onChange("decisionStatus", event.target.value)}
+                  className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                >
+                  {decisionStatusOptions.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="mt-4">
+              <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                Actual outcome
+              </label>
+              <textarea
+                rows={3}
+                value={decision.actualOutcome}
+                onChange={(event) => onChange("actualOutcome", event.target.value)}
+                className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+              />
+            </div>
+            {decision.expectedOutcome ? (
+              <div className="mt-3 rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#524d49]">
+                <span className="font-medium text-[#171717]">Expected:</span> {decision.expectedOutcome}
+              </div>
+            ) : null}
           </div>
 
           <div className="md:col-span-2">
@@ -4415,7 +4462,7 @@ function DecisionDetailPanel({ decision, linkedActions, upstream, downstream, on
           </div>
         </div>
 
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
@@ -4430,6 +4477,15 @@ function DecisionDetailPanel({ decision, linkedActions, upstream, downstream, on
           >
             Create linked Action
           </button>
+          {(decision.decisionStatus === "Completed" || decision.decisionStatus === "Reversed") ? (
+            <button
+              type="button"
+              onClick={onCreateLinkedLesson}
+              className="rounded-lg border border-[#171717] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#171717]"
+            >
+              Create lesson from decision
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onSave}
@@ -4455,6 +4511,29 @@ function DecisionDetailPanel({ decision, linkedActions, upstream, downstream, on
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-medium">{action.actionTitle}</span>
                     <span className="text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{action.status}</span>
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="mt-6 rounded-xl border border-[#d3cbc3] bg-[#f1eee9] p-3">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Linked Lessons</div>
+          <div className="mt-3 space-y-2">
+            {linkedLessons.length === 0 ? (
+              <div className="text-[12px] text-[#4d4944]">No linked lessons yet.</div>
+            ) : (
+              linkedLessons.map((lesson) => (
+                <button
+                  key={lesson.id}
+                  type="button"
+                  onClick={() => onOpenLinkedLesson(lesson)}
+                  className="block w-full rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-left text-[12px] text-[#171717] hover:border-[#171717]"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-medium">{lesson.lessonTitle}</span>
+                    <span className="text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{lesson.status}</span>
                   </div>
                 </button>
               ))
@@ -4517,6 +4596,7 @@ export default function Home() {
   const [creatingLinkedActionForDecisionId, setCreatingLinkedActionForDecisionId] = useState<string | null>(null);
   const [creatingLinkedDecisionForOpportunityId, setCreatingLinkedDecisionForOpportunityId] = useState<string | null>(null);
   const [creatingLinkedSystemForLessonId, setCreatingLinkedSystemForLessonId] = useState<string | null>(null);
+  const [creatingLinkedLessonForDecisionId, setCreatingLinkedLessonForDecisionId] = useState<string | null>(null);
   const [creatingLinkedSopForSystemId, setCreatingLinkedSopForSystemId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<DestinationKey>("Capture");
   const [selectedPillar, setSelectedPillar] = useState<string | null>(null);
@@ -5069,6 +5149,53 @@ export default function Home() {
       crossPillarIssues,
       delegateItems,
       founderAuthorityItems,
+    };
+  })();
+
+  const decisionTrackRecord = (() => {
+    const reviewedDecisions = decisionRecords.filter((decision) =>
+      decision.decisionStatus === "Completed" || decision.decisionStatus === "Reversed" || Boolean(decision.outcomeRating),
+    );
+    const reviewsDue = decisionRecords.filter((decision) =>
+      ["Draft", "Active", "Under Review"].includes(decision.decisionStatus) &&
+      Boolean(decision.reviewDate) &&
+      new Date(decision.reviewDate).getTime() <= Date.now(),
+    );
+    const ratings = { worked: 0, partially: 0, failed: 0, unrated: 0 };
+    reviewedDecisions.forEach((decision) => {
+      if (decision.outcomeRating === "Worked") ratings.worked += 1;
+      else if (decision.outcomeRating === "Partially worked") ratings.partially += 1;
+      else if (decision.outcomeRating === "Failed") ratings.failed += 1;
+      else ratings.unrated += 1;
+    });
+    const byMaker = new Map<string, { total: number; worked: number; failed: number }>();
+    reviewedDecisions.forEach((decision) => {
+      const maker = decision.decisionMaker || "Unassigned";
+      const entry = byMaker.get(maker) || { total: 0, worked: 0, failed: 0 };
+      entry.total += 1;
+      if (decision.outcomeRating === "Worked") entry.worked += 1;
+      if (decision.outcomeRating === "Failed") entry.failed += 1;
+      byMaker.set(maker, entry);
+    });
+    const byPillar = new Map<string, { total: number; worked: number; failed: number }>();
+    reviewedDecisions.forEach((decision) => {
+      const pillar = getAreaText(decision) || "Unassigned";
+      const entry = byPillar.get(pillar) || { total: 0, worked: 0, failed: 0 };
+      entry.total += 1;
+      if (decision.outcomeRating === "Worked") entry.worked += 1;
+      if (decision.outcomeRating === "Failed") entry.failed += 1;
+      byPillar.set(pillar, entry);
+    });
+    const lessonsCreated = reviewedDecisions.filter((decision) =>
+      lessonRecords.some((lesson) => lesson.relatedDecision === decision.id),
+    ).length;
+    return {
+      reviewsDue,
+      reviewedDecisions,
+      ratings,
+      byMaker: [...byMaker.entries()].map(([maker, counts]) => ({ maker, ...counts })),
+      byPillar: [...byPillar.entries()].map(([pillar, counts]) => ({ pillar, ...counts })),
+      lessonsCreated,
     };
   })();
 
@@ -7042,6 +7169,74 @@ export default function Home() {
     });
   };
 
+  const handleCreateLinkedLesson = (decision: DecisionRecord) => {
+    if (creatingLinkedLessonForDecisionId === decision.id) {
+      return;
+    }
+
+    const existingLesson = lessonRecords.find((lesson) => lesson.relatedDecision === decision.id);
+    if (existingLesson) {
+      setSelectedLessonId(existingLesson.id);
+      setLessonEditor(existingLesson);
+      setFeedback({
+        type: "success",
+        message: "A linked Lesson already exists for this Decision.",
+      });
+      return;
+    }
+
+    setCreatingLinkedLessonForDecisionId(decision.id);
+
+    const ratingText = decision.outcomeRating ? ` Outcome rating: ${decision.outcomeRating}.` : "";
+    const actualText = decision.actualOutcome ? ` What actually happened: ${decision.actualOutcome}` : "";
+
+    const createdLesson = normalizeLessonRecord({
+      id: generateConversionId(),
+      sourceCaptureId: decision.sourceCaptureId,
+      targetType: "Convert to Lesson",
+      createdAt: new Date().toISOString(),
+      title: decision.decisionTitle || decision.title,
+      originalRawNote: decision.originalRawNote || decision.decisionStatement || decision.title,
+      relatedArea: decision.relatedArea || decision.relatedPillar || "",
+      importance: decision.importance,
+      status: "New",
+      lessonTitle: `Review: ${decision.decisionTitle || decision.title}`,
+      lessonDescription: `Decision review: ${decision.decisionStatement || decision.title}.${ratingText}${actualText}`.trim(),
+      sourceEvent: `Decision: ${decision.decisionTitle || decision.title}`,
+      dateLearned: new Date().toISOString(),
+      relatedPillar: decision.relatedPillar || decision.relatedArea || "",
+      whyItMatters: decision.expectedOutcome
+        ? `Expected: ${decision.expectedOutcome}.${actualText ? ` Actual: ${decision.actualOutcome}.` : ""}${ratingText}`
+        : `Outcome rating: ${decision.outcomeRating || "Not rated"}.${actualText}`,
+      recommendedChange: decision.lessons || "",
+      relatedProblem: "",
+      relatedProject: "",
+      relatedDecision: decision.id,
+      relatedSystem: "",
+      owner: decision.decisionMaker || "",
+      lessonStatus: "New",
+      relatedCapture: decision.sourceCaptureId,
+    });
+
+    setConversions((currentConversions) => [
+      {
+        ...createdLesson,
+        relatedDecision: decision.id,
+        relatedCapture: decision.sourceCaptureId,
+        relatedPillar: decision.relatedPillar || decision.relatedArea,
+      },
+      ...currentConversions,
+    ]);
+
+    setSelectedLessonId(createdLesson.id);
+    setLessonEditor(createdLesson);
+    setCreatingLinkedLessonForDecisionId(null);
+    setFeedback({
+      type: "success",
+      message: "Linked Lesson created from the Decision.",
+    });
+  };
+
   const handleOpenRelatedLesson = (system: SystemRecord) => {
     const linkedLesson = lessonRecords.find((lesson) => lesson.id === system.relatedLesson);
 
@@ -7832,6 +8027,71 @@ export default function Home() {
                       ))}
                     </div>
                   )}
+                </section>
+
+                <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Decision track record</div>
+                    <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">
+                      {decisionTrackRecord.reviewsDue.length} review{decisionTrackRecord.reviewsDue.length === 1 ? "" : "s"} due
+                    </span>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <MetricCard label="Reviews due" value={String(decisionTrackRecord.reviewsDue.length)} />
+                    <MetricCard label="Reviewed" value={String(decisionTrackRecord.reviewedDecisions.length)} />
+                    <MetricCard label="Lessons created" value={String(decisionTrackRecord.lessonsCreated)} />
+                    <MetricCard
+                      label="Worked / Failed"
+                      value={`${decisionTrackRecord.ratings.worked} / ${decisionTrackRecord.ratings.failed}`}
+                    />
+                  </div>
+
+                  {decisionTrackRecord.reviewedDecisions.length > 0 ? (
+                    <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#2f2b28]">
+                        <span className="font-medium text-[#171717]">Worked:</span> {decisionTrackRecord.ratings.worked}
+                      </div>
+                      <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#2f2b28]">
+                        <span className="font-medium text-[#171717]">Partially worked:</span> {decisionTrackRecord.ratings.partially}
+                      </div>
+                      <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#2f2b28]">
+                        <span className="font-medium text-[#171717]">Failed:</span> {decisionTrackRecord.ratings.failed}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {decisionTrackRecord.byPillar.length > 0 ? (
+                    <div className="mt-4">
+                      <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">By pillar</div>
+                      <div className="flex flex-wrap gap-2">
+                        {decisionTrackRecord.byPillar.map((entry) => (
+                          <span key={entry.pillar} className="rounded-full border border-[#d3cbc3] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28]">
+                            {entry.pillar}: {entry.total} reviewed ({entry.worked} worked, {entry.failed} failed)
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {decisionTrackRecord.byMaker.length > 0 ? (
+                    <div className="mt-4">
+                      <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">By decision maker</div>
+                      <div className="flex flex-wrap gap-2">
+                        {decisionTrackRecord.byMaker.map((entry) => (
+                          <span key={entry.maker} className="rounded-full border border-[#d3cbc3] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28]">
+                            {entry.maker}: {entry.total} reviewed ({entry.worked} worked, {entry.failed} failed)
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {decisionTrackRecord.reviewedDecisions.length === 0 && decisionTrackRecord.reviewsDue.length === 0 ? (
+                    <div className="mt-4 rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
+                      No decisions reviewed yet. When a decision is due, open it, record the actual outcome and rating, and set the final status.
+                    </div>
+                  ) : null}
                 </section>
 
                 <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
@@ -9381,6 +9641,7 @@ export default function Home() {
         <DecisionDetailPanel
           decision={decisionEditor}
           linkedActions={actionRecords.filter((action) => action.relatedDecision === decisionEditor.id)}
+          linkedLessons={lessonRecords.filter((lesson) => lesson.relatedDecision === decisionEditor.id)}
           upstream={[
             ...getCaptureLineage(decisionEditor.sourceCaptureId),
             ...(decisionEditor.relatedOpportunity
@@ -9394,14 +9655,24 @@ export default function Home() {
                   }))
               : []),
           ]}
-          downstream={actionRecords
-            .filter((action) => action.relatedDecision === decisionEditor.id)
-            .map((action) => ({
-              label: "Action",
-              title: action.actionTitle,
-              id: action.id,
-              onClick: () => handleActionEditOpen(action),
-            }))}
+          downstream={[
+            ...actionRecords
+              .filter((action) => action.relatedDecision === decisionEditor.id)
+              .map((action) => ({
+                label: "Action",
+                title: action.actionTitle,
+                id: action.id,
+                onClick: () => handleActionEditOpen(action),
+              })),
+            ...lessonRecords
+              .filter((lesson) => lesson.relatedDecision === decisionEditor.id)
+              .map((lesson) => ({
+                label: "Lesson",
+                title: lesson.lessonTitle,
+                id: lesson.id,
+                onClick: () => handleLessonEditOpen(lesson),
+              })),
+          ]}
           onClose={() => {
             setSelectedDecisionId(null);
             setDecisionEditor(null);
@@ -9409,7 +9680,9 @@ export default function Home() {
           onChange={handleDecisionEditorChange}
           onSave={handleDecisionSave}
           onCreateLinkedAction={() => handleDecisionCreateLinkedAction(decisionEditor)}
+          onCreateLinkedLesson={() => handleCreateLinkedLesson(decisionEditor)}
           onOpenLinkedAction={(action) => handleActionEditOpen(action)}
+          onOpenLinkedLesson={(lesson) => handleLessonEditOpen(lesson)}
         />
       ) : null}
 
