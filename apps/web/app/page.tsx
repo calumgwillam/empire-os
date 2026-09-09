@@ -2871,18 +2871,20 @@ function TodayBrief({ posture, postureIsClear, steps, ownership, ownershipIsClea
   );
 }
 
-function FounderFocusList({ items, onOpen }: { items: FocusListItem[]; onOpen: (objectType: string, id: string) => void }) {
+function FounderFocusList({ items, totalCount, onOpen }: { items: FocusListItem[]; totalCount: number; onOpen: (objectType: string, id: string) => void }) {
   const rankLabels = ["Why this is first", "Why this is second", "Why this is third"];
 
   return (
     <div className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Founder focus — top {items.length} for today</div>
+        <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">
+          Founder focus — {totalCount > 3 ? `top 3 of ${totalCount}` : `top ${items.length}`} for today
+        </div>
       </div>
 
       {items.length === 0 ? (
         <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
-          Nothing requires founder attention right now. The queues below stay visible for review.
+          No immediate founder intervention is currently flagged. Strategic conditions such as founder dependency remain visible elsewhere in Command and Empire.
         </div>
       ) : (
         <div className="space-y-2">
@@ -7672,7 +7674,7 @@ export default function Home() {
     return { signalled, clusters, convergentRisks, clusterByRecordKey };
   })();
 
-  const founderFocusList = (() => {
+  const founderFocusCandidates = (() => {
     type FocusCandidate = {
       key: string;
       objectType: string;
@@ -7680,58 +7682,115 @@ export default function Home() {
       title: string;
       area: string;
       score: number;
-      tier: number;
+      band: number;
+      urgencyTime: number | null;
       reason: string;
     };
 
-    const recordsInConvergentClusters = new Set<string>();
-    correlationLayer.convergentRisks.forEach((cluster) => {
-      cluster.records.forEach((record) => recordsInConvergentClusters.add(record.recordKey));
-    });
-
-    const candidates: FocusCandidate[] = [];
-
-    correlationLayer.convergentRisks.forEach((cluster) => {
-      const root = cluster.records.reduce((best, item) => (item.baseScore > best.baseScore ? item : best), cluster.records[0]);
-      const categoryList = [...cluster.categories].join(", ");
-      candidates.push({
-        key: cluster.clusterKey,
-        objectType: root.objectType,
-        id: root.id,
-        title: cluster.title,
-        area: root.area,
-        score: 420 + cluster.categories.size * 10 + cluster.recordCount,
-        tier: 1,
-        reason: `Convergent risk — one situation is generating ${cluster.categories.size} kinds of signal (${categoryList}) across ${cluster.recordCount} linked records, so it is systemic rather than isolated.`,
-      });
-    });
+    const signalBand = (signals: string[]) => {
+      if (signals.includes("founder authority")) return 1;
+      if (signals.some((signal) => ["blocked", "overdue", "review due", "cash buffer pressure", "overdue commitment", "expected income overdue"].includes(signal))) return 2;
+      if (signals.some((signal) => ["no execution path", "learning not captured", "no valid owner"].includes(signal))) return 4;
+      return 5;
+    };
+    const getUrgencyTime = (objectType: string, id: string) => {
+      const dateValue = objectType === "Action"
+        ? actionRecords.find((record) => record.id === id)?.dueDate
+        : objectType === "Project"
+          ? projects.find((record) => record.id === id)?.targetCompletionDate
+          : objectType === "Decision"
+            ? decisionRecords.find((record) => record.id === id)?.reviewDate
+            : objectType === "Finance" && id.startsWith("commitment:")
+              ? commitmentRecords.find((record) => record.id === id.slice("commitment:".length))?.dueDate
+              : objectType === "Finance" && id.startsWith("income:")
+                ? incomeRecords.find((record) => record.id === id.slice("income:".length))?.date
+                : undefined;
+      const timestamp = dateValue ? getDateValue(dateValue) : 0;
+      return timestamp > 0 ? timestamp : null;
+    };
+    const candidatesByRecord = new Map<string, FocusCandidate>();
+    const addOrUpgradeCandidate = (candidate: FocusCandidate) => {
+      const existing = candidatesByRecord.get(candidate.key);
+      if (!existing || candidate.band < existing.band || (candidate.band === existing.band && candidate.score >= existing.score)) {
+        candidatesByRecord.set(candidate.key, candidate);
+      }
+    };
 
     correlationLayer.signalled.forEach((record, recordKey) => {
-      if (recordsInConvergentClusters.has(recordKey)) {
-        return;
-      }
-
       const signalList = [...record.signals];
       const combinedReason = signalList.length > 1
         ? `Needs attention for ${signalList.length} reasons: ${signalList.join(", ")}.`
         : `Needs attention: ${signalList[0]}.`;
 
-      candidates.push({
+      addOrUpgradeCandidate({
         key: recordKey,
         objectType: record.objectType,
         id: record.id,
         title: record.title,
         area: record.area,
         score: record.baseScore + (signalList.length - 1) * 40,
-        tier: record.baseScore >= 360 ? 1 : record.baseScore >= 240 ? 2 : 3,
+        band: signalBand(signalList),
+        urgencyTime: getUrgencyTime(record.objectType, record.id),
         reason: combinedReason,
       });
     });
 
-    return candidates
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3);
+    const reviewScore: Record<string, number> = {
+      "Authority required": 400,
+      "Critical escalation": 400,
+      "Review due": 300,
+      "Under review": 290,
+      "High-risk judgement": 280,
+    };
+    empireDecisionQueue.founderReviewQueue.forEach((item) => {
+      const key = `${item.objectType}:${item.id}`;
+      const existing = candidatesByRecord.get(key);
+      const band = ["Authority required", "Critical escalation"].includes(item.reasonCategory) ? 1 : 2;
+      addOrUpgradeCandidate({
+        key,
+        objectType: item.objectType,
+        id: item.id,
+        title: item.title,
+        area: item.pillar,
+        score: Math.max(existing?.score ?? 0, reviewScore[item.reasonCategory] ?? 280),
+        band: Math.min(existing?.band ?? band, band),
+        urgencyTime: existing?.urgencyTime ?? getUrgencyTime(item.objectType, item.id),
+        reason: `${item.reasonCategory}: ${item.whyItMatters}`,
+      });
+    });
+
+    correlationLayer.convergentRisks.forEach((cluster) => {
+      const constituentCandidates = cluster.records
+        .map((record) => candidatesByRecord.get(record.recordKey))
+        .filter((candidate): candidate is FocusCandidate => Boolean(candidate));
+      const root = cluster.records.reduce((best, item) => (item.baseScore > best.baseScore ? item : best), cluster.records[0]);
+      const strongestScore = Math.max(...constituentCandidates.map((candidate) => candidate.score), 0);
+      const strongestBand = Math.min(...constituentCandidates.map((candidate) => candidate.band), 3);
+      const urgencyTimes = constituentCandidates
+        .map((candidate) => candidate.urgencyTime)
+        .filter((timestamp): timestamp is number => timestamp !== null);
+      cluster.records.forEach((record) => candidatesByRecord.delete(record.recordKey));
+      candidatesByRecord.set(cluster.clusterKey, {
+        key: cluster.clusterKey,
+        objectType: root.objectType,
+        id: root.id,
+        title: cluster.title,
+        area: root.area,
+        score: Math.max(strongestScore, 420 + cluster.categories.size * 10 + cluster.recordCount),
+        band: strongestBand,
+        urgencyTime: urgencyTimes.length > 0 ? Math.min(...urgencyTimes) : null,
+        reason: `Convergent risk — one situation is generating ${cluster.categories.size} kinds of signal (${[...cluster.categories].join(", ")}) across ${cluster.recordCount} linked records, so it is systemic rather than isolated.`,
+      });
+    });
+
+    return [...candidatesByRecord.values()].sort((left, right) =>
+      left.band - right.band ||
+      right.score - left.score ||
+      (left.urgencyTime ?? Number.POSITIVE_INFINITY) - (right.urgencyTime ?? Number.POSITIVE_INFINITY) ||
+      left.key.localeCompare(right.key),
+    );
   })();
+  const founderFocusList = founderFocusCandidates.slice(0, 3);
 
   const todayBrief = (() => {
     const authorityCount = empireDecisionQueue.founderAuthorityItems.length;
@@ -7742,7 +7801,7 @@ export default function Home() {
       + unassignedAccountability.unresolvedProblems.length;
     const learningGapCount = recurringProblemLearning.gaps.length;
     const executionGapCount = decisionsWithoutExecution.length;
-    const focusCount = founderFocusList.length;
+    const focusCount = founderFocusCandidates.length;
     const ownershipHygieneGapCount = unassignedAccountability.carriedCount;
     const financeCount = cashAttention.count;
 
@@ -7986,7 +8045,7 @@ export default function Home() {
   const cashIsConfigured = cashPosition.currentCash.trim() !== "" || cashPosition.safetyBuffer.trim() !== "";
   const todaySnapshot: DailyPostureSnapshot = {
     date: todaySnapshotDate,
-    focusCount: founderFocusList.length,
+    focusCount: founderFocusCandidates.length,
     ownershipGapCount: todayBrief.ownershipGapCount,
     decisionReviewsDue: todayBrief.reviewDueCount,
     executionGapCount: todayBrief.executionGapCount,
@@ -10136,7 +10195,7 @@ export default function Home() {
               </div>
 
               <div className="mt-5">
-                <FounderFocusList items={founderFocusList} onOpen={handleOpenAttentionRecord} />
+                <FounderFocusList items={founderFocusList} totalCount={founderFocusCandidates.length} onOpen={handleOpenAttentionRecord} />
               </div>
 
               <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
@@ -10418,7 +10477,7 @@ export default function Home() {
               </p>
 
               <div className="mt-6">
-                <FounderFocusList items={founderFocusList} onOpen={handleOpenAttentionRecord} />
+                <FounderFocusList items={founderFocusList} totalCount={founderFocusCandidates.length} onOpen={handleOpenAttentionRecord} />
               </div>
 
               <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
