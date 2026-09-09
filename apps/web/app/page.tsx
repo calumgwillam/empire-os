@@ -1046,6 +1046,27 @@ type CommandRecordGroup = {
   records: CommandRecordItem[];
 };
 
+function isObviousTestTitle(title: string) {
+  const recordKinds = "capture|action|decision|opportunity|project|lesson|problem|system|sop|record|item";
+  const directTestTitle = new RegExp(`^(?:(?:test|demo)(?:\\s+(?:${recordKinds}))?|(?:${recordKinds})\\s+(?:test|demo))$`, "i");
+  const derivativePrefix = new RegExp(`^(?:(?:from\\s+(?:${recordKinds}))|review):\\s*(.+)$`, "i");
+  let candidate = title.trim();
+
+  while (candidate) {
+    if (directTestTitle.test(candidate)) {
+      return true;
+    }
+
+    const derivativeMatch = candidate.match(derivativePrefix);
+    if (!derivativeMatch) {
+      return false;
+    }
+    candidate = derivativeMatch[1].trim();
+  }
+
+  return false;
+}
+
 type RecordControls = {
   searchQuery: string;
   selectedType: string;
@@ -1066,7 +1087,7 @@ type SavedRecordView = {
   pinned?: boolean;
 };
 
-function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: CommandRecordGroup[]; attentionRecordKeys: string[] }) {
+function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureIds }: { groups: CommandRecordGroup[]; attentionRecordKeys: string[]; testSourceCaptureIds: string[] }) {
   const allTypeValue = "All";
   const getDefaultRecordControls = (): RecordControls => ({
     searchQuery: "",
@@ -1088,6 +1109,7 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
   const [defaultSavedViewId, setDefaultSavedViewId] = useState("");
   const [savedViewsLoaded, setSavedViewsLoaded] = useState(false);
   const [defaultSavedViewLoaded, setDefaultSavedViewLoaded] = useState(false);
+  const [hideTestRecords, setHideTestRecords] = useState(true);
   const { searchQuery, selectedType, selectedStatus, selectedArea, selectedOwner, selectedCreatedDate, selectedOperationalDate, sortOrder, attentionOnly } = recordControls;
   const updateRecordControls = (updates: Partial<RecordControls>) =>
     setRecordControls((current) => ({ ...current, ...updates }));
@@ -1313,6 +1335,14 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
 
     return left.title.localeCompare(right.title) || left.id.localeCompare(right.id);
   };
+  const obviousTestSourceIds = new Set([
+    ...testSourceCaptureIds,
+    ...groups.flatMap((group) => group.records
+      .filter((record) => record.sourceCaptureId && isObviousTestTitle(record.title))
+      .map((record) => record.sourceCaptureId)),
+  ]);
+  const isObviousTestRecord = (record: CommandRecordItem) =>
+    isObviousTestTitle(record.title) || Boolean(record.sourceCaptureId && obviousTestSourceIds.has(record.sourceCaptureId));
   const filteredGroups = groups
     .map((group) => ({
       ...group,
@@ -1325,11 +1355,15 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
         const matchesDate = matchesCreatedDate(record);
         const matchesOperational = matchesOperationalDate(record);
         const matchesAttention = !attentionOnly || attentionKeySet.has(`${record.objectType}:${record.id}`);
-        return matchesSearch && matchesType && matchesStatus && matchesArea && matchesOwner && matchesDate && matchesOperational && matchesAttention;
+        const matchesTestVisibility = !hideTestRecords || !isObviousTestRecord(record);
+        return matchesSearch && matchesType && matchesStatus && matchesArea && matchesOwner && matchesDate && matchesOperational && matchesAttention && matchesTestVisibility;
       }).sort((left, right) => sortOrder === "Default" ? 0 : compareRecords(left, right)),
     }))
     .filter((group) => group.records.length > 0);
   const totalRecordCount = groups.reduce((total, group) => total + group.records.length, 0);
+  const hiddenTestRecordCount = hideTestRecords
+    ? groups.reduce((total, group) => total + group.records.filter(isObviousTestRecord).length, 0)
+    : 0;
   const visibleRecordCount = filteredGroups.reduce((total, group) => total + group.records.length, 0);
   const hasActiveFilters = Boolean(normalizedQuery) || selectedType !== allTypeValue || selectedStatus !== "All statuses" || selectedArea !== "All areas" || selectedOwner !== "All owners" || selectedCreatedDate !== "All dates" || selectedOperationalDate !== "All due dates" || sortOrder !== "Default" || attentionOnly;
   const getProjectLifecycleDescriptor = (status: string) => ({
@@ -1385,7 +1419,7 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
           <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <h2 className="text-[24px] font-semibold tracking-[-0.05em] text-[#171717]">Records in motion</h2>
             <span className="text-[11px] text-[#6a625d]">
-              {visibleRecordCount} {visibleRecordCount === 1 ? "record" : "records"}{hasActiveFilters ? ` shown of ${totalRecordCount}` : ""}
+              {visibleRecordCount} {visibleRecordCount === 1 ? "record" : "records"}{hasActiveFilters || hiddenTestRecordCount > 0 ? ` shown of ${totalRecordCount}` : ""}
             </span>
           </div>
         </div>
@@ -1569,6 +1603,20 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
         >
           Attention only
         </button>
+        <button
+          type="button"
+          aria-pressed={hideTestRecords}
+          onClick={() => setHideTestRecords((current) => !current)}
+          className={[
+            "rounded-lg border px-3 py-2 text-[12px] transition",
+            hideTestRecords
+              ? "border-[#171717] bg-[#171717] text-[#f9f7f4]"
+              : "border-[#cfc8c1] bg-white text-[#171717] hover:border-[#171717]",
+          ].join(" ")}
+        >
+          Hide test records
+          {hiddenTestRecordCount > 0 ? ` (${hiddenTestRecordCount})` : ""}
+        </button>
         <select
           value={selectedStatus}
           onChange={(event) => updateRecordControls({ selectedStatus: event.target.value })}
@@ -1737,20 +1785,28 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
 
       {filteredGroups.length === 0 ? (
         <div className="mt-4 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] px-3 py-4 text-[12px] text-[#4d4944]" aria-live="polite">
-          {totalRecordCount > 0 && hasActiveFilters ? (
+          {totalRecordCount > 0 && (hasActiveFilters || hiddenTestRecordCount > 0) ? (
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <div className="font-medium text-[#171717]">
-                  {selectedSavedView ? `Saved view “${selectedSavedView.name}” is hiding all ${totalRecordCount} stored records.` : `The current filters are hiding all ${totalRecordCount} stored records.`}
+                  {hiddenTestRecordCount === totalRecordCount
+                    ? `All ${totalRecordCount} stored records are currently hidden as obvious test/demo records.`
+                    : selectedSavedView
+                      ? `Saved view “${selectedSavedView.name}” is hiding all ${totalRecordCount} stored records.`
+                      : `The current filters are hiding all ${totalRecordCount} stored records.`}
                 </div>
-                <div className="mt-1 text-[11px] text-[#6a625d]">Showing all records will clear the active controls without changing or deleting the saved view.</div>
+                <div className="mt-1 text-[11px] text-[#6a625d]">
+                  {hiddenTestRecordCount === totalRecordCount
+                    ? "Turn off Hide test records to reveal them for development."
+                    : "Showing all records will clear the active controls without changing or deleting the saved view."}
+                </div>
               </div>
               <button
                 type="button"
-                onClick={() => applyQuickView("All records")}
+                onClick={() => hiddenTestRecordCount === totalRecordCount ? setHideTestRecords(false) : applyQuickView("All records")}
                 className="shrink-0 rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[11px] font-medium text-[#f9f7f4] transition hover:bg-[#35312e]"
               >
-                Show all records
+                {hiddenTestRecordCount === totalRecordCount ? "Show test records" : "Show all records"}
               </button>
             </div>
           ) : (
@@ -9851,6 +9907,7 @@ export default function Home() {
               <CommandRecordRegister
                 groups={commandRecordGroups}
                 attentionRecordKeys={commandAttentionItemList.map((item) => `${item.objectType}:${item.id}`)}
+                testSourceCaptureIds={captures.filter((capture) => isObviousTestTitle(capture.title)).map((capture) => capture.id)}
               />
             </div>
           ) : activeView === "Empire" ? (
