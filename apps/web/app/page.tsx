@@ -369,6 +369,40 @@ type ProjectRecord = {
   relatedSopIds?: string[];
 };
 
+type DecisionExecutionState = "No execution path" | "Active execution" | "Blocked execution" | "Completed execution";
+
+function deriveDecisionExecutionState(decision: DecisionRecord, actions: ActionRecord[], projects: ProjectRecord[]) {
+  const directActions = actions.filter((action) => action.relatedDecision === decision.id);
+  const linkedProjects = projects.filter((project) => (project.relatedDecisionIds || []).includes(decision.id));
+  const projectActionIds = new Set(linkedProjects.flatMap((project) => project.relatedActionIds || []));
+  const implementationActions = Array.from(new Map(
+    [...directActions, ...actions.filter((action) => projectActionIds.has(action.id))]
+      .map((action) => [action.id, action]),
+  ).values());
+  const projectStatuses = linkedProjects.map((project) => project.status.trim().toLowerCase());
+  const hasActiveRoute = implementationActions.some((action) => ["Open", "In Progress"].includes(action.status))
+    || projectStatuses.some((status) => status === "open" || status === "in progress");
+  const hasBlockedRoute = implementationActions.some((action) => action.status === "Blocked")
+    || projectStatuses.some((status) => status === "blocked");
+  const hasCompletedWork = implementationActions.some((action) => action.status === "Completed")
+    || projectStatuses.some((status) => ["completed", "closed", "final"].includes(status));
+
+  const state: DecisionExecutionState = hasActiveRoute
+    ? "Active execution"
+    : hasBlockedRoute
+      ? "Blocked execution"
+      : hasCompletedWork
+        ? "Completed execution"
+        : "No execution path";
+
+  return {
+    state,
+    directActionCount: directActions.length,
+    linkedProjectCount: linkedProjects.length,
+    projectActionCount: implementationActions.filter((action) => !directActions.some((directAction) => directAction.id === action.id)).length,
+  };
+}
+
 const projectStatusOptions = ["Open", "In Progress", "Blocked", "Completed", "Cancelled"] as const;
 
 const leadStatusOptions = ["New", "Contacted", "Quote Needed", "Quote Sent", "Follow-Up", "Won", "Lost", "On Hold"] as const;
@@ -4632,6 +4666,7 @@ function SopDetailPanel({ sop, upstream, downstream, onClose, onChange, onSave, 
 
 type DecisionDetailPanelProps = {
   decision: DecisionRecord;
+  executionState: ReturnType<typeof deriveDecisionExecutionState>;
   linkedActions: ActionRecord[];
   linkedLessons: LessonRecord[];
   upstream: RelatedRecordItem[];
@@ -4646,7 +4681,7 @@ type DecisionDetailPanelProps = {
   onOpenRelatedOpportunity?: () => void;
 };
 
-function DecisionDetailPanel({ decision, linkedActions, linkedLessons, upstream, downstream, onClose, onChange, onSave, onCreateLinkedAction, onCreateLinkedLesson, onOpenLinkedAction, onOpenLinkedLesson, onOpenRelatedOpportunity }: DecisionDetailPanelProps) {
+function DecisionDetailPanel({ decision, executionState, linkedActions, linkedLessons, upstream, downstream, onClose, onChange, onSave, onCreateLinkedAction, onCreateLinkedLesson, onOpenLinkedAction, onOpenLinkedLesson, onOpenRelatedOpportunity }: DecisionDetailPanelProps) {
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
@@ -4945,9 +4980,20 @@ function DecisionDetailPanel({ decision, linkedActions, linkedLessons, upstream,
           </button>
         </div>
 
-        {["Active", "Under Review"].includes(decision.decisionStatus) && !linkedActions.some((action) => ["Open", "In Progress", "Blocked"].includes(action.status)) ? (
-          <div className="mt-3 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] px-3 py-2.5 text-[12px] text-[#2f2b28]">
-            <span className="font-medium text-[#171717]">No execution path.</span> This decision has no active execution path. Create a linked action so it becomes someone&apos;s work.
+        {["Active", "Under Review"].includes(decision.decisionStatus) ? (
+          <div className={`mt-3 rounded-xl border px-3 py-2.5 text-[12px] text-[#2f2b28] ${executionState.state === "Active execution" ? "border-[#b8c9ba] bg-[#eef4ee]" : "border-[#c9b8a3] bg-[#f5efe6]"}`}>
+            <span className="font-medium text-[#171717]">{executionState.state}.</span>{" "}
+            {executionState.state === "No execution path"
+              ? decision.decisionStatus === "Under Review"
+                ? "Review may be intentionally pausing implementation; otherwise create a linked Action or link an active Project."
+                : "Create a linked Action or link an active Project so the decision becomes executable work."
+              : executionState.state === "Blocked execution"
+                ? "Implementation records exist, but every current route is blocked."
+                : executionState.state === "Completed execution"
+                  ? "Implementation work is complete; this decision may now need closure or formal review."
+                  : decision.decisionStatus === "Under Review"
+                    ? "Implementation can currently progress while the decision remains under review."
+                    : "At least one direct or project-mediated implementation route can currently progress."}
           </div>
         ) : null}
 
@@ -5874,33 +5920,28 @@ export default function Home() {
     };
   })();
 
-  const decisionsWithoutExecution = (() => {
-    const openActionStatuses = ["Open", "In Progress", "Blocked"];
-
-    return decisionRecords
-      .filter((decision) => ["Active", "Under Review"].includes(decision.decisionStatus))
-      .map((decision) => {
-        const linked = actionRecords.filter((action) => action.relatedDecision === decision.id);
-        const openLinked = linked.filter((action) => openActionStatuses.includes(action.status));
-
-        if (openLinked.length > 0) {
-          return null;
-        }
-
-        return {
-          id: decision.id,
-          objectType: "Decision" as const,
-          title: decision.decisionTitle || decision.title,
-          status: decision.decisionStatus,
-          area: getAreaText(decision) || "Unassigned",
-          owner: decision.decisionMaker || "Unassigned",
-          reason: linked.length === 0
-            ? "No linked actions"
-            : "All linked actions are closed while decision remains active",
-        };
-      })
-      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
-  })();
+  const decisionExecutionRecords = decisionRecords
+    .filter((decision) => ["Active", "Under Review"].includes(decision.decisionStatus))
+    .map((decision) => ({
+      id: decision.id,
+      objectType: "Decision" as const,
+      title: decision.decisionTitle || decision.title,
+      status: decision.decisionStatus,
+      area: getAreaText(decision) || "Unassigned",
+      owner: decision.decisionMaker || "Unassigned",
+      execution: deriveDecisionExecutionState(decision, actionRecords, projects),
+    }));
+  const decisionsWithoutExecution = decisionExecutionRecords
+    .filter((decision) => decision.execution.state === "No execution path")
+    .map((decision) => ({ ...decision, reason: "No direct or project-mediated implementation work" }));
+  const decisionsWithActiveExecution = decisionExecutionRecords
+    .filter((decision) => decision.execution.state === "Active execution");
+  const decisionsWithBlockedExecution = decisionExecutionRecords
+    .filter((decision) => decision.execution.state === "Blocked execution")
+    .map((decision) => ({ ...decision, reason: "Every current implementation route is blocked" }));
+  const decisionsWithCompletedExecution = decisionExecutionRecords
+    .filter((decision) => decision.execution.state === "Completed execution")
+    .map((decision) => ({ ...decision, reason: "Implementation complete — decision may need closure or review" }));
 
   const selectedPillarDetail = selectedPillar ? (() => {
     const blockedProjects = projects.filter((project) => project.area === selectedPillar && project.status.trim().toLowerCase() === "blocked");
@@ -10862,12 +10903,18 @@ export default function Home() {
                   </div>
 
                   <p className="mb-3 max-w-3xl text-[13px] leading-5 text-[#524d49]">
-                    An active or under-review decision with no open linked action exists on paper only. Create a linked action so the decision becomes someone&apos;s work.
+                    Active and under-review decisions are checked across direct Actions, linked Projects and their Actions. Only decisions with no implementation work count as execution gaps.
                   </p>
+
+                  <div className="mb-3 flex flex-wrap gap-2 text-[10px] text-[#4d4944]">
+                    <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1">{decisionsWithActiveExecution.length} active execution</span>
+                    <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1">{decisionsWithBlockedExecution.length} blocked execution</span>
+                    <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1">{decisionsWithCompletedExecution.length} implementation complete</span>
+                  </div>
 
                   {decisionsWithoutExecution.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
-                      Every active decision has an open execution path.
+                      No Active or Under Review Decision currently lacks an execution path.
                     </div>
                   ) : (
                     <div className="space-y-2">
@@ -10892,6 +10939,44 @@ export default function Home() {
                       ))}
                     </div>
                   )}
+
+                  {decisionsWithBlockedExecution.length > 0 ? (
+                    <div className="mt-4">
+                      <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Blocked execution</div>
+                      <div className="space-y-2">
+                        {decisionsWithBlockedExecution.map((decision) => (
+                          <button
+                            key={`blocked-exec-${decision.id}`}
+                            type="button"
+                            onClick={() => handleOpenAttentionRecord("Decision", decision.id)}
+                            className="block w-full rounded-xl border border-[#c9b8a3] bg-[#f5efe6] px-3 py-3 text-left transition hover:border-[#171717]"
+                          >
+                            <div className="text-[14px] font-medium text-[#171717]">{decision.title}</div>
+                            <div className="mt-1 text-[11px] text-[#4d4944]">{decision.reason} • {decision.area} • {decision.status}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {decisionsWithCompletedExecution.length > 0 ? (
+                    <div className="mt-4">
+                      <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Implementation complete — closure/review may be due</div>
+                      <div className="space-y-2">
+                        {decisionsWithCompletedExecution.map((decision) => (
+                          <button
+                            key={`completed-exec-${decision.id}`}
+                            type="button"
+                            onClick={() => handleOpenAttentionRecord("Decision", decision.id)}
+                            className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                          >
+                            <div className="text-[14px] font-medium text-[#171717]">{decision.title}</div>
+                            <div className="mt-1 text-[11px] text-[#4d4944]">{decision.reason} • {decision.area} • {decision.status}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </section>
 
                 <section className="grid gap-4 lg:grid-cols-2">
@@ -12464,6 +12549,7 @@ export default function Home() {
       {selectedDecisionId && decisionEditor ? (
         <DecisionDetailPanel
           decision={decisionEditor}
+          executionState={deriveDecisionExecutionState(decisionEditor, actionRecords, projects)}
           linkedActions={actionRecords.filter((action) => action.relatedDecision === decisionEditor.id)}
           linkedLessons={lessonRecords.filter((lesson) => lesson.relatedDecision === decisionEditor.id)}
           upstream={[
