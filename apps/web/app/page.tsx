@@ -1104,6 +1104,8 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
           const defaultView = parsedViews.find((view) => view.id === storedDefaultViewId);
           if (defaultView) {
             setDefaultSavedViewId(defaultView.id);
+            setSelectedSavedViewId(defaultView.id);
+            setRenameViewName(defaultView.name);
             setRecordControls({ ...defaultView.controls });
           }
         }
@@ -1203,6 +1205,9 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
         setRecordControls({ ...getDefaultRecordControls(), selectedCreatedDate: "Last 7 days" });
         return;
       default:
+        setSelectedSavedViewId("");
+        setRenameViewName("");
+        setUpdatedSavedViewId("");
         setRecordControls(getDefaultRecordControls());
     }
   };
@@ -1731,8 +1736,26 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
       ) : null}
 
       {filteredGroups.length === 0 ? (
-        <div className="mt-4 rounded-xl border border-[#d3cbc3] bg-[#f9f7f4] px-3 py-4 text-[12px] text-[#6a625d]">
-          No records match the current filters.
+        <div className="mt-4 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] px-3 py-4 text-[12px] text-[#4d4944]" aria-live="polite">
+          {totalRecordCount > 0 && hasActiveFilters ? (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="font-medium text-[#171717]">
+                  {selectedSavedView ? `Saved view “${selectedSavedView.name}” is hiding all ${totalRecordCount} stored records.` : `The current filters are hiding all ${totalRecordCount} stored records.`}
+                </div>
+                <div className="mt-1 text-[11px] text-[#6a625d]">Showing all records will clear the active controls without changing or deleting the saved view.</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => applyQuickView("All records")}
+                className="shrink-0 rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[11px] font-medium text-[#f9f7f4] transition hover:bg-[#35312e]"
+              >
+                Show all records
+              </button>
+            </div>
+          ) : (
+            "No records stored."
+          )}
         </div>
       ) : (
         <div className="mt-4 grid gap-3 xl:grid-cols-2">
