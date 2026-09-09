@@ -5814,24 +5814,41 @@ export default function Home() {
 
     const recurringProblems = problemRecords.filter((problem) => isRecurring(problem));
     const unresolvedRecurring = recurringProblems.filter((problem) => isProblemUnresolved(problem));
-
-    const learningCapturedFor = (problem: ProblemRecord) => {
+    const maturityFor = (problem: ProblemRecord) => {
       const linkedLessons = lessonRecords.filter((lesson) => lesson.relatedProblem === problem.id);
-      if (linkedLessons.length > 0) {
-        return true;
+      const meaningfulLessons = linkedLessons.filter((lesson) => ["Reviewed", "Implemented"].includes(lesson.status));
+
+      if (meaningfulLessons.length === 0) {
+        return "missing" as const;
       }
-      const linkedLessonIds = new Set(linkedLessons.map((lesson) => lesson.id));
-      const linkedSystems = systemRecords.filter((system) => linkedLessonIds.has(system.relatedLesson));
-      if (linkedSystems.length > 0) {
-        return true;
+
+      const meaningfulLessonIds = new Set(meaningfulLessons.map((lesson) => lesson.id));
+      const linkedSystemIdsFromLessons = new Set(meaningfulLessons.map((lesson) => lesson.relatedSystem).filter(Boolean));
+      const activeLinkedSystems = systemRecords.filter((system) =>
+        ["Active", "Reviewing"].includes(system.status) &&
+        (meaningfulLessonIds.has(system.relatedLesson) || linkedSystemIdsFromLessons.has(system.id)),
+      );
+      const activeLinkedSystemIds = new Set(activeLinkedSystems.map((system) => system.id));
+      const hasActiveLinkedSop = sopRecords.some((sop) =>
+        ["Active", "Reviewing"].includes(sop.status) &&
+        (meaningfulLessonIds.has(sop.relatedLesson) || activeLinkedSystemIds.has(sop.relatedSystem)),
+      );
+
+      if (activeLinkedSystems.length > 0 || hasActiveLinkedSop) {
+        return "institutionalised" as const;
       }
-      const linkedSystemIds = new Set(linkedSystems.map((system) => system.id));
-      return sopRecords.some((sop) => linkedSystemIds.has(sop.relatedSystem));
+
+      return "captured" as const;
     };
 
-    const gaps = recurringProblems
-      .filter((problem) => !learningCapturedFor(problem))
-      .map((problem) => ({
+    const maturityRecords = recurringProblems.map((problem) => ({
+      problem,
+      maturity: maturityFor(problem),
+    }));
+    const maturityByProblemId = new Map(maturityRecords.map(({ problem, maturity }) => [problem.id, maturity]));
+    const gaps = maturityRecords
+      .filter(({ problem, maturity }) => isProblemUnresolved(problem) && maturity === "missing")
+      .map(({ problem }) => ({
         id: problem.id,
         objectType: "Problem" as const,
         title: problem.problemStatement || problem.title,
@@ -5841,10 +5858,19 @@ export default function Home() {
         area: getAreaText(problem) || "Unassigned",
         owner: problem.owner || "Unassigned",
       }));
+    const capturedNotInstitutionalised = maturityRecords.filter(({ problem, maturity }) =>
+      isProblemUnresolved(problem) && maturity === "captured",
+    ).length;
+    const closedInstitutionalised = maturityRecords.filter(({ problem, maturity }) =>
+      !isProblemUnresolved(problem) && maturity === "institutionalised",
+    ).length;
 
     return {
       unresolvedRecurring,
       gaps,
+      maturityByProblemId,
+      capturedNotInstitutionalised,
+      closedInstitutionalised,
     };
   })();
 
@@ -10766,13 +10792,19 @@ export default function Home() {
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Problems that keep coming back</div>
                     <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">
-                      {recurringProblemLearning.gaps.length} learning gap{recurringProblemLearning.gaps.length === 1 ? "" : "s"}
+                      {recurringProblemLearning.unresolvedRecurring.length} unresolved
                     </span>
                   </div>
 
                   <p className="mb-3 max-w-3xl text-[13px] leading-5 text-[#524d49]">
-                    Recurring or persistent problems are evidence of a weak system, not a one-off event. Resolve them into a Lesson, System or SOP so the fix becomes institutional rather than relearned.
+                    Recurring or persistent problems are evidence of a weak system. Capture meaningful learning first, then connect it to an active System or SOP when the issue warrants institutional prevention.
                   </p>
+
+                  <div className="mb-3 flex flex-wrap gap-2 text-[10px] text-[#4d4944]">
+                    <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1">{recurringProblemLearning.unresolvedRecurring.length} unresolved recurring</span>
+                    <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1">{recurringProblemLearning.gaps.length} learning missing</span>
+                    <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1">{recurringProblemLearning.capturedNotInstitutionalised} captured, not institutionalised</span>
+                  </div>
 
                   {recurringProblemLearning.unresolvedRecurring.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
@@ -10781,7 +10813,7 @@ export default function Home() {
                   ) : (
                     <div className="space-y-2">
                       {recurringProblemLearning.unresolvedRecurring.map((problem) => {
-                        const gap = recurringProblemLearning.gaps.some((entry) => entry.id === problem.id);
+                        const maturity = recurringProblemLearning.maturityByProblemId.get(problem.id) || "missing";
                         return (
                           <button
                             key={`recurring-${problem.id}`}
@@ -10792,13 +10824,17 @@ export default function Home() {
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{problem.frequency}</span>
                               <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{problem.severity}</span>
-                              {gap ? (
+                              {maturity === "missing" ? (
                                 <span className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#6a3328]">
-                                  Learning not yet captured
+                                  Learning missing
+                                </span>
+                              ) : maturity === "captured" ? (
+                                <span className="rounded-full border border-[#c9b8a3] bg-[#f5efe6] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#6a4a28]">
+                                  Learning captured
                                 </span>
                               ) : (
-                                <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">
-                                  Learning captured
+                                <span className="rounded-full border border-[#b8c9ba] bg-[#eef4ee] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f5d3a]">
+                                  Learning institutionalised
                                 </span>
                               )}
                             </div>
@@ -10811,6 +10847,10 @@ export default function Home() {
                       })}
                     </div>
                   )}
+
+                  <div className="mt-3 text-[11px] text-[#6a625d]">
+                    Closed recurring problems with institutionalised learning: {recurringProblemLearning.closedInstitutionalised}
+                  </div>
                 </section>
 
                 <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
