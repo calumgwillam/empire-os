@@ -7636,15 +7636,19 @@ export default function Home() {
     }))
     .filter((group) => group.items.length > 0);
   const commandAttentionItems = commandAttentionItemList.length;
+  const executiveAttentionRecordKeys = new Set(todayBrief.outstandingKeys.map((item) => item.key));
+  const executiveAttentionItems = todayBrief.outstandingCount;
   const projectAttentionCount = new Set(
     commandAttentionGroups.flatMap((group) => group.items)
       .filter((item) => item.objectType === "Project")
       .map((item) => item.id),
   ).size;
-  const attentionSummaryItems = commandAttentionGroups.map((group) => ({
-    label: group.label,
-    count: group.items.length,
-  }));
+  const attentionSummaryItems = commandAttentionGroups
+    .map((group) => ({
+      label: group.label,
+      count: group.items.filter((item) => executiveAttentionRecordKeys.has(`${item.objectType}:${item.id}`)).length,
+    }))
+    .filter((group) => group.count > 0);
   const getAttentionSummaryLabel = (label: string, count: number) => {
     if (count !== 1) {
       return label;
@@ -9505,7 +9509,7 @@ export default function Home() {
                   </h1>
                 </div>
                 <span className="rounded-full border border-[#cfc8c1] bg-[#f7f4f1] px-2.5 py-1.5 text-[10px] uppercase tracking-[0.16em] text-[#2f2b28]">
-                  {commandAttentionItems} item{commandAttentionItems === 1 ? "" : "s"}
+                  {executiveAttentionItems} item{executiveAttentionItems === 1 ? "" : "s"}
                 </span>
               </header>
 
@@ -9537,7 +9541,7 @@ export default function Home() {
               <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Attention items</div>
-                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{commandAttentionItems}</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{executiveAttentionItems}</div>
                 </div>
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Overdue actions</div>
