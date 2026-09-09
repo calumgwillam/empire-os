@@ -5856,45 +5856,56 @@ export default function Home() {
   })();
 
   const decisionTrackRecord = (() => {
-    const reviewedDecisions = decisionRecords.filter((decision) =>
-      decision.decisionStatus === "Completed" || decision.decisionStatus === "Reversed" || Boolean(decision.outcomeRating),
-    );
+    const validOutcomeRatings = new Set(["Worked", "Partially worked", "Failed"]);
+    const isClosed = (decision: DecisionRecord) => ["Completed", "Reversed"].includes(decision.decisionStatus);
+    const hasValidRating = (decision: DecisionRecord) => validOutcomeRatings.has(decision.outcomeRating);
+    const reviewedDecisions = decisionRecords.filter((decision) => isClosed(decision) && hasValidRating(decision));
+    const closedButUnrated = decisionRecords.filter((decision) => isClosed(decision) && !hasValidRating(decision));
+    const ratedWhileActive = decisionRecords.filter((decision) => !isClosed(decision) && hasValidRating(decision));
     const reviewsDue = decisionRecords.filter(isDecisionReviewDue);
-    const ratings = { worked: 0, partially: 0, failed: 0, unrated: 0 };
+    const ratings = { worked: 0, partially: 0, failed: 0 };
     reviewedDecisions.forEach((decision) => {
       if (decision.outcomeRating === "Worked") ratings.worked += 1;
       else if (decision.outcomeRating === "Partially worked") ratings.partially += 1;
-      else if (decision.outcomeRating === "Failed") ratings.failed += 1;
-      else ratings.unrated += 1;
+      else ratings.failed += 1;
     });
-    const byMaker = new Map<string, { total: number; worked: number; failed: number }>();
+    const byMaker = new Map<string, { maker: string; total: number; worked: number; partially: number; failed: number }>();
     reviewedDecisions.forEach((decision) => {
-      const maker = decision.decisionMaker || "Unassigned";
-      const entry = byMaker.get(maker) || { total: 0, worked: 0, failed: 0 };
+      const storedMaker = decision.decisionMaker.trim() || "Unassigned";
+      const makerKey = storedMaker.toLowerCase();
+      const matchedPerson = orderedPeople.find((person) => person.name.trim().toLowerCase() === makerKey);
+      const maker = matchedPerson?.name.trim() || storedMaker;
+      const entry = byMaker.get(makerKey) || { maker, total: 0, worked: 0, partially: 0, failed: 0 };
       entry.total += 1;
       if (decision.outcomeRating === "Worked") entry.worked += 1;
+      if (decision.outcomeRating === "Partially worked") entry.partially += 1;
       if (decision.outcomeRating === "Failed") entry.failed += 1;
-      byMaker.set(maker, entry);
+      byMaker.set(makerKey, entry);
     });
-    const byPillar = new Map<string, { total: number; worked: number; failed: number }>();
+    const byArea = new Map<string, { total: number; worked: number; partially: number; failed: number }>();
     reviewedDecisions.forEach((decision) => {
-      const pillar = getAreaText(decision) || "Unassigned";
-      const entry = byPillar.get(pillar) || { total: 0, worked: 0, failed: 0 };
+      const area = getAreaText(decision) || "Unassigned";
+      const entry = byArea.get(area) || { total: 0, worked: 0, partially: 0, failed: 0 };
       entry.total += 1;
       if (decision.outcomeRating === "Worked") entry.worked += 1;
+      if (decision.outcomeRating === "Partially worked") entry.partially += 1;
       if (decision.outcomeRating === "Failed") entry.failed += 1;
-      byPillar.set(pillar, entry);
+      byArea.set(area, entry);
     });
-    const lessonsCreated = reviewedDecisions.filter((decision) =>
-      lessonRecords.some((lesson) => lesson.relatedDecision === decision.id),
+    const decisionsWithMeaningfulLessons = reviewedDecisions.filter((decision) =>
+      lessonRecords.some((lesson) => lesson.relatedDecision === decision.id && ["Reviewed", "Implemented"].includes(lesson.status)),
     ).length;
+    const actualOutcomeRecorded = reviewedDecisions.filter((decision) => decision.actualOutcome.trim() !== "").length;
     return {
       reviewsDue,
       reviewedDecisions,
+      closedButUnrated,
+      ratedWhileActive,
       ratings,
-      byMaker: [...byMaker.entries()].map(([maker, counts]) => ({ maker, ...counts })),
-      byPillar: [...byPillar.entries()].map(([pillar, counts]) => ({ pillar, ...counts })),
-      lessonsCreated,
+      byMaker: [...byMaker.values()],
+      byArea: [...byArea.entries()].map(([area, counts]) => ({ area, ...counts })),
+      decisionsWithMeaningfulLessons,
+      actualOutcomeRecorded,
     };
   })();
 
@@ -6259,16 +6270,6 @@ export default function Home() {
       .filter((days): days is number => days !== null);
     const avgOpenDecisionDays = openDecisionAges.length === 0 ? null : Math.round(openDecisionAges.reduce((a, b) => a + b, 0) / openDecisionAges.length);
 
-    const closedDecisions = decisionRecords.filter((decision) => ["Completed", "Reversed"].includes(decision.decisionStatus));
-    const closedLatencies = closedDecisions
-      .map((decision) => {
-        const start = getDateValue(decision.decisionDate || decision.createdAt);
-        const end = getDateValue(decision.reviewDate) || nowMs;
-        return start > 0 && end > start ? Math.floor((end - start) / (1000 * 60 * 60 * 24)) : null;
-      })
-      .filter((days): days is number => days !== null);
-    const avgClosedDecisionDays = closedLatencies.length === 0 ? null : Math.round(closedLatencies.reduce((a, b) => a + b, 0) / closedLatencies.length);
-
     const selfSufficiencyPct = totalWork === 0 ? null : pctNonFounder;
 
     return {
@@ -6281,8 +6282,6 @@ export default function Home() {
       delegationScore,
       openDecisionCount: openDecisions.length,
       avgOpenDecisionDays,
-      closedDecisionCount: closedDecisions.length,
-      avgClosedDecisionDays,
       selfSufficiencyPct,
     };
   })();
@@ -10482,14 +10481,13 @@ export default function Home() {
                     </span>
                   </div>
 
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     <MetricCard label="Reviews due" value={String(decisionTrackRecord.reviewsDue.length)} />
-                    <MetricCard label="Reviewed" value={String(decisionTrackRecord.reviewedDecisions.length)} />
-                    <MetricCard label="Lessons created" value={String(decisionTrackRecord.lessonsCreated)} />
-                    <MetricCard
-                      label="Worked / Failed"
-                      value={`${decisionTrackRecord.ratings.worked} / ${decisionTrackRecord.ratings.failed}`}
-                    />
+                    <MetricCard label="Reviewed and rated" value={String(decisionTrackRecord.reviewedDecisions.length)} />
+                    <MetricCard label="Closed but unrated" value={String(decisionTrackRecord.closedButUnrated.length)} />
+                    <MetricCard label="Rated while active" value={String(decisionTrackRecord.ratedWhileActive.length)} />
+                    <MetricCard label="Decisions with meaningful lessons" value={String(decisionTrackRecord.decisionsWithMeaningfulLessons)} />
+                    <MetricCard label="Actual outcome recorded" value={`${decisionTrackRecord.actualOutcomeRecorded} of ${decisionTrackRecord.reviewedDecisions.length}`} />
                   </div>
 
                   {decisionTrackRecord.reviewsDue.length > 0 ? (
@@ -10514,7 +10512,8 @@ export default function Home() {
                   ) : null}
 
                   {decisionTrackRecord.reviewedDecisions.length > 0 ? (
-                    <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                    <div className="mt-4">
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                       <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#2f2b28]">
                         <span className="font-medium text-[#171717]">Worked:</span> {decisionTrackRecord.ratings.worked}
                       </div>
@@ -10524,16 +10523,49 @@ export default function Home() {
                       <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#2f2b28]">
                         <span className="font-medium text-[#171717]">Failed:</span> {decisionTrackRecord.ratings.failed}
                       </div>
+                      <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#2f2b28]">
+                        <span className="font-medium text-[#171717]">Closed but unrated:</span> {decisionTrackRecord.closedButUnrated.length}
+                      </div>
+                      </div>
+                      <div className="mt-2 text-[11px] text-[#6a625d]">
+                        Actual outcome recorded: {decisionTrackRecord.actualOutcomeRecorded} of {decisionTrackRecord.reviewedDecisions.length}. Recorded outcomes are factual evidence, not statistical proof of decision quality.
+                      </div>
                     </div>
                   ) : null}
 
-                  {decisionTrackRecord.byPillar.length > 0 ? (
+                  {decisionTrackRecord.closedButUnrated.length > 0 ? (
                     <div className="mt-4">
-                      <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">By pillar</div>
+                      <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Closed but unrated</div>
                       <div className="flex flex-wrap gap-2">
-                        {decisionTrackRecord.byPillar.map((entry) => (
-                          <span key={entry.pillar} className="rounded-full border border-[#d3cbc3] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28]">
-                            {entry.pillar}: {entry.total} reviewed ({entry.worked} worked, {entry.failed} failed)
+                        {decisionTrackRecord.closedButUnrated.map((decision) => (
+                          <button key={`closed-unrated-${decision.id}`} type="button" onClick={() => handleOpenAttentionRecord("Decision", decision.id)} className="rounded-lg border border-[#c9b8a3] bg-[#f5efe6] px-2.5 py-1.5 text-[11px] text-[#2f2b28] hover:border-[#171717]">
+                            {decision.decisionTitle || decision.title} • {decision.decisionStatus}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {decisionTrackRecord.ratedWhileActive.length > 0 ? (
+                    <div className="mt-4">
+                      <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#6a3328]">Rated while still active</div>
+                      <div className="flex flex-wrap gap-2">
+                        {decisionTrackRecord.ratedWhileActive.map((decision) => (
+                          <button key={`rated-active-${decision.id}`} type="button" onClick={() => handleOpenAttentionRecord("Decision", decision.id)} className="rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-2.5 py-1.5 text-[11px] text-[#6a3328] hover:border-[#171717]">
+                            {decision.decisionTitle || decision.title} • {decision.decisionStatus} • {decision.outcomeRating}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {decisionTrackRecord.byArea.length > 0 ? (
+                    <div className="mt-4">
+                      <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">By area</div>
+                      <div className="flex flex-wrap gap-2">
+                        {decisionTrackRecord.byArea.map((entry) => (
+                          <span key={entry.area} className="rounded-full border border-[#d3cbc3] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28]">
+                            {entry.area}: {entry.total} reviewed ({entry.worked} worked, {entry.partially} partial, {entry.failed} failed)
                           </span>
                         ))}
                       </div>
@@ -10546,14 +10578,14 @@ export default function Home() {
                       <div className="flex flex-wrap gap-2">
                         {decisionTrackRecord.byMaker.map((entry) => (
                           <span key={entry.maker} className="rounded-full border border-[#d3cbc3] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28]">
-                            {entry.maker}: {entry.total} reviewed ({entry.worked} worked, {entry.failed} failed)
+                            {entry.maker}: {entry.total} reviewed ({entry.worked} worked, {entry.partially} partial, {entry.failed} failed)
                           </span>
                         ))}
                       </div>
                     </div>
                   ) : null}
 
-                  {decisionTrackRecord.reviewedDecisions.length === 0 && decisionTrackRecord.reviewsDue.length === 0 ? (
+                  {decisionTrackRecord.reviewedDecisions.length === 0 && decisionTrackRecord.reviewsDue.length === 0 && decisionTrackRecord.closedButUnrated.length === 0 && decisionTrackRecord.ratedWhileActive.length === 0 ? (
                     <div className="mt-4 rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
                       No decisions reviewed yet. When a decision is due, open it, record the actual outcome and rating, and set the final status.
                     </div>
@@ -10567,7 +10599,7 @@ export default function Home() {
                     Live opportunities lined up against the current cash snapshot, protected cash and existing commitments. Affordability is a scenario, not a recommendation to spend.
                   </p>
 
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
                       <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Current cash</div>
                       <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">
@@ -10768,17 +10800,6 @@ export default function Home() {
                       {healthTrend.latency ? <div className="mt-1.5 text-[10px] text-[#4d4944]">{healthTrend.latency}</div> : null}
                     </div>
 
-                    <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
-                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Avg time to close decisions</div>
-                      <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">
-                        {organisationalHealth.avgClosedDecisionDays === null ? "—" : `${organisationalHealth.avgClosedDecisionDays}d`}
-                      </div>
-                      <div className="mt-1.5 text-[11px] leading-4 text-[#4d4944]">
-                        {organisationalHealth.avgClosedDecisionDays === null
-                          ? "No closed decisions yet."
-                          : `Across ${organisationalHealth.closedDecisionCount} closed decision${organisationalHealth.closedDecisionCount === 1 ? "" : "s"}.`}
-                      </div>
-                    </div>
                   </div>
 
                   {organisationalHealth.delegationQuality.label === "Insufficient data" ? (
