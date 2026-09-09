@@ -5558,17 +5558,46 @@ export default function Home() {
       };
     }).filter((item) => item.riskScore > 0 || item.activeDecisions.length > 0 || item.blockedProjects.length > 0 || item.criticalProblems.length > 0);
 
-    const crossPillarIssues = [
-      ...problemRecords.filter((problem) => {
-        const area = getAreaText(problem);
-        return area && !pillarOptions.includes(area as (typeof pillarOptions)[number]) && isProblemUnresolved(problem);
-      }),
-      ...actionRecords.filter((action) => {
-        const area = action.relatedPillar || "";
-        return !pillarOptions.includes(area as (typeof pillarOptions)[number]) && isActionActive(action);
-      }),
-      ...projects.filter((project) => project.area && !pillarOptions.includes(project.area as (typeof pillarOptions)[number]) && isProjectActive(project)),
-    ].slice(0, 8).map((item) => {
+    const distinctAreas = (areas: Array<string | undefined>) =>
+      Array.from(new Set(areas.map((area) => area?.trim()).filter((area): area is string => Boolean(area))));
+    const crossPillarCandidates = [
+      ...problemRecords
+        .filter(isProblemUnresolved)
+        .map((problem) => ({
+          item: problem,
+          areas: distinctAreas([
+            getAreaText(problem),
+            ...actionRecords.filter((action) => action.relatedProblem === problem.id && isActionActive(action)).map((action) => action.relatedPillar),
+          ]),
+        })),
+      ...actionRecords
+        .filter(isActionActive)
+        .map((action) => ({
+          item: action,
+          areas: distinctAreas([
+            action.relatedPillar,
+            problemRecords.find((problem) => problem.id === action.relatedProblem && isProblemUnresolved(problem)) ? getAreaText(problemRecords.find((problem) => problem.id === action.relatedProblem)!) : undefined,
+            decisionRecords.find((decision) => decision.id === action.relatedDecision && isDecisionActive(decision)) ? getAreaText(decisionRecords.find((decision) => decision.id === action.relatedDecision)!) : undefined,
+            opportunityRecords.find((opportunity) => opportunity.id === action.relatedOpportunity)?.relatedPillar,
+            ...projects.filter((project) => (project.relatedActionIds || []).includes(action.id) && isProjectActive(project)).map((project) => project.area),
+          ]),
+        })),
+      ...projects
+        .filter(isProjectActive)
+        .map((project) => ({
+          item: project,
+          areas: distinctAreas([
+            project.area,
+            ...actionRecords.filter((action) => (project.relatedActionIds || []).includes(action.id) && isActionActive(action)).map((action) => action.relatedPillar),
+            ...decisionRecords.filter((decision) => (project.relatedDecisionIds || []).includes(decision.id) && isDecisionActive(decision)).map(getAreaText),
+            ...systemRecords.filter((system) => (project.relatedSystemIds || []).includes(system.id)).map((system) => system.area),
+          ]),
+        })),
+    ];
+    const crossPillarIssues = crossPillarCandidates
+      .filter(({ areas }) => areas.length > 1)
+      .slice(0, 8)
+      .map(({ item, areas }) => {
       const owner = "owner" in item ? item.owner || "Unassigned" : "Unassigned";
       const area = "relatedPillar" in item ? (item.relatedPillar || "General") : "area" in item ? item.area : "General";
 
@@ -5579,11 +5608,7 @@ export default function Home() {
         kind: "problemStatement" in item ? "Cross-pillar problem" : "actionTitle" in item ? "Cross-pillar action" : "Cross-pillar project",
         owner,
         area,
-        why: "problemStatement" in item
-          ? `This issue is unresolved and affects work outside the three core pillars, which can slow delivery across the wider operation.`
-          : "actionTitle" in item
-            ? "This action is still active and can create dependency drag across more than one business stream."
-            : "This project is active outside the core pillar list and may be creating execution pressure or resource contention.",
+        why: `Linked active work connects this record across ${areas.join(" and ")}.`,
         founderIntervention: "Maybe",
         delegationAction: "Delegate to the accountable lead with founder review if it becomes material",
       };
