@@ -1077,6 +1077,7 @@ type RecordControls = {
   selectedOperationalDate: string;
   sortOrder: string;
   attentionOnly: boolean;
+  inMotionOnly: boolean;
 };
 
 type SavedRecordView = {
@@ -1099,6 +1100,7 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
     selectedOperationalDate: "All due dates",
     sortOrder: "Default",
     attentionOnly: false,
+    inMotionOnly: true,
   });
   const [recordControls, setRecordControls] = useState<RecordControls>(getDefaultRecordControls);
   const [savedViews, setSavedViews] = useState<SavedRecordView[]>([]);
@@ -1110,7 +1112,7 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
   const [savedViewsLoaded, setSavedViewsLoaded] = useState(false);
   const [defaultSavedViewLoaded, setDefaultSavedViewLoaded] = useState(false);
   const [hideTestRecords, setHideTestRecords] = useState(true);
-  const { searchQuery, selectedType, selectedStatus, selectedArea, selectedOwner, selectedCreatedDate, selectedOperationalDate, sortOrder, attentionOnly } = recordControls;
+  const { searchQuery, selectedType, selectedStatus, selectedArea, selectedOwner, selectedCreatedDate, selectedOperationalDate, sortOrder, attentionOnly, inMotionOnly } = recordControls;
   const updateRecordControls = (updates: Partial<RecordControls>) =>
     setRecordControls((current) => ({ ...current, ...updates }));
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
@@ -1128,7 +1130,11 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
             setDefaultSavedViewId(defaultView.id);
             setSelectedSavedViewId(defaultView.id);
             setRenameViewName(defaultView.name);
-            setRecordControls({ ...defaultView.controls });
+            setRecordControls({
+              ...getDefaultRecordControls(),
+              ...defaultView.controls,
+              inMotionOnly: defaultView.controls.inMotionOnly ?? false,
+            });
           }
         }
       }
@@ -1211,6 +1217,12 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
   };
   const applyQuickView = (view: string) => {
     switch (view) {
+      case "In motion":
+        setSelectedSavedViewId("");
+        setRenameViewName("");
+        setUpdatedSavedViewId("");
+        setRecordControls(getDefaultRecordControls());
+        return;
       case "Attention":
         setRecordControls({ ...getDefaultRecordControls(), attentionOnly: true });
         return;
@@ -1230,7 +1242,7 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
         setSelectedSavedViewId("");
         setRenameViewName("");
         setUpdatedSavedViewId("");
-        setRecordControls(getDefaultRecordControls());
+        setRecordControls({ ...getDefaultRecordControls(), inMotionOnly: false });
     }
   };
   const saveCurrentView = () => {
@@ -1301,6 +1313,7 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
       setSelectedSavedViewId("");
       setRenameViewName("");
       setUpdatedSavedViewId("");
+      setRecordControls(getDefaultRecordControls());
     }
   };
   const toggleSelectedViewPin = () => {
@@ -1343,6 +1356,20 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
   ]);
   const isObviousTestRecord = (record: CommandRecordItem) =>
     isObviousTestTitle(record.title) || Boolean(record.sourceCaptureId && obviousTestSourceIds.has(record.sourceCaptureId));
+  const isRecordInMotion = (record: CommandRecordItem) => {
+    const activeStatuses: Record<CommandRecordType, string[]> = {
+      Problem: ["Open", "Investigating", "Action required"],
+      Action: ["Open", "In Progress", "Blocked"],
+      Decision: ["Draft", "Active", "Under Review"],
+      Opportunity: ["New", "Evaluating", "On Hold"],
+      Project: ["Open", "In Progress", "Blocked"],
+      Lesson: ["New", "Change Required"],
+      System: ["Draft", "Active", "Reviewing"],
+      SOP: ["Draft", "Active", "Reviewing"],
+    };
+
+    return activeStatuses[record.objectType].includes(record.status);
+  };
   const filteredGroups = groups
     .map((group) => ({
       ...group,
@@ -1356,7 +1383,8 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
         const matchesOperational = matchesOperationalDate(record);
         const matchesAttention = !attentionOnly || attentionKeySet.has(`${record.objectType}:${record.id}`);
         const matchesTestVisibility = !hideTestRecords || !isObviousTestRecord(record);
-        return matchesSearch && matchesType && matchesStatus && matchesArea && matchesOwner && matchesDate && matchesOperational && matchesAttention && matchesTestVisibility;
+        const matchesMotion = !inMotionOnly || isRecordInMotion(record);
+        return matchesSearch && matchesType && matchesStatus && matchesArea && matchesOwner && matchesDate && matchesOperational && matchesAttention && matchesTestVisibility && matchesMotion;
       }).sort((left, right) => sortOrder === "Default" ? 0 : compareRecords(left, right)),
     }))
     .filter((group) => group.records.length > 0);
@@ -1365,7 +1393,7 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
     ? groups.reduce((total, group) => total + group.records.filter(isObviousTestRecord).length, 0)
     : 0;
   const visibleRecordCount = filteredGroups.reduce((total, group) => total + group.records.length, 0);
-  const hasActiveFilters = Boolean(normalizedQuery) || selectedType !== allTypeValue || selectedStatus !== "All statuses" || selectedArea !== "All areas" || selectedOwner !== "All owners" || selectedCreatedDate !== "All dates" || selectedOperationalDate !== "All due dates" || sortOrder !== "Default" || attentionOnly;
+  const hasActiveFilters = Boolean(normalizedQuery) || selectedType !== allTypeValue || selectedStatus !== "All statuses" || selectedArea !== "All areas" || selectedOwner !== "All owners" || selectedCreatedDate !== "All dates" || selectedOperationalDate !== "All due dates" || sortOrder !== "Default" || attentionOnly || inMotionOnly;
   const getProjectLifecycleDescriptor = (status: string) => ({
     Open: "Open project",
     "In Progress": "Project in progress",
@@ -1428,6 +1456,7 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <span className="mr-1 text-[10px] uppercase tracking-[0.14em] text-[#6a625d]">Quick views</span>
+        <button type="button" onClick={() => applyQuickView("In motion")} className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-2.5 py-1.5 text-[11px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]">In motion</button>
         <button type="button" onClick={() => applyQuickView("All records")} className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-2.5 py-1.5 text-[11px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]">All records</button>
         <button type="button" onClick={() => applyQuickView("Attention")} className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-2.5 py-1.5 text-[11px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]">Attention</button>
         <button type="button" onClick={() => applyQuickView("Open actions")} className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-2.5 py-1.5 text-[11px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]">Open actions</button>
@@ -1463,7 +1492,11 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
               setUpdatedSavedViewId("");
               const selectedView = savedViews.find((view) => view.id === viewId);
               if (selectedView) {
-                setRecordControls({ ...selectedView.controls });
+                setRecordControls({
+                  ...getDefaultRecordControls(),
+                  ...selectedView.controls,
+                  inMotionOnly: selectedView.controls.inMotionOnly ?? false,
+                });
                 setRenameViewName(selectedView.name);
               } else {
                 setRenameViewName("");
@@ -1524,7 +1557,13 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
             {defaultSavedViewId ? (
               <button
                 type="button"
-                onClick={() => setDefaultSavedViewId("")}
+                onClick={() => {
+                  const clearingActiveDefault = selectedSavedViewId === defaultSavedViewId;
+                  setDefaultSavedViewId("");
+                  if (clearingActiveDefault) {
+                    applyQuickView("In motion");
+                  }
+                }}
                 className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]"
               >
                 Clear default
@@ -1619,7 +1658,10 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
         </button>
         <select
           value={selectedStatus}
-          onChange={(event) => updateRecordControls({ selectedStatus: event.target.value })}
+          onChange={(event) => updateRecordControls({
+            selectedStatus: event.target.value,
+            inMotionOnly: event.target.value === "All statuses",
+          })}
           aria-label="Filter Records in Motion by status"
           className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[12px] text-[#171717] outline-none focus:border-[#171717]"
         >
@@ -1673,7 +1715,7 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
           <button
             type="button"
             onClick={() => {
-              updateRecordControls({ selectedType: allTypeValue, selectedStatus: "All statuses", selectedArea: "All areas", selectedOwner: "All owners", selectedCreatedDate: "All dates", selectedOperationalDate: "All due dates" });
+              updateRecordControls({ selectedType: allTypeValue, selectedStatus: "All statuses", selectedArea: "All areas", selectedOwner: "All owners", selectedCreatedDate: "All dates", selectedOperationalDate: "All due dates", inMotionOnly: true });
             }}
             className="rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-3 py-2 text-[12px] text-[#4d4944] transition hover:border-[#171717] hover:text-[#171717]"
           >
@@ -1780,6 +1822,11 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
               Attention only <span aria-hidden="true">×</span>
             </button>
           ) : null}
+          {inMotionOnly ? (
+            <button type="button" onClick={() => updateRecordControls({ inMotionOnly: false })} className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 hover:border-[#171717]">
+              In motion <span aria-hidden="true">×</span>
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -1798,12 +1845,12 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
                 <div className="mt-1 text-[11px] text-[#6a625d]">
                   {hiddenTestRecordCount === totalRecordCount
                     ? "Turn off Hide test records to reveal them for development."
-                    : "Showing all records will clear the active controls without changing or deleting the saved view."}
+                    : "Returning to the founder view will clear the active controls without changing or deleting the saved view."}
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => hiddenTestRecordCount === totalRecordCount ? setHideTestRecords(false) : applyQuickView("All records")}
+                onClick={() => hiddenTestRecordCount === totalRecordCount ? setHideTestRecords(false) : applyQuickView("In motion")}
                 className="shrink-0 rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[11px] font-medium text-[#f9f7f4] transition hover:bg-[#35312e]"
               >
                 {hiddenTestRecordCount === totalRecordCount ? "Show test records" : "Show all records"}
