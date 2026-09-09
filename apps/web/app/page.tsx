@@ -2637,6 +2637,17 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
   onOpenRecord: (objectType: string, id: string) => void;
   onOpenStep: (stepLabel: string) => void;
 }) {
+  const resolvedDisplayItems = Array.from(
+    new Map(
+      postureChange.resolvedSincePrevious.map((item) => [
+        `${item.objectType}:${item.title.trim().toLowerCase()}`,
+        item,
+      ]),
+    ).values(),
+  );
+  const resolvedPreviewItems = resolvedDisplayItems.slice(0, 3);
+  const additionalResolvedItems = resolvedDisplayItems.slice(3);
+
   return (
     <div className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
       <div className="flex items-center justify-between gap-3">
@@ -2763,12 +2774,20 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
             </div>
 
             <div>
-              <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Resolved since previous snapshot</div>
-              {postureChange.resolvedSincePrevious.length === 0 ? (
+              <div className="flex items-center gap-2">
+                <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Resolved since previous snapshot</div>
+                {resolvedDisplayItems.length > 1 ? (
+                  <span className="rounded border border-[#b8c9ba] bg-[#eef4ee] px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.1em] text-[#2f5d3a]">
+                    {resolvedDisplayItems.length} resolved
+                  </span>
+                ) : null}
+              </div>
+              {resolvedDisplayItems.length === 0 ? (
                 <div className="mt-1 text-[11px] text-[#4d4944]">Nothing resolved since the previous snapshot.</div>
               ) : (
-                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-                  {postureChange.resolvedSincePrevious.map((item) => (
+                <div className="mt-1 space-y-1">
+                  <div className="flex flex-wrap gap-x-3 gap-y-1">
+                  {resolvedPreviewItems.map((item) => (
                     <span key={`resolved-${item.key}`} className="inline-flex items-center gap-1.5 text-[11px] leading-5 text-[#2f5d3a]">
                       <span>{item.title}</span>
                       {item.objectType !== "Record" ? (
@@ -2778,6 +2797,26 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
                       ) : null}
                     </span>
                   ))}
+                  </div>
+                  {additionalResolvedItems.length > 0 ? (
+                    <details className="text-[10px] text-[#4d4944]">
+                      <summary className="w-fit cursor-pointer font-medium text-[#2f5d3a]">
+                        Show {additionalResolvedItems.length} more resolved
+                      </summary>
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                        {additionalResolvedItems.map((item) => (
+                          <span key={`resolved-more-${item.key}`} className="inline-flex items-center gap-1.5 text-[11px] leading-5 text-[#2f5d3a]">
+                            <span>{item.title}</span>
+                            {item.objectType !== "Record" ? (
+                              <span className="rounded border border-[#b8c9ba] bg-[#eef4ee] px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.1em] text-[#2f5d3a]">
+                                {item.objectType}
+                              </span>
+                            ) : null}
+                          </span>
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
                 </div>
               )}
             </div>
