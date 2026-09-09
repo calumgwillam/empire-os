@@ -6525,6 +6525,79 @@ export default function Home() {
     };
   })();
 
+  const strategicDataConfidence = (() => {
+    type Limitation = {
+      key: string;
+      label: string;
+      action?: { label: string; objectType: string; id: string };
+    };
+    const limitations: Limitation[] = [];
+    const cashPositionBlocksAllocation = !capitalAllocation.cashConfigured;
+
+    if (cashPositionBlocksAllocation || capitalAllocation.cashSnapshotFreshness.label === "Missing / invalid date") {
+      limitations.push({
+        key: "cash-position",
+        label: "Cash position incomplete",
+        action: { label: "Update cash snapshot", objectType: "Finance", id: "cash-buffer" },
+      });
+    } else if (capitalAllocation.cashSnapshotFreshness.label === "Stale") {
+      limitations.push({
+        key: "cash-position",
+        label: "Cash snapshot is stale",
+        action: { label: "Update cash snapshot", objectType: "Finance", id: "cash-buffer" },
+      });
+    }
+
+    if (capitalAllocation.commitmentsNeedingAttention.length > 0) {
+      const firstCommitment = capitalAllocation.commitmentsNeedingAttention[0].commitment;
+      limitations.push({
+        key: "commitments",
+        label: `${capitalAllocation.commitmentsNeedingAttention.length} commitment record${capitalAllocation.commitmentsNeedingAttention.length === 1 ? "" : "s"} need attention`,
+        action: { label: "Review commitments", objectType: "Finance", id: `commitment:${firstCommitment.id}` },
+      });
+    }
+
+    if (capitalAllocation.highFitMissingCapitalCount > 0) {
+      const firstOpportunity = capitalAllocation.liveOpportunities.find((opportunity) => opportunity.fitRank >= 3 && opportunity.capitalState === "missing");
+      limitations.push({
+        key: "opportunity-capital",
+        label: `${capitalAllocation.highFitMissingCapitalCount} high-fit opportunit${capitalAllocation.highFitMissingCapitalCount === 1 ? "y is" : "ies are"} missing a capital requirement`,
+        action: firstOpportunity ? { label: "Add capital requirement", objectType: "Opportunity", id: firstOpportunity.id } : undefined,
+      });
+    }
+
+    const ownershipGapCount = organisationalHealth.totalWork - organisationalHealth.validOwned;
+    if (ownershipGapCount > 0) {
+      limitations.push({ key: "ownership", label: `${ownershipGapCount} active operational record${ownershipGapCount === 1 ? " has" : "s have"} invalid or missing ownership` });
+    }
+
+    if (decisionTrackRecord.closedButUnrated.length > 0) {
+      const firstDecision = decisionTrackRecord.closedButUnrated[0];
+      limitations.push({
+        key: "decision-outcomes",
+        label: `${decisionTrackRecord.closedButUnrated.length} closed Decision${decisionTrackRecord.closedButUnrated.length === 1 ? " is" : "s are"} still unrated`,
+        action: { label: "Rate Decision", objectType: "Decision", id: firstDecision.id },
+      });
+    }
+
+    if (capitalAllocation.wonCommercialEvidence.totalWonLeads > 0 && capitalAllocation.wonCommercialEvidence.totalMissingFinalValues > 0) {
+      const firstLead = leads.find((lead) => lead.status === "Won" && (parseOptionalFinanceAmount(lead.finalJobValue) ?? 0) <= 0);
+      limitations.push({
+        key: "commercial-evidence",
+        label: `${capitalAllocation.wonCommercialEvidence.totalMissingFinalValues} Won Lead${capitalAllocation.wonCommercialEvidence.totalMissingFinalValues === 1 ? " is" : "s are"} missing a valid final job value`,
+        action: firstLead ? { label: "Add final job value", objectType: "Lead", id: firstLead.id } : undefined,
+      });
+    }
+
+    const state = cashPositionBlocksAllocation || limitations.length >= 3
+      ? "Limited" as const
+      : limitations.length > 0
+        ? "Usable" as const
+        : "Strong" as const;
+
+    return { state, limitations };
+  })();
+
   const isBlankOwnerText = (ownerValue?: string) => {
     const text = (ownerValue || "").trim();
     return text === "" || text.toLowerCase() === "unassigned";
@@ -10627,6 +10700,55 @@ export default function Home() {
               <div className="mt-6">
                 <FounderFocusList items={founderFocusList} totalCount={founderFocusCandidates.length} onOpen={handleOpenAttentionRecord} />
               </div>
+
+              <section className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Strategic data confidence</div>
+                    <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">{strategicDataConfidence.state}</div>
+                    <div className="mt-1 text-[12px] leading-5 text-[#4d4944]">
+                      {strategicDataConfidence.limitations.length === 0
+                        ? "No material structured-data limitations currently reduce confidence in the Empire picture."
+                        : `${strategicDataConfidence.limitations.length} limitation${strategicDataConfidence.limitations.length === 1 ? "" : "s"} currently reduce confidence in the Empire picture.`}
+                    </div>
+                  </div>
+                  <span className={`rounded-full border px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.14em] ${strategicDataConfidence.state === "Strong" ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]" : strategicDataConfidence.state === "Limited" ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]" : "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"}`}>
+                    {strategicDataConfidence.state}
+                  </span>
+                </div>
+
+                {strategicDataConfidence.limitations.length > 0 ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {strategicDataConfidence.limitations.map((limitation) => {
+                      const hasCorrectiveAction = Boolean(limitation.action) || limitation.key === "ownership";
+                      return hasCorrectiveAction ? (
+                        <button
+                          key={limitation.key}
+                          type="button"
+                          onClick={() => {
+                            if (limitation.key === "ownership") {
+                              setActiveView("People");
+                              setSelectedAccountabilityKey("unassigned");
+                              return;
+                            }
+                            if (limitation.action) {
+                              handleOpenAttentionRecord(limitation.action.objectType, limitation.action.id);
+                            }
+                          }}
+                          className="rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-2 text-left text-[11px] text-[#2f2b28] transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                        >
+                          <span className="font-medium text-[#171717]">{limitation.label}</span>
+                          <span className="ml-2 text-[9px] uppercase tracking-[0.1em] text-[#6a625d]">{limitation.key === "ownership" ? "Review ownership" : limitation.action?.label}</span>
+                        </button>
+                      ) : (
+                        <span key={limitation.key} className="rounded-lg border border-[#d3cbc3] bg-white px-2.5 py-2 text-[11px] font-medium text-[#2f2b28]">
+                          {limitation.label}
+                        </span>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </section>
 
               <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
