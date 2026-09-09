@@ -5492,6 +5492,12 @@ export default function Home() {
   const isDecisionActive = (decision: DecisionRecord) =>
     ["Draft", "Active", "Under Review"].includes(decision.decisionStatus);
 
+  const isDecisionReviewDue = (decision: DecisionRecord) => {
+    if (!isDecisionActive(decision) || !decision.reviewDate) return false;
+    const reviewTime = new Date(decision.reviewDate).getTime();
+    return !Number.isNaN(reviewTime) && reviewTime <= Date.now();
+  };
+
   const isDecisionNotYetActionable = (decision: DecisionRecord) =>
     ["Draft", "Under Review"].includes(decision.decisionStatus);
 
@@ -5577,50 +5583,70 @@ export default function Home() {
   });
 
   const empireDecisionQueue = (() => {
-    const founderReviewQueue = [
+    const founderReviewCandidates = [
       ...decisionRecords
-        .filter((decision) => ["Draft", "Active", "Under Review"].includes(decision.decisionStatus))
-        .map((decision) => ({
-          id: decision.id,
-          kind: "Decision" as const,
-          title: decision.decisionTitle,
-          pillar: getAreaText(decision) || "Unassigned",
-          owner: decision.decisionMaker || "Unassigned",
-          whatIsChanging: decision.decisionStatement || "No decision statement recorded.",
-          whyItMatters: decision.reviewDate && new Date(decision.reviewDate).getTime() <= Date.now()
-            ? `This decision is overdue for review, so the current path may be stale or unchallenged.`
-            : decision.riskLevel === "High" || decision.riskLevel === "Critical"
-              ? `This decision carries ${decision.riskLevel.toLowerCase()} risk and should be checked before it becomes a delivery issue.`
-              : "This decision is active and still shaping execution or resource allocation.",
-          founderIntervention: decision.decisionStatus === "Under Review" || decision.riskLevel === "High" || decision.riskLevel === "Critical" ? "Yes" : "Maybe",
-          delegationAction: decision.decisionStatus === "Draft" ? "Delegate for drafting and owner review" : "Escalate if risk increases",
-        })),
+        .filter((decision) => isDecisionActive(decision) && (
+          isDecisionReviewDue(decision) ||
+          decision.decisionStatus === "Under Review" ||
+          decision.riskLevel === "High" ||
+          decision.riskLevel === "Critical"
+        ))
+        .map((decision) => {
+          const reasonCategory = decision.riskLevel === "Critical"
+            ? "Critical escalation"
+            : isDecisionReviewDue(decision)
+              ? "Review due"
+              : decision.decisionStatus === "Under Review"
+                ? "Under review"
+                : "High-risk judgement";
+          return {
+            id: decision.id,
+            objectType: "Decision" as const,
+            kind: "Decision" as const,
+            title: decision.decisionTitle,
+            pillar: getAreaText(decision) || "Unassigned",
+            owner: decision.decisionMaker || "Unassigned",
+            reasonCategory,
+            whatIsChanging: decision.decisionStatement || "No decision statement recorded.",
+            whyItMatters: reasonCategory === "Review due"
+              ? "This decision is due or overdue for explicit review, so its assumptions and current path need founder judgement."
+              : reasonCategory === "Under review"
+                ? "This decision is explicitly under review and needs a clear conclusion."
+                : `This decision carries ${decision.riskLevel.toLowerCase()} risk and needs founder judgement.`,
+            founderIntervention: "Yes",
+            delegationAction: "Founder review required",
+          };
+        }),
       ...problemRecords
-        .filter((problem) => isProblemUnresolved(problem) && (problem.severity === "High" || problem.severity === "Critical" || problem.problemStatus === "Action required"))
+        .filter((problem) => isProblemUnresolved(problem) && problem.severity === "Critical")
         .map((problem) => ({
           id: problem.id,
+          objectType: "Problem" as const,
           kind: "Problem" as const,
           title: problem.problemStatement,
           pillar: getAreaText(problem) || "Unassigned",
           owner: problem.owner || "Unassigned",
+          reasonCategory: "Critical escalation",
           whatIsChanging: `${problem.severity} severity problem still requiring action.`,
-          whyItMatters: `This issue remains ${problem.problemStatus.toLowerCase()}, so quality, time, or delivery is still being affected.`,
-          founderIntervention: problem.severity === "Critical" ? "Yes" : "Maybe",
-          delegationAction: problem.severity === "High" || problem.severity === "Critical" ? "Escalate to direct owner and review urgency" : "Delegate to operational owner",
+          whyItMatters: `This critical issue remains ${problem.problemStatus.toLowerCase()} and requires founder-level escalation.`,
+          founderIntervention: "Yes",
+          delegationAction: "Escalate to founder and accountable owner",
         })),
       ...actionRecords
-        .filter((action) => action.status === "Blocked" || (action.status === "Open" && action.priority === "Critical"))
+        .filter((action) => isActionActive(action) && action.priority === "Critical")
         .map((action) => ({
           id: action.id,
+          objectType: "Action" as const,
           kind: "Action" as const,
           title: action.actionTitle,
           pillar: action.relatedPillar || "Unassigned",
           owner: action.owner || "Unassigned",
+          reasonCategory: "Critical escalation",
           whatIsChanging: action.status === "Blocked" ? "This dependency is blocked and preventing progress." : "This critical action is still open and needs immediate movement.",
           whyItMatters: action.dueDate && new Date(action.dueDate).getTime() <= Date.now()
             ? `The due date of ${action.dueDate} has passed, so momentum is slipping and downstream work is delayed.`
             : "This item is critical to the current operating plan and should not sit unresolved.",
-          founderIntervention: action.status === "Blocked" || action.priority === "Critical" ? "Yes" : "Maybe",
+          founderIntervention: "Yes",
           delegationAction: action.status === "Blocked" ? "Escalate and remove dependency" : "Delegate with clear owner follow-up",
         })),
     ];
@@ -5799,6 +5825,28 @@ export default function Home() {
         })),
     ].slice(0, 8);
 
+    const reasonPriority: Record<string, number> = {
+      "Authority required": 5,
+      "Critical escalation": 4,
+      "Review due": 3,
+      "Under review": 2,
+      "High-risk judgement": 1,
+    };
+    const founderReviewQueue = Array.from(
+      [...founderReviewCandidates, ...founderAuthorityItems.map((item) => ({
+        ...item,
+        kind: item.objectType,
+        reasonCategory: "Authority required",
+      }))].reduce((items, item) => {
+        const key = `${item.objectType}:${item.id}`;
+        const existing = items.get(key);
+        if (!existing || reasonPriority[item.reasonCategory] > reasonPriority[existing.reasonCategory]) {
+          items.set(key, item);
+        }
+        return items;
+      }, new Map<string, (typeof founderReviewCandidates)[number] | ((typeof founderAuthorityItems)[number] & { kind: string; reasonCategory: string })>()),
+    ).map(([, item]) => item);
+
     return {
       founderReviewQueue,
       crossPillarIssues,
@@ -5811,11 +5859,7 @@ export default function Home() {
     const reviewedDecisions = decisionRecords.filter((decision) =>
       decision.decisionStatus === "Completed" || decision.decisionStatus === "Reversed" || Boolean(decision.outcomeRating),
     );
-    const reviewsDue = decisionRecords.filter((decision) =>
-      ["Draft", "Active", "Under Review"].includes(decision.decisionStatus) &&
-      Boolean(decision.reviewDate) &&
-      new Date(decision.reviewDate).getTime() <= Date.now(),
-    );
+    const reviewsDue = decisionRecords.filter(isDecisionReviewDue);
     const ratings = { worked: 0, partially: 0, failed: 0, unrated: 0 };
     reviewedDecisions.forEach((decision) => {
       if (decision.outcomeRating === "Worked") ratings.worked += 1;
@@ -10401,7 +10445,7 @@ export default function Home() {
                 <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
                   <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Founder review queue</div>
                   {empireDecisionQueue.founderReviewQueue.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">No items currently require founder review.</div>
+                    <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">No current record meets the explicit founder-review or founder-authority criteria.</div>
                   ) : (
                     <div className="space-y-2">
                       {empireDecisionQueue.founderReviewQueue.map((item) => (
@@ -10414,7 +10458,7 @@ export default function Home() {
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{item.kind}</span>
                             <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{item.pillar}</span>
-                            <span className="rounded-full border border-[#cfc8c1] bg-[#f1efe9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">Open record</span>
+                            <span className="rounded-full border border-[#cfc8c1] bg-[#f1efe9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{item.reasonCategory}</span>
                           </div>
                           <div className="mt-2 text-[17px] font-medium tracking-[-0.04em] text-[#171717]">{item.title}</div>
                           <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
