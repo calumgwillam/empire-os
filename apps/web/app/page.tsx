@@ -6251,15 +6251,55 @@ export default function Home() {
     const highFitMissingCapitalCount = highFitOpportunities.filter((opp) => opp.capitalState === "missing").length;
     const highFitZeroCapitalCount = highFitOpportunities.filter((opp) => opp.capitalState === "zero").length;
 
-    const pillarReturn = pillarOptions.map((pillar) => {
-      const wonValue = activeLeads
-        .filter((lead) => (lead.relatedPillar || "") === pillar && lead.status === "Won")
-        .reduce((total, lead) => total + wonLeadsValue(lead), 0);
-      const liveCount = liveOpportunities.filter((opp) => opp.area === pillar).length;
-      const wonPerLiveOpportunity = liveCount > 0 && wonValue > 0 ? wonValue / liveCount : null;
-      return { pillar, wonValue, liveCount, wonPerLiveOpportunity };
+    const wonLeads = leads.filter((lead) => lead.status === "Won");
+    const wonValueByAreaMap = new Map<string, {
+      area: string;
+      wonLeadCount: number;
+      knownFinalValueCount: number;
+      missingFinalValueCount: number;
+      knownFinalWonValue: number;
+      quotedValueCount: number;
+      knownQuotedValue: number;
+    }>();
+
+    wonLeads.forEach((lead) => {
+      const area = lead.relatedPillar.trim() || "Unassigned";
+      const current = wonValueByAreaMap.get(area) || {
+        area,
+        wonLeadCount: 0,
+        knownFinalValueCount: 0,
+        missingFinalValueCount: 0,
+        knownFinalWonValue: 0,
+        quotedValueCount: 0,
+        knownQuotedValue: 0,
+      };
+      const finalValue = parseOptionalFinanceAmount(lead.finalJobValue);
+      const quoteValue = parseOptionalFinanceAmount(lead.quoteValue);
+
+      current.wonLeadCount += 1;
+      if (finalValue !== null && finalValue > 0) {
+        current.knownFinalValueCount += 1;
+        current.knownFinalWonValue += finalValue;
+      } else {
+        current.missingFinalValueCount += 1;
+      }
+      if (quoteValue !== null && quoteValue > 0) {
+        current.quotedValueCount += 1;
+        current.knownQuotedValue += quoteValue;
+      }
+      wonValueByAreaMap.set(area, current);
     });
-    const totalWonValue = pillarReturn.reduce((sum, p) => sum + p.wonValue, 0);
+
+    const wonValueByArea = [...wonValueByAreaMap.values()]
+      .sort((left, right) => right.knownFinalWonValue - left.knownFinalWonValue || left.area.localeCompare(right.area));
+    const wonCommercialEvidence = {
+      byArea: wonValueByArea,
+      totalWonLeads: wonLeads.length,
+      totalKnownFinalValues: wonValueByArea.reduce((sum, area) => sum + area.knownFinalValueCount, 0),
+      totalMissingFinalValues: wonValueByArea.reduce((sum, area) => sum + area.missingFinalValueCount, 0),
+      totalKnownFinalWonValue: wonValueByArea.reduce((sum, area) => sum + area.knownFinalWonValue, 0),
+      archivedWonLeadCount: wonLeads.filter((lead) => lead.archived).length,
+    };
 
     return {
       liveOpportunities,
@@ -6274,8 +6314,7 @@ export default function Home() {
       highFitOpportunityCount,
       highFitMissingCapitalCount,
       highFitZeroCapitalCount,
-      pillarReturn,
-      totalWonValue,
+      wonCommercialEvidence,
     };
   })();
 
@@ -10432,18 +10471,30 @@ export default function Home() {
                   )}
 
                   <div className="mt-4">
-                    <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Historical won value by pillar <span className="normal-case tracking-normal text-[#7a726b]">(current evidence only — not proof of future return)</span></div>
-                    {capitalAllocation.totalWonValue === 0 && capitalAllocation.pillarReturn.every((p) => p.liveCount === 0) ? (
+                    <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Won commercial value by area <span className="normal-case tracking-normal text-[#7a726b]">(recorded to date; known final values only)</span></div>
+                    {capitalAllocation.wonCommercialEvidence.totalWonLeads === 0 ? (
                       <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-3 text-[12px] text-[#4d4944]">
-                        Insufficient evidence — too little won-value or live-opportunity history to compare pillars.
+                        No won commercial history has been recorded yet.
+                      </div>
+                    ) : capitalAllocation.wonCommercialEvidence.totalKnownFinalValues === 0 ? (
+                      <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-3 text-[12px] text-[#4d4944]">
+                        {capitalAllocation.wonCommercialEvidence.totalWonLeads} Won Lead{capitalAllocation.wonCommercialEvidence.totalWonLeads === 1 ? " is" : "s are"} recorded, but none has a valid positive final job value. Final-value coverage is insufficient.
                       </div>
                     ) : (
-                      <div className="flex flex-wrap gap-2">
-                        {capitalAllocation.pillarReturn.map((p) => (
-                          <span key={p.pillar} className="rounded-full border border-[#d3cbc3] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28]">
-                            {p.pillar}: {formatFinanceAmount(p.wonValue)} won • {p.liveCount} live{p.wonPerLiveOpportunity !== null ? ` • ${formatFinanceAmount(p.wonPerLiveOpportunity)}/live` : ""}
-                          </span>
-                        ))}
+                      <div>
+                        <div className="mb-2 text-[11px] leading-4 text-[#4d4944]">
+                          Known final value {formatFinanceAmount(capitalAllocation.wonCommercialEvidence.totalKnownFinalWonValue)} across {capitalAllocation.wonCommercialEvidence.totalKnownFinalValues} of {capitalAllocation.wonCommercialEvidence.totalWonLeads} Won Leads; {capitalAllocation.wonCommercialEvidence.totalMissingFinalValues} missing final value. Includes {capitalAllocation.wonCommercialEvidence.archivedWonLeadCount} archived win{capitalAllocation.wonCommercialEvidence.archivedWonLeadCount === 1 ? "" : "s"}.
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                          {capitalAllocation.wonCommercialEvidence.byArea.map((area) => (
+                            <div key={area.area} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-[11px] text-[#2f2b28]">
+                              <div className="font-medium text-[#171717]">{area.area}</div>
+                              <div className="mt-1 text-[16px] font-semibold tracking-[-0.03em] text-[#171717]">{formatFinanceAmount(area.knownFinalWonValue)} known final value</div>
+                              <div className="mt-1 leading-4 text-[#4d4944]">{area.wonLeadCount} Won Lead{area.wonLeadCount === 1 ? "" : "s"} • {area.knownFinalValueCount} with final value • {area.missingFinalValueCount} missing</div>
+                              <div className="mt-1 leading-4 text-[#6a625d]">Quoted separately: {formatFinanceAmount(area.knownQuotedValue)} across {area.quotedValueCount} Lead{area.quotedValueCount === 1 ? "" : "s"}; not included above.</div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
