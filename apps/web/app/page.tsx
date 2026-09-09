@@ -1809,7 +1809,6 @@ function CommandRecordRegister({ groups, attentionRecordKeys }: { groups: Comman
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] uppercase tracking-[0.12em] text-[#6a625d]">
                         {record.area ? <span>{record.area}</span> : null}
-                        {record.sourceCaptureId ? <span>Capture {record.sourceCaptureId}</span> : null}
                       </div>
                     </button>
                   ))}
