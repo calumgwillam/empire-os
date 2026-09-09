@@ -7981,7 +7981,7 @@ export default function Home() {
         operationalDate: "",
         owner: sop.owner || "Unassigned",
         status: sop.status,
-        area: sop.area?.trim() || "",
+        area: systemRecords.find((system) => system.id === sop.relatedSystem)?.area || sop.relatedArea?.trim() || "",
         sourceCaptureId: sop.sourceCaptureId,
         onOpen: () => {
           setSelectedSopId(sop.id);
