@@ -5437,6 +5437,26 @@ export default function Home() {
   const isProjectActive = (project: ProjectRecord) =>
     !["completed", "closed", "final", "cancelled", "canceled"].includes(project.status.trim().toLowerCase());
 
+  const founderPerson = orderedPeople.find((person) => person.accessLevel === "Founder" && person.status === "Active") || null;
+  const founderOwnerKey = founderPerson?.name.trim().toLowerCase() || null;
+  const getValidActiveOwnerKey = (ownerText: string | undefined, ownerPersonId?: string) => {
+    if (ownerPersonId) {
+      const owner = orderedPeople.find((person) => person.id === ownerPersonId && person.status === "Active");
+      if (owner) return owner.name.trim().toLowerCase();
+    }
+
+    const text = (ownerText || "").trim();
+    if (!text || text.toLowerCase() === "unassigned") return null;
+    const matched = orderedPeople.find((person) => person.status === "Active" && person.name.trim().toLowerCase() === text.toLowerCase());
+    return matched ? matched.name.trim().toLowerCase() : null;
+  };
+  const isFounderOwned = (ownerText: string | undefined, ownerPersonId?: string) =>
+    founderOwnerKey !== null && getValidActiveOwnerKey(ownerText, ownerPersonId) === founderOwnerKey;
+  const activeOwnershipActions = actionRecords.filter(isActionActive);
+  const activeOwnershipProjects = projects.filter(isProjectActive);
+  const activeOwnershipLeads = activeLeads.filter((lead) => !["Won", "Lost"].includes(lead.status));
+  const activeOwnershipProblems = problemRecords.filter(isProblemUnresolved);
+
   const metricsLeadsGenerated = activeLeads.length;
   const metricsLeadsBySource = leadSourceOptions
     .map((source) => ({ source, count: activeLeads.filter((lead) => lead.sourceChannel === source).length }))
@@ -5614,22 +5634,88 @@ export default function Home() {
       };
     });
 
-    const delegateItems = actionRecords
-      .filter((action) => action.status === "Open" && action.priority !== "Critical" && (!action.dueDate || new Date(action.dueDate).getTime() > Date.now() + 1000 * 60 * 60 * 24 * 30))
+    const nowMs = Date.now();
+    const daysUntil = (dateValue?: string) => {
+      const timestamp = dateValue ? new Date(dateValue).getTime() : 0;
+      return timestamp && !Number.isNaN(timestamp) ? (timestamp - nowMs) / (1000 * 60 * 60 * 24) : null;
+    };
+    const delegateItems = [
+      ...activeOwnershipActions
+        .filter((action) => isFounderOwned(action.owner, action.ownerPersonId) && action.status !== "Blocked" && action.priority !== "Critical")
+        .map((action) => {
+          const dueInDays = daysUntil(action.dueDate);
+          const suitability = (action.priority === "Low" ? 0 : action.priority === "Medium" ? 15 : 35)
+            + (action.status === "In Progress" ? 10 : 0)
+            + (dueInDays === null ? 0 : dueInDays < 0 ? 80 : dueInDays <= 7 ? 55 : dueInDays <= 30 ? 30 : 0);
+          return {
+            id: action.id,
+            objectType: "Action" as const,
+            title: action.actionTitle,
+            pillar: action.relatedPillar || "Unassigned",
+            owner: action.owner || founderPerson?.name || "Founder",
+            whatIsChanging: "This active action is still carried by the founder but does not have a critical or blocked authority signal.",
+            whyItMatters: "Transferring routine execution creates founder capacity while preserving accountability through a named owner.",
+            founderIntervention: "No",
+            delegationAction: "Transfer to an active non-founder owner with a clear outcome and follow-up",
+            suitability,
+          };
+        }),
+      ...activeOwnershipProjects
+        .filter((project) => isFounderOwned(project.owner) && project.status.trim().toLowerCase() !== "blocked")
+        .map((project) => {
+          const dueInDays = daysUntil(project.targetCompletionDate);
+          const suitability = (project.status.trim().toLowerCase() === "in progress" ? 15 : 0)
+            + (dueInDays === null ? 0 : dueInDays < 0 ? 80 : dueInDays <= 14 ? 50 : dueInDays <= 30 ? 25 : 0);
+          return {
+            id: project.id,
+            objectType: "Project" as const,
+            title: project.projectName,
+            pillar: project.area || "Unassigned",
+            owner: project.owner || founderPerson?.name || "Founder",
+            whatIsChanging: "This active, unblocked project is currently carried by the founder.",
+            whyItMatters: "Moving delivery ownership away from the founder improves operating leverage and tests whether the project can run autonomously.",
+            founderIntervention: "No",
+            delegationAction: "Transfer delivery ownership to an active non-founder owner",
+            suitability,
+          };
+        }),
+      ...activeOwnershipLeads
+        .filter((lead) => isFounderOwned(lead.owner))
+        .map((lead) => {
+          const followUpInDays = daysUntil(lead.followUpDate);
+          const suitability = (lead.status === "Follow-Up" ? 25 : 0)
+            + (followUpInDays === null ? 0 : followUpInDays < 0 ? 60 : followUpInDays <= 7 ? 35 : 0);
+          return {
+            id: lead.id,
+            objectType: "Lead" as const,
+            title: lead.leadName,
+            pillar: lead.relatedPillar || "Unassigned",
+            owner: lead.owner || founderPerson?.name || "Founder",
+            whatIsChanging: "This live lead is currently carried by the founder.",
+            whyItMatters: "Delegating routine pipeline ownership reduces founder dependency while keeping commercial follow-up accountable.",
+            founderIntervention: "No",
+            delegationAction: "Transfer pipeline ownership to an active non-founder owner",
+            suitability,
+          };
+        }),
+      ...activeOwnershipProblems
+        .filter((problem) => isFounderOwned(problem.owner) && problem.severity !== "Critical" && problem.problemStatus !== "Action required")
+        .map((problem) => ({
+          id: problem.id,
+          objectType: "Problem" as const,
+          title: problem.problemStatement,
+          pillar: getAreaText(problem) || "Unassigned",
+          owner: problem.owner || founderPerson?.name || "Founder",
+          whatIsChanging: "This unresolved, non-critical problem is currently carried by the founder.",
+          whyItMatters: "Assigning investigation and resolution to an operational owner reduces founder dependency without delegating an explicit authority decision.",
+          founderIntervention: "No",
+          delegationAction: "Transfer investigation and resolution to an active non-founder owner",
+          suitability: problem.severity === "Low" ? 5 : problem.severity === "Medium" ? 20 : 40,
+        })),
+    ]
+      .sort((left, right) => left.suitability - right.suitability || left.title.localeCompare(right.title))
       .slice(0, 6)
-      .map((action) => ({
-        id: action.id,
-        objectType: "Action",
-        title: action.actionTitle,
-        pillar: action.relatedPillar || "Unassigned",
-        owner: action.owner || "Unassigned",
-        whatIsChanging: "The work is still active but does not require founder-level attention yet.",
-        whyItMatters: action.dueDate
-          ? `The next deadline is ${action.dueDate}, which gives enough runway for standard operational management.`
-          : "This action is live and should remain inside normal operational ownership.",
-        founderIntervention: "No",
-        delegationAction: "Delegate to the assigned owner for routine delivery",
-      }));
+      .map(({ suitability: _suitability, ...item }) => item);
 
     const founderAuthorityItems = [
       ...projects.filter((project) => project.status.trim().toLowerCase() === "blocked" && project.area && pillarOptions.includes(project.area as (typeof pillarOptions)[number])).map((project) => ({
@@ -5980,30 +6066,12 @@ export default function Home() {
   const unassignedAccountability = buildAccountabilitySnapshot(null);
 
   const organisationalHealth = (() => {
-    const founderPerson = orderedPeople.find((person) => person.accessLevel === "Founder" && person.status === "Active") || null;
-
-    const activeActions = actionRecords.filter((action) => isActionActive(action));
-    const activeProjects = projects.filter((project) => isProjectActive(project));
-    const pipelineLeadsAll = activeLeads.filter((lead) => !["Won", "Lost"].includes(lead.status));
-    const unresolvedProblems = problemRecords.filter((problem) => isProblemUnresolved(problem));
+    const activeActions = activeOwnershipActions;
+    const activeProjects = activeOwnershipProjects;
+    const pipelineLeadsAll = activeOwnershipLeads;
+    const unresolvedProblems = activeOwnershipProblems;
 
     const totalWork = activeActions.length + activeProjects.length + pipelineLeadsAll.length + unresolvedProblems.length;
-
-    const founderNames = new Set<string>();
-    if (founderPerson) {
-      founderNames.add(founderPerson.name.trim().toLowerCase());
-    }
-
-    const hasValidOwner = (ownerText: string | undefined, ownerPersonId?: string) => {
-      if (ownerPersonId) {
-        const owner = orderedPeople.find((person) => person.id === ownerPersonId && person.status === "Active");
-        if (owner) return owner.name.trim().toLowerCase();
-      }
-      const text = (ownerText || "").trim();
-      if (!text || text.toLowerCase() === "unassigned") return null;
-      const matched = orderedPeople.find((person) => person.status === "Active" && person.name.trim().toLowerCase() === text.toLowerCase());
-      return matched ? matched.name.trim().toLowerCase() : null;
-    };
 
     let validOwned = 0;
     let founderOwned = 0;
@@ -6011,11 +6079,11 @@ export default function Home() {
     const ownerLoad = new Map<string, number>();
 
     const tallyWork = (ownerText: string | undefined, ownerPersonId: string | undefined, isRisky: boolean) => {
-      const ownerKey = hasValidOwner(ownerText, ownerPersonId);
+      const ownerKey = getValidActiveOwnerKey(ownerText, ownerPersonId);
       if (!ownerKey) return;
       validOwned += 1;
       ownerLoad.set(ownerKey, (ownerLoad.get(ownerKey) || 0) + 1);
-      if (founderNames.has(ownerKey)) {
+      if (founderOwnerKey !== null && ownerKey === founderOwnerKey) {
         founderOwned += 1;
       } else if (isRisky) {
         stalledOrRiskyDelegated += 1;
@@ -6051,13 +6119,20 @@ export default function Home() {
       topOwnerShare = Math.round((maxLoad / validOwned) * 100);
     }
 
-    const delegationComponentsPresent = [pctValidOwner, pctNonFounder, pctDelegatedStalled, topOwnerShare].filter((v) => v !== null).length;
-    const delegationScore = delegationComponentsPresent < 3 || totalWork === 0
+    const delegationScore = totalWork === 0
       ? null
-      : Math.round((pctValidOwner ?? 0) * 0.5 + (pctNonFounder ?? 0) * 0.3 + (100 - (pctDelegatedStalled ?? 0)) * 0.2);
+      : validOwned === 0
+        ? 0
+        : (() => {
+            const ownershipScore = (pctValidOwner ?? 0) * 0.30;
+            const nonFounderScore = (pctNonFounder ?? 0) * 0.35;
+            const concentrationScore = (100 - (topOwnerShare ?? 100)) * 0.25;
+            const delegatedExecutionScore = pctDelegatedStalled === null ? 0 : (100 - pctDelegatedStalled) * 0.10;
+            const availableWeight = pctDelegatedStalled === null ? 0.90 : 1;
+            return Math.round((ownershipScore + nonFounderScore + concentrationScore + delegatedExecutionScore) / availableWeight);
+          })();
     const delegationQuality = (() => {
       if (totalWork === 0) return { label: "No active work", tone: "clear" as const };
-      if (delegationComponentsPresent < 3) return { label: "Insufficient data", tone: "neutral" as const };
       const score = delegationScore ?? 0;
       if (score >= 80) return { label: "Strong", tone: "clear" as const };
       if (score >= 60) return { label: "Adequate", tone: "neutral" as const };
