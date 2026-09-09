@@ -2335,11 +2335,12 @@ function useFinanceSavedFeedback(): [boolean, () => void] {
 const financeFieldClass = "w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6";
 const financeLabelClass = "mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]";
 
-function CashPositionPanel({ value, onClose, onChange, onSave }: {
+function CashPositionPanel({ value, validationError, onClose, onChange, onSave }: {
   value: CashPositionRecord;
+  validationError: string | null;
   onClose: () => void;
   onChange: (field: keyof CashPositionRecord, value: string) => void;
-  onSave: () => void;
+  onSave: () => boolean;
 }) {
   const [hasSaved, markSaved] = useFinanceSavedFeedback();
 
@@ -2377,9 +2378,13 @@ function CashPositionPanel({ value, onClose, onChange, onSave }: {
           </div>
         </div>
 
+        {validationError ? (
+          <p role="alert" className="mt-4 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">{validationError}</p>
+        ) : null}
+
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-          <button type="button" onClick={() => { onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save cash position"}</button>
+          <button type="button" onClick={() => { if (onSave()) markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save cash position"}</button>
         </div>
       </div>
     </div>
@@ -5091,6 +5096,7 @@ export default function Home() {
   const [commitmentRecords, setCommitmentRecords] = useState<CommitmentRecord[]>([]);
   const [dailyPostureSnapshots, setDailyPostureSnapshots] = useState<DailyPostureSnapshot[]>([]);
   const [cashPositionEditor, setCashPositionEditor] = useState<CashPositionRecord | null>(null);
+  const [cashPositionValidationError, setCashPositionValidationError] = useState<string | null>(null);
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
   const [incomeEditor, setIncomeEditor] = useState<IncomeRecord | null>(null);
   const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
@@ -5361,10 +5367,17 @@ export default function Home() {
   const parseOptionalFinanceAmount = (value: string) => {
     const trimmed = value.trim();
     if (!trimmed) return null;
-    const normalized = trimmed.replace(/[^0-9.\-]/g, "");
-    if (!normalized) return null;
+    const normalized = trimmed.replace(/[£$,\s]/g, "");
+    if (!/^-?(?:\d+\.?\d*|\.\d+)$/.test(normalized)) return null;
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : null;
+  };
+  const parseCashSnapshotDate = (value: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const parsed = new Date(`${value}T00:00:00`);
+    const [year, month, day] = value.split("-").map(Number);
+    if (Number.isNaN(parsed.getTime()) || parsed.getFullYear() !== year || parsed.getMonth() !== month - 1 || parsed.getDate() !== day) return null;
+    return parsed;
   };
   const formatFinanceAmount = (value: number) =>
     value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -5380,9 +5393,28 @@ export default function Home() {
     .filter((record) => record.status === "Paid")
     .reduce((total, record) => total + parseFinanceAmount(record.amount), 0);
   const netCashMovement = totalReceivedIncome - totalPaidExpenses;
-  const reservedTaxAmount = parseFinanceAmount(cashPosition.reservedTax);
-  const safetyBufferAmount = parseFinanceAmount(cashPosition.safetyBuffer);
-  const availableOperatingCash = parseFinanceAmount(cashPosition.currentCash) - reservedTaxAmount - safetyBufferAmount;
+  const currentCashAmount = parseOptionalFinanceAmount(cashPosition.currentCash);
+  const parsedReservedTaxAmount = parseOptionalFinanceAmount(cashPosition.reservedTax);
+  const parsedSafetyBufferAmount = parseOptionalFinanceAmount(cashPosition.safetyBuffer);
+  const cashAmountsValid = currentCashAmount !== null && currentCashAmount >= 0
+    && parsedReservedTaxAmount !== null && parsedReservedTaxAmount >= 0
+    && parsedSafetyBufferAmount !== null && parsedSafetyBufferAmount >= 0;
+  const reservedTaxAmount = parsedReservedTaxAmount !== null && parsedReservedTaxAmount >= 0 ? parsedReservedTaxAmount : 0;
+  const safetyBufferAmount = parsedSafetyBufferAmount !== null && parsedSafetyBufferAmount >= 0 ? parsedSafetyBufferAmount : 0;
+  const availableOperatingCash = cashAmountsValid ? currentCashAmount - reservedTaxAmount - safetyBufferAmount : 0;
+  const cashSnapshotDate = parseCashSnapshotDate(cashPosition.lastUpdated);
+  const todayForCashSnapshot = new Date();
+  todayForCashSnapshot.setHours(0, 0, 0, 0);
+  const cashSnapshotAgeDays = cashSnapshotDate && cashSnapshotDate <= todayForCashSnapshot
+    ? Math.floor((todayForCashSnapshot.getTime() - cashSnapshotDate.getTime()) / (1000 * 60 * 60 * 24))
+    : null;
+  const cashSnapshotFreshness = cashSnapshotAgeDays === null
+    ? { label: "Missing / invalid date", tone: "warn" as const }
+    : cashSnapshotAgeDays <= 7
+      ? { label: "Current", tone: "clear" as const }
+      : cashSnapshotAgeDays <= 30
+        ? { label: "Aging", tone: "neutral" as const }
+        : { label: "Stale", tone: "warn" as const };
 
   const getConvertedRecordsByType = (targetType: CaptureConversionRecord["targetType"]) =>
     [...conversions]
@@ -6386,15 +6418,32 @@ export default function Home() {
         (b.upside ?? 0) - (a.upside ?? 0),
       );
 
-    const currentCash = parseOptionalFinanceAmount(cashPosition.currentCash);
-    const cashConfigured = currentCash !== null;
-    const protectedCash = Math.max(0, reservedTaxAmount) + Math.max(0, safetyBufferAmount);
-    const activeCommitments = commitmentRecords.filter((commitment) =>
-      !["paid", "cancelled", "canceled", "completed"].includes(commitment.status.trim().toLowerCase()),
-    );
-    const committedCash = activeCommitments.reduce((sum, commitment) =>
-      sum + Math.max(0, parseFinanceAmount(commitment.amount)), 0);
-    const grossDeployableCash = cashConfigured ? currentCash - protectedCash : null;
+    const currentCash = currentCashAmount !== null && currentCashAmount >= 0 ? currentCashAmount : null;
+    const cashConfigured = cashAmountsValid;
+    const protectedCash = cashAmountsValid ? reservedTaxAmount + safetyBufferAmount : null;
+    const activeCommitmentStatuses = new Set(["upcoming", "due", "overdue"]);
+    const finalCommitmentStatuses = new Set(["paid", "cancelled", "canceled", "completed"]);
+    const commitmentReadModel = commitmentRecords.map((commitment) => {
+      const status = commitment.status.trim().toLowerCase();
+      const amount = parseOptionalFinanceAmount(commitment.amount);
+      const hasSupportedActiveStatus = activeCommitmentStatuses.has(status);
+      const isFinal = finalCommitmentStatuses.has(status);
+      const hasValidPositiveAmount = amount !== null && amount > 0;
+      const needsAttention = !isFinal && (!hasSupportedActiveStatus || !hasValidPositiveAmount);
+      return {
+        commitment,
+        amount,
+        isFinal,
+        isValidActive: hasSupportedActiveStatus && hasValidPositiveAmount,
+        needsAttention,
+        missingOrInvalidDueDate: hasSupportedActiveStatus && !parseCashSnapshotDate(commitment.dueDate),
+      };
+    });
+    const validActiveCommitments = commitmentReadModel.filter((item) => item.isValidActive);
+    const commitmentsNeedingAttention = commitmentReadModel.filter((item) => item.needsAttention);
+    const commitmentsMissingDueDate = commitmentReadModel.filter((item) => item.isValidActive && item.missingOrInvalidDueDate);
+    const committedCash = validActiveCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
+    const grossDeployableCash = cashConfigured && currentCash !== null && protectedCash !== null ? currentCash - protectedCash : null;
     const uncommittedDeployableCash = grossDeployableCash === null ? null : grossDeployableCash - committedCash;
     const highFitWithCapital = liveOpportunities.filter((opp) => opp.fitRank >= 3 && opp.capital !== null);
     const highFitOpportunities = liveOpportunities.filter((opp) => opp.fitRank >= 3);
@@ -6459,11 +6508,15 @@ export default function Home() {
       liveOpportunities,
       currentCash,
       protectedCash,
-      activeCommitments,
+      validActiveCommitments,
+      commitmentsNeedingAttention,
+      commitmentsMissingDueDate,
       committedCash,
       grossDeployableCash,
       uncommittedDeployableCash,
       cashConfigured,
+      cashSnapshotFreshness,
+      cashSnapshotAgeDays,
       highFitKnownCapitalRequired,
       highFitOpportunityCount,
       highFitMissingCapitalCount,
@@ -6580,7 +6633,7 @@ export default function Home() {
       return !Number.isNaN(parsed) && parsed < now;
     };
 
-    const cashConfigured = cashPosition.currentCash.trim() !== "" || cashPosition.safetyBuffer.trim() !== "";
+    const cashConfigured = cashAmountsValid;
     const bufferBreached = cashConfigured && availableOperatingCash < 0;
     const bufferPressured = cashConfigured && !bufferBreached && availableOperatingCash === 0;
 
@@ -8102,7 +8155,7 @@ export default function Home() {
     : `Today: ${clearedThisSession.total} cleared • ${todayBrief.outstandingSituationCount} situation${todayBrief.outstandingSituationCount === 1 ? "" : "s"} outstanding${todayBrief.outstandingSituationCount !== todayBrief.outstandingCount ? ` across ${todayBrief.outstandingCount} records` : ""}${clearedCategoryBreakdown ? ` (${clearedCategoryBreakdown})` : ""}`;
 
   const todaySnapshotDate = new Date().toISOString().slice(0, 10);
-  const cashIsConfigured = cashPosition.currentCash.trim() !== "" || cashPosition.safetyBuffer.trim() !== "";
+  const cashIsConfigured = cashAmountsValid;
   const todaySnapshot: DailyPostureSnapshot = {
     date: todaySnapshotDate,
     focusCount: founderFocusCandidates.length,
@@ -9982,6 +10035,7 @@ export default function Home() {
   };
 
   const handleCashPositionOpen = () => {
+    setCashPositionValidationError(null);
     setCashPositionEditor({ ...cashPosition });
   };
 
@@ -9990,19 +10044,53 @@ export default function Home() {
       return;
     }
 
+    setCashPositionValidationError(null);
     setCashPositionEditor({ ...cashPositionEditor, [field]: value });
   };
 
   const handleCashPositionSave = () => {
     if (!cashPositionEditor) {
-      return;
+      return false;
     }
 
-    setCashPosition({
+    const currentCash = parseOptionalFinanceAmount(cashPositionEditor.currentCash);
+    const reservedTax = parseOptionalFinanceAmount(cashPositionEditor.reservedTax);
+    const safetyBuffer = parseOptionalFinanceAmount(cashPositionEditor.safetyBuffer);
+    if (currentCash === null || currentCash < 0) {
+      setCashPositionValidationError("Current business cash is required and must be a valid non-negative amount.");
+      return false;
+    }
+    if (reservedTax === null || reservedTax < 0) {
+      setCashPositionValidationError("Reserved tax is required and must be a valid non-negative amount.");
+      return false;
+    }
+    if (safetyBuffer === null || safetyBuffer < 0) {
+      setCashPositionValidationError("Safety buffer is required and must be a valid non-negative amount.");
+      return false;
+    }
+
+    const moneyChanged = cashPositionEditor.currentCash !== cashPosition.currentCash
+      || cashPositionEditor.reservedTax !== cashPosition.reservedTax
+      || cashPositionEditor.safetyBuffer !== cashPosition.safetyBuffer;
+    const dateChanged = cashPositionEditor.lastUpdated !== cashPosition.lastUpdated;
+    const today = new Date().toISOString().slice(0, 10);
+    const nextLastUpdated = moneyChanged && !dateChanged ? today : cashPositionEditor.lastUpdated;
+    const snapshotDate = parseCashSnapshotDate(nextLastUpdated);
+    const todayDate = parseCashSnapshotDate(today)!;
+    if (!snapshotDate || snapshotDate > todayDate) {
+      setCashPositionValidationError("Last updated must be a valid date that is not in the future.");
+      return false;
+    }
+
+    const nextCashPosition = {
       ...cashPositionEditor,
-      lastUpdated: cashPositionEditor.lastUpdated || new Date().toISOString().slice(0, 10),
-    });
+      lastUpdated: nextLastUpdated,
+    };
+    setCashPosition(nextCashPosition);
+    setCashPositionEditor(nextCashPosition);
+    setCashPositionValidationError(null);
     setFeedback({ type: "success", message: "Cash position saved." });
+    return true;
   };
 
   const handleIncomeEditOpen = (income: IncomeRecord) => {
@@ -10715,8 +10803,24 @@ export default function Home() {
                   <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Capital allocation</div>
 
                   <p className="mb-3 max-w-3xl text-[13px] leading-5 text-[#524d49]">
-                    Live opportunities lined up against the current cash snapshot, protected cash and existing commitments. Affordability is a scenario, not a recommendation to spend.
+                    Cash snapshot {cashPosition.lastUpdated ? `as of ${formatCapturedAt(cashPosition.lastUpdated)}` : "has no valid as-of date"}. Active commitments are derived separately and may require reconciliation. Affordability is a scenario, not a recommendation to spend.
                   </p>
+
+                  <div className={`mb-3 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 text-[11px] ${capitalAllocation.cashSnapshotFreshness.tone === "warn" ? "border-[#c9b8a3] bg-[#f5efe6] text-[#524d49]" : "border-[#d3cbc3] bg-white text-[#4d4944]"}`}>
+                    <span className="font-medium text-[#171717]">Cash snapshot freshness:</span>
+                    <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-0.5 text-[9px] uppercase tracking-[0.14em]">{capitalAllocation.cashSnapshotFreshness.label}</span>
+                    {capitalAllocation.cashSnapshotFreshness.label === "Stale" ? <span>Cash snapshot is stale; capital-allocation scenarios may not reflect the current bank position.</span> : null}
+                    {capitalAllocation.cashSnapshotFreshness.label === "Missing / invalid date" ? <span>Snapshot date is missing or invalid; capital-allocation reliability is reduced.</span> : null}
+                    {!capitalAllocation.cashConfigured || capitalAllocation.cashSnapshotFreshness.label === "Missing / invalid date" ? (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenAttentionRecord("Finance", "cash-buffer")}
+                        className="ml-auto rounded-lg border border-[#171717] bg-white px-2.5 py-1.5 text-[10px] font-medium text-[#171717] transition hover:bg-[#f4f1ee]"
+                      >
+                        Update cash snapshot
+                      </button>
+                    ) : null}
+                  </div>
 
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
@@ -10726,16 +10830,18 @@ export default function Home() {
                       </div>
                       <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
                         {capitalAllocation.cashConfigured
-                          ? `Authoritative cash snapshot${cashPosition.lastUpdated ? ` as of ${formatCapturedAt(cashPosition.lastUpdated)}` : "; as-of date not set"}.`
-                          : "Current cash is required before deployable cash can be calculated."}
+                          ? "Manual cash snapshot used as the authoritative current balance."
+                          : "Current cash and protected amounts must be valid before deployable cash can be calculated."}
                       </div>
                     </div>
 
                     <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
                       <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Protected cash</div>
-                      <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">{formatFinanceAmount(capitalAllocation.protectedCash)}</div>
+                      <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">{capitalAllocation.protectedCash !== null ? formatFinanceAmount(capitalAllocation.protectedCash) : "—"}</div>
                       <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
-                        {formatFinanceAmount(reservedTaxAmount)} reserved tax + {formatFinanceAmount(safetyBufferAmount)} safety buffer.
+                        {cashAmountsValid
+                          ? `${formatFinanceAmount(reservedTaxAmount)} reserved tax + ${formatFinanceAmount(safetyBufferAmount)} safety buffer.`
+                          : "Reserved tax and safety buffer must both be valid non-negative amounts."}
                       </div>
                     </div>
 
@@ -10743,7 +10849,7 @@ export default function Home() {
                       <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Committed cash</div>
                       <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">{formatFinanceAmount(capitalAllocation.committedCash)}</div>
                       <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
-                        {capitalAllocation.activeCommitments.length} unpaid active commitment{capitalAllocation.activeCommitments.length === 1 ? "" : "s"}; Planned Expenses are not included.
+                        {capitalAllocation.validActiveCommitments.length} valid active commitment{capitalAllocation.validActiveCommitments.length === 1 ? "" : "s"} • {capitalAllocation.commitmentsNeedingAttention.length} need attention. Planned Expenses are not included.
                       </div>
                     </div>
 
@@ -10761,6 +10867,28 @@ export default function Home() {
                       </div>
                     </div>
                   </div>
+
+                  {capitalAllocation.commitmentsNeedingAttention.length > 0 || capitalAllocation.commitmentsMissingDueDate.length > 0 ? (
+                    <div className="mt-3 flex flex-col gap-2 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] px-3 py-2.5 text-[11px] leading-5 text-[#524d49] sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        {capitalAllocation.commitmentsNeedingAttention.length > 0 ? (
+                          <div>Committed cash may be incomplete until {capitalAllocation.commitmentsNeedingAttention.length} flagged commitment record{capitalAllocation.commitmentsNeedingAttention.length === 1 ? " is" : "s are"} corrected.</div>
+                        ) : null}
+                        {capitalAllocation.commitmentsMissingDueDate.length > 0 ? (
+                          <div>{capitalAllocation.commitmentsMissingDueDate.length} valid active commitment{capitalAllocation.commitmentsMissingDueDate.length === 1 ? " has" : "s have"} a missing or invalid due date; included in committed cash.</div>
+                        ) : null}
+                      </div>
+                      {capitalAllocation.commitmentsNeedingAttention.length > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenAttentionRecord("Finance", `commitment:${capitalAllocation.commitmentsNeedingAttention[0].commitment.id}`)}
+                          className="shrink-0 rounded-lg border border-[#171717] bg-white px-2.5 py-1.5 text-[10px] font-medium text-[#171717] transition hover:bg-[#f4f1ee]"
+                        >
+                          Review commitments
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
 
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
@@ -10828,6 +10956,11 @@ export default function Home() {
                                     ? "Explicitly recorded as a zero-capital opportunity."
                                   : "No valid upside figure — capital efficiency N/A."}
                             </div>
+                            {opp.capitalState === "missing" ? (
+                              <span className="mt-2 inline-flex rounded-lg border border-[#171717] bg-white px-2.5 py-1.5 text-[10px] font-medium text-[#171717]">
+                                Add capital requirement
+                              </span>
+                            ) : null}
                             {opp.fitRank >= 3 && opp.capitalState === "stated" && opp.capital !== null ? (
                               <div className={`mt-1 text-[11px] leading-4 ${remainingAfterFunding !== null && remainingAfterFunding < 0 ? "text-[#6a3328]" : "text-[#4d4944]"}`}>
                                 <span className="font-medium text-[#171717]">Remaining after funding:</span>{" "}
@@ -11421,7 +11554,19 @@ export default function Home() {
                 Track cash position, income, expenses and financial commitments so the business always knows its real operating position.
               </p>
 
+              <div className={`mt-4 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2.5 text-[11px] ${cashSnapshotFreshness.tone === "warn" ? "border-[#c9b8a3] bg-[#f5efe6] text-[#524d49]" : "border-[#d3cbc3] bg-[#f9f7f4] text-[#4d4944]"}`}>
+                <span className="font-medium text-[#171717]">Cash snapshot:</span>
+                <span>{cashPosition.lastUpdated ? `as of ${formatCapturedAt(cashPosition.lastUpdated)}` : "as-of date unavailable"}</span>
+                <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-0.5 text-[9px] uppercase tracking-[0.14em]">{cashSnapshotFreshness.label}</span>
+                {cashSnapshotFreshness.label === "Stale" ? <span>Capital-allocation scenarios may not reflect the current bank position.</span> : null}
+                {cashSnapshotFreshness.label === "Missing / invalid date" ? <span>Update the snapshot date to restore reliable as-of context.</span> : null}
+              </div>
+
               <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Current business cash</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{currentCashAmount !== null && currentCashAmount >= 0 ? formatFinanceAmount(currentCashAmount) : "—"}</div>
+                </div>
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Total received income</div>
                   <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(totalReceivedIncome)}</div>
@@ -11436,15 +11581,15 @@ export default function Home() {
                 </div>
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Reserved tax</div>
-                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(reservedTaxAmount)}</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{parsedReservedTaxAmount !== null && parsedReservedTaxAmount >= 0 ? formatFinanceAmount(parsedReservedTaxAmount) : "—"}</div>
                 </div>
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Safety buffer</div>
-                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(safetyBufferAmount)}</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{parsedSafetyBufferAmount !== null && parsedSafetyBufferAmount >= 0 ? formatFinanceAmount(parsedSafetyBufferAmount) : "—"}</div>
                 </div>
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Available operating cash</div>
-                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(availableOperatingCash)}</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{cashAmountsValid ? formatFinanceAmount(availableOperatingCash) : "—"}</div>
                   {cashPosition.lastUpdated ? (
                     <div className="mt-1 text-[10px] text-[#5d584f]">Updated {formatCapturedAt(cashPosition.lastUpdated)}</div>
                   ) : null}
@@ -12954,7 +13099,11 @@ export default function Home() {
       {cashPositionEditor ? (
         <CashPositionPanel
           value={cashPositionEditor}
-          onClose={() => setCashPositionEditor(null)}
+          validationError={cashPositionValidationError}
+          onClose={() => {
+            setCashPositionEditor(null);
+            setCashPositionValidationError(null);
+          }}
           onChange={handleCashPositionChange}
           onSave={handleCashPositionSave}
         />
