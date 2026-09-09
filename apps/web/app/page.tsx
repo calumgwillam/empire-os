@@ -5579,23 +5579,6 @@ export default function Home() {
         })),
     ];
 
-    const riskByPillar = pillarOptions.map((pillar) => {
-      const criticalProblems = problemRecords.filter((problem) => getAreaText(problem) === pillar && (problem.severity === "Critical" || problem.severity === "High") && isProblemUnresolved(problem));
-      const blockedProjects = projects.filter((project) => project.area === pillar && project.status.trim().toLowerCase() === "blocked");
-      const overdueActions = actionRecords.filter((action) => action.relatedPillar === pillar && action.dueDate && new Date(action.dueDate).getTime() <= Date.now() && isActionActive(action));
-      const activeDecisions = decisionRecords.filter((decision) => getAreaText(decision) === pillar && ["Active", "Under Review"].includes(decision.decisionStatus));
-      const riskScore = criticalProblems.length * 4 + blockedProjects.length * 3 + overdueActions.length * 2 + activeDecisions.length;
-
-      return {
-        pillar,
-        riskScore,
-        criticalProblems,
-        blockedProjects,
-        overdueActions,
-        activeDecisions,
-      };
-    }).filter((item) => item.riskScore > 0 || item.activeDecisions.length > 0 || item.blockedProjects.length > 0 || item.criticalProblems.length > 0);
-
     const distinctAreas = (areas: Array<string | undefined>) =>
       Array.from(new Set(areas.map((area) => area?.trim()).filter((area): area is string => Boolean(area))));
     const crossPillarCandidates = [
@@ -5772,7 +5755,6 @@ export default function Home() {
 
     return {
       founderReviewQueue,
-      riskByPillar,
       crossPillarIssues,
       delegateItems,
       founderAuthorityItems,
@@ -7294,6 +7276,98 @@ export default function Home() {
   const staleRecords = commandAttentionItemList.filter((item) =>
     item.reasons.some((reason) => reason === "STALE PROJECT" || reason === "STALE PROJECT • TARGET APPROACHING" || reason === "STALE IN-PROGRESS ACTION"),
   );
+
+  const currentRiskSummary = (() => {
+    const areaSignals = new Map<string, Map<string, Set<string>>>();
+    const addAreaSignal = (areaValue: string | undefined, category: string, objectType: string, id: string) => {
+      const area = areaValue?.trim() || "Unassigned";
+      if (!areaSignals.has(area)) areaSignals.set(area, new Map());
+      const categories = areaSignals.get(area)!;
+      if (!categories.has(category)) categories.set(category, new Set());
+      categories.get(category)!.add(`${objectType}:${id}`);
+    };
+
+    problemRecords
+      .filter((problem) => isProblemUnresolved(problem) && ["High", "Critical"].includes(problem.severity))
+      .forEach((problem) => addAreaSignal(getAreaText(problem), "High/Critical problems", "Problem", problem.id));
+    actionRecords
+      .filter((action) => isActionActive(action) && action.status === "Blocked")
+      .forEach((action) => addAreaSignal(action.relatedPillar, "Blocked actions", "Action", action.id));
+    commandAttentionItemList
+      .filter((item) => item.objectType === "Action" && item.reasons.some((reason) => reason.startsWith("OVERDUE BY ")))
+      .forEach((item) => addAreaSignal(item.area, "Overdue actions", item.objectType, item.id));
+    commandAttentionItemList
+      .filter((item) => item.objectType === "Project")
+      .forEach((item) => {
+        if (item.reasons.includes("BLOCKED PROJECT")) addAreaSignal(item.area, "Blocked projects", item.objectType, item.id);
+        if (item.reasons.includes("OVERDUE PROJECT")) addAreaSignal(item.area, "Overdue projects", item.objectType, item.id);
+        if (item.reasons.includes("DUE WITHIN 7 DAYS")) addAreaSignal(item.area, "Projects due soon", item.objectType, item.id);
+        if (item.reasons.some((reason) => reason.startsWith("STALE PROJECT"))) addAreaSignal(item.area, "Stale projects", item.objectType, item.id);
+        if (item.reasons.includes("PAST START DATE • NOT STARTED")) addAreaSignal(item.area, "Projects past start date", item.objectType, item.id);
+      });
+    decisionTrackRecord.reviewsDue.forEach((decision) =>
+      addAreaSignal(getAreaText(decision), "Decision reviews due", "Decision", decision.id));
+    decisionsWithoutExecution.forEach((decision) =>
+      addAreaSignal(decision.area, "Decisions without execution", "Decision", decision.id));
+    recurringProblemLearning.unresolvedRecurring.forEach((problem) =>
+      addAreaSignal(getAreaText(problem), "Recurring unresolved problems", "Problem", problem.id));
+    recurringProblemLearning.gaps.forEach((problem) =>
+      addAreaSignal(problem.area, "Recurring-learning gaps", "Problem", problem.id));
+    unassignedAccountability.ownedActions.forEach((action) =>
+      addAreaSignal(action.relatedPillar, "Ownership gaps", "Action", action.id));
+    unassignedAccountability.activeProjects.forEach((project) =>
+      addAreaSignal(project.area, "Ownership gaps", "Project", project.id));
+    unassignedAccountability.pipelineLeads.forEach((lead) =>
+      addAreaSignal(lead.relatedPillar, "Ownership gaps", "Lead", lead.id));
+    unassignedAccountability.unresolvedProblems.forEach((problem) =>
+      addAreaSignal(getAreaText(problem), "Ownership gaps", "Problem", problem.id));
+    unassignedAccountability.waitingDecisions.forEach((decision) =>
+      addAreaSignal(getAreaText(decision), "Ownership gaps", "Decision", decision.id));
+    growthAttention.stalledOpportunities.forEach((opportunity) =>
+      addAreaSignal(opportunity.area, "Stalled high-fit opportunities", "Opportunity", opportunity.id));
+    growthAttention.stalledLeads.forEach((lead) =>
+      addAreaSignal(lead.area, "Stalled leads", "Lead", lead.id));
+    cashAttention.overdueCommitments.forEach((item) => {
+      const commitment = commitmentRecords.find((record) => record.id === item.id);
+      addAreaSignal(commitment?.relatedPillar, "Overdue commitments", "Finance", item.id);
+    });
+    cashAttention.overdueExpectedIncome.forEach((item) => {
+      const income = incomeRecords.find((record) => record.id === item.id);
+      addAreaSignal(income?.area, "Overdue expected income", "Finance", item.id);
+    });
+
+    const byArea = [...areaSignals.entries()]
+      .map(([area, categories]) => {
+        const categoryCounts = [...categories.entries()]
+          .map(([label, records]) => ({ label, count: records.size }))
+          .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+        return {
+          area,
+          categories: categoryCounts,
+          signalCount: categoryCounts.reduce((sum, category) => sum + category.count, 0),
+        };
+      })
+      .sort((left, right) => right.signalCount - left.signalCount || left.area.localeCompare(right.area));
+
+    const empireWide: Array<{ label: string; detail: string }> = [];
+    if (organisationalHealth.delegationQuality.label === "Needs attention" && organisationalHealth.selfSufficiencyPct !== null) {
+      empireWide.push({
+        label: "Founder dependency",
+        detail: `${organisationalHealth.selfSufficiencyPct}% flows without the founder; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%.`,
+      });
+    }
+    if (cashAttention.buffer) {
+      empireWide.push({ label: "Cash buffer pressure", detail: cashAttention.buffer.detail });
+    }
+    if (capitalAllocation.uncommittedDeployableCash !== null && capitalAllocation.uncommittedDeployableCash < 0) {
+      empireWide.push({
+        label: "Committed cash pressure",
+        detail: `Active commitments exceed gross deployable cash by ${formatFinanceAmount(Math.abs(capitalAllocation.uncommittedDeployableCash))}.`,
+      });
+    }
+
+    return { byArea, empireWide };
+  })();
 
   const correlationLayer = (() => {
     type SignalledRecord = {
@@ -10206,8 +10280,8 @@ export default function Home() {
                   <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{empireDecisionQueue.founderReviewQueue.length}</div>
                 </div>
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
-                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Pillars at risk</div>
-                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{empireDecisionQueue.riskByPillar.length}</div>
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Areas with risk signals</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{currentRiskSummary.byArea.length}</div>
                 </div>
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Cross-pillar issues</div>
@@ -10567,27 +10641,40 @@ export default function Home() {
                 </section>
 
                 <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
-                  <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Current risks by pillar</div>
-                  {empireDecisionQueue.riskByPillar.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">No pillar risks are currently active.</div>
+                  <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Current risks by area</div>
+                  {currentRiskSummary.byArea.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">No current area-attributable risk signals are flagged.</div>
                   ) : (
                     <div className="space-y-3">
-                      {empireDecisionQueue.riskByPillar.map((pillar) => (
-                        <div key={pillar.pillar} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                      {currentRiskSummary.byArea.map((area) => (
+                        <div key={area.area} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
                           <div className="flex items-center justify-between gap-3">
-                            <div className="text-[17px] font-medium tracking-[-0.04em] text-[#171717]">{pillar.pillar}</div>
-                            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">Risk {pillar.riskScore}</span>
+                            <div className="text-[17px] font-medium tracking-[-0.04em] text-[#171717]">{area.area}</div>
+                            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{area.signalCount} signal{area.signalCount === 1 ? "" : "s"}</span>
                           </div>
-                          <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
-                            <div><span className="font-medium text-[#171717]">Blocked projects:</span> {pillar.blockedProjects.length}</div>
-                            <div><span className="font-medium text-[#171717]">Critical/high problems:</span> {pillar.criticalProblems.length}</div>
-                            <div><span className="font-medium text-[#171717]">Overdue actions:</span> {pillar.overdueActions.length}</div>
-                            <div><span className="font-medium text-[#171717]">Active decisions:</span> {pillar.activeDecisions.length}</div>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {area.categories.map((category) => (
+                              <span key={category.label} className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 text-[10px] text-[#4d4944]">
+                                {category.count} {category.label.toLowerCase()}
+                              </span>
+                            ))}
                           </div>
                         </div>
                       ))}
                     </div>
                   )}
+                  {currentRiskSummary.empireWide.length > 0 ? (
+                    <div className="mt-3 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] px-3 py-3">
+                      <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Empire-wide</div>
+                      <div className="mt-2 space-y-1.5">
+                        {currentRiskSummary.empireWide.map((signal) => (
+                          <div key={signal.label} className="text-[12px] leading-5 text-[#524d49]">
+                            <span className="font-medium text-[#171717]">{signal.label}:</span> {signal.detail}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </section>
 
                 <section className="rounded-2xl border border-[#6a3328] bg-[#f9f7f4] p-4">
