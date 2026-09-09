@@ -5792,18 +5792,41 @@ export default function Home() {
       .slice(0, 6)
       .map(({ suitability: _suitability, ...item }) => item);
 
-    const founderAuthorityItems = [
-      ...projects.filter((project) => project.status.trim().toLowerCase() === "blocked" && project.area && pillarOptions.includes(project.area as (typeof pillarOptions)[number])).map((project) => ({
-        id: project.id,
-        objectType: "Project",
-        title: project.projectName,
-        pillar: project.area,
-        owner: project.owner || "Unassigned",
-        whatIsChanging: "This project is blocked and needs a decision on sequencing, resourcing or scope.",
-        whyItMatters: "A blocked project is preventing delivery, revenue timing or plan confidence in this pillar.",
-        founderIntervention: "Yes",
-        delegationAction: "Escalate to founder or executive decision on how to unblock",
-      })),
+    const founderReviewDecisionById = new Map(
+      founderReviewCandidates
+        .filter((item) => item.objectType === "Decision")
+        .map((item) => [item.id, item]),
+    );
+    const founderAuthorityCandidates = [
+      ...projects
+        .filter((project) => isProjectActive(project) && project.status.trim().toLowerCase() === "blocked" && project.area.trim() !== "")
+        .map((project) => {
+          const linkedFounderReviewDecisions = (project.relatedDecisionIds || [])
+            .map((decisionId) => founderReviewDecisionById.get(decisionId))
+            .filter((decision): decision is NonNullable<typeof decision> => Boolean(decision));
+          const targetTime = project.targetCompletionDate ? new Date(`${project.targetCompletionDate}T00:00:00`).getTime() : 0;
+          const targetUrgency = targetTime && !Number.isNaN(targetTime)
+            ? targetTime < Date.now() ? 30 : targetTime <= Date.now() + 7 * 24 * 60 * 60 * 1000 ? 15 : 0
+            : 0;
+          const linkedDecisionStrength = linkedFounderReviewDecisions.some((decision) => decision.reasonCategory === "Critical escalation")
+            ? 40
+            : linkedFounderReviewDecisions.length > 0 ? 20 : 0;
+          return {
+            id: project.id,
+            objectType: "Project" as const,
+            title: project.projectName,
+            pillar: project.area,
+            owner: project.owner || "Unassigned",
+            reasonCategory: "Blocked project decision",
+            whatIsChanging: "This active project is blocked and needs a decision on sequencing, resourcing or scope.",
+            whyItMatters: linkedFounderReviewDecisions.length > 0
+              ? `The blocked project is preventing delivery and is linked to ${linkedFounderReviewDecisions.length} Decision${linkedFounderReviewDecisions.length === 1 ? "" : "s"} that already meet founder-review criteria.`
+              : "The blocked project is preventing delivery, revenue timing or plan confidence in its area.",
+            founderIntervention: "Yes",
+            delegationAction: "Escalate to founder or executive decision on how to unblock",
+            authorityScore: 80 + linkedDecisionStrength + targetUrgency,
+          };
+        }),
       ...opportunityRecords
         .filter((opportunity) => {
           const hasSettledDecision = decisionRecords.some((decision) =>
@@ -5812,20 +5835,40 @@ export default function Home() {
 
           return ["Evaluating", "Approved"].includes(opportunity.status)
             && ["High", "Exceptional"].includes(opportunity.strategicFit)
-            && !(opportunity.status === "Approved" && hasSettledDecision);
+            && !hasSettledDecision;
         })
-        .map((opportunity) => ({
-          id: opportunity.id,
-          objectType: "Opportunity",
-          title: opportunity.opportunityTitle,
-          pillar: opportunity.relatedPillar || opportunity.relatedArea || "Unassigned",
-          owner: opportunity.owner || "Unassigned",
-          whatIsChanging: `This opportunity is still being evaluated for ${opportunity.strategicFit.toLowerCase()} strategic fit.`,
-          whyItMatters: "This item could materially change revenue or allocation, so it needs a deliberate decision rather than casual drift.",
-          founderIntervention: "Yes",
-          delegationAction: "Escalate to founder approval or strategic decision",
-        })),
-    ].slice(0, 8);
+        .map((opportunity) => {
+          const linkedFounderReviewDecision = founderReviewCandidates.find((item) =>
+            item.objectType === "Decision" && decisionRecords.some((decision) => decision.id === item.id && decision.relatedOpportunity === opportunity.id),
+          );
+          return {
+            id: opportunity.id,
+            objectType: "Opportunity" as const,
+            title: opportunity.opportunityTitle,
+            pillar: opportunity.relatedPillar || opportunity.relatedArea || "Unassigned",
+            owner: opportunity.owner || "Unassigned",
+            reasonCategory: "Strategic opportunity approval",
+            whatIsChanging: `This ${opportunity.strategicFit.toLowerCase()}-fit opportunity remains ${opportunity.status.toLowerCase()} without a settled linked Decision.`,
+            whyItMatters: linkedFounderReviewDecision
+              ? `The opportunity needs deliberate approval and its linked Decision already meets founder-review criteria: ${linkedFounderReviewDecision.reasonCategory.toLowerCase()}.`
+              : "This opportunity could materially change revenue or allocation, so it needs a deliberate strategic decision rather than casual drift.",
+            founderIntervention: "Yes",
+            delegationAction: "Escalate to founder approval or strategic decision",
+            authorityScore: (opportunity.strategicFit === "Exceptional" ? 70 : 50) + (linkedFounderReviewDecision ? 20 : 0),
+          };
+        }),
+    ];
+    const founderAuthorityItems = Array.from(
+      founderAuthorityCandidates.reduce((items, item) => {
+        const key = `${item.objectType}:${item.id}`;
+        const existing = items.get(key);
+        if (!existing || item.authorityScore > existing.authorityScore) items.set(key, item);
+        return items;
+      }, new Map<string, (typeof founderAuthorityCandidates)[number]>()),
+    )
+      .map(([, item]) => item)
+      .sort((left, right) => right.authorityScore - left.authorityScore || `${left.objectType}:${left.id}`.localeCompare(`${right.objectType}:${right.id}`));
+    const founderAuthorityDisplayItems = founderAuthorityItems.slice(0, 8);
 
     const reasonPriority: Record<string, number> = {
       "Authority required": 5,
@@ -5854,6 +5897,7 @@ export default function Home() {
       crossPillarIssues,
       delegateItems,
       founderAuthorityItems,
+      founderAuthorityDisplayItems,
     };
   })();
 
@@ -11154,20 +11198,27 @@ export default function Home() {
                       </div>
 
                       <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
-                        <div className="text-[12px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Requires founder authority</div>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-[12px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Inferred founder authority</div>
+                          {empireDecisionQueue.founderAuthorityItems.length > 8 ? (
+                            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">
+                              Top 8 of {empireDecisionQueue.founderAuthorityItems.length}
+                            </span>
+                          ) : null}
+                        </div>
                         {empireDecisionQueue.founderAuthorityItems.length === 0 ? (
-                          <div className="mt-2 text-[12px] text-[#4d4944]">No current items clearly require founder authority.</div>
+                          <div className="mt-2 text-[12px] text-[#4d4944]">No current record meets the inferred founder-authority criteria.</div>
                         ) : (
                           <div className="mt-2 space-y-2">
-                            {empireDecisionQueue.founderAuthorityItems.map((item) => (
+                            {empireDecisionQueue.founderAuthorityDisplayItems.map((item) => (
                               <button
-                                key={`founder-${item.id}`}
+                                key={`founder-${item.objectType}-${item.id}`}
                                 type="button"
                                 onClick={() => handleOpenAttentionRecord(item.objectType, item.id)}
                                 className="block w-full rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] px-2.5 py-2 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
                               >
                                 <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
-                                <div className="mt-1 text-[11px] text-[#4d4944]">{item.pillar} • {item.owner}</div>
+                                <div className="mt-1 text-[11px] text-[#4d4944]">{item.reasonCategory} • {item.pillar} • {item.owner}</div>
                               </button>
                             ))}
                           </div>
