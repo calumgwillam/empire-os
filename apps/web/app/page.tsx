@@ -7915,7 +7915,7 @@ export default function Home() {
         operationalDate: "",
         owner: system.owner || "Unassigned",
         status: system.status,
-        area: getAreaText(system),
+        area: system.area,
         sourceCaptureId: system.sourceCaptureId,
         onOpen: () => {
           setSelectedSystemId(system.id);
@@ -7934,7 +7934,7 @@ export default function Home() {
         operationalDate: "",
         owner: sop.owner || "Unassigned",
         status: sop.status,
-        area: getAreaText(sop),
+        area: sop.area?.trim() || "",
         sourceCaptureId: sop.sourceCaptureId,
         onOpen: () => {
           setSelectedSopId(sop.id);
