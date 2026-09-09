@@ -2644,8 +2644,13 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
               ) : (
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
                   {postureChange.resolvedSincePrevious.map((item) => (
-                    <span key={`resolved-${item.key}`} className="text-[11px] leading-5 text-[#2f5d3a]">
-                      {item.title}
+                    <span key={`resolved-${item.key}`} className="inline-flex items-center gap-1.5 text-[11px] leading-5 text-[#2f5d3a]">
+                      <span>{item.title}</span>
+                      {item.objectType !== "Record" ? (
+                        <span className="rounded border border-[#b8c9ba] bg-[#eef4ee] px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.1em] text-[#2f5d3a]">
+                          {item.objectType}
+                        </span>
+                      ) : null}
                     </span>
                   ))}
                 </div>
@@ -7487,16 +7492,40 @@ export default function Home() {
     const previousKeys = new Map((previousDaySnapshot?.outstandingKeys || []).map((item) => [item.key, item]));
 
     const resolveTitle = (key: string, item?: { title: string; objectType: string; category: string }) => {
-      if (item) {
+      if (item?.title && item.title !== key) {
         return item;
       }
       const signalled = correlationLayer.signalled.get(key);
       if (signalled) {
         return { title: signalled.title, objectType: signalled.objectType, category: [...signalled.signals].join(", ") };
       }
-      const separatorIndex = key.indexOf(":");
-      const objectType = separatorIndex >= 0 ? key.slice(0, separatorIndex) : "Record";
-      return { title: key, objectType, category: "attention" };
+
+      const keyParts = key.split(":");
+      const objectTypes = ["Action", "Decision", "Problem", "Opportunity", "Project", "Lead", "Lesson"];
+      const objectTypeIndex = keyParts.findIndex((part) => objectTypes.includes(part));
+      const objectType = objectTypeIndex >= 0 ? keyParts[objectTypeIndex] : item?.objectType || "Record";
+      const recordId = objectTypeIndex >= 0 ? keyParts.slice(objectTypeIndex + 1).join(":") : "";
+      const recordTitle = objectType === "Action"
+        ? actionRecords.find((record) => record.id === recordId)?.actionTitle
+        : objectType === "Decision"
+          ? decisionRecords.find((record) => record.id === recordId)?.decisionTitle
+          : objectType === "Problem"
+            ? problemRecords.find((record) => record.id === recordId)?.problemStatement
+            : objectType === "Opportunity"
+              ? opportunityRecords.find((record) => record.id === recordId)?.opportunityTitle
+              : objectType === "Project"
+                ? projects.find((record) => record.id === recordId)?.projectName
+                : objectType === "Lead"
+                  ? leads.find((record) => record.id === recordId)?.leadName
+                  : objectType === "Lesson"
+                    ? lessonRecords.find((record) => record.id === recordId)?.lessonTitle
+                    : undefined;
+
+      return {
+        title: recordTitle || `Resolved ${objectType.toLowerCase()} attention`,
+        objectType,
+        category: item?.category || "attention",
+      };
     };
 
     const newSincePrevious = [...currentKeys.entries()]
