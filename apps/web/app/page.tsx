@@ -5450,7 +5450,15 @@ export default function Home() {
         delegationAction: "Escalate to founder or executive decision on how to unblock",
       })),
       ...opportunityRecords
-        .filter((opportunity) => ["Evaluating", "Approved"].includes(opportunity.status) && ["High", "Exceptional"].includes(opportunity.strategicFit))
+        .filter((opportunity) => {
+          const hasSettledDecision = decisionRecords.some((decision) =>
+            decision.relatedOpportunity === opportunity.id && ["Completed", "Reversed"].includes(decision.decisionStatus),
+          );
+
+          return ["Evaluating", "Approved"].includes(opportunity.status)
+            && ["High", "Exceptional"].includes(opportunity.strategicFit)
+            && !(opportunity.status === "Approved" && hasSettledDecision);
+        })
         .map((opportunity) => ({
           id: opportunity.id,
           objectType: "Opportunity",
