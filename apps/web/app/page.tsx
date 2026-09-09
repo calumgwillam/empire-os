@@ -2619,12 +2619,13 @@ type PostureChange = {
   resolvedSincePrevious: PostureChangeItem[];
 };
 
-function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsClear, freshness, freshnessIsClear, growth, growthIsClear, progress, deskIsClear, trendItems, sevenDayShape, postureChange, onOpenRecord, onOpenStep }: {
+function TodayBrief({ posture, postureIsClear, steps, ownership, ownershipIsClear, founderDependency, freshness, freshnessIsClear, growth, growthIsClear, progress, deskIsClear, trendItems, sevenDayShape, postureChange, onOpenRecord, onOpenStep }: {
   posture: string;
   postureIsClear: boolean;
   steps: TodayBriefStep[];
-  delegation: string;
-  delegationIsClear: boolean;
+  ownership: string;
+  ownershipIsClear: boolean;
+  founderDependency: string | null;
   freshness: string;
   freshnessIsClear: boolean;
   growth: string;
@@ -2692,9 +2693,18 @@ function TodayBrief({ posture, postureIsClear, steps, delegation, delegationIsCl
         })}
       </div>
 
-      <div className={`mt-4 rounded-xl border px-3 py-2.5 text-[12px] leading-5 ${delegationIsClear ? "border-[#d3cbc3] bg-white text-[#2f2b28]" : "border-[#c9b8a3] bg-[#f5efe6] text-[#2f2b28]"}`}>
-        <span className="font-medium text-[#171717]">Today&apos;s delegation:</span> {delegation}
+      <div className={`mt-4 rounded-xl border px-3 py-2.5 text-[12px] leading-5 ${ownershipIsClear ? "border-[#d3cbc3] bg-white text-[#2f2b28]" : "border-[#c9b8a3] bg-[#f5efe6] text-[#2f2b28]"}`}>
+        <span className="font-medium text-[#171717]">Ownership hygiene:</span> {ownership}
       </div>
+
+      {founderDependency ? (
+        <div className="mt-3 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] px-3 py-2.5 text-[12px] leading-5 text-[#2f2b28]">
+          <div><span className="font-medium text-[#171717]">Founder dependency:</span> {founderDependency}</div>
+          <span className="mt-2 inline-flex rounded border border-[#c9b8a3] bg-[#f9f7f4] px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.1em] text-[#6a625d]">
+            Strategic, not urgent
+          </span>
+        </div>
+      ) : null}
 
       <div className={`mt-3 rounded-xl border px-3 py-2.5 text-[12px] leading-5 ${freshnessIsClear ? "border-[#d3cbc3] bg-white text-[#2f2b28]" : "border-[#c9b8a3] bg-[#f5efe6] text-[#2f2b28]"}`}>
         <span className="font-medium text-[#171717]">Trust the picture:</span> {freshness}
@@ -7441,7 +7451,7 @@ export default function Home() {
     const learningGapCount = recurringProblemLearning.gaps.length;
     const executionGapCount = decisionsWithoutExecution.length;
     const focusCount = founderFocusList.length;
-    const delegationGapCount = unassignedAccountability.carriedCount;
+    const ownershipHygieneGapCount = unassignedAccountability.carriedCount;
     const financeCount = cashAttention.count;
 
     const postureParts: string[] = [];
@@ -7466,7 +7476,7 @@ export default function Home() {
       },
       {
         label: "Fix ownership gaps",
-        count: delegationGapCount,
+        count: ownershipHygieneGapCount,
         hint: "Assign a valid active owner to dropped or ghost-owned work.",
       },
       {
@@ -7493,9 +7503,13 @@ export default function Home() {
 
     const peopleWithAttention = personAccountabilitySummaries.filter((entry) => entry.attentionCount > 0);
 
-    const delegation = delegationGapCount === 0
-      ? "Delegation hygiene is clear — every active work item has a valid active owner."
-      : `${delegationGapCount} active item${delegationGapCount === 1 ? "" : "s"} lack${delegationGapCount === 1 ? "s" : ""} a valid active owner. ${peopleWithAttention.length} ${peopleWithAttention.length === 1 ? "person is" : "people are"} carrying attention items.`;
+    const ownership = ownershipHygieneGapCount === 0
+      ? "Every active work item has a valid active owner."
+      : `${ownershipHygieneGapCount} active item${ownershipHygieneGapCount === 1 ? "" : "s"} lack${ownershipHygieneGapCount === 1 ? "s" : ""} a valid active owner. ${peopleWithAttention.length} ${peopleWithAttention.length === 1 ? "person is" : "people are"} carrying attention items.`;
+    const delegationCandidateCount = empireDecisionQueue.delegateItems.length;
+    const founderDependency = organisationalHealth.delegationQuality.label === "Needs attention" && organisationalHealth.selfSufficiencyPct !== null
+      ? `${organisationalHealth.selfSufficiencyPct}% flows without the founder; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${delegationCandidateCount > 0 ? `, and ${delegationCandidateCount} founder-owned item${delegationCandidateCount === 1 ? " is" : "s are"} suitable for delegation.` : "."}`
+      : null;
 
     const staleCount = staleRecords.length;
     const freshness = staleCount === 0
@@ -7548,8 +7562,9 @@ export default function Home() {
       posture,
       postureIsClear: postureParts.length === 0,
       steps,
-      delegation,
-      delegationIsClear: delegationGapCount === 0,
+      ownership,
+      ownershipIsClear: ownershipHygieneGapCount === 0,
+      founderDependency,
       freshness,
       freshnessIsClear: staleCount === 0,
       growth,
@@ -9811,8 +9826,9 @@ export default function Home() {
                   posture={todayBrief.posture}
                   postureIsClear={todayBrief.postureIsClear}
                   steps={todayBrief.steps}
-                  delegation={todayBrief.delegation}
-                  delegationIsClear={todayBrief.delegationIsClear}
+                  ownership={todayBrief.ownership}
+                  ownershipIsClear={todayBrief.ownershipIsClear}
+                  founderDependency={todayBrief.founderDependency}
                   freshness={todayBrief.freshness}
                   freshnessIsClear={todayBrief.freshnessIsClear}
                   growth={todayBrief.growth}
