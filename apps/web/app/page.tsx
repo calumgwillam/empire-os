@@ -7431,67 +7431,103 @@ export default function Home() {
     cashAttention.overdueExpectedIncome.forEach((item) =>
       addSignal(`Finance:income:${item.id}`, "Finance", `income:${item.id}`, item.title, "Finance", "expected income overdue", 260));
 
-    const recordById = (key: string) => {
-      const [objectType, ...rest] = key.split(":");
-      const id = rest.join(":");
-      return { objectType, id };
-    };
-
     const adjacency = new Map<string, Set<string>>();
+    const recordKeys = new Set<string>([
+      ...captures.map((capture) => `Capture:${capture.id}`),
+      ...problemRecords.map((problem) => `Problem:${problem.id}`),
+      ...actionRecords.map((action) => `Action:${action.id}`),
+      ...decisionRecords.map((decision) => `Decision:${decision.id}`),
+      ...opportunityRecords.map((opportunity) => `Opportunity:${opportunity.id}`),
+      ...lessonRecords.map((lesson) => `Lesson:${lesson.id}`),
+      ...systemRecords.map((system) => `System:${system.id}`),
+      ...sopRecords.map((sop) => `SOP:${sop.id}`),
+      ...projects.map((project) => `Project:${project.id}`),
+      ...leads.map((lead) => `Lead:${lead.id}`),
+    ]);
     const link = (a: string, b: string) => {
       if (a === b) return;
+      if (!recordKeys.has(a) || !recordKeys.has(b)) return;
       if (!adjacency.has(a)) adjacency.set(a, new Set());
       if (!adjacency.has(b)) adjacency.set(b, new Set());
       adjacency.get(a)!.add(b);
       adjacency.get(b)!.add(a);
     };
 
+    const linkCapture = (recordKey: string, sourceCaptureId?: string, relatedCaptureId?: string) => {
+      const captureId = relatedCaptureId || sourceCaptureId;
+      if (captureId) link(recordKey, `Capture:${captureId}`);
+    };
+
     actionRecords.forEach((action) => {
+      const actionKey = `Action:${action.id}`;
       if (action.relatedProblem) link(`Action:${action.id}`, `Problem:${action.relatedProblem}`);
       if (action.relatedDecision) link(`Action:${action.id}`, `Decision:${action.relatedDecision}`);
       if (action.relatedOpportunity) link(`Action:${action.id}`, `Opportunity:${action.relatedOpportunity}`);
+      linkCapture(actionKey, action.sourceCaptureId, action.relatedCapture);
     });
     decisionRecords.forEach((decision) => {
       if (decision.relatedOpportunity) link(`Decision:${decision.id}`, `Opportunity:${decision.relatedOpportunity}`);
+      linkCapture(`Decision:${decision.id}`, decision.sourceCaptureId, decision.relatedCapture);
+    });
+    problemRecords.forEach((problem) => {
+      linkCapture(`Problem:${problem.id}`, problem.sourceCaptureId, problem.relatedCapture);
+    });
+    opportunityRecords.forEach((opportunity) => {
+      linkCapture(`Opportunity:${opportunity.id}`, opportunity.sourceCaptureId, opportunity.relatedCapture);
     });
     lessonRecords.forEach((lesson) => {
       if (lesson.relatedProblem) link(`Lesson:${lesson.id}`, `Problem:${lesson.relatedProblem}`);
       if (lesson.relatedDecision) link(`Lesson:${lesson.id}`, `Decision:${lesson.relatedDecision}`);
       if (lesson.relatedProject) link(`Lesson:${lesson.id}`, `Project:${lesson.relatedProject}`);
+      if (lesson.relatedSystem) link(`Lesson:${lesson.id}`, `System:${lesson.relatedSystem}`);
+      linkCapture(`Lesson:${lesson.id}`, lesson.sourceCaptureId, lesson.relatedCapture);
+    });
+    systemRecords.forEach((system) => {
+      if (system.relatedLesson) link(`System:${system.id}`, `Lesson:${system.relatedLesson}`);
+      linkCapture(`System:${system.id}`, system.sourceCaptureId, system.relatedCapture);
+    });
+    sopRecords.forEach((sop) => {
+      if (sop.relatedSystem) link(`SOP:${sop.id}`, `System:${sop.relatedSystem}`);
+      if (sop.relatedLesson) link(`SOP:${sop.id}`, `Lesson:${sop.relatedLesson}`);
+      linkCapture(`SOP:${sop.id}`, sop.sourceCaptureId, sop.relatedCapture);
     });
     projects.forEach((project) => {
       (project.relatedActionIds || []).forEach((actionId) => link(`Project:${project.id}`, `Action:${actionId}`));
       (project.relatedDecisionIds || []).forEach((decisionId) => link(`Project:${project.id}`, `Decision:${decisionId}`));
+      (project.relatedSystemIds || []).forEach((systemId) => link(`Project:${project.id}`, `System:${systemId}`));
+      (project.relatedSopIds || []).forEach((sopId) => link(`Project:${project.id}`, `SOP:${sopId}`));
     });
 
-    const visited = new Set<string>();
+    const assignedSignalledRecords = new Set<string>();
     const clusters: Array<{
       clusterKey: string;
       title: string;
       records: SignalledRecord[];
       categories: Set<string>;
       recordCount: number;
+      contributingRecordCount: number;
       topScore: number;
     }> = [];
 
     signalled.forEach((record, recordKey) => {
-      if (visited.has(recordKey)) return;
+      if (assignedSignalledRecords.has(recordKey)) return;
 
       const component: SignalledRecord[] = [];
+      const visitedGraphNodes = new Set<string>([recordKey]);
       const queue = [recordKey];
-      visited.add(recordKey);
 
       while (queue.length > 0) {
         const current = queue.pop()!;
         const currentRecord = signalled.get(current);
         if (currentRecord) {
           component.push(currentRecord);
+          assignedSignalledRecords.add(current);
         }
         const neighbours = adjacency.get(current);
         if (neighbours) {
           neighbours.forEach((neighbour) => {
-            if (!visited.has(neighbour) && signalled.has(neighbour)) {
-              visited.add(neighbour);
+            if (!visitedGraphNodes.has(neighbour)) {
+              visitedGraphNodes.add(neighbour);
               queue.push(neighbour);
             }
           });
@@ -7509,12 +7545,13 @@ export default function Home() {
         records: component,
         categories,
         recordCount: component.length,
+        contributingRecordCount: component.filter((item) => item.signals.size > 0).length,
         topScore: root.baseScore,
       });
     });
 
     const convergentRisks = clusters
-      .filter((cluster) => cluster.categories.size >= 3 && cluster.recordCount >= 2)
+      .filter((cluster) => cluster.categories.size >= 3 && cluster.recordCount >= 2 && cluster.contributingRecordCount >= 2)
       .sort((a, b) => b.categories.size - a.categories.size || b.recordCount - a.recordCount || b.topScore - a.topScore);
 
     const clusterByRecordKey = new Map<string, (typeof clusters)[number]>();
@@ -10686,12 +10723,12 @@ export default function Home() {
                   </div>
 
                   <p className="mb-3 max-w-3xl text-[13px] leading-5 text-[#524d49]">
-                    These are single underlying situations generating signals across three or more categories at once — recurring problem, blocked work, overdue decision, cash or growth pressure touching the same linked records. They are systemic, not isolated, and deserve founder attention first.
+                    These are linked situations where at least two signalled records contribute three or more distinct risk categories. Unsignalled linked records may connect the situation, but do not count as evidence.
                   </p>
 
                   {correlationLayer.convergentRisks.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
-                      No situation is currently generating signals across three or more categories at once.
+                      No linked situation currently has at least two signalled records contributing three or more distinct risk categories.
                     </div>
                   ) : (
                     <div className="space-y-2">
@@ -10699,7 +10736,7 @@ export default function Home() {
                         <div key={cluster.clusterKey} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#6a3328]">Convergent risk</span>
-                            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{cluster.recordCount} records</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{cluster.recordCount} signalled records</span>
                             <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f2b28]">{cluster.categories.size} categories</span>
                           </div>
                           <div className="mt-2 text-[16px] font-medium tracking-[-0.04em] text-[#171717]">{cluster.title}</div>
