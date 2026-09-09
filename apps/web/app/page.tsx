@@ -6235,7 +6235,7 @@ export default function Home() {
 
   const organisationalHealth = (() => {
     const activeActions = activeOwnershipActions;
-    const activeProjects = activeOwnershipProjects;
+    const activeProjects = projects.filter((project) => ["open", "in progress", "blocked"].includes(project.status.trim().toLowerCase()));
     const pipelineLeadsAll = activeOwnershipLeads;
     const unresolvedProblems = activeOwnershipProblems;
 
@@ -6278,6 +6278,7 @@ export default function Home() {
 
     const pctValidOwner = totalWork === 0 ? null : Math.round((validOwned / totalWork) * 100);
     const pctNonFounder = validOwned === 0 ? null : Math.round(((validOwned - founderOwned) / validOwned) * 100);
+    const nonFounderOwned = validOwned - founderOwned;
     const delegatedCount = validOwned - founderOwned;
     const pctDelegatedStalled = delegatedCount === 0 ? null : Math.round((stalledOrRiskyDelegated / delegatedCount) * 100);
 
@@ -6311,15 +6312,25 @@ export default function Home() {
     const openDecisionAges = openDecisions
       .map((decision) => {
         const start = getDateValue(decision.decisionDate || decision.createdAt);
-        return start > 0 ? Math.floor((nowMs - start) / (1000 * 60 * 60 * 24)) : null;
+        const ageDays = start > 0 ? Math.floor((nowMs - start) / (1000 * 60 * 60 * 24)) : null;
+        return ageDays !== null && ageDays >= 0 ? ageDays : null;
       })
-      .filter((days): days is number => days !== null);
+      .filter((days): days is number => days !== null)
+      .sort((first, second) => first - second);
     const avgOpenDecisionDays = openDecisionAges.length === 0 ? null : Math.round(openDecisionAges.reduce((a, b) => a + b, 0) / openDecisionAges.length);
+    const medianOpenDecisionDays = openDecisionAges.length === 0
+      ? null
+      : openDecisionAges.length % 2 === 1
+        ? openDecisionAges[Math.floor(openDecisionAges.length / 2)]
+        : Math.round((openDecisionAges[openDecisionAges.length / 2 - 1] + openDecisionAges[openDecisionAges.length / 2]) / 2);
+    const oldestOpenDecisionDays = openDecisionAges.length === 0 ? null : openDecisionAges[openDecisionAges.length - 1];
 
     const selfSufficiencyPct = totalWork === 0 ? null : pctNonFounder;
 
     return {
       totalWork,
+      validOwned,
+      nonFounderOwned,
       pctValidOwner,
       pctNonFounder,
       pctDelegatedStalled,
@@ -6327,7 +6338,12 @@ export default function Home() {
       delegationQuality,
       delegationScore,
       openDecisionCount: openDecisions.length,
+      activeDecisionCount: openDecisions.filter((decision) => decision.decisionStatus === "Active").length,
+      underReviewDecisionCount: openDecisions.filter((decision) => decision.decisionStatus === "Under Review").length,
+      openDecisionAgeSampleCount: openDecisionAges.length,
       avgOpenDecisionDays,
+      medianOpenDecisionDays,
+      oldestOpenDecisionDays,
       selfSufficiencyPct,
     };
   })();
@@ -10861,7 +10877,7 @@ export default function Home() {
                   <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Organisational health &amp; self-sufficiency</div>
 
                   <p className="mb-3 max-w-3xl text-[13px] leading-5 text-[#524d49]">
-                    Whether the business can run without the founder carrying it. These are derived from current ownership, delegation and decision records — not targets.
+                    Operational ownership is measured across active Actions, Projects, Leads and Problems. Decision governance is shown separately and is not included in the ownership percentages.
                   </p>
 
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -10869,47 +10885,56 @@ export default function Home() {
                       <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Delegation quality</div>
                       <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">{organisationalHealth.delegationQuality.label}</div>
                       <div className="mt-1.5 space-y-0.5 text-[11px] leading-4 text-[#4d4944]">
-                        {organisationalHealth.pctValidOwner !== null ? <div>{organisationalHealth.pctValidOwner}% valid owner</div> : null}
+                        <div>{organisationalHealth.validOwned} of {organisationalHealth.totalWork} active operational records have valid owners</div>
+                        {organisationalHealth.pctValidOwner !== null ? <div>{organisationalHealth.pctValidOwner}% ownership coverage</div> : null}
                         {organisationalHealth.pctNonFounder !== null ? <div>{organisationalHealth.pctNonFounder}% not founder-owned</div> : null}
                         <div>{organisationalHealth.pctDelegatedStalled !== null ? `${organisationalHealth.pctDelegatedStalled}% of delegated work stalled / at risk` : "No delegated work — stalled share N/A"}</div>
-                        {organisationalHealth.topOwnerShare !== null ? <div>Top owner carries {organisationalHealth.topOwnerShare}%</div> : null}
+                        {organisationalHealth.topOwnerShare !== null ? <div>Top owner share of validly owned work: {organisationalHealth.topOwnerShare}%</div> : null}
                       </div>
                       {healthTrend.delegation ? <div className="mt-1.5 text-[10px] text-[#4d4944]">{healthTrend.delegation}</div> : null}
                     </div>
 
                     <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
-                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Flows without founder</div>
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Operational work without founder</div>
                       <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">
                         {organisationalHealth.selfSufficiencyPct === null ? "—" : `${organisationalHealth.selfSufficiencyPct}%`}
                       </div>
                       <div className="mt-1.5 text-[11px] leading-4 text-[#4d4944]">
-                        {organisationalHealth.selfSufficiencyPct === null
-                          ? "No active work to measure."
-                          : `${organisationalHealth.selfSufficiencyPct}% of actively owned work is owned by someone other than the founder.`}
+                        {organisationalHealth.totalWork === 0
+                          ? "No active operational work to measure."
+                          : organisationalHealth.validOwned === 0
+                            ? "Founder-independent ownership cannot be calculated until active work has valid owners."
+                            : `${organisationalHealth.nonFounderOwned} of ${organisationalHealth.validOwned} validly owned active records are non-founder-owned.`}
                       </div>
                       {healthTrend.selfSufficiency ? <div className="mt-1.5 text-[10px] text-[#4d4944]">{healthTrend.selfSufficiency}</div> : null}
                     </div>
 
                     <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
-                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Avg open decision age</div>
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Median open decision age</div>
                       <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">
-                        {organisationalHealth.avgOpenDecisionDays === null ? "—" : `${organisationalHealth.avgOpenDecisionDays}d`}
+                        {organisationalHealth.medianOpenDecisionDays === null ? "—" : `${organisationalHealth.medianOpenDecisionDays}d`}
                       </div>
                       <div className="mt-1.5 text-[11px] leading-4 text-[#4d4944]">
-                        {organisationalHealth.avgOpenDecisionDays === null
-                          ? "No open decisions to measure."
-                          : `${organisationalHealth.openDecisionCount} open decision${organisationalHealth.openDecisionCount === 1 ? "" : "s"}, average age.`}
+                        {organisationalHealth.openDecisionCount === 0
+                          ? "No Active or Under Review Decisions to measure."
+                          : organisationalHealth.openDecisionAgeSampleCount === 0
+                            ? "No valid non-future Decision dates to measure."
+                            : `${organisationalHealth.openDecisionAgeSampleCount} dated Decision${organisationalHealth.openDecisionAgeSampleCount === 1 ? "" : "s"}; Active ${organisationalHealth.activeDecisionCount}, Under Review ${organisationalHealth.underReviewDecisionCount}.`}
                       </div>
-                      {healthTrend.latency ? <div className="mt-1.5 text-[10px] text-[#4d4944]">{healthTrend.latency}</div> : null}
+                    </div>
+
+                    <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Oldest open decision age</div>
+                      <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">
+                        {organisationalHealth.oldestOpenDecisionDays === null ? "—" : `${organisationalHealth.oldestOpenDecisionDays}d`}
+                      </div>
+                      <div className="mt-1.5 text-[11px] leading-4 text-[#4d4944]">
+                        Oldest valid age across current Active and Under Review Decisions.
+                      </div>
                     </div>
 
                   </div>
 
-                  {organisationalHealth.delegationQuality.label === "Insufficient data" ? (
-                    <div className="mt-3 rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-2.5 text-[12px] text-[#4d4944]">
-                      Limited data — delegation quality is indicative only until more active work has valid owners.
-                    </div>
-                  ) : null}
                 </section>
 
                 <section className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
