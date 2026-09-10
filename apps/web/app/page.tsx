@@ -2398,6 +2398,34 @@ function useFinanceSavedFeedback(): [boolean, () => void] {
 const financeFieldClass = "w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6";
 const financeLabelClass = "mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]";
 
+function isValidCalendarDateInput(value: string) {
+  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (!match) {
+    return false;
+  }
+
+  const [, year, month, day] = match;
+  const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+
+  return parsed.getFullYear() === Number(year)
+    && parsed.getMonth() === Number(month) - 1
+    && parsed.getDate() === Number(day);
+}
+
+// Zero is a valid entry, so emptiness is tested explicitly rather than by truthiness.
+function parseFinanceAmountInput(value: string) {
+  const normalised = value.replace(/[£$,\s]/g, "");
+
+  if (normalised === "" || !/^\+?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalised)) {
+    return null;
+  }
+
+  const parsed = Number(normalised);
+
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function CashPositionPanel({ value, validationError, onClose, onChange, onSave }: {
   value: CashPositionRecord;
   validationError: string | null;
@@ -2461,6 +2489,9 @@ function IncomeDetailPanel({ income, onClose, onChange, onSave }: {
   onSave: () => void;
 }) {
   const hasInvalidDescription = !income.description.trim();
+  const hasInvalidDate = !isValidCalendarDateInput(income.date);
+  const hasInvalidAmount = parseFinanceAmountInput(income.amount) === null;
+  const [hasAttemptedSave, setHasAttemptedSave] = useState(false);
   const [hasSaved, markSaved] = useFinanceSavedFeedback();
 
   return (
@@ -2483,12 +2514,15 @@ function IncomeDetailPanel({ income, onClose, onChange, onSave }: {
             <label className={financeLabelClass}>Description</label>
             <input value={income.description} onChange={(event) => onChange("description", event.target.value)} className={financeFieldClass} />
           </div>
-          {hasInvalidDescription ? (
+          {hasAttemptedSave && hasInvalidDescription ? (
             <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Description is required.</p>
           ) : null}
           <div>
             <label className={financeLabelClass}>Date</label>
             <input type="date" value={income.date} onChange={(event) => onChange("date", event.target.value)} className={financeFieldClass} />
+            {hasAttemptedSave && hasInvalidDate ? (
+              <p role="alert" className="mt-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">A valid date is required.</p>
+            ) : null}
           </div>
           <div>
             <label className={financeLabelClass}>Customer / source</label>
@@ -2497,6 +2531,9 @@ function IncomeDetailPanel({ income, onClose, onChange, onSave }: {
           <div>
             <label className={financeLabelClass}>Amount</label>
             <input value={income.amount} onChange={(event) => onChange("amount", event.target.value)} placeholder="e.g. 850" className={financeFieldClass} />
+            {hasAttemptedSave && hasInvalidAmount ? (
+              <p role="alert" className="mt-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Amount must be a valid non-negative number.</p>
+            ) : null}
           </div>
           <div>
             <label className={financeLabelClass}>Pillar / area</label>
@@ -2518,7 +2555,7 @@ function IncomeDetailPanel({ income, onClose, onChange, onSave }: {
 
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-          <button type="button" onClick={() => { onSave(); markSaved(); }} disabled={hasInvalidDescription} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save income"}</button>
+          <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save income"}</button>
         </div>
       </div>
     </div>
@@ -2532,6 +2569,9 @@ function ExpenseDetailPanel({ expense, onClose, onChange, onSave }: {
   onSave: () => void;
 }) {
   const hasInvalidDescription = !expense.description.trim();
+  const hasInvalidDate = !isValidCalendarDateInput(expense.date);
+  const hasInvalidAmount = parseFinanceAmountInput(expense.amount) === null;
+  const [hasAttemptedSave, setHasAttemptedSave] = useState(false);
   const [hasSaved, markSaved] = useFinanceSavedFeedback();
 
   return (
@@ -2554,12 +2594,15 @@ function ExpenseDetailPanel({ expense, onClose, onChange, onSave }: {
             <label className={financeLabelClass}>Description</label>
             <input value={expense.description} onChange={(event) => onChange("description", event.target.value)} className={financeFieldClass} />
           </div>
-          {hasInvalidDescription ? (
+          {hasAttemptedSave && hasInvalidDescription ? (
             <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Description is required.</p>
           ) : null}
           <div>
             <label className={financeLabelClass}>Date</label>
             <input type="date" value={expense.date} onChange={(event) => onChange("date", event.target.value)} className={financeFieldClass} />
+            {hasAttemptedSave && hasInvalidDate ? (
+              <p role="alert" className="mt-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">A valid date is required.</p>
+            ) : null}
           </div>
           <div>
             <label className={financeLabelClass}>Supplier / payee</label>
@@ -2568,6 +2611,9 @@ function ExpenseDetailPanel({ expense, onClose, onChange, onSave }: {
           <div>
             <label className={financeLabelClass}>Amount</label>
             <input value={expense.amount} onChange={(event) => onChange("amount", event.target.value)} placeholder="e.g. 220" className={financeFieldClass} />
+            {hasAttemptedSave && hasInvalidAmount ? (
+              <p role="alert" className="mt-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Amount must be a valid non-negative number.</p>
+            ) : null}
           </div>
           <div>
             <label className={financeLabelClass}>Category</label>
@@ -2596,7 +2642,7 @@ function ExpenseDetailPanel({ expense, onClose, onChange, onSave }: {
 
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-          <button type="button" onClick={() => { onSave(); markSaved(); }} disabled={hasInvalidDescription} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save expense"}</button>
+          <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save expense"}</button>
         </div>
       </div>
     </div>
@@ -2610,6 +2656,9 @@ function CommitmentDetailPanel({ commitment, onClose, onChange, onSave }: {
   onSave: () => void;
 }) {
   const hasInvalidName = !commitment.commitmentName.trim();
+  const hasInvalidAmount = parseFinanceAmountInput(commitment.amount) === null;
+  const hasInvalidDueDate = !isValidCalendarDateInput(commitment.dueDate);
+  const [hasAttemptedSave, setHasAttemptedSave] = useState(false);
   const [hasSaved, markSaved] = useFinanceSavedFeedback();
 
   return (
@@ -2632,16 +2681,22 @@ function CommitmentDetailPanel({ commitment, onClose, onChange, onSave }: {
             <label className={financeLabelClass}>Commitment name</label>
             <input value={commitment.commitmentName} onChange={(event) => onChange("commitmentName", event.target.value)} className={financeFieldClass} />
           </div>
-          {hasInvalidName ? (
+          {hasAttemptedSave && hasInvalidName ? (
             <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Commitment name is required.</p>
           ) : null}
           <div>
             <label className={financeLabelClass}>Amount</label>
             <input value={commitment.amount} onChange={(event) => onChange("amount", event.target.value)} placeholder="e.g. 480" className={financeFieldClass} />
+            {hasAttemptedSave && hasInvalidAmount ? (
+              <p role="alert" className="mt-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Amount must be a valid non-negative number.</p>
+            ) : null}
           </div>
           <div>
             <label className={financeLabelClass}>Due date</label>
             <input type="date" value={commitment.dueDate} onChange={(event) => onChange("dueDate", event.target.value)} className={financeFieldClass} />
+            {hasAttemptedSave && hasInvalidDueDate ? (
+              <p role="alert" className="mt-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">A valid due date is required.</p>
+            ) : null}
           </div>
           <div>
             <label className={financeLabelClass}>Type</label>
@@ -2671,7 +2726,7 @@ function CommitmentDetailPanel({ commitment, onClose, onChange, onSave }: {
 
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-          <button type="button" onClick={() => { onSave(); markSaved(); }} disabled={hasInvalidName} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save commitment"}</button>
+          <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidName || hasInvalidAmount || hasInvalidDueDate) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save commitment"}</button>
         </div>
       </div>
     </div>
