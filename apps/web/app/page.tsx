@@ -677,6 +677,69 @@ function formatCapturedAt(value: string) {
   }).format(date);
 }
 
+// Cash snapshot dates are calendar days; accepts legacy ISO datetime values and returns "" when unusable.
+function normaliseCashSnapshotDate(value: unknown) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$/);
+
+  if (!match) {
+    return "";
+  }
+
+  const [, year, month, day] = match;
+  const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+
+  if (
+    parsed.getFullYear() !== Number(year)
+    || parsed.getMonth() !== Number(month) - 1
+    || parsed.getDate() !== Number(day)
+  ) {
+    return "";
+  }
+
+  return `${year}-${month}-${day}`;
+}
+
+function formatCashSnapshotDate(value: string) {
+  const normalised = normaliseCashSnapshotDate(value);
+
+  if (!normalised) {
+    return "";
+  }
+
+  const [year, month, day] = normalised.split("-").map(Number);
+
+  return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" }).format(new Date(year, month - 1, day));
+}
+
+// Editor-only validation parser: "0" is a valid amount, so emptiness is tested explicitly rather than by truthiness.
+function parseCashPositionAmount(value: unknown) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalised = value.replace(/[£$,\s]/g, "");
+
+  if (normalised === "") {
+    return null;
+  }
+
+  if (!/^\+?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalised)) {
+    return null;
+  }
+
+  const parsed = Number(normalised);
+
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function formatSavedViewUpdatedAt(value?: string) {
   if (!value) {
     return "Updated date unavailable";
@@ -5097,6 +5160,7 @@ export default function Home() {
   const [dailyPostureSnapshots, setDailyPostureSnapshots] = useState<DailyPostureSnapshot[]>([]);
   const [cashPositionEditor, setCashPositionEditor] = useState<CashPositionRecord | null>(null);
   const [cashPositionValidationError, setCashPositionValidationError] = useState<string | null>(null);
+  const cashPositionHydratedRef = useRef(false);
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
   const [incomeEditor, setIncomeEditor] = useState<IncomeRecord | null>(null);
   const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
@@ -5188,7 +5252,11 @@ export default function Home() {
         const parsedCashPosition = JSON.parse(storedCashPosition);
 
         if (parsedCashPosition && typeof parsedCashPosition === "object") {
-          setCashPosition({ ...defaultCashPosition, ...parsedCashPosition });
+          setCashPosition({
+            ...defaultCashPosition,
+            ...parsedCashPosition,
+            lastUpdated: normaliseCashSnapshotDate(parsedCashPosition.lastUpdated),
+          });
         }
       }
 
@@ -5302,6 +5370,12 @@ export default function Home() {
   }, [leads]);
 
   useEffect(() => {
+    // The first run happens before the stored cash position has been read back into state.
+    if (!cashPositionHydratedRef.current) {
+      cashPositionHydratedRef.current = true;
+      return;
+    }
+
     window.localStorage.setItem(CASH_POSITION_STORAGE_KEY, JSON.stringify(cashPosition));
   }, [cashPosition]);
 
@@ -5402,7 +5476,9 @@ export default function Home() {
   const reservedTaxAmount = parsedReservedTaxAmount !== null && parsedReservedTaxAmount >= 0 ? parsedReservedTaxAmount : 0;
   const safetyBufferAmount = parsedSafetyBufferAmount !== null && parsedSafetyBufferAmount >= 0 ? parsedSafetyBufferAmount : 0;
   const availableOperatingCash = cashAmountsValid ? currentCashAmount - reservedTaxAmount - safetyBufferAmount : 0;
-  const cashSnapshotDate = parseCashSnapshotDate(cashPosition.lastUpdated);
+  const cashSnapshotDateValue = normaliseCashSnapshotDate(cashPosition.lastUpdated);
+  const cashSnapshotLabel = formatCashSnapshotDate(cashSnapshotDateValue);
+  const cashSnapshotDate = parseCashSnapshotDate(cashSnapshotDateValue);
   const todayForCashSnapshot = new Date();
   todayForCashSnapshot.setHours(0, 0, 0, 0);
   const cashSnapshotAgeDays = cashSnapshotDate && cashSnapshotDate <= todayForCashSnapshot
@@ -10109,7 +10185,7 @@ export default function Home() {
 
   const handleCashPositionOpen = () => {
     setCashPositionValidationError(null);
-    setCashPositionEditor({ ...cashPosition });
+    setCashPositionEditor({ ...cashPosition, lastUpdated: normaliseCashSnapshotDate(cashPosition.lastUpdated) });
   };
 
   const handleCashPositionChange = (field: keyof CashPositionRecord, value: string) => {
@@ -10126,18 +10202,18 @@ export default function Home() {
       return false;
     }
 
-    const currentCash = parseOptionalFinanceAmount(cashPositionEditor.currentCash);
-    const reservedTax = parseOptionalFinanceAmount(cashPositionEditor.reservedTax);
-    const safetyBuffer = parseOptionalFinanceAmount(cashPositionEditor.safetyBuffer);
-    if (currentCash === null || currentCash < 0) {
+    const currentCash = parseCashPositionAmount(cashPositionEditor.currentCash);
+    const reservedTax = parseCashPositionAmount(cashPositionEditor.reservedTax);
+    const safetyBuffer = parseCashPositionAmount(cashPositionEditor.safetyBuffer);
+    if (currentCash === null) {
       setCashPositionValidationError("Current business cash is required and must be a valid non-negative amount.");
       return false;
     }
-    if (reservedTax === null || reservedTax < 0) {
+    if (reservedTax === null) {
       setCashPositionValidationError("Reserved tax is required and must be a valid non-negative amount.");
       return false;
     }
-    if (safetyBuffer === null || safetyBuffer < 0) {
+    if (safetyBuffer === null) {
       setCashPositionValidationError("Safety buffer is required and must be a valid non-negative amount.");
       return false;
     }
@@ -10147,7 +10223,9 @@ export default function Home() {
       || cashPositionEditor.safetyBuffer !== cashPosition.safetyBuffer;
     const dateChanged = cashPositionEditor.lastUpdated !== cashPosition.lastUpdated;
     const today = new Date().toISOString().slice(0, 10);
-    const nextLastUpdated = moneyChanged && !dateChanged ? today : cashPositionEditor.lastUpdated;
+    const nextLastUpdated = moneyChanged && !dateChanged
+      ? today
+      : normaliseCashSnapshotDate(cashPositionEditor.lastUpdated);
     const snapshotDate = parseCashSnapshotDate(nextLastUpdated);
     const todayDate = parseCashSnapshotDate(today)!;
     if (!snapshotDate || snapshotDate > todayDate) {
@@ -10925,7 +11003,7 @@ export default function Home() {
                   <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Capital allocation</div>
 
                   <p className="mb-3 max-w-3xl text-[13px] leading-5 text-[#524d49]">
-                    Cash snapshot {cashPosition.lastUpdated ? `as of ${formatCapturedAt(cashPosition.lastUpdated)}` : "has no valid as-of date"}. Active commitments are derived separately and may require reconciliation. Affordability is a scenario, not a recommendation to spend.
+                    Cash snapshot {cashSnapshotLabel ? `as of ${cashSnapshotLabel}` : "has no recorded as-of date"}. Active commitments are derived separately and may require reconciliation. Affordability is a scenario, not a recommendation to spend.
                   </p>
 
                   <div className={`mb-3 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 text-[11px] ${capitalAllocation.cashSnapshotFreshness.tone === "warn" ? "border-[#c9b8a3] bg-[#f5efe6] text-[#524d49]" : "border-[#d3cbc3] bg-white text-[#4d4944]"}`}>
@@ -11678,7 +11756,7 @@ export default function Home() {
 
               <div className={`mt-4 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2.5 text-[11px] ${cashSnapshotFreshness.tone === "warn" ? "border-[#c9b8a3] bg-[#f5efe6] text-[#524d49]" : "border-[#d3cbc3] bg-[#f9f7f4] text-[#4d4944]"}`}>
                 <span className="font-medium text-[#171717]">Cash snapshot:</span>
-                <span>{cashPosition.lastUpdated ? `as of ${formatCapturedAt(cashPosition.lastUpdated)}` : "as-of date unavailable"}</span>
+                <span>{cashSnapshotLabel ? `as of ${cashSnapshotLabel}` : "no as-of date recorded"}</span>
                 <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-0.5 text-[9px] uppercase tracking-[0.14em]">{cashSnapshotFreshness.label}</span>
                 {cashSnapshotFreshness.label === "Stale" ? <span>Capital-allocation scenarios may not reflect the current bank position.</span> : null}
                 {cashSnapshotFreshness.label === "Missing / invalid date" ? <span>Update the snapshot date to restore reliable as-of context.</span> : null}
@@ -11712,8 +11790,8 @@ export default function Home() {
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Available operating cash</div>
                   <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{cashAmountsValid ? formatFinanceAmount(availableOperatingCash) : "—"}</div>
-                  {cashPosition.lastUpdated ? (
-                    <div className="mt-1 text-[10px] text-[#5d584f]">Updated {formatCapturedAt(cashPosition.lastUpdated)}</div>
+                  {cashSnapshotLabel ? (
+                    <div className="mt-1 text-[10px] text-[#5d584f]">Updated {cashSnapshotLabel}</div>
                   ) : null}
                 </div>
               </div>
