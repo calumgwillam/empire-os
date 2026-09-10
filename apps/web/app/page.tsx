@@ -2426,6 +2426,50 @@ function parseFinanceAmountInput(value: string) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
+function FinanceDeleteControl({ canDelete, label, onDelete }: {
+  canDelete: boolean;
+  label: string;
+  onDelete: () => void;
+}) {
+  const [isConfirming, setIsConfirming] = useState(false);
+
+  if (!canDelete) {
+    return <div />;
+  }
+
+  if (!isConfirming) {
+    return (
+      <button
+        type="button"
+        onClick={() => setIsConfirming(true)}
+        className="rounded-lg border border-[#d4b4a7] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#6a3328] transition hover:border-[#6a3328]"
+      >
+        {label}
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2">
+      <span className="text-[11px] font-medium text-[#6a3328]">Delete permanently?</span>
+      <button
+        type="button"
+        onClick={onDelete}
+        className="rounded-lg bg-[#6a3328] px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]"
+      >
+        Confirm delete
+      </button>
+      <button
+        type="button"
+        onClick={() => setIsConfirming(false)}
+        className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]"
+      >
+        Keep
+      </button>
+    </div>
+  );
+}
+
 function CashPositionPanel({ value, validationError, onClose, onChange, onSave }: {
   value: CashPositionRecord;
   validationError: string | null;
@@ -2482,11 +2526,13 @@ function CashPositionPanel({ value, validationError, onClose, onChange, onSave }
   );
 }
 
-function IncomeDetailPanel({ income, onClose, onChange, onSave }: {
+function IncomeDetailPanel({ income, canDelete, onClose, onChange, onSave, onDelete }: {
   income: IncomeRecord;
+  canDelete: boolean;
   onClose: () => void;
   onChange: (field: keyof IncomeRecord, value: string) => void;
   onSave: () => void;
+  onDelete: () => void;
 }) {
   const hasInvalidDescription = !income.description.trim();
   const hasInvalidDate = !isValidCalendarDateInput(income.date);
@@ -2553,20 +2599,25 @@ function IncomeDetailPanel({ income, onClose, onChange, onSave }: {
           </div>
         </div>
 
-        <div className="mt-6 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-          <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save income"}</button>
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+          <FinanceDeleteControl canDelete={canDelete} label="Delete income record" onDelete={onDelete} />
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save income"}</button>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function ExpenseDetailPanel({ expense, onClose, onChange, onSave }: {
+function ExpenseDetailPanel({ expense, canDelete, onClose, onChange, onSave, onDelete }: {
   expense: ExpenseRecord;
+  canDelete: boolean;
   onClose: () => void;
   onChange: (field: keyof ExpenseRecord, value: string) => void;
   onSave: () => void;
+  onDelete: () => void;
 }) {
   const hasInvalidDescription = !expense.description.trim();
   const hasInvalidDate = !isValidCalendarDateInput(expense.date);
@@ -2640,20 +2691,25 @@ function ExpenseDetailPanel({ expense, onClose, onChange, onSave }: {
           </div>
         </div>
 
-        <div className="mt-6 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-          <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save expense"}</button>
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+          <FinanceDeleteControl canDelete={canDelete} label="Delete expense record" onDelete={onDelete} />
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save expense"}</button>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function CommitmentDetailPanel({ commitment, onClose, onChange, onSave }: {
+function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSave, onDelete }: {
   commitment: CommitmentRecord;
+  canDelete: boolean;
   onClose: () => void;
   onChange: (field: keyof CommitmentRecord, value: string) => void;
   onSave: () => void;
+  onDelete: () => void;
 }) {
   const hasInvalidName = !commitment.commitmentName.trim();
   const hasInvalidAmount = parseFinanceAmountInput(commitment.amount) === null;
@@ -2724,9 +2780,12 @@ function CommitmentDetailPanel({ commitment, onClose, onChange, onSave }: {
           </div>
         </div>
 
-        <div className="mt-6 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-          <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidName || hasInvalidAmount || hasInvalidDueDate) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save commitment"}</button>
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+          <FinanceDeleteControl canDelete={canDelete} label="Delete commitment" onDelete={onDelete} />
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidName || hasInvalidAmount || hasInvalidDueDate) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save commitment"}</button>
+          </div>
         </div>
       </div>
     </div>
@@ -10337,6 +10396,18 @@ export default function Home() {
     setFeedback({ type: "success", message: isNew ? "Income record created." : "Income record saved." });
   };
 
+  const handleIncomeDelete = () => {
+    if (!incomeEditor) {
+      return;
+    }
+
+    const targetId = incomeEditor.id;
+    setIncomeRecords((current) => current.filter((record) => record.id !== targetId));
+    setSelectedIncomeId(null);
+    setIncomeEditor(null);
+    setFeedback({ type: "success", message: "Income record deleted." });
+  };
+
   const handleCreateIncome = () => {
     const newIncome: IncomeRecord = {
       ...defaultIncomeForm,
@@ -10386,6 +10457,18 @@ export default function Home() {
     setFeedback({ type: "success", message: isNew ? "Expense record created." : "Expense record saved." });
   };
 
+  const handleExpenseDelete = () => {
+    if (!expenseEditor) {
+      return;
+    }
+
+    const targetId = expenseEditor.id;
+    setExpenseRecords((current) => current.filter((record) => record.id !== targetId));
+    setSelectedExpenseId(null);
+    setExpenseEditor(null);
+    setFeedback({ type: "success", message: "Expense record deleted." });
+  };
+
   const handleCreateExpense = () => {
     const newExpense: ExpenseRecord = {
       ...defaultExpenseForm,
@@ -10431,6 +10514,18 @@ export default function Home() {
     setSelectedCommitmentId(nextCommitment.id);
     setCommitmentEditor(nextCommitment);
     setFeedback({ type: "success", message: isNew ? "Commitment created." : "Commitment saved." });
+  };
+
+  const handleCommitmentDelete = () => {
+    if (!commitmentEditor) {
+      return;
+    }
+
+    const targetId = commitmentEditor.id;
+    setCommitmentRecords((current) => current.filter((record) => record.id !== targetId));
+    setSelectedCommitmentId(null);
+    setCommitmentEditor(null);
+    setFeedback({ type: "success", message: "Commitment deleted." });
   };
 
   const handleCreateCommitment = () => {
@@ -13367,36 +13462,42 @@ export default function Home() {
       {selectedIncomeId && incomeEditor ? (
         <IncomeDetailPanel
           income={incomeEditor}
+          canDelete={incomeRecords.some((record) => record.id === incomeEditor.id)}
           onClose={() => {
             setSelectedIncomeId(null);
             setIncomeEditor(null);
           }}
           onChange={handleIncomeEditorChange}
           onSave={handleIncomeSave}
+          onDelete={handleIncomeDelete}
         />
       ) : null}
 
       {selectedExpenseId && expenseEditor ? (
         <ExpenseDetailPanel
           expense={expenseEditor}
+          canDelete={expenseRecords.some((record) => record.id === expenseEditor.id)}
           onClose={() => {
             setSelectedExpenseId(null);
             setExpenseEditor(null);
           }}
           onChange={handleExpenseEditorChange}
           onSave={handleExpenseSave}
+          onDelete={handleExpenseDelete}
         />
       ) : null}
 
       {selectedCommitmentId && commitmentEditor ? (
         <CommitmentDetailPanel
           commitment={commitmentEditor}
+          canDelete={commitmentRecords.some((record) => record.id === commitmentEditor.id)}
           onClose={() => {
             setSelectedCommitmentId(null);
             setCommitmentEditor(null);
           }}
           onChange={handleCommitmentEditorChange}
           onSave={handleCommitmentSave}
+          onDelete={handleCommitmentDelete}
         />
       ) : null}
 
