@@ -6898,7 +6898,7 @@ export default function Home() {
 
     const cashConfigured = cashAmountsValid;
     const bufferBreached = cashConfigured && availableOperatingCash < 0;
-    const bufferPressured = cashConfigured && !bufferBreached && availableOperatingCash === 0;
+    const bufferPressured = cashConfigured && !bufferBreached && safetyBufferAmount > 0 && availableOperatingCash === 0;
 
     const buffer = cashConfigured && (bufferBreached || bufferPressured)
       ? {
