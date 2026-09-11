@@ -12381,6 +12381,15 @@ export default function Home() {
                             ? "No active non-founder owner is currently available to receive delegated work."
                             : `${empireDecisionQueue.delegationCapacityNames.length} active non-founder owner${empireDecisionQueue.delegationCapacityNames.length === 1 ? " is" : "s are"} available: ${empireDecisionQueue.delegationCapacityNames.join(", ")}.`}
                         </div>
+                        {empireDecisionQueue.delegateItems.length > 0 && empireDecisionQueue.delegationCapacityNames.length === 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => setActiveView("People")}
+                            className="mt-2 rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-2.5 py-1.5 text-[11px] font-medium text-[#171717] transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                          >
+                            Open People
+                          </button>
+                        ) : null}
                         {empireDecisionQueue.delegateItems.length === 0 ? (
                           <div className="mt-2 text-[12px] text-[#4d4944]">No routine items are ready for delegation.</div>
                         ) : (
