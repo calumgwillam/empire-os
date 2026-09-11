@@ -8435,6 +8435,9 @@ export default function Home() {
     const growthIsClear = growthParts.length === 0;
 
     const outstandingRecordKeys = new Set<string>();
+    founderFocusCandidates.forEach((item) =>
+      outstandingRecordKeys.add(`${item.objectType}:${item.id}`),
+    );
     empireDecisionQueue.founderAuthorityItems.forEach((item) => outstandingRecordKeys.add(`${item.objectType}:${item.id}`));
     decisionTrackRecord.reviewsDue.forEach((decision) => outstandingRecordKeys.add(`Decision:${decision.id}`));
     unassignedAccountability.ownedActions.forEach((action) => outstandingRecordKeys.add(`Action:${action.id}`));
@@ -8451,19 +8454,49 @@ export default function Home() {
     growthAttention.stalledLeads.forEach((item) => outstandingRecordKeys.add(`Lead:${item.id}`));
     const outstandingCount = outstandingRecordKeys.size;
 
-    const outstandingSituationCount = correlationLayer.clusters.filter((cluster) =>
-      cluster.records.some((record) => outstandingRecordKeys.has(record.recordKey)),
+    const clusteredOutstandingRecordKeys = new Set<string>();
+    const clusteredSituationCount = correlationLayer.clusters.reduce((count, cluster) => {
+      const matchingRecords = cluster.records.filter((record) =>
+        outstandingRecordKeys.has(record.recordKey),
+      );
+
+      if (matchingRecords.length === 0) {
+        return count;
+      }
+
+      matchingRecords.forEach((record) =>
+        clusteredOutstandingRecordKeys.add(record.recordKey),
+      );
+
+      return count + 1;
+    }, 0);
+
+    const unclusteredOutstandingCount = [...outstandingRecordKeys].filter(
+      (key) => !clusteredOutstandingRecordKeys.has(key),
     ).length;
+
+    const outstandingSituationCount =
+      clusteredSituationCount + unclusteredOutstandingCount;
+
+    const founderFocusByRecordKey = new Map(
+      founderFocusCandidates.map((item) => [
+        `${item.objectType}:${item.id}`,
+        item,
+      ]),
+    );
 
     const outstandingKeys = [...outstandingRecordKeys].map((key) => {
       const signalled = correlationLayer.signalled.get(key);
+      const focusItem = founderFocusByRecordKey.get(key);
       const separatorIndex = key.indexOf(":");
       const objectType = separatorIndex >= 0 ? key.slice(0, separatorIndex) : key;
       return {
         key,
-        title: signalled?.title || key,
-        objectType: signalled?.objectType || objectType,
-        category: signalled ? [...signalled.signals].join(", ") : "attention",
+        title: signalled?.title || focusItem?.title || key,
+        objectType: signalled?.objectType || focusItem?.objectType || objectType,
+        category: signalled
+          ? [...signalled.signals].join(", ")
+          : focusItem?.reason || "attention",
       };
     });
 
