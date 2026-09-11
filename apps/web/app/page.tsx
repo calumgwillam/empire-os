@@ -10795,6 +10795,165 @@ export default function Home() {
     input.click();
   }
 
+  function handleRestoreEmergencySnapshot() {
+    try {
+      const rawSnapshots = window.localStorage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
+
+      if (!rawSnapshots) {
+        window.alert("No emergency recovery snapshots are available.");
+        return;
+      }
+
+      const snapshots = JSON.parse(rawSnapshots);
+
+      if (!Array.isArray(snapshots) || snapshots.length === 0) {
+        window.alert("No emergency recovery snapshots are available.");
+        return;
+      }
+
+      const validSnapshots = snapshots.filter(
+        (snapshot) =>
+          snapshot &&
+          typeof snapshot === "object" &&
+          typeof snapshot.createdAt === "string" &&
+          snapshot.storage &&
+          typeof snapshot.storage === "object" &&
+          !Array.isArray(snapshot.storage),
+      );
+
+      if (validSnapshots.length === 0) {
+        throw new Error("No valid emergency snapshots were found.");
+      }
+
+      const choices = validSnapshots
+        .map(
+          (snapshot, index) =>
+            `${index + 1}. ${new Date(snapshot.createdAt).toLocaleString()}`,
+        )
+        .join("\n");
+
+      const selection = window.prompt(
+        `Choose an emergency snapshot to restore:\n\n${choices}\n\nEnter the snapshot number:`,
+      );
+
+      if (selection === null) {
+        return;
+      }
+
+      const selectedIndex = Number(selection.trim()) - 1;
+
+      if (
+        !Number.isInteger(selectedIndex) ||
+        selectedIndex < 0 ||
+        selectedIndex >= validSnapshots.length
+      ) {
+        window.alert("Invalid snapshot number. Nothing was restored.");
+        return;
+      }
+
+      const selectedSnapshot = validSnapshots[selectedIndex];
+      const storage = selectedSnapshot.storage as Record<string, unknown>;
+
+      const storageKeys = [
+        STORAGE_KEY,
+        CONVERSION_STORAGE_KEY,
+        PERSON_STORAGE_KEY,
+        PROJECT_STORAGE_KEY,
+        LEAD_STORAGE_KEY,
+        CASH_POSITION_STORAGE_KEY,
+        INCOME_STORAGE_KEY,
+        EXPENSE_STORAGE_KEY,
+        COMMITMENT_STORAGE_KEY,
+        SAVED_VIEWS_STORAGE_KEY,
+        DEFAULT_SAVED_VIEW_STORAGE_KEY,
+        DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+      ];
+
+      for (const key of storageKeys) {
+        if (!Object.prototype.hasOwnProperty.call(storage, key)) {
+          throw new Error(`Emergency snapshot is missing required storage key: ${key}`);
+        }
+
+        const value = storage[key];
+
+        if (value !== null && typeof value !== "string") {
+          throw new Error(`Invalid emergency snapshot value for: ${key}`);
+        }
+      }
+
+      const arrayStorageKeys = [
+        STORAGE_KEY,
+        CONVERSION_STORAGE_KEY,
+        PERSON_STORAGE_KEY,
+        PROJECT_STORAGE_KEY,
+        LEAD_STORAGE_KEY,
+        INCOME_STORAGE_KEY,
+        EXPENSE_STORAGE_KEY,
+        COMMITMENT_STORAGE_KEY,
+        SAVED_VIEWS_STORAGE_KEY,
+        DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+      ];
+
+      for (const key of arrayStorageKeys) {
+        const value = storage[key];
+
+        if (typeof value === "string") {
+          const decoded = JSON.parse(value);
+
+          if (!Array.isArray(decoded)) {
+            throw new Error(`Expected an array for: ${key}`);
+          }
+        }
+      }
+
+      const cashValue = storage[CASH_POSITION_STORAGE_KEY];
+
+      if (typeof cashValue === "string") {
+        const decodedCash = JSON.parse(cashValue);
+
+        if (
+          !decodedCash ||
+          typeof decodedCash !== "object" ||
+          Array.isArray(decodedCash)
+        ) {
+          throw new Error("Invalid cash position data.");
+        }
+      }
+
+      const confirmed = window.confirm(
+        `Restore emergency snapshot from ${new Date(
+          selectedSnapshot.createdAt,
+        ).toLocaleString()}? A fresh full backup of the current data will download first.`,
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      handleDownloadFullBackup();
+
+      for (const key of storageKeys) {
+        const value = storage[key];
+
+        if (value === null) {
+          window.localStorage.removeItem(key);
+        } else {
+          window.localStorage.setItem(key, value as string);
+        }
+      }
+
+      window.location.reload();
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message:
+          error instanceof Error
+            ? `Emergency restore blocked: ${error.message}`
+            : "Emergency restore blocked: invalid recovery snapshot.",
+      });
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[#f1efe9] text-[#171717]">
       <div className="flex min-h-screen">
@@ -10867,6 +11026,14 @@ export default function Home() {
               className="mt-2 w-full rounded-lg border border-[#cfc8c1] bg-[#f7f4f1] px-3 py-2.5 text-left text-[12px] font-medium text-[#4d4944] transition-colors hover:bg-[#e7e1da]"
             >
               Restore from backup
+            </button>
+
+            <button
+              type="button"
+              onClick={handleRestoreEmergencySnapshot}
+              className="mt-2 w-full rounded-lg border border-[#cfc8c1] bg-[#f7f4f1] px-3 py-2.5 text-left text-[12px] font-medium text-[#4d4944] transition-colors hover:bg-[#e7e1da]"
+            >
+              Restore emergency snapshot
             </button>
 
             <p className="mt-2 px-1 text-[10px] leading-4 text-[#6b655f]">
