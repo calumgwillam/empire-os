@@ -6668,6 +6668,7 @@ export default function Home() {
           upside: hasUpside ? upside : null,
           capital,
           capitalState,
+          capitalLabel: rawCapital,
           requiredTime: opportunity.requiredTime?.trim() || "",
           efficiency,
         };
@@ -6708,11 +6709,15 @@ export default function Home() {
     const highFitWithCapital = liveOpportunities.filter((opp) => opp.fitRank >= 3 && opp.capital !== null);
     const highFitOpportunities = liveOpportunities.filter((opp) => opp.fitRank >= 3);
     const highFitOpportunityCount = highFitOpportunities.length;
-    const highFitKnownCapitalRequired = highFitOpportunityCount === 0
-      ? null
-      : highFitWithCapital.reduce((sum, opp) => sum + (opp.capital ?? 0), 0);
     const highFitMissingCapitalCount = highFitOpportunities.filter((opp) => opp.capitalState === "missing").length;
+    const highFitQualitativeCapitalCount = highFitOpportunities.filter((opp) => opp.capitalState === "qualitative").length;
     const highFitZeroCapitalCount = highFitOpportunities.filter((opp) => opp.capitalState === "zero").length;
+    const highFitKnownCapitalRequired =
+      highFitOpportunityCount === 0 ||
+      highFitMissingCapitalCount > 0 ||
+      highFitQualitativeCapitalCount > 0
+        ? null
+        : highFitWithCapital.reduce((sum, opp) => sum + (opp.capital ?? 0), 0);
 
     const wonLeads = leads.filter((lead) => lead.status === "Won");
     const wonValueByAreaMap = new Map<string, {
@@ -6780,6 +6785,7 @@ export default function Home() {
       highFitKnownCapitalRequired,
       highFitOpportunityCount,
       highFitMissingCapitalCount,
+      highFitQualitativeCapitalCount,
       highFitZeroCapitalCount,
       wonCommercialEvidence,
     };
@@ -11903,8 +11909,10 @@ export default function Home() {
                         {capitalAllocation.highFitOpportunityCount === 0
                           ? "No live High/Exceptional-fit opportunities."
                           : capitalAllocation.highFitMissingCapitalCount > 0
-                            ? `Known total only — ${capitalAllocation.highFitMissingCapitalCount} live high-fit opportunit${capitalAllocation.highFitMissingCapitalCount === 1 ? "y is" : "ies are"} missing capital data${capitalAllocation.highFitZeroCapitalCount > 0 ? `; ${capitalAllocation.highFitZeroCapitalCount} explicitly require zero capital` : ""}.`
-                            : `Complete across ${capitalAllocation.highFitOpportunityCount} live high-fit opportunit${capitalAllocation.highFitOpportunityCount === 1 ? "y" : "ies"}${capitalAllocation.highFitZeroCapitalCount > 0 ? `; ${capitalAllocation.highFitZeroCapitalCount} explicitly require zero capital` : ""}.`}
+                            ? `Numeric total unavailable — ${capitalAllocation.highFitMissingCapitalCount} live high-fit opportunit${capitalAllocation.highFitMissingCapitalCount === 1 ? "y is" : "ies are"} missing capital data.`
+                            : capitalAllocation.highFitQualitativeCapitalCount > 0
+                              ? `Numeric total unavailable — ${capitalAllocation.highFitQualitativeCapitalCount} live high-fit opportunit${capitalAllocation.highFitQualitativeCapitalCount === 1 ? "y has" : "ies have"} a qualitative capital requirement.`
+                              : `Complete across ${capitalAllocation.highFitOpportunityCount} live high-fit opportunit${capitalAllocation.highFitOpportunityCount === 1 ? "y" : "ies"}${capitalAllocation.highFitZeroCapitalCount > 0 ? `; ${capitalAllocation.highFitZeroCapitalCount} explicitly require zero capital` : ""}.`}
                       </div>
                     </div>
 
@@ -11946,7 +11954,7 @@ export default function Home() {
                             <div className="mt-1.5 text-[15px] font-medium tracking-[-0.04em] text-[#171717]">{opp.title}</div>
                             <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] leading-4 text-[#4d4944]">
                               <span><span className="font-medium text-[#171717]">Upside:</span> {opp.upside !== null ? formatFinanceAmount(opp.upside) : "Not stated"}</span>
-                              <span><span className="font-medium text-[#171717]">Capital:</span> {opp.capitalState === "stated" && opp.capital !== null ? formatFinanceAmount(opp.capital) : opp.capitalState === "zero" ? "Zero capital" : "Not stated"}</span>
+                              <span><span className="font-medium text-[#171717]">Capital:</span> {opp.capitalState === "stated" && opp.capital !== null ? formatFinanceAmount(opp.capital) : opp.capitalState === "zero" ? "Zero capital" : opp.capitalState === "qualitative" ? opp.capitalLabel : "Not stated"}</span>
                               <span><span className="font-medium text-[#171717]">Time:</span> {opp.requiredTime || "Not stated"}</span>
                               <span><span className="font-medium text-[#171717]">Pillar:</span> {opp.area}</span>
                             </div>
@@ -11957,7 +11965,9 @@ export default function Home() {
                                   ? "Capital requirement is missing — capital efficiency N/A."
                                   : opp.capitalState === "zero"
                                     ? "Explicitly recorded as a zero-capital opportunity."
-                                  : "No valid upside figure — capital efficiency N/A."}
+                                    : opp.capitalState === "qualitative"
+                                      ? `Capital requirement is recorded qualitatively as "${opp.capitalLabel}" — numeric capital efficiency N/A.`
+                                      : "No valid upside figure — capital efficiency N/A."}
                             </div>
                             {opp.capitalState === "missing" ? (
                               <span className="mt-2 inline-flex rounded-lg border border-[#171717] bg-white px-2.5 py-1.5 text-[10px] font-medium text-[#171717]">
