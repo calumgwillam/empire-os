@@ -8597,6 +8597,32 @@ export default function Home() {
     attentionSnapshot[`growth:Lead:${item.id}`] = "Growth";
   });
 
+  strategicDataConfidence.limitations
+    .filter(
+      (limitation) =>
+        limitation.severity === "Blocker" ||
+        limitation.severity === "Material",
+    )
+    .forEach((limitation) => {
+      const objectType =
+        limitation.key === "ownership"
+          ? "People"
+          : limitation.action?.objectType;
+
+      const id =
+        limitation.key === "ownership"
+          ? "unassigned"
+          : limitation.action?.id;
+
+      if (!objectType || !id) {
+        return;
+      }
+
+      attentionSnapshot[
+        `confidence:${limitation.key}:${objectType}:${id}`
+      ] = "Strategic data confidence";
+    });
+
   const [clearedThisSession, setClearedThisSession] = useState<{ total: number; byCategory: Record<string, number> }>({ total: 0, byCategory: {} });
   const previousAttentionSnapshotRef = useRef<Record<string, string> | null>(null);
   const clearedKeysRef = useRef<Set<string>>(new Set());
@@ -8604,6 +8630,11 @@ export default function Home() {
   const attentionSnapshotJson = JSON.stringify(attentionSnapshot);
 
   useEffect(() => {
+    if (!operatingDataLoaded) {
+      previousAttentionSnapshotRef.current = null;
+      return;
+    }
+
     const currentSnapshot = JSON.parse(attentionSnapshotJson) as Record<string, string>;
     const currentKeys = new Set(Object.keys(currentSnapshot));
 
