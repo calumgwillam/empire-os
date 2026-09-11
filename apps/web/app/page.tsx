@@ -8024,7 +8024,7 @@ export default function Home() {
     if (organisationalHealth.delegationQuality.label === "Needs attention" && organisationalHealth.selfSufficiencyPct !== null) {
       empireWide.push({
         label: "Founder dependency",
-        detail: `${organisationalHealth.selfSufficiencyPct}% flows without the founder; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%.`,
+        detail: `${organisationalHealth.selfSufficiencyPct}% flows without the founder; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${empireDecisionQueue.delegateItems.length > 0 && empireDecisionQueue.delegationCapacityNames.length === 0 ? `; ${empireDecisionQueue.delegateItems.length} founder-owned item${empireDecisionQueue.delegateItems.length === 1 ? " is" : "s are"} suitable for delegation, but no active non-founder owner is available.` : "."}`,
       });
     }
     if (cashAttention.buffer) {
@@ -8465,7 +8465,7 @@ export default function Home() {
       : `${ownershipHygieneGapCount} active item${ownershipHygieneGapCount === 1 ? "" : "s"} lack${ownershipHygieneGapCount === 1 ? "s" : ""} a valid active owner. ${peopleWithAttention.length} ${peopleWithAttention.length === 1 ? "person is" : "people are"} carrying attention items.`;
     const delegationCandidateCount = empireDecisionQueue.delegateItems.length;
     const founderDependency = organisationalHealth.delegationQuality.label === "Needs attention" && organisationalHealth.selfSufficiencyPct !== null
-      ? `${organisationalHealth.selfSufficiencyPct}% flows without the founder; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${delegationCandidateCount > 0 ? `, and ${delegationCandidateCount} founder-owned item${delegationCandidateCount === 1 ? " is" : "s are"} suitable for delegation.` : "."}`
+      ? `${organisationalHealth.selfSufficiencyPct}% flows without the founder; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${delegationCandidateCount > 0 ? `, and ${delegationCandidateCount} founder-owned item${delegationCandidateCount === 1 ? " is" : "s are"} suitable for delegation${empireDecisionQueue.delegationCapacityNames.length === 0 ? ", but no active non-founder owner is available" : ""}.` : "."}`
       : null;
 
     const staleCount = staleRecords.length;
