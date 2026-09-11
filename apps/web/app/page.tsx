@@ -6642,12 +6642,17 @@ export default function Home() {
       .filter((opportunity) => liveStatuses.includes(opportunity.status))
       .map((opportunity) => {
         const upside = parseFinanceAmount(opportunity.estimatedUpside);
-        const parsedCapital = parseOptionalFinanceAmount(opportunity.requiredCapital);
-        const capitalState = parsedCapital === null || parsedCapital < 0
+        const rawCapital = opportunity.requiredCapital.trim();
+        const parsedCapital = parseOptionalFinanceAmount(rawCapital);
+        const capitalState = !rawCapital
           ? "missing" as const
-          : parsedCapital === 0
-            ? "zero" as const
-            : "stated" as const;
+          : parsedCapital === null
+            ? "qualitative" as const
+            : parsedCapital < 0
+              ? "missing" as const
+              : parsedCapital === 0
+                ? "zero" as const
+                : "stated" as const;
         const capital = capitalState === "stated" ? parsedCapital : null;
         const hasUpside = upside > 0;
         const efficiency = hasUpside && capital !== null ? upside / capital : null;
