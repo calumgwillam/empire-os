@@ -8364,11 +8364,24 @@ export default function Home() {
     const financeCount = cashAttention.count;
 
     const postureParts: string[] = [];
+    const strategicConfidenceAttentionCount =
+      strategicDataConfidence.limitations.filter(
+        (limitation) =>
+          limitation.severity === "Blocker" ||
+          limitation.severity === "Material",
+      ).length;
+
     if (authorityCount > 0) postureParts.push(`${authorityCount} need${authorityCount === 1 ? "s" : ""} your authority`);
     if (reviewDueCount > 0) postureParts.push(`${reviewDueCount} decision review${reviewDueCount === 1 ? "" : "s"} overdue`);
     if (ownershipGapCount > 0) postureParts.push(`${ownershipGapCount} ownership gap${ownershipGapCount === 1 ? "" : "s"}`);
     if (learningGapCount > 0) postureParts.push(`${learningGapCount} recurring problem${learningGapCount === 1 ? "" : "s"} not yet captured as learning`);
     if (executionGapCount > 0) postureParts.push(`${executionGapCount} decision${executionGapCount === 1 ? "" : "s"} without an execution path`);
+    if (strategicConfidenceAttentionCount > 0) {
+      postureParts.push(
+        `${strategicConfidenceAttentionCount} strategic data confidence issue${strategicConfidenceAttentionCount === 1 ? " needs" : "s need"} attention`,
+      );
+    }
+
     if (cashAttention.buffer) postureParts.push("cash buffer pressure");
     if (cashAttention.overdueCommitments.length > 0) postureParts.push(`${cashAttention.overdueCommitments.length} overdue commitment${cashAttention.overdueCommitments.length === 1 ? "" : "s"}`);
     if (cashAttention.overdueExpectedIncome.length > 0) postureParts.push(`${cashAttention.overdueExpectedIncome.length} expected income overdue`);
