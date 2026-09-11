@@ -35,6 +35,7 @@ const SAVED_VIEWS_STORAGE_KEY = "empire-os-records-in-motion-views";
 const DEFAULT_SAVED_VIEW_STORAGE_KEY = "empire-os-records-in-motion-default-view";
 const DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY = "empire-os-daily-posture-snapshots";
 const LAST_BACKUP_AT_STORAGE_KEY = "empire-os-last-backup-at";
+const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
 
 const sharedAreaOptions = [
   "Garden Maintenance",
@@ -5274,6 +5275,85 @@ export default function Home() {
       const storedIncome = window.localStorage.getItem(INCOME_STORAGE_KEY);
       const storedExpenses = window.localStorage.getItem(EXPENSE_STORAGE_KEY);
       const storedCommitments = window.localStorage.getItem(COMMITMENT_STORAGE_KEY);
+
+      // Preserve the untouched browser data before any startup parsing or persistence runs.
+      // Recovery snapshot failures must never interrupt normal Empire OS loading.
+      try {
+        const recoveryStorageKeys = [
+          STORAGE_KEY,
+          CONVERSION_STORAGE_KEY,
+          PERSON_STORAGE_KEY,
+          PROJECT_STORAGE_KEY,
+          LEAD_STORAGE_KEY,
+          CASH_POSITION_STORAGE_KEY,
+          INCOME_STORAGE_KEY,
+          EXPENSE_STORAGE_KEY,
+          COMMITMENT_STORAGE_KEY,
+          SAVED_VIEWS_STORAGE_KEY,
+          DEFAULT_SAVED_VIEW_STORAGE_KEY,
+          DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+        ];
+
+        const recoveryStorage: Record<string, string | null> = {};
+        let hasStoredData = false;
+
+        for (const key of recoveryStorageKeys) {
+          const value = window.localStorage.getItem(key);
+          recoveryStorage[key] = value;
+          if (value !== null) {
+            hasStoredData = true;
+          }
+        }
+
+        if (hasStoredData) {
+          const rawExistingSnapshots = window.localStorage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
+          let existingSnapshots: Array<{
+            createdAt: string;
+            storage: Record<string, string | null>;
+          }> = [];
+
+          if (rawExistingSnapshots) {
+            try {
+              const parsedSnapshots = JSON.parse(rawExistingSnapshots);
+              if (Array.isArray(parsedSnapshots)) {
+                existingSnapshots = parsedSnapshots.filter(
+                  (snapshot) =>
+                    snapshot &&
+                    typeof snapshot === "object" &&
+                    typeof snapshot.createdAt === "string" &&
+                    snapshot.storage &&
+                    typeof snapshot.storage === "object" &&
+                    !Array.isArray(snapshot.storage),
+                );
+              }
+            } catch {
+              existingSnapshots = [];
+            }
+          }
+
+          const latestStorage = existingSnapshots[0]?.storage;
+          const storageChanged =
+            !latestStorage ||
+            JSON.stringify(latestStorage) !== JSON.stringify(recoveryStorage);
+
+          if (storageChanged) {
+            const nextSnapshots = [
+              {
+                createdAt: new Date().toISOString(),
+                storage: recoveryStorage,
+              },
+              ...existingSnapshots,
+            ].slice(0, 5);
+
+            window.localStorage.setItem(
+              RECOVERY_SNAPSHOTS_STORAGE_KEY,
+              JSON.stringify(nextSnapshots),
+            );
+          }
+        }
+      } catch {
+        // Emergency snapshot creation is best-effort only.
+      }
 
       if (storedCaptures) {
         const parsedCaptures = JSON.parse(storedCaptures);
