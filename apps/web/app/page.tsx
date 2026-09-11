@@ -8283,6 +8283,40 @@ export default function Home() {
       });
     });
 
+    strategicDataConfidence.limitations
+      .filter(
+        (limitation) =>
+          limitation.severity === "Blocker" ||
+          limitation.severity === "Material",
+      )
+      .forEach((limitation) => {
+        const objectType =
+          limitation.key === "ownership"
+            ? "People"
+            : limitation.action?.objectType;
+
+        const id =
+          limitation.key === "ownership"
+            ? "unassigned"
+            : limitation.action?.id;
+
+        if (!objectType || !id) {
+          return;
+        }
+
+        addOrUpgradeCandidate({
+          key: `data-confidence:${limitation.key}`,
+          objectType,
+          id,
+          title: limitation.label,
+          area: objectType,
+          score: limitation.severity === "Blocker" ? 390 : 250,
+          band: limitation.severity === "Blocker" ? 1 : 3,
+          urgencyTime: getUrgencyTime(objectType, id),
+          reason: `Strategic data confidence ${limitation.severity.toLowerCase()} — ${limitation.label}.`,
+        });
+      });
+
     correlationLayer.convergentRisks.forEach((cluster) => {
       const constituentCandidates = cluster.records
         .map((record) => candidatesByRecord.get(record.recordKey))
@@ -9583,6 +9617,11 @@ export default function Home() {
     } else if (objectType === "Lesson") {
       const record = lessonRecords.find((item) => item.id === id);
       if (record) handleLessonEditOpen(record);
+    } else if (objectType === "People") {
+      setActiveView("People");
+      if (id === "unassigned") {
+        setSelectedAccountabilityKey("unassigned");
+      }
     } else if (objectType === "Finance") {
       setActiveView("Finance");
       if (id === "cash-buffer") {
