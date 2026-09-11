@@ -6858,6 +6858,26 @@ export default function Home() {
       });
     }
 
+    if (capitalAllocation.highFitQualitativeCapitalCount > 0) {
+      const firstOpportunity = capitalAllocation.liveOpportunities.find(
+        (opportunity) =>
+          opportunity.fitRank >= 3 && opportunity.capitalState === "qualitative",
+      );
+
+      limitations.push({
+        key: "opportunity-capital-qualitative",
+        label: `${capitalAllocation.highFitQualitativeCapitalCount} high-fit opportunit${capitalAllocation.highFitQualitativeCapitalCount === 1 ? "y has" : "ies have"} a qualitative rather than numeric capital requirement`,
+        severity: "Warning",
+        action: firstOpportunity
+          ? {
+              label: "Quantify capital requirement",
+              objectType: "Opportunity",
+              id: firstOpportunity.id,
+            }
+          : undefined,
+      });
+    }
+
     const ownershipGapCount =
       organisationalHealth.totalWork - organisationalHealth.validOwned;
 
