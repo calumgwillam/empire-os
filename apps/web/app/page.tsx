@@ -1012,48 +1012,6 @@ function normalizeSopRecord(record: CaptureConversionRecord): SopRecord {
   };
 }
 
-const LEGACY_DUPLICATE_SYSTEM_CLEANUP_KEY = "empire-os-cleanup-lesson-test-systems-v1";
-
-function cleanupLegacyDuplicateLessonTestSystems(records: CaptureConversionRecord[]) {
-  const groupedByLesson = new Map<string, CaptureConversionRecord[]>();
-
-  for (const record of records) {
-    if (record.targetType !== "Convert to System") {
-      continue;
-    }
-
-    if (!record.systemName || record.systemName.trim() !== "Lesson test") {
-      continue;
-    }
-
-    const lessonId = (record.relatedLesson || record.sourceCaptureId || record.id || "").trim();
-    if (!lessonId) {
-      continue;
-    }
-
-    const key = `${lessonId}|${record.systemName.trim()}`;
-    const group = groupedByLesson.get(key) ?? [];
-    group.push(record);
-    groupedByLesson.set(key, group);
-  }
-
-  const idsToRemove = new Set<string>();
-
-  for (const group of groupedByLesson.values()) {
-    if (group.length < 2) {
-      continue;
-    }
-
-    const ordered = [...group].sort(
-      (first, second) => new Date(first.createdAt).getTime() - new Date(second.createdAt).getTime(),
-    );
-
-    ordered.slice(1).forEach((record) => idsToRemove.add(record.id));
-  }
-
-  return records.filter((record) => !idsToRemove.has(record.id));
-}
-
 const destinationDefinitions = [
   {
     key: "Problems",
@@ -5325,20 +5283,10 @@ export default function Home() {
 
       if (storedConversions) {
         const parsedConversions = JSON.parse(storedConversions);
-
         if (Array.isArray(parsedConversions)) {
-          const alreadyCleaned = window.localStorage.getItem(LEGACY_DUPLICATE_SYSTEM_CLEANUP_KEY) === "done";
-
-          if (!alreadyCleaned) {
-            const cleanedConversions = cleanupLegacyDuplicateLessonTestSystems(parsedConversions);
-            window.localStorage.setItem(LEGACY_DUPLICATE_SYSTEM_CLEANUP_KEY, "done");
-            setConversions(cleanedConversions);
-          } else {
-            setConversions(parsedConversions);
-          }
+          setConversions(parsedConversions);
         }
       }
-
       if (storedPeople) {
         const parsedPeople = JSON.parse(storedPeople);
 
