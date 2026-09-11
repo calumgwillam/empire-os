@@ -5797,6 +5797,9 @@ export default function Home() {
     !["completed", "closed", "final", "cancelled", "canceled"].includes(project.status.trim().toLowerCase());
 
   const founderPerson = orderedPeople.find((person) => person.accessLevel === "Founder" && person.status === "Active") || null;
+  const activeNonFounderPeople = orderedPeople.filter(
+    (person) => person.status === "Active" && person.accessLevel !== "Founder",
+  );
   const founderOwnerKey = founderPerson?.name.trim().toLowerCase() || null;
   const getValidActiveOwnerKey = (ownerText: string | undefined, ownerPersonId?: string) => {
     if (ownerPersonId) {
@@ -6183,6 +6186,7 @@ export default function Home() {
       founderReviewQueue,
       crossPillarIssues,
       delegateItems,
+      delegationCapacityNames: activeNonFounderPeople.map((person) => person.name),
       founderAuthorityItems,
       founderAuthorityDisplayItems,
     };
@@ -12368,7 +12372,12 @@ export default function Home() {
                     <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Delegation vs founder authority</div>
                     <div className="space-y-4">
                       <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
-                        <div className="text-[12px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Should be delegated</div>
+                        <div className="text-[12px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Suitable for delegation</div>
+                        <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
+                          {empireDecisionQueue.delegationCapacityNames.length === 0
+                            ? "No active non-founder owner is currently available to receive delegated work."
+                            : `${empireDecisionQueue.delegationCapacityNames.length} active non-founder owner${empireDecisionQueue.delegationCapacityNames.length === 1 ? " is" : "s are"} available: ${empireDecisionQueue.delegationCapacityNames.join(", ")}.`}
+                        </div>
                         {empireDecisionQueue.delegateItems.length === 0 ? (
                           <div className="mt-2 text-[12px] text-[#4d4944]">No routine items are ready for delegation.</div>
                         ) : (
