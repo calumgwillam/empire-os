@@ -12059,6 +12059,9 @@ export default function Home() {
                         {organisationalHealth.pctValidOwner !== null ? <div>{organisationalHealth.pctValidOwner}% ownership coverage</div> : null}
                         {organisationalHealth.pctNonFounder !== null ? <div>{organisationalHealth.pctNonFounder}% not founder-owned</div> : null}
                         <div>{organisationalHealth.pctDelegatedStalled !== null ? `${organisationalHealth.pctDelegatedStalled}% of delegated work stalled / at risk` : "No delegated work — stalled share N/A"}</div>
+                        {empireDecisionQueue.delegateItems.length > 0 && empireDecisionQueue.delegationCapacityNames.length === 0
+                          ? <div>{empireDecisionQueue.delegateItems.length} founder-owned item{empireDecisionQueue.delegateItems.length === 1 ? " is" : "s are"} suitable for delegation, but no active non-founder owner is available.</div>
+                          : null}
                         {organisationalHealth.topOwnerShare !== null ? <div>Top owner share of validly owned work: {organisationalHealth.topOwnerShare}%</div> : null}
                       </div>
                       {healthTrend.delegation ? <div className="mt-1.5 text-[10px] text-[#4d4944]">{healthTrend.delegation}</div> : null}
