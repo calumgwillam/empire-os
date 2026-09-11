@@ -5272,6 +5272,7 @@ export default function Home() {
   const [expenseRecords, setExpenseRecords] = useState<ExpenseRecord[]>([]);
   const [commitmentRecords, setCommitmentRecords] = useState<CommitmentRecord[]>([]);
   const [dailyPostureSnapshots, setDailyPostureSnapshots] = useState<DailyPostureSnapshot[]>([]);
+  const [operatingDataLoaded, setOperatingDataLoaded] = useState(false);
   const [cashPositionEditor, setCashPositionEditor] = useState<CashPositionRecord | null>(null);
   const [cashPositionValidationError, setCashPositionValidationError] = useState<string | null>(null);
   const cashPositionHydratedRef = useRef(false);
@@ -5440,48 +5441,70 @@ export default function Home() {
         type: "error",
         message: "Local capture storage could not be loaded.",
       });
+    } finally {
+      setOperatingDataLoaded(true);
     }
   }, []);
 
   useEffect(() => {
+    if (!operatingDataLoaded) {
+      return;
+    }
+
     if (captures.length === 0) {
       window.localStorage.removeItem(STORAGE_KEY);
     } else {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(captures));
     }
-  }, [captures]);
+  }, [captures, operatingDataLoaded]);
 
   useEffect(() => {
+    if (!operatingDataLoaded) {
+      return;
+    }
+
     if (conversions.length === 0) {
       window.localStorage.removeItem(CONVERSION_STORAGE_KEY);
     } else {
       window.localStorage.setItem(CONVERSION_STORAGE_KEY, JSON.stringify(conversions));
     }
-  }, [conversions]);
+  }, [conversions, operatingDataLoaded]);
 
   useEffect(() => {
+    if (!operatingDataLoaded) {
+      return;
+    }
+
     if (people.length === 0) {
       window.localStorage.removeItem(PERSON_STORAGE_KEY);
     } else {
       window.localStorage.setItem(PERSON_STORAGE_KEY, JSON.stringify(people));
     }
-  }, [people]);
+  }, [people, operatingDataLoaded]);
 
   useEffect(() => {
+    if (!operatingDataLoaded) {
+      return;
+    }
+
     if (projects.length === 0) {
       window.localStorage.removeItem(PROJECT_STORAGE_KEY);
     } else {
       window.localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(projects));
     }
-  }, [projects]);
+  }, [projects, operatingDataLoaded]);
 
   useEffect(() => {
+    if (!operatingDataLoaded) {
+      return;
+    }
+
     if (leads.length === 0) {
       window.localStorage.removeItem(LEAD_STORAGE_KEY);
     } else {
       window.localStorage.setItem(LEAD_STORAGE_KEY, JSON.stringify(leads));
     }
-  }, [leads]);
+  }, [leads, operatingDataLoaded]);
 
   useEffect(() => {
     // The first run happens before the stored cash position has been read back into state.
@@ -5494,28 +5517,40 @@ export default function Home() {
   }, [cashPosition]);
 
   useEffect(() => {
+    if (!operatingDataLoaded) {
+      return;
+    }
+
     if (incomeRecords.length === 0) {
       window.localStorage.removeItem(INCOME_STORAGE_KEY);
     } else {
       window.localStorage.setItem(INCOME_STORAGE_KEY, JSON.stringify(incomeRecords));
     }
-  }, [incomeRecords]);
+  }, [incomeRecords, operatingDataLoaded]);
 
   useEffect(() => {
+    if (!operatingDataLoaded) {
+      return;
+    }
+
     if (expenseRecords.length === 0) {
       window.localStorage.removeItem(EXPENSE_STORAGE_KEY);
     } else {
       window.localStorage.setItem(EXPENSE_STORAGE_KEY, JSON.stringify(expenseRecords));
     }
-  }, [expenseRecords]);
+  }, [expenseRecords, operatingDataLoaded]);
 
   useEffect(() => {
+    if (!operatingDataLoaded) {
+      return;
+    }
+
     if (commitmentRecords.length === 0) {
       window.localStorage.removeItem(COMMITMENT_STORAGE_KEY);
     } else {
       window.localStorage.setItem(COMMITMENT_STORAGE_KEY, JSON.stringify(commitmentRecords));
     }
-  }, [commitmentRecords]);
+  }, [commitmentRecords, operatingDataLoaded]);
 
   const orderedCaptures = [...captures].sort(
     (first, second) =>
