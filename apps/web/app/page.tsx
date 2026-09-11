@@ -8305,7 +8305,7 @@ export default function Home() {
         }
 
         addOrUpgradeCandidate({
-          key: `data-confidence:${limitation.key}`,
+          key: `${objectType}:${id}`,
           objectType,
           id,
           title: limitation.label,
