@@ -10539,6 +10539,189 @@ export default function Home() {
     setCommitmentEditor(newCommitment);
   };
 
+  function handleDownloadFullBackup() {
+    const storageKeys = [
+      STORAGE_KEY,
+      CONVERSION_STORAGE_KEY,
+      PERSON_STORAGE_KEY,
+      PROJECT_STORAGE_KEY,
+      LEAD_STORAGE_KEY,
+      CASH_POSITION_STORAGE_KEY,
+      INCOME_STORAGE_KEY,
+      EXPENSE_STORAGE_KEY,
+      COMMITMENT_STORAGE_KEY,
+      SAVED_VIEWS_STORAGE_KEY,
+      DEFAULT_SAVED_VIEW_STORAGE_KEY,
+      DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+    ];
+
+    const storage: Record<string, string | null> = {};
+
+    for (const key of storageKeys) {
+      storage[key] = window.localStorage.getItem(key);
+    }
+
+    const backup = {
+      format: "empire-os-backup",
+      version: 1,
+      createdAt: new Date().toISOString(),
+      storage,
+    };
+
+    const blob = new Blob([JSON.stringify(backup, null, 2)], {
+      type: "application/json",
+    });
+
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+
+    anchor.href = url;
+    anchor.download = `empire-os-backup-${timestamp}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+
+    setFeedback({
+      type: "success",
+      message: "Full Empire OS backup downloaded.",
+    });
+  }
+
+  function handleRestoreFullBackup() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/json,.json";
+
+    input.onchange = async () => {
+      const file = input.files?.[0];
+
+      if (!file) {
+        return;
+      }
+
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text) as {
+          format?: unknown;
+          version?: unknown;
+          storage?: unknown;
+        };
+
+        if (
+          parsed.format !== "empire-os-backup" ||
+          parsed.version !== 1 ||
+          !parsed.storage ||
+          typeof parsed.storage !== "object" ||
+          Array.isArray(parsed.storage)
+        ) {
+          throw new Error("Invalid Empire OS backup format.");
+        }
+
+        const storage = parsed.storage as Record<string, unknown>;
+
+        const storageKeys = [
+          STORAGE_KEY,
+          CONVERSION_STORAGE_KEY,
+          PERSON_STORAGE_KEY,
+          PROJECT_STORAGE_KEY,
+          LEAD_STORAGE_KEY,
+          CASH_POSITION_STORAGE_KEY,
+          INCOME_STORAGE_KEY,
+          EXPENSE_STORAGE_KEY,
+          COMMITMENT_STORAGE_KEY,
+          SAVED_VIEWS_STORAGE_KEY,
+          DEFAULT_SAVED_VIEW_STORAGE_KEY,
+          DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+        ];
+
+        for (const key of storageKeys) {
+          if (!Object.prototype.hasOwnProperty.call(storage, key)) {
+            throw new Error(`Backup is missing required storage key: ${key}`);
+          }
+
+          const value = storage[key];
+
+          if (value !== null && typeof value !== "string") {
+            throw new Error(`Invalid stored value for: ${key}`);
+          }
+        }
+
+        const arrayStorageKeys = [
+          STORAGE_KEY,
+          CONVERSION_STORAGE_KEY,
+          PERSON_STORAGE_KEY,
+          PROJECT_STORAGE_KEY,
+          LEAD_STORAGE_KEY,
+          INCOME_STORAGE_KEY,
+          EXPENSE_STORAGE_KEY,
+          COMMITMENT_STORAGE_KEY,
+          SAVED_VIEWS_STORAGE_KEY,
+          DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+        ];
+
+        for (const key of arrayStorageKeys) {
+          const value = storage[key];
+
+          if (typeof value === "string") {
+            const decoded = JSON.parse(value);
+
+            if (!Array.isArray(decoded)) {
+              throw new Error(`Expected an array for: ${key}`);
+            }
+          }
+        }
+
+        const cashValue = storage[CASH_POSITION_STORAGE_KEY];
+
+        if (typeof cashValue === "string") {
+          const decodedCash = JSON.parse(cashValue);
+
+          if (
+            !decodedCash ||
+            typeof decodedCash !== "object" ||
+            Array.isArray(decodedCash)
+          ) {
+            throw new Error("Invalid cash position data.");
+          }
+        }
+
+        const confirmed = window.confirm(
+          "Restore this Empire OS backup? A fresh safety backup of the current data will download first, then the restored data will replace the current browser data."
+        );
+
+        if (!confirmed) {
+          return;
+        }
+
+        handleDownloadFullBackup();
+
+        for (const key of storageKeys) {
+          const value = storage[key];
+
+          if (value === null) {
+            window.localStorage.removeItem(key);
+          } else {
+            window.localStorage.setItem(key, value as string);
+          }
+        }
+
+        window.location.reload();
+      } catch (error) {
+        setFeedback({
+          type: "error",
+          message:
+            error instanceof Error
+              ? `Backup restore blocked: ${error.message}`
+              : "Backup restore blocked: invalid backup file.",
+        });
+      }
+    };
+
+    input.click();
+  }
+
   return (
     <div className="min-h-screen bg-[#f1efe9] text-[#171717]">
       <div className="flex min-h-screen">
@@ -10595,6 +10778,24 @@ export default function Home() {
               );
             })}
           </nav>
+
+          <div className="mt-6 border-t border-[#d7d1ca] pt-4">
+            <button
+              type="button"
+              onClick={handleDownloadFullBackup}
+              className="w-full rounded-lg border border-[#cfc8c1] bg-[#f1ede8] px-3 py-2.5 text-left text-[12px] font-medium text-[#2f2b28] transition-colors hover:bg-[#e7e1da]"
+            >
+              Download full backup
+            </button>
+
+            <button
+              type="button"
+              onClick={handleRestoreFullBackup}
+              className="mt-2 w-full rounded-lg border border-[#cfc8c1] bg-[#f7f4f1] px-3 py-2.5 text-left text-[12px] font-medium text-[#4d4944] transition-colors hover:bg-[#e7e1da]"
+            >
+              Restore from backup
+            </button>
+          </div>
         </aside>
 
         <main className="flex-1 bg-[#f3f1ee]">
