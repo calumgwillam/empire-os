@@ -6781,76 +6781,159 @@ export default function Home() {
   })();
 
   const strategicDataConfidence = (() => {
+    type LimitationSeverity = "Blocker" | "Material" | "Warning";
     type Limitation = {
       key: string;
       label: string;
+      severity: LimitationSeverity;
       action?: { label: string; objectType: string; id: string };
     };
+
     const limitations: Limitation[] = [];
     const cashPositionBlocksAllocation = !capitalAllocation.cashConfigured;
 
-    if (cashPositionBlocksAllocation || capitalAllocation.cashSnapshotFreshness.label === "Missing / invalid date") {
+    if (
+      cashPositionBlocksAllocation ||
+      capitalAllocation.cashSnapshotFreshness.label === "Missing / invalid date"
+    ) {
       limitations.push({
         key: "cash-position",
         label: "Cash position incomplete",
+        severity: "Blocker",
         action: { label: "Update cash snapshot", objectType: "Finance", id: "cash-buffer" },
       });
     } else if (capitalAllocation.cashSnapshotFreshness.label === "Stale") {
       limitations.push({
         key: "cash-position",
         label: "Cash snapshot is stale",
+        severity: "Material",
         action: { label: "Update cash snapshot", objectType: "Finance", id: "cash-buffer" },
       });
     }
 
     if (capitalAllocation.commitmentsNeedingAttention.length > 0) {
-      const firstCommitment = capitalAllocation.commitmentsNeedingAttention[0].commitment;
+      const firstCommitment =
+        capitalAllocation.commitmentsNeedingAttention[0].commitment;
+
       limitations.push({
         key: "commitments",
         label: `${capitalAllocation.commitmentsNeedingAttention.length} commitment record${capitalAllocation.commitmentsNeedingAttention.length === 1 ? "" : "s"} need attention`,
-        action: { label: "Review commitments", objectType: "Finance", id: `commitment:${firstCommitment.id}` },
+        severity: "Material",
+        action: {
+          label: "Review commitments",
+          objectType: "Finance",
+          id: `commitment:${firstCommitment.id}`,
+        },
       });
     }
 
     if (capitalAllocation.highFitMissingCapitalCount > 0) {
-      const firstOpportunity = capitalAllocation.liveOpportunities.find((opportunity) => opportunity.fitRank >= 3 && opportunity.capitalState === "missing");
+      const firstOpportunity = capitalAllocation.liveOpportunities.find(
+        (opportunity) =>
+          opportunity.fitRank >= 3 && opportunity.capitalState === "missing",
+      );
+
       limitations.push({
         key: "opportunity-capital",
         label: `${capitalAllocation.highFitMissingCapitalCount} high-fit opportunit${capitalAllocation.highFitMissingCapitalCount === 1 ? "y is" : "ies are"} missing a capital requirement`,
-        action: firstOpportunity ? { label: "Add capital requirement", objectType: "Opportunity", id: firstOpportunity.id } : undefined,
+        severity: "Material",
+        action: firstOpportunity
+          ? {
+              label: "Add capital requirement",
+              objectType: "Opportunity",
+              id: firstOpportunity.id,
+            }
+          : undefined,
       });
     }
 
-    const ownershipGapCount = organisationalHealth.totalWork - organisationalHealth.validOwned;
+    const ownershipGapCount =
+      organisationalHealth.totalWork - organisationalHealth.validOwned;
+
     if (ownershipGapCount > 0) {
-      limitations.push({ key: "ownership", label: `${ownershipGapCount} active operational record${ownershipGapCount === 1 ? " has" : "s have"} invalid or missing ownership` });
+      limitations.push({
+        key: "ownership",
+        label: `${ownershipGapCount} active operational record${ownershipGapCount === 1 ? " has" : "s have"} invalid or missing ownership`,
+        severity: "Material",
+      });
     }
 
     if (decisionTrackRecord.closedButUnrated.length > 0) {
       const firstDecision = decisionTrackRecord.closedButUnrated[0];
+
       limitations.push({
         key: "decision-outcomes",
         label: `${decisionTrackRecord.closedButUnrated.length} closed Decision${decisionTrackRecord.closedButUnrated.length === 1 ? " is" : "s are"} still unrated`,
-        action: { label: "Rate Decision", objectType: "Decision", id: firstDecision.id },
+        severity: "Warning",
+        action: {
+          label: "Rate Decision",
+          objectType: "Decision",
+          id: firstDecision.id,
+        },
       });
     }
 
-    if (capitalAllocation.wonCommercialEvidence.totalWonLeads > 0 && capitalAllocation.wonCommercialEvidence.totalMissingFinalValues > 0) {
-      const firstLead = leads.find((lead) => lead.status === "Won" && (parseOptionalFinanceAmount(lead.finalJobValue) ?? 0) <= 0);
+    if (
+      capitalAllocation.wonCommercialEvidence.totalWonLeads > 0 &&
+      capitalAllocation.wonCommercialEvidence.totalMissingFinalValues > 0
+    ) {
+      const firstLead = leads.find(
+        (lead) =>
+          lead.status === "Won" &&
+          (parseOptionalFinanceAmount(lead.finalJobValue) ?? 0) <= 0,
+      );
+
       limitations.push({
         key: "commercial-evidence",
         label: `${capitalAllocation.wonCommercialEvidence.totalMissingFinalValues} Won Lead${capitalAllocation.wonCommercialEvidence.totalMissingFinalValues === 1 ? " is" : "s are"} missing a valid final job value`,
-        action: firstLead ? { label: "Add final job value", objectType: "Lead", id: firstLead.id } : undefined,
+        severity: "Warning",
+        action: firstLead
+          ? {
+              label: "Add final job value",
+              objectType: "Lead",
+              id: firstLead.id,
+            }
+          : undefined,
       });
     }
 
-    const state = cashPositionBlocksAllocation || limitations.length >= 3
-      ? "Limited" as const
-      : limitations.length > 0
-        ? "Usable" as const
-        : "Strong" as const;
+    const severityRank: Record<LimitationSeverity, number> = {
+      Blocker: 3,
+      Material: 2,
+      Warning: 1,
+    };
 
-    return { state, limitations };
+    limitations.sort(
+      (left, right) =>
+        severityRank[right.severity] - severityRank[left.severity],
+    );
+
+    const blockerCount = limitations.filter(
+      (limitation) => limitation.severity === "Blocker",
+    ).length;
+
+    const materialCount = limitations.filter(
+      (limitation) => limitation.severity === "Material",
+    ).length;
+
+    const warningCount = limitations.filter(
+      (limitation) => limitation.severity === "Warning",
+    ).length;
+
+    const state =
+      blockerCount > 0 || materialCount >= 2
+        ? ("Limited" as const)
+        : limitations.length > 0
+          ? ("Usable" as const)
+          : ("Strong" as const);
+
+    return {
+      state,
+      limitations,
+      blockerCount,
+      materialCount,
+      warningCount,
+    };
   })();
 
   const isBlankOwnerText = (ownerValue?: string) => {
@@ -11384,7 +11467,7 @@ export default function Home() {
                     <div className="mt-1 text-[12px] leading-5 text-[#4d4944]">
                       {strategicDataConfidence.limitations.length === 0
                         ? "No material structured-data limitations currently reduce confidence in the Empire picture."
-                        : `${strategicDataConfidence.limitations.length} limitation${strategicDataConfidence.limitations.length === 1 ? "" : "s"} currently reduce confidence in the Empire picture.`}
+                        : `${strategicDataConfidence.limitations.length} limitation${strategicDataConfidence.limitations.length === 1 ? "" : "s"} currently reduce confidence — ${strategicDataConfidence.blockerCount} blocker, ${strategicDataConfidence.materialCount} material, ${strategicDataConfidence.warningCount} warning.`}
                     </div>
                   </div>
                   <span className={`rounded-full border px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.14em] ${strategicDataConfidence.state === "Strong" ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]" : strategicDataConfidence.state === "Limited" ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]" : "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"}`}>
@@ -11413,11 +11496,13 @@ export default function Home() {
                           className="rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-2 text-left text-[11px] text-[#2f2b28] transition hover:border-[#171717] hover:bg-[#f4f1ee]"
                         >
                           <span className="font-medium text-[#171717]">{limitation.label}</span>
+                          <span className="ml-2 rounded border border-[#d3cbc3] px-1.5 py-0.5 text-[8px] uppercase tracking-[0.1em] text-[#6a625d]">{limitation.severity}</span>
                           <span className="ml-2 text-[9px] uppercase tracking-[0.1em] text-[#6a625d]">{limitation.key === "ownership" ? "Review ownership" : limitation.action?.label}</span>
                         </button>
                       ) : (
                         <span key={limitation.key} className="rounded-lg border border-[#d3cbc3] bg-white px-2.5 py-2 text-[11px] font-medium text-[#2f2b28]">
                           {limitation.label}
+                          <span className="ml-2 rounded border border-[#d3cbc3] px-1.5 py-0.5 text-[8px] uppercase tracking-[0.1em] text-[#6a625d]">{limitation.severity}</span>
                         </span>
                       );
                     })}
