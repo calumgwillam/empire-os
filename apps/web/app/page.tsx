@@ -34,6 +34,7 @@ const COMMITMENT_STORAGE_KEY = "empire-os-financial-commitments";
 const SAVED_VIEWS_STORAGE_KEY = "empire-os-records-in-motion-views";
 const DEFAULT_SAVED_VIEW_STORAGE_KEY = "empire-os-records-in-motion-default-view";
 const DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY = "empire-os-daily-posture-snapshots";
+const LAST_BACKUP_AT_STORAGE_KEY = "empire-os-last-backup-at";
 
 const sharedAreaOptions = [
   "Garden Maintenance",
@@ -5231,6 +5232,7 @@ export default function Home() {
   const [commitmentRecords, setCommitmentRecords] = useState<CommitmentRecord[]>([]);
   const [dailyPostureSnapshots, setDailyPostureSnapshots] = useState<DailyPostureSnapshot[]>([]);
   const [operatingDataLoaded, setOperatingDataLoaded] = useState(false);
+  const [lastBackupAt, setLastBackupAt] = useState("");
   const [cashPositionEditor, setCashPositionEditor] = useState<CashPositionRecord | null>(null);
   const [cashPositionValidationError, setCashPositionValidationError] = useState<string | null>(null);
   const cashPositionHydratedRef = useRef(false);
@@ -10522,6 +10524,10 @@ export default function Home() {
     setCommitmentEditor(newCommitment);
   };
 
+  useEffect(() => {
+    setLastBackupAt(window.localStorage.getItem(LAST_BACKUP_AT_STORAGE_KEY) || "");
+  }, []);
+
   function handleDownloadFullBackup() {
     const storageKeys = [
       STORAGE_KEY,
@@ -10565,6 +10571,10 @@ export default function Home() {
     anchor.click();
     anchor.remove();
     URL.revokeObjectURL(url);
+
+    const completedAt = new Date().toISOString();
+    window.localStorage.setItem(LAST_BACKUP_AT_STORAGE_KEY, completedAt);
+    setLastBackupAt(completedAt);
 
     setFeedback({
       type: "success",
@@ -10778,6 +10788,12 @@ export default function Home() {
             >
               Restore from backup
             </button>
+
+            <p className="mt-2 px-1 text-[10px] leading-4 text-[#6b655f]">
+              {lastBackupAt
+                ? `Last backup: ${new Date(lastBackupAt).toLocaleString()}`
+                : "No external backup recorded yet"}
+            </p>
           </div>
         </aside>
 
