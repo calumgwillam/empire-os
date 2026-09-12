@@ -4169,7 +4169,7 @@ function FounderExecutionReleaseSystem({
 
         <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
           <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
-            Prepare Delegate
+            Prepare to Delegate
           </div>
           <div className="mt-1 text-[18px] font-semibold tracking-[-0.04em] text-[#171717]">
             {summary.prepareToDelegateCount}
@@ -4196,7 +4196,7 @@ function FounderExecutionReleaseSystem({
 
         <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
           <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
-            Complete Person.
+            Complete Personally
           </div>
           <div className="mt-1 text-[18px] font-semibold tracking-[-0.04em] text-[#171717]">
             {summary.completePersonallyCount}
