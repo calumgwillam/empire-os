@@ -5800,6 +5800,15 @@ export default function Home() {
   const activeNonFounderPeople = orderedPeople.filter(
     (person) => person.status === "Active" && person.accessLevel !== "Founder",
   );
+  const delegationReadyNonFounderPeople = activeNonFounderPeople.filter(
+    (person) =>
+      person.role.trim() !== "" &&
+      person.responsibilities.trim() !== "" &&
+      person.authority.trim() !== "",
+  );
+  const delegationReadinessGapPeople = activeNonFounderPeople.filter(
+    (person) => !delegationReadyNonFounderPeople.some((readyPerson) => readyPerson.id === person.id),
+  );
   const founderOwnerKey = founderPerson?.name.trim().toLowerCase() || null;
   const getValidActiveOwnerKey = (ownerText: string | undefined, ownerPersonId?: string) => {
     if (ownerPersonId) {
@@ -6186,7 +6195,8 @@ export default function Home() {
       founderReviewQueue,
       crossPillarIssues,
       delegateItems,
-      delegationCapacityNames: activeNonFounderPeople.map((person) => person.name),
+      delegationCapacityNames: delegationReadyNonFounderPeople.map((person) => person.name),
+      delegationReadinessGapNames: delegationReadinessGapPeople.map((person) => person.name),
       founderAuthorityItems,
       founderAuthorityDisplayItems,
     };
@@ -8024,7 +8034,7 @@ export default function Home() {
     if (organisationalHealth.delegationQuality.label === "Needs attention" && organisationalHealth.selfSufficiencyPct !== null) {
       empireWide.push({
         label: "Founder dependency",
-        detail: `${organisationalHealth.selfSufficiencyPct}% flows without the founder; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${empireDecisionQueue.delegateItems.length > 0 && empireDecisionQueue.delegationCapacityNames.length === 0 ? `; ${empireDecisionQueue.delegateItems.length} founder-owned item${empireDecisionQueue.delegateItems.length === 1 ? " is" : "s are"} suitable for delegation, but no active non-founder owner is available.` : "."}`,
+        detail: `${organisationalHealth.selfSufficiencyPct}% flows without the founder; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${empireDecisionQueue.delegateItems.length > 0 && empireDecisionQueue.delegationCapacityNames.length === 0 ? `; ${empireDecisionQueue.delegateItems.length} founder-owned item${empireDecisionQueue.delegateItems.length === 1 ? " is" : "s are"} suitable for delegation, but ${empireDecisionQueue.delegationReadinessGapNames.length > 0 ? `${empireDecisionQueue.delegationReadinessGapNames.length} active non-founder owner${empireDecisionQueue.delegationReadinessGapNames.length === 1 ? " is" : "s are"} not yet delegation-ready` : "no active non-founder owner is available"}.` : "."}`,
       });
     }
     if (cashAttention.buffer) {
@@ -8465,7 +8475,7 @@ export default function Home() {
       : `${ownershipHygieneGapCount} active item${ownershipHygieneGapCount === 1 ? "" : "s"} lack${ownershipHygieneGapCount === 1 ? "s" : ""} a valid active owner. ${peopleWithAttention.length} ${peopleWithAttention.length === 1 ? "person is" : "people are"} carrying attention items.`;
     const delegationCandidateCount = empireDecisionQueue.delegateItems.length;
     const founderDependency = organisationalHealth.delegationQuality.label === "Needs attention" && organisationalHealth.selfSufficiencyPct !== null
-      ? `${organisationalHealth.selfSufficiencyPct}% flows without the founder; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${delegationCandidateCount > 0 ? `, and ${delegationCandidateCount} founder-owned item${delegationCandidateCount === 1 ? " is" : "s are"} suitable for delegation${empireDecisionQueue.delegationCapacityNames.length === 0 ? ", but no active non-founder owner is available" : ""}.` : "."}`
+      ? `${organisationalHealth.selfSufficiencyPct}% flows without the founder; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${delegationCandidateCount > 0 ? `, and ${delegationCandidateCount} founder-owned item${delegationCandidateCount === 1 ? " is" : "s are"} suitable for delegation${empireDecisionQueue.delegationCapacityNames.length === 0 ? `, but ${empireDecisionQueue.delegationReadinessGapNames.length > 0 ? `${empireDecisionQueue.delegationReadinessGapNames.length} active non-founder owner${empireDecisionQueue.delegationReadinessGapNames.length === 1 ? " is" : "s are"} not yet delegation-ready` : "no active non-founder owner is available"}` : ""}.` : "."}`
       : null;
 
     const staleCount = staleRecords.length;
@@ -12060,7 +12070,7 @@ export default function Home() {
                         {organisationalHealth.pctNonFounder !== null ? <div>{organisationalHealth.pctNonFounder}% not founder-owned</div> : null}
                         <div>{organisationalHealth.pctDelegatedStalled !== null ? `${organisationalHealth.pctDelegatedStalled}% of delegated work stalled / at risk` : "No delegated work — stalled share N/A"}</div>
                         {empireDecisionQueue.delegateItems.length > 0 && empireDecisionQueue.delegationCapacityNames.length === 0
-                          ? <div>{empireDecisionQueue.delegateItems.length} founder-owned item{empireDecisionQueue.delegateItems.length === 1 ? " is" : "s are"} suitable for delegation, but no active non-founder owner is available.</div>
+                          ? <div>{empireDecisionQueue.delegateItems.length} founder-owned item{empireDecisionQueue.delegateItems.length === 1 ? " is" : "s are"} suitable for delegation, but {empireDecisionQueue.delegationReadinessGapNames.length > 0 ? `${empireDecisionQueue.delegationReadinessGapNames.length} active non-founder owner${empireDecisionQueue.delegationReadinessGapNames.length === 1 ? " is" : "s are"} not yet delegation-ready` : "no active non-founder owner is available"}.</div>
                           : null}
                         {organisationalHealth.topOwnerShare !== null ? <div>Top owner share of validly owned work: {organisationalHealth.topOwnerShare}%</div> : null}
                       </div>
@@ -12378,8 +12388,10 @@ export default function Home() {
                         <div className="text-[12px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Suitable for delegation</div>
                         <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
                           {empireDecisionQueue.delegationCapacityNames.length === 0
-                            ? "No active non-founder owner is currently available to receive delegated work."
-                            : `${empireDecisionQueue.delegationCapacityNames.length} active non-founder owner${empireDecisionQueue.delegationCapacityNames.length === 1 ? " is" : "s are"} available: ${empireDecisionQueue.delegationCapacityNames.join(", ")}.`}
+                            ? empireDecisionQueue.delegationReadinessGapNames.length > 0
+                              ? `${empireDecisionQueue.delegationReadinessGapNames.length} active non-founder owner${empireDecisionQueue.delegationReadinessGapNames.length === 1 ? " is" : "s are"} not yet delegation-ready. Add role, responsibilities and authority before assigning delegated work.`
+                              : "No active non-founder owner is currently available to receive delegated work."
+                            : `${empireDecisionQueue.delegationCapacityNames.length} delegation-ready non-founder owner${empireDecisionQueue.delegationCapacityNames.length === 1 ? " is" : "s are"} available: ${empireDecisionQueue.delegationCapacityNames.join(", ")}.`}
                         </div>
                         {empireDecisionQueue.delegateItems.length > 0 && empireDecisionQueue.delegationCapacityNames.length === 0 ? (
                           <button
