@@ -13037,6 +13037,16 @@ export default function Home() {
 
                           <div className="mt-1 text-[11px] text-[#4d4944]">{summary.person.pillar}</div>
 
+                          {summary.person.status === "Active" && summary.person.accessLevel !== "Founder" ? (
+                            <div className="mt-3 text-[11px] font-medium text-[#2f2b28]">
+                              {summary.person.role.trim() !== "" &&
+                              summary.person.responsibilities.trim() !== "" &&
+                              summary.person.authority.trim() !== ""
+                                ? "Delegation ready"
+                                : "Readiness incomplete — add role, responsibilities and authority"}
+                            </div>
+                          ) : null}
+
                           <div className="mt-4 grid gap-3 sm:grid-cols-2">
                             <MetricCard label="Carrying" value={String(summary.carriedCount)} />
                             <MetricCard label="Overdue actions" value={String(summary.overdueActions.length)} />
