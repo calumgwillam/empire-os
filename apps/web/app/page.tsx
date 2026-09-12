@@ -13052,11 +13052,9 @@ export default function Home() {
 
                           {summary.person.status === "Active" && summary.person.accessLevel !== "Founder" ? (
                             <div className="mt-3 text-[11px] font-medium text-[#2f2b28]">
-                              {summary.person.role.trim() !== "" &&
-                              summary.person.responsibilities.trim() !== "" &&
-                              summary.person.authority.trim() !== ""
+                              {getDelegationReadinessMissingFields(summary.person).length === 0
                                 ? "Delegation ready"
-                                : "Readiness incomplete — add role, responsibilities and authority"}
+                                : `Readiness incomplete — add ${getDelegationReadinessMissingFields(summary.person).join(", ")}.`}
                             </div>
                           ) : null}
 
