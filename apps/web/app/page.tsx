@@ -11388,7 +11388,7 @@ export default function Home() {
       headline = `${releasableCount} of ${totalFounderOwned} founder-owned execution items are structurally releasable.`;
     } else if (prepareToDelegateCount > 0 && !hasDelegationReadyPeople) {
       headline = "Founder load is constrained by delegation capacity, not work suitability.";
-    } else if (retainAuthorityCount > 0 && releasableCount === 0) {
+    } else if (retainAuthorityCount > totalFounderOwned / 2) {
       headline = "Most founder-owned execution is authority-bound; limited delegation leverage exists.";
     } else {
       headline = `${releasableCount} of ${totalFounderOwned} founder-owned execution items can be released.`;
