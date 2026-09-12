@@ -5796,15 +5796,20 @@ export default function Home() {
   const isProjectActive = (project: ProjectRecord) =>
     !["completed", "closed", "final", "cancelled", "canceled"].includes(project.status.trim().toLowerCase());
 
+  const getDelegationReadinessMissingFields = (person: PersonRecord) => {
+    const missing: string[] = [];
+    if (person.role.trim() === "") missing.push("role");
+    if (person.responsibilities.trim() === "") missing.push("responsibilities");
+    if (person.authority.trim() === "") missing.push("authority");
+    return missing;
+  };
+
   const founderPerson = orderedPeople.find((person) => person.accessLevel === "Founder" && person.status === "Active") || null;
   const activeNonFounderPeople = orderedPeople.filter(
     (person) => person.status === "Active" && person.accessLevel !== "Founder",
   );
   const delegationReadyNonFounderPeople = activeNonFounderPeople.filter(
-    (person) =>
-      person.role.trim() !== "" &&
-      person.responsibilities.trim() !== "" &&
-      person.authority.trim() !== "",
+    (person) => getDelegationReadinessMissingFields(person).length === 0,
   );
   const delegationReadinessGapPeople = activeNonFounderPeople.filter(
     (person) => !delegationReadyNonFounderPeople.some((readyPerson) => readyPerson.id === person.id),
@@ -12952,12 +12957,20 @@ export default function Home() {
                       {selectedAccountabilityDetail.hasOwner ? "Accountability view" : "Accountability gap"}
                     </div>
                     <div className="mt-2 text-[30px] font-semibold tracking-[-0.06em] text-[#171717]">{selectedAccountabilityDetail.ownerLabel}</div>
-                    {selectedAccountability.person ? (
-                      <div className="mt-1 text-[12px] text-[#4d4944]">
-                        {selectedAccountability.person.role || "Role not specified"} • {selectedAccountability.person.pillar} • {selectedAccountability.person.status}
-                      </div>
-                    ) : (
-                      <div className="mt-1 text-[12px] text-[#4d4944]">
+    {selectedAccountability.person ? (
+  <>
+    <div className="mt-1 text-[12px] text-[#4d4944]">
+      {selectedAccountability.person.role || "Role not specified"} • {selectedAccountability.person.pillar} • {selectedAccountability.person.status}
+    </div>
+    {selectedAccountability.person.status === "Active" && selectedAccountability.person.accessLevel !== "Founder" ? (
+      <div className="mt-2 text-[12px] text-[#2f2b28]">
+        {getDelegationReadinessMissingFields(selectedAccountability.person).length === 0
+          ? "Delegation ready"
+          : `Readiness incomplete — add ${getDelegationReadinessMissingFields(selectedAccountability.person).join(", ")}.`}
+      </div>
+    ) : null}
+  </>
+) : (                  <div className="mt-1 text-[12px] text-[#4d4944]">
                         Active work with no valid active owner — blank or assigned to a name that isn&apos;t an active person. Assign each item to a real person to close this accountability gap.
                       </div>
                     )}
