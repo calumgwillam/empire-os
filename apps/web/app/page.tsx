@@ -3213,6 +3213,7 @@ function ConvertedDestinationView({ title, description, records }: ConvertedDest
 
 type ProblemDetailPanelProps = {
   problem: ProblemRecord;
+  people: PersonRecord[];
   linkedActions: ActionRecord[];
   linkedLessons: LessonRecord[];
   upstream: RelatedRecordItem[];
@@ -3226,7 +3227,15 @@ type ProblemDetailPanelProps = {
   onOpenLinkedLesson: (lesson: LessonRecord) => void;
 };
 
-function ProblemDetailPanel({ problem, linkedActions, linkedLessons, upstream, downstream, onClose, onChange, onSave, onCreateLinkedAction, onCreateLinkedLesson, onOpenLinkedAction, onOpenLinkedLesson }: ProblemDetailPanelProps) {
+function ProblemDetailPanel({ problem, people, linkedActions, linkedLessons, upstream, downstream, onClose, onChange, onSave, onCreateLinkedAction, onCreateLinkedLesson, onOpenLinkedAction, onOpenLinkedLesson }: ProblemDetailPanelProps) {
+  const savedOwner = problem.owner.trim();
+  const savedOwnerMatchesActivePerson = people.some((person) => person.name.trim().toLowerCase() === savedOwner.toLowerCase());
+  const problemOwnerOptions = [
+    "Unassigned",
+    ...people.map((person) => person.name),
+    ...(savedOwner && !savedOwnerMatchesActivePerson && savedOwner.toLowerCase() !== "unassigned" ? [savedOwner] : []),
+  ];
+
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
@@ -3345,13 +3354,16 @@ function ProblemDetailPanel({ problem, linkedActions, linkedLessons, upstream, d
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
               Owner
             </label>
-            <input
-              value={problem.owner}
-              onChange={(event) => onChange("owner", event.target.value)}
+            <select
+              value={savedOwner || "Unassigned"}
+              onChange={(event) => onChange("owner", event.target.value === "Unassigned" ? "" : event.target.value)}
               className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
-            />
+            >
+              {problemOwnerOptions.map((owner) => (
+                <option key={owner} value={owner}>{owner}</option>
+              ))}
+            </select>
           </div>
-
           <div>
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
               Related area
@@ -13908,6 +13920,7 @@ export default function Home() {
       {selectedProblemId && problemEditor ? (
         <ProblemDetailPanel
           problem={problemEditor}
+          people={people.filter((person) => person.status === "Active")}
           linkedActions={actionRecords.filter((action) => action.relatedProblem === problemEditor.id)}
           linkedLessons={lessonRecords.filter((lesson) => lesson.relatedProblem === problemEditor.id)}
           upstream={getCaptureLineage(problemEditor.sourceCaptureId)}
