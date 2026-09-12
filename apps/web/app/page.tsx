@@ -9774,7 +9774,54 @@ export default function Home() {
       }
     }
   };
+  const handleDelegateItem = (
+    objectType: "Action" | "Project" | "Lead" | "Problem",
+    id: string,
+    personId: string,
+  ) => {
+    const person = delegationReadyNonFounderPeople.find((entry) => entry.id === personId);
 
+    if (!person) {
+      setFeedback({
+        type: "error",
+        message: "Choose an active delegation-ready non-founder owner.",
+      });
+      return;
+    }
+
+    if (objectType === "Action") {
+      setConversions((currentConversions) =>
+        currentConversions.map((conversion) =>
+          conversion.id === id
+            ? { ...conversion, owner: person.name, ownerPersonId: person.id }
+            : conversion,
+        ),
+      );
+    } else if (objectType === "Problem") {
+      setConversions((currentConversions) =>
+        currentConversions.map((conversion) =>
+          conversion.id === id ? { ...conversion, owner: person.name } : conversion,
+        ),
+      );
+    } else if (objectType === "Project") {
+      setProjects((currentProjects) =>
+        currentProjects.map((project) =>
+          project.id === id ? { ...project, owner: person.name } : project,
+        ),
+      );
+    } else if (objectType === "Lead") {
+      setLeads((currentLeads) =>
+        currentLeads.map((lead) =>
+          lead.id === id ? { ...lead, owner: person.name } : lead,
+        ),
+      );
+    }
+
+    setFeedback({
+      type: "success",
+      message: `Delegated to ${person.name}.`,
+    });
+  };
   const handleOpenTodayStep = (stepLabel: string) => {
     if (stepLabel === "Clear founder focus") {
       const first = founderFocusList[0];
@@ -12410,7 +12457,7 @@ export default function Home() {
                               : "No active non-founder owner is currently available to receive delegated work."
                             : `${empireDecisionQueue.delegationCapacityNames.length} delegation-ready non-founder owner${empireDecisionQueue.delegationCapacityNames.length === 1 ? " is" : "s are"} available: ${empireDecisionQueue.delegationCapacityNames.join(", ")}.`}
                         </div>
-                        {empireDecisionQueue.delegateItems.length > 0 && empireDecisionQueue.delegationCapacityNames.length === 0 ? (
+                         {empireDecisionQueue.delegateItems.length > 0 && empireDecisionQueue.delegationCapacityNames.length === 0 ? (
                           <button
                             type="button"
                             onClick={() => setActiveView("People")}
@@ -12419,24 +12466,52 @@ export default function Home() {
                             Open People
                           </button>
                         ) : null}
+
                         {empireDecisionQueue.delegateItems.length === 0 ? (
-                          <div className="mt-2 text-[12px] text-[#4d4944]">No routine items are ready for delegation.</div>
+                          <div className="mt-2 text-[12px] text-[#4d4944]">
+                            No routine items are ready for delegation.
+                          </div>
                         ) : (
                           <div className="mt-2 space-y-2">
                             {empireDecisionQueue.delegateItems.map((item) => (
-                              <button
+                              <div
                                 key={`delegate-${item.id}`}
-                                type="button"
-                                onClick={() => handleOpenAttentionRecord(item.objectType, item.id)}
-                                className="block w-full rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] px-2.5 py-2 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                                className="rounded-lg border border-[#d3cbc3] bg-[#f9f7f4]"
                               >
-                                <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
-                                <div className="mt-1 text-[11px] text-[#4d4944]">{item.pillar} • {item.owner}</div>
-                              </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenAttentionRecord(item.objectType, item.id)}
+                                  className="block w-full px-2.5 py-2 text-left transition hover:bg-[#f4f1ee]"
+                                >
+                                  <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
+                                  <div className="mt-1 text-[11px] text-[#4d4944]">{item.pillar} • {item.owner}</div>
+                                </button>
+
+                                {delegationReadyNonFounderPeople.length > 0 ? (
+                                  <div className="border-t border-[#d3cbc3] px-2.5 py-2">
+                                    <select
+                                      defaultValue=""
+                                      onChange={(event) => {
+                                        if (event.target.value) {
+                                          handleDelegateItem(item.objectType, item.id, event.target.value);
+                                          event.target.value = "";
+                                        }
+                                      }}
+                                      className="w-full rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-2 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
+                                    >
+                                      <option value="">Delegate to...</option>
+                                      {delegationReadyNonFounderPeople.map((person) => (
+                                        <option key={person.id} value={person.id}>
+                                          {person.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                ) : null}
+                              </div>
                             ))}
                           </div>
-                        )}
-                      </div>
+                        )}                     </div>
 
                       <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
                         <div className="flex items-center justify-between gap-2">
