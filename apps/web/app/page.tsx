@@ -3636,6 +3636,181 @@ function FounderOperatingReview({
   );
 }
 
+type BottleneckSeverity = "Critical" | "Material" | "Emerging";
+type BottleneckCategory = "Authority" | "Execution" | "Ownership" | "Capability" | "Recurrence";
+
+type BottleneckItem = {
+  id: string;
+  category: BottleneckCategory;
+  title: string;
+  objectType: string;
+  area?: string;
+  owner?: string;
+  severity: BottleneckSeverity;
+  why: string;
+  releasePath: string;
+  onOpen: () => void;
+};
+
+type BottleneckSummary = {
+  headline: string;
+  totalCount: number;
+  criticalCount: number;
+  materialCount: number;
+  emergingCount: number;
+  topCategoryText: string;
+};
+
+function FounderBottleneckMap({
+  summary,
+  bottlenecks,
+}: {
+  summary: BottleneckSummary;
+  bottlenecks: BottleneckItem[];
+}) {
+  const displayedBottlenecks = bottlenecks.slice(0, 6);
+
+  return (
+    <section className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">
+            Dependency Analysis
+          </p>
+          <h2 className="mt-1 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">
+            Founder Bottleneck Map
+          </h2>
+          <p className="mt-1 text-[12px] font-medium text-[#4d4944]">
+            {summary.headline}
+          </p>
+        </div>
+        <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.14em] text-[#2f2b28]">
+          {summary.totalCount} Bottleneck{summary.totalCount === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      {/* Summary strip */}
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            Structural Bottlenecks
+          </div>
+          <div className="mt-1 text-[20px] font-semibold tracking-[-0.04em] text-[#171717]">
+            {summary.totalCount}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            Critical Severity
+          </div>
+          <div className={`mt-1 text-[20px] font-semibold tracking-[-0.04em] ${summary.criticalCount > 0 ? "text-[#6a3328]" : "text-[#171717]"}`}>
+            {summary.criticalCount}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            Material Severity
+          </div>
+          <div className={`mt-1 text-[20px] font-semibold tracking-[-0.04em] ${summary.materialCount > 0 ? "text-[#6a4a28]" : "text-[#171717]"}`}>
+            {summary.materialCount}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            Main Concentration
+          </div>
+          <div className="mt-1 text-[13px] font-semibold tracking-[-0.02em] text-[#171717] truncate">
+            {summary.topCategoryText}
+          </div>
+        </div>
+      </div>
+
+      {/* Bottlenecks list */}
+      <div className="mt-4 space-y-2.5">
+        {summary.totalCount === 0 ? (
+          <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-4 py-5 text-[13px] text-[#4d4944]">
+            No structural founder bottlenecks are currently detected. Operational authority, execution, ownership and system coverage are within normal bounds.
+          </div>
+        ) : (
+          displayedBottlenecks.map((item) => (
+            <div
+              key={`bottleneck-${item.category}-${item.id}`}
+              onClick={item.onOpen}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  item.onOpen();
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              aria-label={`Open bottleneck ${item.objectType}: ${item.title}`}
+              className="block w-full cursor-pointer rounded-xl border border-[#d3cbc3] bg-white p-3.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${
+                    item.severity === "Critical"
+                      ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"
+                      : item.severity === "Material"
+                        ? "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"
+                        : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
+                  }`}
+                >
+                  {item.severity}
+                </span>
+
+                <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-[#4d4944]">
+                  {item.category} Bottleneck
+                </span>
+
+                <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#2f2b28]">
+                  {item.objectType}
+                </span>
+
+                {item.area ? (
+                  <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#4d4944]">
+                    {item.area}
+                  </span>
+                ) : null}
+
+                {item.owner ? (
+                  <span className="text-[10px] text-[#6a625d]">
+                    Owner: {item.owner}
+                  </span>
+                ) : null}
+              </div>
+
+              <div className="mt-2 text-[14px] font-medium tracking-[-0.03em] text-[#171717]">
+                {item.title}
+              </div>
+
+              <div className="mt-1.5 text-[11px] leading-4 text-[#524d49]">
+                <span className="font-medium text-[#171717]">Why this is a bottleneck: </span>
+                {item.why}
+              </div>
+
+              <div className="mt-1 text-[11px] leading-4 text-[#2f5d3a]">
+                <span className="font-medium text-[#171717]">Release path: </span>
+                {item.releasePath}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      {summary.totalCount > 6 ? (
+        <p className="mt-3 text-right text-[11px] font-medium text-[#6a625d]">
+          Showing top 6 of {summary.totalCount} structural bottlenecks
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function PillarCard({ pillar, summary, onSelect }: { pillar: string; summary: { activeProjects: number; blockedProjects: number; openActions: number; openProblems: number; openOpportunities: number; leadsWaiting: number; wonLeadValue: number; priorityScore: number; }; onSelect: (pillar: string) => void; }) {
   return (
     <button
@@ -10080,6 +10255,311 @@ export default function Home() {
     };
   })();
 
+  const founderBottleneckMap = (() => {
+    const rawBottlenecks: BottleneckItem[] = [];
+    const usedKeys = new Set<string>();
+
+    // 1. AUTHORITY BOTTLENECK
+    for (const item of empireDecisionQueue.founderReviewQueue) {
+      const key = `${item.kind}:${item.id}`;
+      if (usedKeys.has(key)) continue;
+
+      const isCritical = item.reasonCategory === "Critical escalation" ||
+        item.reasonCategory === "Authority required" ||
+        item.reasonCategory === "Blocked project decision";
+
+      const severity: BottleneckSeverity = isCritical ? "Critical" : "Material";
+      const why = `${item.reasonCategory}: ${item.whyItMatters}`;
+      const releasePath = item.reasonCategory === "Blocked project decision"
+        ? "Provide explicit founder decision or scope approval to unblock project delivery."
+        : item.reasonCategory === "Review due"
+          ? "Complete formal decision review, record actual outcome and rating."
+          : "Issue formal founder decision or strategic approval to establish baseline.";
+
+      rawBottlenecks.push({
+        id: item.id,
+        category: "Authority",
+        title: item.title,
+        objectType: item.kind,
+        area: item.pillar,
+        owner: item.owner,
+        severity,
+        why,
+        releasePath,
+        onOpen: () => handleOpenAttentionRecord(item.kind, item.id),
+      });
+      usedKeys.add(key);
+    }
+
+    // High/Exceptional fit evaluating opportunities needing approval
+    opportunityRecords
+      .filter((opp) => opp.status === "Evaluating" && ["High", "Exceptional"].includes(opp.strategicFit))
+      .forEach((opp) => {
+        const key = `Opportunity:${opp.id}`;
+        if (usedKeys.has(key)) return;
+
+        const hasDecision = decisionRecords.some((d) => d.relatedOpportunity === opp.id && ["Completed", "Reversed"].includes(d.decisionStatus));
+        if (hasDecision) return;
+
+        rawBottlenecks.push({
+          id: opp.id,
+          category: "Authority",
+          title: opp.opportunityTitle || opp.title,
+          objectType: "Opportunity",
+          area: getAreaText(opp),
+          owner: opp.owner || "Unassigned",
+          severity: opp.strategicFit === "Exceptional" ? "Critical" : "Material",
+          why: `High strategic-fit opportunity ('${opp.opportunityTitle || opp.title}') remains ${opp.status.toLowerCase()} without a settled founder decision.`,
+          releasePath: "Review strategic alignment and issue formal founder approval decision.",
+          onOpen: () => handleOpenAttentionRecord("Opportunity", opp.id),
+        });
+        usedKeys.add(key);
+      });
+
+    // 2. EXECUTION BOTTLENECK
+    // Decisions without an execution path
+    decisionsWithoutExecution.forEach((decision) => {
+      const key = `Decision:${decision.id}`;
+      if (usedKeys.has(key)) return;
+
+      rawBottlenecks.push({
+        id: decision.id,
+        category: "Execution",
+        title: decision.title,
+        objectType: "Decision",
+        area: decision.area,
+        owner: decision.owner,
+        severity: "Material",
+        why: `Active decision '${decision.title}' has no direct or project-mediated execution path, stalling implementation.`,
+        releasePath: "Create or link an active Action or Project to establish an executable path.",
+        onOpen: () => handleOpenAttentionRecord("Decision", decision.id),
+      });
+      usedKeys.add(key);
+    });
+
+    // Blocked actions with upstream blockers
+    actionRecords.filter(isActionActive).forEach((action) => {
+      const key = `Action:${action.id}`;
+      if (usedKeys.has(key)) return;
+
+      const dependencyBlocker = getActionDependencyBlocker(action);
+      const founderOwned = isFounderOwned(action.owner, action.ownerPersonId);
+      const waitingOnDecision = dependencyBlocker?.reason.startsWith("WAITING ON DECISION:") ?? false;
+      if ((action.status === "Blocked" || dependencyBlocker) && (founderOwned || waitingOnDecision)) {
+        rawBottlenecks.push({
+          id: action.id,
+          category: "Execution",
+          title: action.actionTitle || action.title,
+          objectType: "Action",
+          area: getAreaText(action),
+          owner: getActionOwnerDisplay(action, people),
+          severity: "Critical",
+          why: dependencyBlocker
+            ? `Action '${action.actionTitle || action.title}' is blocked by an upstream dependency (${dependencyBlocker.reason.replace("BLOCKED BY PROBLEM: ", "").replace("WAITING ON DECISION: ", "")}).`
+            : `Action '${action.actionTitle || action.title}' is blocked, preventing downstream operational progress.`,
+          releasePath: dependencyBlocker
+            ? "Resolve the upstream dependency to clear the execution blocker."
+            : "Remove operational blocker or re-sequence work.",
+          onOpen: () => handleOpenAttentionRecord("Action", action.id),
+        });
+        usedKeys.add(key);
+      }
+    });
+
+    // Founder-owned overdue execution work
+    actionRecords.filter(isActionActive).forEach((action) => {
+      const key = `Action:${action.id}`;
+      if (usedKeys.has(key)) return;
+
+      if (isFounderOwned(action.owner, action.ownerPersonId)) {
+        const isOverdue = action.dueDate && new Date(action.dueDate).getTime() < Date.now();
+        if (isOverdue) {
+          rawBottlenecks.push({
+            id: action.id,
+            category: "Execution",
+            title: action.actionTitle || action.title,
+            objectType: "Action",
+            area: getAreaText(action),
+            owner: getActionOwnerDisplay(action, people),
+            severity: "Material",
+            why: `Founder-owned action '${action.actionTitle || action.title}' is overdue (due ${action.dueDate.slice(0, 10)}), creating execution drag.`,
+            releasePath: "Complete execution or reassign to an operational owner in People.",
+            onOpen: () => handleOpenAttentionRecord("Action", action.id),
+          });
+          usedKeys.add(key);
+        }
+      }
+    });
+
+    // 3. RECURRING / SYSTEM BOTTLENECK
+    // Convergent risk clusters
+    correlationLayer.convergentRisks.forEach((cluster) => {
+      const key = cluster.clusterKey;
+      if (usedKeys.has(key)) return;
+
+      const root = cluster.records[0];
+      rawBottlenecks.push({
+        id: root.id,
+        category: "Recurrence",
+        title: cluster.title,
+        objectType: root.objectType,
+        area: root.area,
+        severity: "Critical",
+        why: `Convergent risk — one situation generates ${cluster.categories.size} signal categories across ${cluster.recordCount} linked records, requiring repeated founder intervention.`,
+        releasePath: "Address root cause across linked records to resolve systemic recurrence.",
+        onOpen: () => handleOpenAttentionRecord(root.objectType, root.id),
+      });
+      usedKeys.add(key);
+    });
+
+    // Unresolved recurring problems without captured learning
+    recurringProblemLearning.gaps.forEach((problem) => {
+      const key = `Problem:${problem.id}`;
+      if (usedKeys.has(key)) return;
+
+      rawBottlenecks.push({
+        id: problem.id,
+        category: "Recurrence",
+        title: problem.title,
+        objectType: "Problem",
+        area: problem.area,
+        owner: problem.owner,
+        severity: problem.severity === "Critical" ? "Critical" : "Material",
+        why: `Unresolved recurring problem '${problem.title}' (${problem.frequency}) occurs repeatedly without an active SOP or system.`,
+        releasePath: "Capture operational learning into a System or SOP to institutionalise prevention.",
+        onOpen: () => handleOpenAttentionRecord("Problem", problem.id),
+      });
+      usedKeys.add(key);
+    });
+
+    // 4. CAPABILITY BOTTLENECK
+    if (empireDecisionQueue.delegateItems.length > 0) {
+      if (activeNonFounderPeople.length === 0) {
+        const key = "People:no-nonfounder";
+        if (!usedKeys.has(key)) {
+          rawBottlenecks.push({
+            id: "unassigned",
+            category: "Capability",
+            title: "No active non-founder team members available",
+            objectType: "People",
+            area: "People",
+            severity: "Critical",
+            why: `${empireDecisionQueue.delegateItems.length} routine founder-owned item(s) sit with the founder because no active non-founder team member exists.`,
+            releasePath: "Onboard or activate team members in People to absorb operational load.",
+            onOpen: () => setActiveView("People"),
+          });
+          usedKeys.add(key);
+        }
+      } else if (delegationReadyNonFounderPeople.length === 0 && delegationReadinessGapPeople.length > 0) {
+        const key = "People:readiness-gap";
+        if (!usedKeys.has(key)) {
+          rawBottlenecks.push({
+            id: "unassigned",
+            category: "Capability",
+            title: "Team delegation readiness gap",
+            objectType: "People",
+            area: "People",
+            severity: "Material",
+            why: `${empireDecisionQueue.delegateItems.length} founder-owned routine item(s) are ready for delegation, but active team members (${empireDecisionQueue.delegationReadinessGapNames.join(", ")}) miss role, responsibilities, or authority definitions in People.`,
+            releasePath: "Define role, responsibilities, and authority in People to enable delegated ownership.",
+            onOpen: () => setActiveView("People"),
+          });
+          usedKeys.add(key);
+        }
+      }
+    }
+
+    // 5. OWNERSHIP BOTTLENECK
+    // Routine delegable items carried by founder
+    for (const item of empireDecisionQueue.delegateItems) {
+      const key = `${item.objectType}:${item.id}`;
+      if (usedKeys.has(key)) continue;
+
+      rawBottlenecks.push({
+        id: item.id,
+        category: "Ownership",
+        title: `Routine founder-owned ${item.objectType.toLowerCase()}: ${item.title}`,
+        objectType: item.objectType,
+        area: item.pillar,
+        owner: item.owner,
+        severity: "Material",
+        why: `Founder carries routine ${item.objectType.toLowerCase()} execution ('${item.title}') that is suitable for delegation.`,
+        releasePath: delegationReadyNonFounderPeople.length > 0
+          ? `Delegate ownership to an active team member (${delegationReadyNonFounderPeople.map((p) => p.name).join(", ")}).`
+          : "Define delegation readiness for active team members in People, then transfer ownership.",
+        onOpen: () => handleOpenAttentionRecord(item.objectType, item.id),
+      });
+      usedKeys.add(key);
+    }
+
+    const severityRank: Record<BottleneckSeverity, number> = { Critical: 3, Material: 2, Emerging: 1 };
+    const categoryRank: Record<BottleneckCategory, number> = { Authority: 5, Execution: 4, Recurrence: 3, Capability: 2, Ownership: 1 };
+
+    const sortedBottlenecks = [...rawBottlenecks].sort((left, right) => {
+      const sevDiff = severityRank[right.severity] - severityRank[left.severity];
+      if (sevDiff !== 0) return sevDiff;
+      const catDiff = categoryRank[right.category] - categoryRank[left.category];
+      if (catDiff !== 0) return catDiff;
+      return left.title.localeCompare(right.title);
+    });
+
+    const totalCount = sortedBottlenecks.length;
+    const criticalCount = sortedBottlenecks.filter((b) => b.severity === "Critical").length;
+    const materialCount = sortedBottlenecks.filter((b) => b.severity === "Material").length;
+    const emergingCount = sortedBottlenecks.filter((b) => b.severity === "Emerging").length;
+
+    const categoryCounts: Record<BottleneckCategory, number> = { Authority: 0, Execution: 0, Recurrence: 0, Capability: 0, Ownership: 0 };
+    sortedBottlenecks.forEach((b) => {
+      categoryCounts[b.category] = (categoryCounts[b.category] || 0) + 1;
+    });
+
+    const categoryDisplayName: Record<BottleneckCategory, string> = {
+      Authority: "Authority decisions",
+      Execution: "Execution blockers",
+      Recurrence: "Systemic recurrence",
+      Capability: "Delegation capacity",
+      Ownership: "Ownership load",
+    };
+
+    const sortedCategoryCounts = (Object.entries(categoryCounts) as [BottleneckCategory, number][])
+      .filter(([, count]) => count > 0)
+      .sort((a, b) => b[1] - a[1]);
+
+    let headline = "";
+    let topCategoryText = "";
+
+    if (totalCount === 0) {
+      headline = "No structural founder bottlenecks are currently detected.";
+      topCategoryText = "None";
+    } else if (sortedCategoryCounts.length === 1) {
+      const cat = sortedCategoryCounts[0][0];
+      topCategoryText = categoryDisplayName[cat];
+      headline = `Founder dependency is currently concentrated in ${categoryDisplayName[cat].toLowerCase()}.`;
+    } else {
+      const top1 = sortedCategoryCounts[0];
+      const top2 = sortedCategoryCounts[1];
+      if (top2 && top2[1] >= Math.max(1, top1[1] - 1)) {
+        topCategoryText = `${categoryDisplayName[top1[0]]} & ${categoryDisplayName[top2[0]]}`;
+        headline = `Founder dependency is currently concentrated in ${categoryDisplayName[top1[0]].toLowerCase()} and ${categoryDisplayName[top2[0]].toLowerCase()}.`;
+      } else {
+        topCategoryText = categoryDisplayName[top1[0]];
+        headline = `Founder dependency is currently concentrated in ${categoryDisplayName[top1[0]].toLowerCase()}.`;
+      }
+    }
+
+    return {
+      summary: {
+        headline,
+        totalCount,
+        criticalCount,
+        materialCount,
+        emergingCount,
+        topCategoryText,
+      },
+      bottlenecks: sortedBottlenecks,
+    };
+  })();
+
   const getAttentionGroup = (item: AttentionItem) => {
     const isBlockedOrWaiting = item.reasons.some((reason) =>
       reason === "BLOCKED PROJECT" || (item.objectType !== "Project" && reason === "BLOCKED") || reason.startsWith("BLOCKED BY PROBLEM:") || reason.startsWith("WAITING ON DECISION:"),
@@ -12562,6 +13042,13 @@ export default function Home() {
                   recurring={founderOperatingReview.recurring}
                   founderDependency={founderOperatingReview.founderDependency}
                   next7Days={founderOperatingReview.next7Days}
+                />
+              </div>
+
+              <div className="mt-5">
+                <FounderBottleneckMap
+                  summary={founderBottleneckMap.summary}
+                  bottlenecks={founderBottleneckMap.bottlenecks}
                 />
               </div>
 
