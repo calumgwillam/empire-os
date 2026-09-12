@@ -11158,9 +11158,11 @@ export default function Home() {
     const rawItems: ExecutionReleaseItem[] = [];
     const usedRecordKeys = new Set<string>();
 
-    const authorityKeys = new Set(
-      empireDecisionQueue.founderReviewQueue.map((item) => `${item.kind}:${item.id}`)
-    );
+    const authorityKeys = new Set([
+  ...empireDecisionQueue.founderReviewQueue.map((item) => `${item.kind}:${item.id}`),
+  ...empireDecisionQueue.founderAuthorityItems.map((item) => `${item.objectType}:${item.id}`),
+]);
+
 
     const hasDelegationReadyPeople = delegationReadyNonFounderPeople.length > 0;
     const nowMs = Date.now();
