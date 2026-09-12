@@ -3811,6 +3811,265 @@ function FounderBottleneckMap({
   );
 }
 
+type DecisionControlStatus =
+  | "No execution path"
+  | "Delivery slipping"
+  | "Ownership gap"
+  | "Review due"
+  | "Learning incomplete"
+  | "On track";
+
+type DecisionControlSeverity = "Critical" | "Material" | "Healthy";
+
+type DecisionControlItem = {
+  id: string;
+  title: string;
+  decisionStatus: string;
+  controlStatus: DecisionControlStatus;
+  severity: DecisionControlSeverity;
+  area?: string;
+  owner?: string;
+  directActiveActionCount: number;
+  linkedActiveProjectCount: number;
+  why: string;
+  controlAction: string;
+  onOpen: () => void;
+  linkedActionsPreview?: Array<{ id: string; title: string; status: string }>;
+  linkedProjectsPreview?: Array<{ id: string; name: string; status: string }>;
+};
+
+type DecisionControlSummary = {
+  headline: string;
+  activeTrackedCount: number;
+  hasPathCount: number;
+  noPathCount: number;
+  slippingCount: number;
+  onTrackCount: number;
+  learningIncompleteCount: number;
+};
+
+function DecisionExecutionControlLayer({
+  summary,
+  items,
+  onTrackItems,
+  learningIncompleteItems,
+}: {
+  summary: DecisionControlSummary;
+  items: DecisionControlItem[];
+  onTrackItems: DecisionControlItem[];
+  learningIncompleteItems: DecisionControlItem[];
+}) {
+  const displayedItems = items.slice(0, 6);
+
+  return (
+    <section className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">
+            Execution Control
+          </p>
+          <h2 className="mt-1 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">
+            Decision-to-Execution Control Layer
+          </h2>
+          <p className="mt-1 text-[12px] font-medium text-[#4d4944]">
+            {summary.headline}
+          </p>
+        </div>
+        <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.14em] text-[#2f2b28]">
+          {summary.activeTrackedCount} Active Decision{summary.activeTrackedCount === 1 ? "" : "s"} Tracked
+        </span>
+      </div>
+
+      {/* Summary strip */}
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            Execution Path Exists
+          </div>
+          <div className="mt-1 text-[20px] font-semibold tracking-[-0.04em] text-[#171717]">
+            {summary.hasPathCount}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            No Execution Path
+          </div>
+          <div className={`mt-1 text-[20px] font-semibold tracking-[-0.04em] ${summary.noPathCount > 0 ? "text-[#6a3328]" : "text-[#171717]"}`}>
+            {summary.noPathCount}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            Delivery Slipping
+          </div>
+          <div className={`mt-1 text-[20px] font-semibold tracking-[-0.04em] ${summary.slippingCount > 0 ? "text-[#6a4a28]" : "text-[#171717]"}`}>
+            {summary.slippingCount}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            Execution On Track
+          </div>
+          <div className="mt-1 text-[20px] font-semibold tracking-[-0.04em] text-[#2f5d3a]">
+            {summary.onTrackCount}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            Learning Incomplete
+          </div>
+          <div className={`mt-1 text-[20px] font-semibold tracking-[-0.04em] ${summary.learningIncompleteCount > 0 ? "text-[#6a4a28]" : "text-[#171717]"}`}>
+            {summary.learningIncompleteCount}
+          </div>
+        </div>
+      </div>
+
+      {/* Main control items list */}
+      <div className="mt-4 space-y-2.5">
+        {items.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-4 py-5 text-[13px] text-[#4d4944]">
+            No active decision-execution control gaps or learning incomplete items detected. Decision delivery is on track across all active decisions.
+          </div>
+        ) : (
+          displayedItems.map((item) => (
+            <div
+              key={`decision-control-${item.id}`}
+              onClick={item.onOpen}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  item.onOpen();
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              aria-label={`Open decision control item: ${item.title}`}
+              className="block w-full cursor-pointer rounded-xl border border-[#d3cbc3] bg-white p-3.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${
+                    item.severity === "Critical"
+                      ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"
+                      : item.severity === "Material"
+                        ? "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"
+                        : "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
+                  }`}
+                >
+                  {item.severity}
+                </span>
+
+                <span
+                  className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] ${
+                    item.controlStatus === "No execution path"
+                      ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"
+                      : item.controlStatus === "Delivery slipping"
+                        ? "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"
+                        : item.controlStatus === "On track"
+                          ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
+                          : "border-[#d3cbc3] bg-[#f9f7f4] text-[#4d4944]"
+                  }`}
+                >
+                  {item.controlStatus}
+                </span>
+
+                <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#2f2b28]">
+                  Decision ({item.decisionStatus})
+                </span>
+
+                {item.area ? (
+                  <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#4d4944]">
+                    {item.area}
+                  </span>
+                ) : null}
+
+                {item.owner ? (
+                  <span className="text-[10px] text-[#6a625d]">
+                    Decision maker: {item.owner}
+                  </span>
+                ) : null}
+              </div>
+
+              <div className="mt-2 text-[14px] font-medium tracking-[-0.03em] text-[#171717]">
+                {item.title}
+              </div>
+
+              {/* Execution path summary */}
+              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] uppercase tracking-[0.12em] text-[#6a625d]">
+                <span>
+                  Execution path:{" "}
+                  {item.directActiveActionCount === 0 && item.linkedActiveProjectCount === 0
+                    ? "None (0 active actions, 0 active projects)"
+                    : `${item.directActiveActionCount} active action${item.directActiveActionCount === 1 ? "" : "s"}, ${item.linkedActiveProjectCount} active project${item.linkedActiveProjectCount === 1 ? "" : "s"}`}
+                </span>
+              </div>
+
+              {/* Linked actions/projects preview */}
+              {((item.linkedActionsPreview && item.linkedActionsPreview.length > 0) || (item.linkedProjectsPreview && item.linkedProjectsPreview.length > 0)) ? (
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {item.linkedActionsPreview?.map((act) => (
+                    <span
+                      key={`act-prev-${act.id}`}
+                      className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-1.5 py-0.5 text-[9px] text-[#4d4944]"
+                    >
+                      Action: {act.title} ({act.status})
+                    </span>
+                  ))}
+                  {item.linkedProjectsPreview?.map((proj) => (
+                    <span
+                      key={`proj-prev-${proj.id}`}
+                      className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-1.5 py-0.5 text-[9px] text-[#4d4944]"
+                    >
+                      Project: {proj.name} ({proj.status})
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="mt-1.5 text-[11px] leading-4 text-[#524d49]">
+                <span className="font-medium text-[#171717]">Why this is here: </span>
+                {item.why}
+              </div>
+
+              <div className="mt-1 text-[11px] leading-4 text-[#2f5d3a]">
+                <span className="font-medium text-[#171717]">Control action: </span>
+                {item.controlAction}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      {items.length > 6 ? (
+        <p className="mt-3 text-right text-[11px] font-medium text-[#6a625d]">
+          Showing top 6 of {items.length} decision control gaps
+        </p>
+      ) : null}
+
+      {/* Small indicators for On track / Learning incomplete */}
+      {(onTrackItems.length > 0 || learningIncompleteItems.length > 0) ? (
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[#e0dad4] pt-3 text-[11px]">
+          {onTrackItems.length > 0 ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-[#b8c9ba] bg-[#eef4ee] px-2.5 py-1 text-[#2f5d3a]">
+              <span className="font-semibold">{onTrackItems.length}</span> decision{onTrackItems.length === 1 ? "" : "s"} on track
+            </span>
+          ) : null}
+
+          {learningIncompleteItems.length > 0 ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-[#c9b8a3] bg-[#f5efe6] px-2.5 py-1 text-[#6a4a28]">
+              <span className="font-semibold">{learningIncompleteItems.length}</span> closed decision{learningIncompleteItems.length === 1 ? "" : "s"} missing outcome rating
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function PillarCard({ pillar, summary, onSelect }: { pillar: string; summary: { activeProjects: number; blockedProjects: number; openActions: number; openProblems: number; openOpportunities: number; leadsWaiting: number; wonLeadValue: number; priorityScore: number; }; onSelect: (pillar: string) => void; }) {
   return (
     <button
@@ -10560,6 +10819,284 @@ export default function Home() {
     };
   })();
 
+  const decisionControlLayer = (() => {
+    const items: DecisionControlItem[] = [];
+    const onTrackItems: DecisionControlItem[] = [];
+    const learningIncompleteItems: DecisionControlItem[] = [];
+
+    let activeTrackedCount = 0;
+    let hasPathCount = 0;
+    let noPathCount = 0;
+    let slippingCount = 0;
+    let onTrackCount = 0;
+
+    const nowMs = Date.now();
+
+    decisionRecords.forEach((decision) => {
+      const isActive = isDecisionActive(decision);
+      const isClosed = ["Completed", "Reversed"].includes(decision.decisionStatus);
+
+      if (!isActive && !isClosed) return;
+
+      // Direct active actions
+      const directActiveActions = actionRecords.filter(
+        (action) => action.relatedDecision === decision.id && isActionActive(action)
+      );
+
+      // Linked active projects
+      const linkedActiveProjects = projects.filter(
+        (project) => (project.relatedDecisionIds || []).includes(decision.id) && isProjectActive(project)
+      );
+
+      // Project action IDs
+      const projectActionIds = new Set(
+        linkedActiveProjects.flatMap((project) => project.relatedActionIds || [])
+      );
+
+      // All implementation active actions (direct + via linked active projects)
+      const implementationActiveActions = Array.from(
+        new Map(
+          [
+            ...directActiveActions,
+            ...actionRecords.filter(
+              (action) => projectActionIds.has(action.id) && isActionActive(action)
+            ),
+          ].map((action) => [action.id, action])
+        ).values()
+      );
+
+      const directActiveActionCount = directActiveActions.length;
+      const linkedActiveProjectCount = linkedActiveProjects.length;
+      const totalActiveExecutionCount = implementationActiveActions.length + linkedActiveProjectCount;
+      const hasExecutionPath = totalActiveExecutionCount > 0;
+
+      const reviewDue = isActive && isDecisionReviewDue(decision);
+
+      // Evaluate delivery slipping on linked execution
+      const blockedActions = implementationActiveActions.filter((a) => a.status === "Blocked");
+      const overdueActions = implementationActiveActions.filter(
+        (a) => a.dueDate && new Date(a.dueDate).getTime() < nowMs
+      );
+      const blockedProjects = linkedActiveProjects.filter(
+        (p) => p.status.trim().toLowerCase() === "blocked"
+      );
+      const overdueProjects = linkedActiveProjects.filter(
+        (p) => p.targetCompletionDate && new Date(`${p.targetCompletionDate}T00:00:00`).getTime() < nowMs
+      );
+
+      const isDeliverySlipping =
+        blockedActions.length > 0 ||
+        overdueActions.length > 0 ||
+        blockedProjects.length > 0 ||
+        overdueProjects.length > 0;
+
+      // Evaluate ownership on linked execution
+      const allLinkedExecutionOwners = [
+        ...implementationActiveActions.map((a) => getValidActiveOwnerKey(a.owner, a.ownerPersonId)),
+        ...linkedActiveProjects.map((p) => getValidActiveOwnerKey(p.owner, undefined)),
+      ];
+       const hasDelegationSuitableFounderOwnedExecution =
+  implementationActiveActions.some((action) =>
+    empireDecisionQueue.delegateItems.some(
+      (item) => item.objectType === "Action" && item.id === action.id,
+    ),
+  ) ||
+  linkedActiveProjects.some((project) =>
+    empireDecisionQueue.delegateItems.some(
+      (item) => item.objectType === "Project" && item.id === project.id,
+    ),
+  );
+
+
+
+      const isOwnershipGap =
+  hasExecutionPath &&
+  (
+    allLinkedExecutionOwners.some((key) => key === null) ||
+    hasDelegationSuitableFounderOwnedExecution
+  );
+
+      // Evaluate closed decision learning
+      const isClosedLearningIncomplete =
+        isClosed &&
+        (!["Worked", "Partially worked", "Failed"].includes(decision.outcomeRating) ||
+          !decision.actualOutcome.trim());
+
+      if (isActive) {
+        activeTrackedCount++;
+        if (hasExecutionPath) {
+          hasPathCount++;
+        } else {
+          noPathCount++;
+        }
+        if (isDeliverySlipping) {
+          slippingCount++;
+        }
+      }
+
+      // Determine primary control status and severity
+      let controlStatus: DecisionControlStatus = "On track";
+      let severity: DecisionControlSeverity = "Healthy";
+      let why = "";
+      let controlAction = "";
+
+      if (isActive) {
+        if (!hasExecutionPath) {
+          controlStatus = "No execution path";
+          const isHighRisk =
+            decision.riskLevel === "Critical" ||
+            decision.riskLevel === "High";
+          severity = isHighRisk ? "Critical" : "Material";
+          why = `Active decision '${decision.decisionTitle || decision.title}' has no direct linked actions or projects, leaving implementation stalled.`;
+          if (reviewDue) {
+            why += ` Note: Decision review date is also due (${decision.reviewDate?.slice(0, 10)}).`;
+          }
+          controlAction = "Create or link an Action or Project to establish an executable path.";
+        } else if (isDeliverySlipping) {
+          controlStatus = "Delivery slipping";
+          const hasCriticalSlippage =
+            blockedActions.length > 0 ||
+            blockedProjects.length > 0 ||
+            overdueActions.some((a) => nowMs - new Date(a.dueDate).getTime() > 7 * 24 * 60 * 60 * 1000);
+          severity = hasCriticalSlippage ? "Critical" : "Material";
+
+          const slippageDetails: string[] = [];
+          if (blockedActions.length > 0)
+            slippageDetails.push(`${blockedActions.length} blocked action${blockedActions.length === 1 ? "" : "s"}`);
+          if (overdueActions.length > 0)
+            slippageDetails.push(`${overdueActions.length} overdue action${overdueActions.length === 1 ? "" : "s"}`);
+          if (blockedProjects.length > 0)
+            slippageDetails.push(`${blockedProjects.length} blocked project${blockedProjects.length === 1 ? "" : "s"}`);
+          if (overdueProjects.length > 0)
+            slippageDetails.push(`${overdueProjects.length} overdue project${overdueProjects.length === 1 ? "" : "s"}`);
+
+          why = `Delivery is slipping on execution path for '${decision.decisionTitle || decision.title}' (${slippageDetails.join(", ")}).`;
+          if (reviewDue) {
+            why += ` Scheduled review date (${decision.reviewDate?.slice(0, 10)}) is also due.`;
+          }
+          controlAction = "Resolve blocker or update target dates on linked execution items.";
+        } else if (isOwnershipGap) {
+          controlStatus = "Ownership gap";
+          severity = "Material";
+          why = `Linked execution path exists for '${decision.decisionTitle || decision.title}', but execution items lack a valid active owner in People.`;
+          if (reviewDue) {
+            why += ` Scheduled review date (${decision.reviewDate?.slice(0, 10)}) is also due.`;
+          }
+          controlAction = "Assign a valid active execution owner in People.";
+        } else if (reviewDue) {
+          controlStatus = "Review due";
+          severity = "Material";
+          why = `Scheduled review date (${decision.reviewDate?.slice(0, 10)}) for '${decision.decisionTitle || decision.title}' has been reached.`;
+          controlAction = "Complete scheduled Decision review, record actual outcome and rating.";
+        } else {
+          controlStatus = "On track";
+          severity = "Healthy";
+          why = `Execution path is active (${directActiveActionCount} action${directActiveActionCount === 1 ? "" : "s"}, ${linkedActiveProjectCount} project${linkedActiveProjectCount === 1 ? "" : "s"}), validly owned, and progressing without delivery warnings.`;
+          controlAction = "No intervention required — execution path is active and owned.";
+          onTrackCount++;
+        }
+      } else if (isClosed) {
+        if (isClosedLearningIncomplete) {
+          controlStatus = "Learning incomplete";
+          severity = "Material";
+          why = `Decision '${decision.decisionTitle || decision.title}' is ${decision.decisionStatus.toLowerCase()} but lacks formal outcome rating or recorded actual outcome.`;
+          controlAction = "Capture actual outcome notes and formal outcome rating.";
+        } else {
+          controlStatus = "On track";
+          severity = "Healthy";
+          why = `Decision '${decision.decisionTitle || decision.title}' is ${decision.decisionStatus.toLowerCase()} with complete outcome rating (${decision.outcomeRating}).`;
+          controlAction = "No intervention required — decision learning is complete.";
+        }
+      }
+
+      const item: DecisionControlItem = {
+        id: decision.id,
+        title: decision.decisionTitle || decision.title,
+        decisionStatus: decision.decisionStatus,
+        controlStatus,
+        severity,
+        area: getAreaText(decision) || "Unassigned",
+        owner: decision.decisionMaker || "Unassigned",
+        directActiveActionCount,
+        linkedActiveProjectCount,
+        why,
+        controlAction,
+        onOpen: () => handleOpenAttentionRecord("Decision", decision.id),
+        linkedActionsPreview: directActiveActions.slice(0, 3).map((a) => ({
+          id: a.id,
+          title: a.actionTitle || a.title,
+          status: a.status,
+        })),
+        linkedProjectsPreview: linkedActiveProjects.slice(0, 3).map((p) => ({
+          id: p.id,
+          name: p.projectName,
+          status: p.status,
+        })),
+      };
+
+      if (controlStatus === "On track") {
+        onTrackItems.push(item);
+      } else if (controlStatus === "Learning incomplete") {
+        learningIncompleteItems.push(item);
+        items.push(item);
+      } else {
+        items.push(item);
+      }
+    });
+
+    const learningIncompleteCount = learningIncompleteItems.length;
+
+    const severityRank: Record<DecisionControlSeverity, number> = { Critical: 3, Material: 2, Healthy: 1 };
+    const statusRank: Record<DecisionControlStatus, number> = {
+      "No execution path": 6,
+      "Delivery slipping": 5,
+      "Ownership gap": 4,
+      "Review due": 3,
+      "Learning incomplete": 2,
+      "On track": 1,
+    };
+
+    items.sort((left, right) => {
+      const sevDiff = severityRank[right.severity] - severityRank[left.severity];
+      if (sevDiff !== 0) return sevDiff;
+      const statDiff = statusRank[right.controlStatus] - statusRank[left.controlStatus];
+      if (statDiff !== 0) return statDiff;
+      return left.title.localeCompare(right.title);
+    });
+
+    let headline = "";
+    if (noPathCount > 0) {
+      headline = `Decision execution is constrained by ${noPathCount} missing execution path${noPathCount === 1 ? "." : "s."}`;
+    } else if (slippingCount > 0) {
+      headline = `Decision delivery is slipping on ${slippingCount} decision${slippingCount === 1 ? "." : "s."}`;
+    } else if (activeTrackedCount > 0 && onTrackCount === activeTrackedCount) {
+      headline = "Decision delivery is on track across all active decisions.";
+    } else if (items.length > 0 && items.some((i) => i.controlStatus === "Review due")) {
+      const reviewDueGaps = items.filter((i) => i.controlStatus === "Review due").length;
+      headline = `Decision delivery is broadly on track; ${reviewDueGaps} review control gap${reviewDueGaps === 1 ? " remains." : "s remain."}`;
+    } else if (learningIncompleteCount > 0) {
+headline = activeTrackedCount > 0
+  ? `Active decision delivery is on track; ${learningIncompleteCount} closed decision${learningIncompleteCount === 1 ? " needs" : "s need"} outcome rating.`
+  : `${learningIncompleteCount} closed decision${learningIncompleteCount === 1 ? " needs" : "s need"} outcome rating; no active decisions are currently being tracked.`;    } else {
+      headline = "No active decision-execution control gaps detected.";
+    }
+
+    return {
+      summary: {
+        headline,
+        activeTrackedCount,
+        hasPathCount,
+        noPathCount,
+        slippingCount,
+        onTrackCount,
+        learningIncompleteCount,
+      },
+      items,
+      onTrackItems,
+      learningIncompleteItems,
+    };
+  })();
+
   const getAttentionGroup = (item: AttentionItem) => {
     const isBlockedOrWaiting = item.reasons.some((reason) =>
       reason === "BLOCKED PROJECT" || (item.objectType !== "Project" && reason === "BLOCKED") || reason.startsWith("BLOCKED BY PROBLEM:") || reason.startsWith("WAITING ON DECISION:"),
@@ -13049,6 +13586,15 @@ export default function Home() {
                 <FounderBottleneckMap
                   summary={founderBottleneckMap.summary}
                   bottlenecks={founderBottleneckMap.bottlenecks}
+                />
+              </div>
+
+              <div className="mt-5">
+                <DecisionExecutionControlLayer
+                  summary={decisionControlLayer.summary}
+                  items={decisionControlLayer.items}
+                  onTrackItems={decisionControlLayer.onTrackItems}
+                  learningIncompleteItems={decisionControlLayer.learningIncompleteItems}
                 />
               </div>
 
