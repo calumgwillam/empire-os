@@ -4126,6 +4126,7 @@ function FounderExecutionReleaseSystem({
   onNavigateToPeople: () => void;
 }) {
   const displayedItems = items.slice(0, 8);
+  const topReleaseMove = items[0] || null;
 
   return (
     <section className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
@@ -4201,6 +4202,46 @@ function FounderExecutionReleaseSystem({
             {summary.completePersonallyCount}
           </div>
         </div>
+      </div>
+
+      {/* Best Next Release Move */}
+      <div className="mt-3 rounded-xl border border-[#d3cbc3] bg-white px-3.5 py-3">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#4d4944]">
+          Best Next Release Move
+        </div>
+        {topReleaseMove ? (
+          <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={topReleaseMove.onOpen}
+              className="text-left text-[14px] font-medium tracking-[-0.03em] text-[#171717] hover:underline"
+            >
+              {topReleaseMove.title}
+            </button>
+            <span
+              className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${
+                topReleaseMove.releaseAction === "Delegate Now"
+                  ? "border-[#2f5d3a] bg-[#eef4ee] text-[#2f5d3a]"
+                  : topReleaseMove.releaseAction === "Unblock First"
+                    ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"
+                    : topReleaseMove.releaseAction === "Retain — Founder Authority Required"
+                      ? "border-[#171717] bg-[#171717] text-[#f7f4f1]"
+                      : topReleaseMove.releaseAction === "Prepare to Delegate"
+                        ? "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"
+                        : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
+              }`}
+            >
+              {topReleaseMove.releaseAction}
+            </span>
+            <p className="w-full text-[11px] leading-4 text-[#524d49]">
+              {topReleaseMove.releasePath || topReleaseMove.why}
+            </p>
+          </div>
+        ) : (
+          <p className="mt-1 text-[12px] italic text-[#6a625d]">
+            No founder execution load currently requires release.
+          </p>
+        )}
       </div>
 
       {/* Main Ranked Release Queue */}
