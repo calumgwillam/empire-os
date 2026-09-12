@@ -12962,14 +12962,21 @@ export default function Home() {
     <div className="mt-1 text-[12px] text-[#4d4944]">
       {selectedAccountability.person.role || "Role not specified"} • {selectedAccountability.person.pillar} • {selectedAccountability.person.status}
     </div>
-    {selectedAccountability.person.status === "Active" && selectedAccountability.person.accessLevel !== "Founder" ? (
-      <div className="mt-2 text-[12px] text-[#2f2b28]">
-        {getDelegationReadinessMissingFields(selectedAccountability.person).length === 0
-          ? "Delegation ready"
-          : `Readiness incomplete — add ${getDelegationReadinessMissingFields(selectedAccountability.person).join(", ")}.`}
-      </div>
-    ) : null}
-  </>
+ {selectedAccountability.person.status === "Active" && selectedAccountability.person.accessLevel !== "Founder" ? (
+  getDelegationReadinessMissingFields(selectedAccountability.person).length === 0 ? (
+    <div className="mt-2 text-[12px] text-[#2f2b28]">
+      Delegation ready
+    </div>
+  ) : (
+    <button
+      type="button"
+      onClick={() => handlePersonEditOpen(selectedAccountability.person!)}
+      className="mt-2 text-left text-[12px] font-medium text-[#2f2b28] underline underline-offset-2"
+    >
+      Readiness incomplete — add {getDelegationReadinessMissingFields(selectedAccountability.person).join(", ")}.
+    </button>
+  )
+) : null} </>
 ) : (                  <div className="mt-1 text-[12px] text-[#4d4944]">
                         Active work with no valid active owner — blank or assigned to a name that isn&apos;t an active person. Assign each item to a real person to close this accountability gap.
                       </div>
