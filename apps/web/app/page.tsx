@@ -3368,6 +3368,274 @@ function FounderOperatingBrief({
   );
 }
 
+type ReviewItem = {
+  metric: string;
+  changeText: string;
+  explanation: string;
+};
+
+type RecurringReviewItem = {
+  id: string;
+  objectType: string;
+  title: string;
+  area?: string;
+  why: string;
+  onOpen: () => void;
+};
+
+type Next7DaysPriority = {
+  id: string;
+  objectType: string;
+  title: string;
+  area?: string;
+  why: string;
+  onOpen: () => void;
+};
+
+function FounderOperatingReview({
+  headline,
+  hasSufficientHistory,
+  snapshotCount,
+  baselineDateLabel,
+  improved,
+  deteriorated,
+  recurring,
+  founderDependency,
+  next7Days,
+}: {
+  headline: string;
+  hasSufficientHistory: boolean;
+  snapshotCount: number;
+  baselineDateLabel: string;
+  improved: ReviewItem[];
+  deteriorated: ReviewItem[];
+  recurring: RecurringReviewItem[];
+  founderDependency: {
+    status: string;
+    summary: string;
+    detail: string;
+  };
+  next7Days: Next7DaysPriority[];
+}) {
+  return (
+    <section className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">
+            7-Day Review
+          </p>
+          <h2 className="mt-1 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">
+            7-Day Founder Operating Review
+          </h2>
+          <p className="mt-1 text-[12px] font-medium text-[#4d4944]">
+            {headline}
+          </p>
+        </div>
+        <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.14em] text-[#2f2b28]">
+          {hasSufficientHistory
+            ? `vs Baseline (${baselineDateLabel})`
+            : `Baseline (${snapshotCount} Snapshot${snapshotCount === 1 ? "" : "s"})`}
+        </span>
+      </div>
+
+      {!hasSufficientHistory ? (
+        <div className="mt-3 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] px-3 py-2 text-[11px] leading-5 text-[#524d49]">
+          <span className="font-medium text-[#171717]">Trend confidence is limited: </span>
+          Fewer than 2 posture snapshots are stored. Trend metrics will compare against historical baselines automatically as daily posture snapshots accumulate.
+        </div>
+      ) : null}
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        {/* IMPROVED */}
+        <div className="rounded-xl border border-[#d3cbc3] bg-white p-3.5">
+          <div className="flex items-center justify-between gap-2 border-b border-[#e0dad4] pb-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f5d3a]">
+              1. What Improved
+            </h3>
+            <span className="rounded-full border border-[#b8c9ba] bg-[#eef4ee] px-2 py-0.5 text-[9px] font-medium text-[#2f5d3a]">
+              {improved.length} area{improved.length === 1 ? "" : "s"}
+            </span>
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {improved.length === 0 ? (
+              <p className="py-2 text-[12px] italic text-[#6a625d]">
+                {hasSufficientHistory
+                  ? "No major metric reductions or improvements recorded over this window."
+                  : "Requires at least 2 posture snapshots to calculate improvements."}
+              </p>
+            ) : (
+              improved.map((item) => (
+                <div
+                  key={`imp-${item.metric}`}
+                  className="rounded-lg border border-[#b8c9ba] bg-[#eef4ee] p-2.5"
+                >
+                  <div className="flex items-center justify-between gap-2 text-[13px] font-medium text-[#171717]">
+                    <span>{item.metric}</span>
+                    <span className="text-[11px] font-semibold text-[#2f5d3a]">{item.changeText}</span>
+                  </div>
+                  <div className="mt-1 text-[11px] leading-4 text-[#524d49]">
+                    {item.explanation}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* DETERIORATED */}
+        <div className="rounded-xl border border-[#d3cbc3] bg-white p-3.5">
+          <div className="flex items-center justify-between gap-2 border-b border-[#e0dad4] pb-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6a3328]">
+              2. What Deteriorated
+            </h3>
+            <span className="rounded-full border border-[#d4b4a7] bg-[#f8efeb] px-2 py-0.5 text-[9px] font-medium text-[#6a3328]">
+              {deteriorated.length} area{deteriorated.length === 1 ? "" : "s"}
+            </span>
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {deteriorated.length === 0 ? (
+              <p className="py-2 text-[12px] italic text-[#6a625d]">
+                {hasSufficientHistory
+                  ? "No major metric increases or deteriorations recorded over this window."
+                  : "Requires at least 2 posture snapshots to calculate deteriorations."}
+              </p>
+            ) : (
+              deteriorated.map((item) => (
+                <div
+                  key={`det-${item.metric}`}
+                  className="rounded-lg border border-[#d4b4a7] bg-[#f8efeb] p-2.5"
+                >
+                  <div className="flex items-center justify-between gap-2 text-[13px] font-medium text-[#171717]">
+                    <span>{item.metric}</span>
+                    <span className="text-[11px] font-semibold text-[#6a3328]">{item.changeText}</span>
+                  </div>
+                  <div className="mt-1 text-[11px] leading-4 text-[#524d49]">
+                    {item.explanation}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* RECURRING */}
+        <div className="rounded-xl border border-[#d3cbc3] bg-white p-3.5">
+          <div className="flex items-center justify-between gap-2 border-b border-[#e0dad4] pb-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#171717]">
+              3. What Keeps Recurring
+            </h3>
+            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] font-medium text-[#2f2b28]">
+              {recurring.length} pattern{recurring.length === 1 ? "" : "s"}
+            </span>
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {recurring.length === 0 ? (
+              <p className="py-2 text-[12px] italic text-[#6a625d]">
+                No recurring problems, persistent multi-snapshot risks or systemic patterns detected.
+              </p>
+            ) : (
+              recurring.map((item) => (
+                <button
+                  key={`recur-${item.objectType}-${item.id}`}
+                  type="button"
+                  onClick={item.onOpen}
+                  className="block w-full rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] p-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-[#2f2b28]">
+                      {item.objectType}
+                    </span>
+                    {item.area ? (
+                      <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#4d4944]">
+                        {item.area}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-1 text-[13px] font-medium text-[#171717]">{item.title}</div>
+                  <div className="mt-0.5 text-[11px] leading-4 text-[#524d49]">{item.why}</div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* FOUNDER DEPENDENCY TREND */}
+        <div className="rounded-xl border border-[#d3cbc3] bg-white p-3.5">
+          <div className="flex items-center justify-between gap-2 border-b border-[#e0dad4] pb-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#171717]">
+              4. Founder Dependency Trend
+            </h3>
+            <span
+              className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] ${
+                founderDependency.status === "Improving"
+                  ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
+                  : founderDependency.status === "Worsening"
+                    ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]"
+                    : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
+              }`}
+            >
+              {founderDependency.status}
+            </span>
+          </div>
+
+          <div className="mt-3 text-[13px] font-medium text-[#171717]">
+            {founderDependency.summary}
+          </div>
+          <div className="mt-1 text-[11px] leading-4 text-[#524d49]">
+            {founderDependency.detail}
+          </div>
+        </div>
+
+        {/* NEXT 7 DAYS */}
+        <div className="lg:col-span-2 rounded-xl border border-[#d3cbc3] bg-white p-3.5">
+          <div className="flex items-center justify-between gap-2 border-b border-[#e0dad4] pb-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#171717]">
+              5. Next 7 Days — Forward Priorities
+            </h3>
+            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] font-medium text-[#2f2b28]">
+              {next7Days.length} Forward Priorities
+            </span>
+          </div>
+
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            {next7Days.map((item, index) => (
+              <button
+                key={`next7-${item.objectType}-${item.id}`}
+                type="button"
+                onClick={item.onOpen}
+                className="block w-full rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] p-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-[#171717] text-[9px] font-semibold text-[#f7f4f1]">
+                    {index + 1}
+                  </span>
+                  <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-[#2f2b28]">
+                    {item.objectType}
+                  </span>
+                  {item.area ? (
+                    <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#4d4944]">
+                      {item.area}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-1.5 text-[13px] font-medium text-[#171717]">
+                  {item.title}
+                </div>
+                <div className="mt-1 text-[11px] leading-4 text-[#524d49]">
+                  {item.why}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function PillarCard({ pillar, summary, onSelect }: { pillar: string; summary: { activeProjects: number; blockedProjects: number; openActions: number; openProblems: number; openOpportunities: number; leadsWaiting: number; wonLeadValue: number; priorityScore: number; }; onSelect: (pillar: string) => void; }) {
   return (
     <button
@@ -9458,6 +9726,360 @@ export default function Home() {
     return recent.map((entry) => entry.outstandingCount).join(" → ");
   })();
 
+  const founderOperatingReview = (() => {
+    const earlierSnapshots = dailyPostureSnapshots
+      .filter((entry) => entry.date < todaySnapshotDate)
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    const hasSufficientHistory = earlierSnapshots.length >= 1;
+    const baselineSnapshot = earlierSnapshots.slice(-7)[0] || null;
+    const baselineDateLabel = baselineSnapshot ? baselineSnapshot.date : todaySnapshotDate;
+
+    const improved: ReviewItem[] = [];
+    const deteriorated: ReviewItem[] = [];
+
+    if (baselineSnapshot) {
+      const compareLowerIsBetter = (
+        metric: string,
+        currentVal: number,
+        baseVal: number,
+        improvedExplanation: string,
+        deterioratedExplanation: string,
+      ) => {
+        if (currentVal < baseVal) {
+          const diff = baseVal - currentVal;
+          improved.push({
+            metric,
+            changeText: `${baseVal} → ${currentVal} (-${diff})`,
+            explanation: improvedExplanation,
+          });
+        } else if (currentVal > baseVal) {
+          const diff = currentVal - baseVal;
+          deteriorated.push({
+            metric,
+            changeText: `${baseVal} → ${currentVal} (+${diff})`,
+            explanation: deterioratedExplanation,
+          });
+        }
+      };
+
+      const compareHigherIsBetter = (
+        metric: string,
+        currentVal: number | null | undefined,
+        baseVal: number | null | undefined,
+        improvedExplanation: string,
+        deterioratedExplanation: string,
+        unit = "",
+      ) => {
+        if (currentVal == null || baseVal == null) return;
+        if (currentVal > baseVal) {
+          const diff = currentVal - baseVal;
+          improved.push({
+            metric,
+            changeText: `${baseVal}${unit} → ${currentVal}${unit} (+${diff}${unit})`,
+            explanation: improvedExplanation,
+          });
+        } else if (currentVal < baseVal) {
+          const diff = baseVal - currentVal;
+          deteriorated.push({
+            metric,
+            changeText: `${baseVal}${unit} → ${currentVal}${unit} (-${diff}${unit})`,
+            explanation: deterioratedExplanation,
+          });
+        }
+      };
+
+      compareLowerIsBetter(
+        "Ownership gaps",
+        todayBrief.ownershipGapCount,
+        baselineSnapshot.ownershipGapCount,
+        "Fewer unassigned or ghost-owned active work items require founder triage.",
+        "More active items now lack a valid active owner.",
+      );
+
+      compareLowerIsBetter(
+        "Decision reviews due",
+        todayBrief.reviewDueCount,
+        baselineSnapshot.decisionReviewsDue,
+        "Pending decision reviews were completed or updated.",
+        "More decisions have reached or passed their scheduled review date without closure.",
+      );
+
+      compareLowerIsBetter(
+        "Execution gaps",
+        todayBrief.executionGapCount,
+        baselineSnapshot.executionGapCount,
+        "Active decisions were connected to open actions or projects.",
+        "More active decisions currently lack an execution path.",
+      );
+
+      compareLowerIsBetter(
+        "Learning gaps",
+        todayBrief.learningGapCount,
+        baselineSnapshot.learningGapCount,
+        "Recurring problems were converted into lessons, systems or SOPs.",
+        "Recurring problems remain uncaptured as learning.",
+      );
+
+      compareLowerIsBetter(
+        "Stale records",
+        todayBrief.staleCount,
+        baselineSnapshot.staleRecordCount,
+        "Active records received status movement or review.",
+        "More active records have gone without movement or review.",
+      );
+
+      compareLowerIsBetter(
+        "Finance attention",
+        todayBrief.financeCount,
+        baselineSnapshot.financeAttentionCount,
+        "Finance attention items were resolved.",
+        "More finance attention items (buffer pressure / overdue commitments / income) emerged.",
+      );
+
+      compareLowerIsBetter(
+        "Growth stalls",
+        todayBrief.growthStallCount,
+        baselineSnapshot.growthStallCount,
+        "Commercial leads or high-fit opportunities were progressed.",
+        "More high-fit opportunities or commercial leads have gone idle.",
+      );
+
+      compareHigherIsBetter(
+        "Non-founder ownership share",
+        organisationalHealth.selfSufficiencyPct,
+        baselineSnapshot.selfSufficiencyPct,
+        "Non-founder owners are carrying a larger share of active operational work.",
+        "Founder is carrying a larger share of active operational work.",
+        "%",
+      );
+
+      compareHigherIsBetter(
+        "Delegation quality",
+        organisationalHealth.delegationScore,
+        baselineSnapshot.delegationQualityPct,
+        "Work distribution and delegation structure across active owners improved.",
+        "Delegation structure or workload concentration worsened.",
+        "%",
+      );
+
+      compareHigherIsBetter(
+        "Operating cash",
+        cashIsConfigured ? availableOperatingCash : null,
+        baselineSnapshot.availableOperatingCash,
+        "Available operating cash balance increased.",
+        "Available operating cash balance decreased.",
+      );
+    }
+
+    const recurringItems: RecurringReviewItem[] = [];
+    const usedRecurringKeys = new Set<string>();
+
+    recurringProblemLearning.unresolvedRecurring.forEach((problem) => {
+      const key = `Problem:${problem.id}`;
+      if (usedRecurringKeys.has(key)) return;
+      recurringItems.push({
+        id: problem.id,
+        objectType: "Problem",
+        title: problem.problemStatement || problem.title,
+        area: getAreaText(problem),
+        why: `${problem.frequency} problem (${problem.severity.toLowerCase()} severity) — needs captured learning or SOP`,
+        onOpen: () => handleOpenAttentionRecord("Problem", problem.id),
+      });
+      usedRecurringKeys.add(key);
+    });
+
+    correlationLayer.convergentRisks.forEach((cluster) => {
+      if (recurringItems.length >= 3) return;
+      const key = cluster.clusterKey;
+      if (usedRecurringKeys.has(key)) return;
+      const root = cluster.records[0];
+      recurringItems.push({
+        id: root.id,
+        objectType: root.objectType,
+        title: cluster.title,
+        area: root.area,
+        why: `Convergent risk generating ${cluster.categories.size} signal categories across ${cluster.recordCount} linked records`,
+        onOpen: () => handleOpenAttentionRecord(root.objectType, root.id),
+      });
+      usedRecurringKeys.add(key);
+    });
+
+    if (baselineSnapshot?.outstandingKeys) {
+      const baselineKeysSet = new Set(baselineSnapshot.outstandingKeys.map((k) => k.key));
+      todayBrief.outstandingKeys.forEach((item) => {
+        if (recurringItems.length >= 3) return;
+        if (baselineKeysSet.has(item.key) && !usedRecurringKeys.has(item.key)) {
+          const keyParts = item.key.split(":");
+          const objectType = item.objectType || keyParts[0] || "Record";
+          const recordId = keyParts.slice(1).join(":");
+          recurringItems.push({
+            id: recordId || item.key,
+            objectType,
+            title: item.title,
+            why: `Unresolved attention item persisting across posture snapshots (${item.category})`,
+            onOpen: () => handleOpenAttentionRecord(objectType, recordId || item.key),
+          });
+          usedRecurringKeys.add(item.key);
+        }
+      });
+    }
+
+    const currentSelfSufficiency = organisationalHealth.selfSufficiencyPct;
+    const baseSelfSufficiency = baselineSnapshot?.selfSufficiencyPct ?? null;
+
+    let dependencyStatus = "Flat";
+    let dependencySummary = "";
+    let dependencyDetail = "";
+
+    if (!hasSufficientHistory) {
+      dependencyStatus = "Baseline established";
+      dependencySummary = currentSelfSufficiency !== null
+        ? `${currentSelfSufficiency}% of active work is non-founder owned.`
+        : "Current founder dependency baseline established.";
+      dependencyDetail = "At least 2 daily posture snapshots are required to establish a historical 7-day trend.";
+    } else if (currentSelfSufficiency !== null && baseSelfSufficiency !== null) {
+      const diff = currentSelfSufficiency - baseSelfSufficiency;
+      if (diff > 2) {
+        dependencyStatus = "Improving";
+        dependencySummary = `Non-founder ownership increased by +${diff}% (from ${baseSelfSufficiency}% to ${currentSelfSufficiency}%).`;
+      } else if (diff < -2) {
+        dependencyStatus = "Worsening";
+        dependencySummary = `Founder dependency increased; non-founder share fell by ${Math.abs(diff)}% (from ${baseSelfSufficiency}% to ${currentSelfSufficiency}%).`;
+      } else {
+        dependencyStatus = "Flat";
+        dependencySummary = `Non-founder ownership share remains stable at ${currentSelfSufficiency}% (baseline: ${baseSelfSufficiency}%).`;
+      }
+      dependencyDetail = `Top owner carries ${organisationalHealth.topOwnerShare ?? 0}% of active work. ${empireDecisionQueue.delegateItems.length > 0 ? `${empireDecisionQueue.delegateItems.length} founder-owned item${empireDecisionQueue.delegateItems.length === 1 ? " is" : "s are"} ready for delegation.` : "No routine founder-owned items currently flagged for delegation."}`;
+    } else {
+      dependencyStatus = "Stable";
+      dependencySummary = "Current non-founder ownership baseline tracked.";
+      dependencyDetail = "Ownership metrics are derived from active Actions, Projects, Leads and Problems.";
+    }
+
+    const next7Days: Next7DaysPriority[] = [];
+    const usedNext7Keys = new Set<string>();
+
+    if (founderFocusCandidates.length > 0) {
+      const topFocus = founderFocusCandidates[0];
+      const key = `${topFocus.objectType}:${topFocus.id}`;
+      next7Days.push({
+        id: topFocus.id,
+        objectType: topFocus.objectType,
+        title: topFocus.title,
+        area: topFocus.area,
+        why: `Top immediate execution priority: ${topFocus.reason}`,
+        onOpen: () => handleOpenAttentionRecord(topFocus.objectType, topFocus.id),
+      });
+      usedNext7Keys.add(key);
+      usedNext7Keys.add(topFocus.key);
+    } else if (cashAttention.buffer) {
+      next7Days.push({
+        id: "cash-buffer",
+        objectType: "Finance",
+        title: cashAttention.buffer.title,
+        area: "Finance",
+        why: cashAttention.buffer.detail,
+        onOpen: () => handleOpenAttentionRecord("Finance", "cash-buffer"),
+      });
+      usedNext7Keys.add("Finance:cash-buffer");
+    }
+
+    if (unassignedAccountability.carriedCount > 0 && !usedNext7Keys.has("People:unassigned")) {
+      next7Days.push({
+        id: "unassigned",
+        objectType: "People",
+        title: `${unassignedAccountability.carriedCount} unassigned active item${unassignedAccountability.carriedCount === 1 ? "" : "s"} requiring owner triage`,
+        area: "People",
+        why: "Assigning clear active owners prevents dropped execution and founder bottlenecking.",
+        onOpen: () => {
+          setActiveView("People");
+          setSelectedAccountabilityKey("unassigned");
+        },
+      });
+      usedNext7Keys.add("People:unassigned");
+    } else {
+      for (const reviewItem of empireDecisionQueue.founderReviewQueue) {
+        const key = `${reviewItem.kind}:${reviewItem.id}`;
+        if (!usedNext7Keys.has(key)) {
+          next7Days.push({
+            id: reviewItem.id,
+            objectType: reviewItem.kind,
+            title: reviewItem.title,
+            area: reviewItem.pillar,
+            why: `${reviewItem.reasonCategory}: ${reviewItem.whyItMatters}`,
+            onOpen: () => handleOpenAttentionRecord(reviewItem.kind, reviewItem.id),
+          });
+          usedNext7Keys.add(key);
+          break;
+        }
+      }
+    }
+
+    for (const watchItem of founderOperatingBrief.watch) {
+      const key = `${watchItem.objectType}:${watchItem.id}`;
+      if (!usedNext7Keys.has(key)) {
+        next7Days.push({
+          id: watchItem.id,
+          objectType: watchItem.objectType,
+          title: watchItem.title,
+          area: watchItem.area,
+          why: `Near-term focus: ${watchItem.why}`,
+          onOpen: watchItem.onOpen,
+        });
+        usedNext7Keys.add(key);
+        break;
+      }
+    }
+
+    if (next7Days.length < 3) {
+      for (const candidate of founderFocusCandidates) {
+        if (next7Days.length >= 3) break;
+        const key = `${candidate.objectType}:${candidate.id}`;
+        if (!usedNext7Keys.has(key)) {
+          next7Days.push({
+            id: candidate.id,
+            objectType: candidate.objectType,
+            title: candidate.title,
+            area: candidate.area,
+            why: candidate.reason,
+            onOpen: () => handleOpenAttentionRecord(candidate.objectType, candidate.id),
+          });
+          usedNext7Keys.add(key);
+        }
+      }
+    }
+
+    let headline = "";
+    if (!hasSufficientHistory) {
+      headline = "7-Day Operating Trajectory: Baseline established for today — gathering 7-day posture history";
+    } else if (improved.length > 0 && deteriorated.length === 0) {
+      headline = `7-Day Operating Trajectory: Positive momentum — ${improved.length} area${improved.length === 1 ? "" : "s"} improved`;
+    } else if (deteriorated.length > 0 && improved.length === 0) {
+      headline = `7-Day Operating Trajectory: Operating load increased — ${deteriorated.length} area${deteriorated.length === 1 ? "" : "s"} deteriorated`;
+    } else if (improved.length > 0 && deteriorated.length > 0) {
+      headline = `7-Day Operating Trajectory: Mixed trajectory — ${improved.length} improved, ${deteriorated.length} deteriorated`;
+    } else {
+      headline = "7-Day Operating Trajectory: Stable posture across recent posture snapshots";
+    }
+
+    return {
+      headline,
+      hasSufficientHistory,
+      snapshotCount: dailyPostureSnapshots.length,
+      baselineDateLabel,
+      improved,
+      deteriorated,
+      recurring: recurringItems,
+      founderDependency: {
+        status: dependencyStatus,
+        summary: dependencySummary,
+        detail: dependencyDetail,
+      },
+      next7Days,
+    };
+  })();
+
   const getAttentionGroup = (item: AttentionItem) => {
     const isBlockedOrWaiting = item.reasons.some((reason) =>
       reason === "BLOCKED PROJECT" || (item.objectType !== "Project" && reason === "BLOCKED") || reason.startsWith("BLOCKED BY PROBLEM:") || reason.startsWith("WAITING ON DECISION:"),
@@ -11926,6 +12548,20 @@ export default function Home() {
                   delegationReadyPeople={delegationReadyNonFounderPeople}
                   onOpenRecord={handleOpenAttentionRecord}
                   onNavigateToPeople={() => setActiveView("People")}
+                />
+              </div>
+
+              <div className="mt-5">
+                <FounderOperatingReview
+                  headline={founderOperatingReview.headline}
+                  hasSufficientHistory={founderOperatingReview.hasSufficientHistory}
+                  snapshotCount={founderOperatingReview.snapshotCount}
+                  baselineDateLabel={founderOperatingReview.baselineDateLabel}
+                  improved={founderOperatingReview.improved}
+                  deteriorated={founderOperatingReview.deteriorated}
+                  recurring={founderOperatingReview.recurring}
+                  founderDependency={founderOperatingReview.founderDependency}
+                  next7Days={founderOperatingReview.next7Days}
                 />
               </div>
 
