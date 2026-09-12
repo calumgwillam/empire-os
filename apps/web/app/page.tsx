@@ -4070,6 +4070,300 @@ function DecisionExecutionControlLayer({
   );
 }
 
+type ReleaseAction =
+  | "Delegate Now"
+  | "Prepare to Delegate"
+  | "Complete Personally"
+  | "Retain — Founder Authority Required"
+  | "Unblock First"
+  | "Monitor / Retain Temporarily";
+
+type ReleaseSeverity = "Critical" | "Material" | "Low";
+
+type ExecutionReleaseItem = {
+  id: string;
+  objectType: "Action" | "Project" | "Lead" | "Problem";
+  title: string;
+  area?: string;
+  owner: string;
+  status: string;
+  releaseAction: ReleaseAction;
+  severity: ReleaseSeverity;
+  urgencyText?: string;
+  why: string;
+  releasePath: string;
+  hasCapacity: boolean;
+  requiresAuthority: boolean;
+  priorityScore: number;
+  onOpen: () => void;
+  delegateAction?: (personId: string) => void;
+};
+
+type ReleaseSystemSummary = {
+  headline: string;
+  totalFounderOwned: number;
+  delegateNowCount: number;
+  prepareToDelegateCount: number;
+  retainAuthorityCount: number;
+  unblockFirstCount: number;
+  completePersonallyCount: number;
+  monitorCount: number;
+  releasableCount: number;
+  releasablePct: number;
+};
+
+function FounderExecutionReleaseSystem({
+  summary,
+  items,
+  delegationReadyPeople,
+  delegationReadinessGapNames,
+  onNavigateToPeople,
+}: {
+  summary: ReleaseSystemSummary;
+  items: ExecutionReleaseItem[];
+  delegationReadyPeople: PersonRecord[];
+  delegationReadinessGapNames: string[];
+  onNavigateToPeople: () => void;
+}) {
+  const displayedItems = items.slice(0, 8);
+
+  return (
+    <section className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">
+            Execution Release &amp; Leverage
+          </p>
+          <h2 className="mt-1 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">
+            Founder Execution Release System
+          </h2>
+          <p className="mt-1 text-[12px] font-medium text-[#4d4944]">
+            {summary.headline}
+          </p>
+        </div>
+        <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.14em] text-[#2f2b28]">
+          {summary.totalFounderOwned} Founder-Owned Active Item{summary.totalFounderOwned === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      {/* Summary Strip */}
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            Releasable Load
+          </div>
+          <div className="mt-1 text-[18px] font-semibold tracking-[-0.04em] text-[#2f5d3a]">
+            {summary.releasableCount} ({summary.releasablePct}%)
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#2f5d3a]">
+            Delegate Now
+          </div>
+          <div className="mt-1 text-[18px] font-semibold tracking-[-0.04em] text-[#2f5d3a]">
+            {summary.delegateNowCount}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            Prepare Delegate
+          </div>
+          <div className="mt-1 text-[18px] font-semibold tracking-[-0.04em] text-[#171717]">
+            {summary.prepareToDelegateCount}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            Retain Authority
+          </div>
+          <div className="mt-1 text-[18px] font-semibold tracking-[-0.04em] text-[#171717]">
+            {summary.retainAuthorityCount}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#6a3328]">
+            Unblock First
+          </div>
+          <div className={`mt-1 text-[18px] font-semibold tracking-[-0.04em] ${summary.unblockFirstCount > 0 ? "text-[#6a3328]" : "text-[#171717]"}`}>
+            {summary.unblockFirstCount}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
+            Complete Person.
+          </div>
+          <div className="mt-1 text-[18px] font-semibold tracking-[-0.04em] text-[#171717]">
+            {summary.completePersonallyCount}
+          </div>
+        </div>
+      </div>
+
+      {/* Main Ranked Release Queue */}
+      <div className="mt-4 space-y-2.5">
+        {summary.totalFounderOwned === 0 ? (
+          <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-4 py-5 text-[13px] text-[#4d4944]">
+            No active founder-owned execution items detected. Operational execution is fully distributed across non-founder team members.
+          </div>
+        ) : (
+          displayedItems.map((item) => (
+            <div
+              key={`release-${item.objectType}-${item.id}`}
+              className="rounded-xl border border-[#d3cbc3] bg-white p-3.5 transition hover:border-[#171717]"
+            >
+              <button
+                type="button"
+                onClick={item.onOpen}
+                className="block w-full text-left transition hover:text-[#6a3328]"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${
+                      item.releaseAction === "Delegate Now"
+                        ? "border-[#2f5d3a] bg-[#eef4ee] text-[#2f5d3a]"
+                        : item.releaseAction === "Unblock First"
+                          ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"
+                          : item.releaseAction === "Retain — Founder Authority Required"
+                            ? "border-[#171717] bg-[#171717] text-[#f7f4f1]"
+                            : item.releaseAction === "Prepare to Delegate"
+                              ? "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"
+                              : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
+                    }`}
+                  >
+                    {item.releaseAction}
+                  </span>
+
+                  <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#2f2b28]">
+                    {item.objectType}
+                  </span>
+
+                  {item.area ? (
+                    <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#4d4944]">
+                      {item.area}
+                    </span>
+                  ) : null}
+
+                  <span className="text-[10px] text-[#6a625d]">
+                    Status: {item.status}
+                  </span>
+
+                  {item.urgencyText ? (
+                    <span className="text-[10px] font-medium text-[#6a3328]">
+                      • {item.urgencyText}
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="mt-2 text-[14px] font-medium tracking-[-0.03em] text-[#171717]">
+                  {item.title}
+                </div>
+
+                <div className="mt-1 text-[11px] leading-4 text-[#524d49]">
+                  <span className="font-medium text-[#171717]">Why this is here: </span>
+                  {item.why}
+                </div>
+
+                <div className="mt-1 text-[11px] leading-4 text-[#2f5d3a]">
+                  <span className="font-medium text-[#171717]">Release path: </span>
+                  {item.releasePath}
+                </div>
+              </button>
+
+              {/* Direct Delegation Control for DELEGATE NOW */}
+              {item.releaseAction === "Delegate Now" && item.delegateAction && delegationReadyPeople.length > 0 ? (
+                <div className="mt-2.5 flex items-center gap-2 border-t border-[#e0dad4] pt-2">
+                  <select
+                    defaultValue=""
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        item.delegateAction?.(e.target.value);
+                        e.target.value = "";
+                      }
+                    }}
+                    className="w-full rounded-lg border border-[#cfc8c1] bg-white px-2 py-1 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
+                  >
+                    <option value="">Delegate to...</option>
+                    {delegationReadyPeople.map((person) => (
+                      <option key={person.id} value={person.id}>
+                        {person.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+
+              {/* Navigation Action for PREPARE TO DELEGATE */}
+              {item.releaseAction === "Prepare to Delegate" ? (
+                <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-[#e0dad4] pt-2">
+                  <span className="text-[10px] text-[#6a625d]">
+                    {delegationReadinessGapNames.length > 0
+                      ? `Readiness gap: ${delegationReadinessGapNames.join(", ")} missing role/responsibilities/authority.`
+                      : "No active non-founder team members available in People."}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onNavigateToPeople}
+                    className="shrink-0 rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]"
+                  >
+                    Configure People
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ))
+        )}
+      </div>
+
+      {summary.totalFounderOwned > 8 ? (
+        <p className="mt-3 text-right text-[11px] font-medium text-[#6a625d]">
+          Showing top 8 of {summary.totalFounderOwned} founder-owned active items
+        </p>
+      ) : null}
+
+      {/* Founder Capacity Release Footer */}
+      <div className="mt-4 border-t border-[#e0dad4] pt-3">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#4d4944]">
+          Founder Capacity Release Breakdown
+        </div>
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[#4d4944]">
+          <span>
+            <span className="font-medium text-[#171717]">Structurally releasable:</span>{" "}
+            {summary.releasableCount} item{summary.releasableCount === 1 ? "" : "s"} ({summary.releasablePct}%)
+          </span>
+          <span>
+            <span className="font-medium text-[#171717]">Authority bound:</span>{" "}
+            {summary.retainAuthorityCount}
+          </span>
+          <span>
+            <span className="font-medium text-[#171717]">Blocked before release:</span>{" "}
+            {summary.unblockFirstCount}
+          </span>
+          <span>
+            <span className="font-medium text-[#171717]">Complete personally:</span>{" "}
+            {summary.completePersonallyCount}
+          </span>
+          <span>
+            <span className="font-medium text-[#171717]">Delegation-ready team:</span>{" "}
+            {delegationReadyPeople.length > 0
+              ? delegationReadyPeople.map((p) => p.name).join(", ")
+              : "0 (constraint)"}
+          </span>
+          {delegationReadinessGapNames.length > 0 ? (
+            <span>
+              <span className="font-medium text-[#171717]">Readiness gap team:</span>{" "}
+              {delegationReadinessGapNames.join(", ")}
+            </span>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function PillarCard({ pillar, summary, onSelect }: { pillar: string; summary: { activeProjects: number; blockedProjects: number; openActions: number; openProblems: number; openOpportunities: number; leadsWaiting: number; wonLeadValue: number; priorityScore: number; }; onSelect: (pillar: string) => void; }) {
   return (
     <button
@@ -10819,6 +11113,261 @@ export default function Home() {
     };
   })();
 
+  const founderExecutionReleaseSystem = (() => {
+    const rawItems: ExecutionReleaseItem[] = [];
+    const usedRecordKeys = new Set<string>();
+
+    const authorityKeys = new Set(
+      empireDecisionQueue.founderReviewQueue.map((item) => `${item.kind}:${item.id}`)
+    );
+
+    const hasDelegationReadyPeople = delegationReadyNonFounderPeople.length > 0;
+    const nowMs = Date.now();
+    const dayMs = 1000 * 60 * 60 * 24;
+
+    const delegationReadinessGapNames = delegationReadinessGapPeople.map((person) => person.name);
+
+    // Helper to add founder item safely with deduplication
+    const processFounderItem = (
+      objectType: "Action" | "Project" | "Lead" | "Problem",
+      id: string,
+      title: string,
+      area: string,
+      owner: string,
+      status: string,
+      dueDateValue: string | undefined,
+      priorityOrSeverity: string | undefined,
+      isBlocked: boolean,
+      dependencyBlockerReason: string | null,
+    ) => {
+      const recordKey = `${objectType}:${id}`;
+      if (usedRecordKeys.has(recordKey)) return;
+
+      const requiresAuthority = authorityKeys.has(recordKey);
+
+      let releaseAction: ReleaseAction = "Monitor / Retain Temporarily";
+      let severity: ReleaseSeverity = "Low";
+      let why = "";
+      let releasePath = "";
+      let urgencyText = "";
+
+      const dueTimestamp = dueDateValue ? new Date(dueDateValue.includes("T") ? dueDateValue : `${dueDateValue}T00:00:00`).getTime() : 0;
+      const isValidDate = dueTimestamp > 0 && !Number.isNaN(dueTimestamp);
+      const daysUntilDue = isValidDate ? Math.round((dueTimestamp - nowMs) / dayMs) : null;
+      const isOverdue = daysUntilDue !== null && daysUntilDue < 0;
+      const isDueSoon = daysUntilDue !== null && daysUntilDue >= 0 && daysUntilDue <= 7;
+
+      if (isOverdue) {
+        urgencyText = `Overdue by ${Math.abs(daysUntilDue!)} day${Math.abs(daysUntilDue!) === 1 ? "" : "s"}`;
+      } else if (isDueSoon) {
+        urgencyText = daysUntilDue === 0 ? "Due today" : `Due in ${daysUntilDue} day${daysUntilDue === 1 ? "" : "s"}`;
+      } else if (isValidDate && daysUntilDue !== null && daysUntilDue <= 30) {
+        urgencyText = `Due in ${daysUntilDue} days`;
+      }
+
+      // 1. Check UNBLOCK FIRST
+      if (isBlocked || dependencyBlockerReason) {
+        releaseAction = "Unblock First";
+        severity = "Critical";
+        why = dependencyBlockerReason
+          ? `Founder-owned ${objectType.toLowerCase()} '${title}' is blocked by an upstream dependency (${dependencyBlockerReason}). Releasing ownership now will not restore progress.`
+          : `Founder-owned ${objectType.toLowerCase()} '${title}' is blocked. Resolving the operational blocker is required before transferring ownership.`;
+        releasePath = dependencyBlockerReason
+          ? "Clear upstream dependency, then evaluate for delegation."
+          : "Resolve blocker or re-sequence work, then delegate.";
+      }
+      // 2. Check RETAIN — FOUNDER AUTHORITY REQUIRED
+      else if (requiresAuthority) {
+        releaseAction = "Retain — Founder Authority Required";
+        severity = "Critical";
+        why = `Founder-owned ${objectType.toLowerCase()} '${title}' requires founder judgement or strategic decision authority.`;
+        releasePath = "Retain under founder ownership and execute or issue formal decision.";
+      }
+      // 3. Check COMPLETE PERSONALLY
+      else if (isOverdue || (isDueSoon && (priorityOrSeverity === "Critical" || priorityOrSeverity === "High"))) {
+        releaseAction = "Complete Personally";
+        severity = isOverdue ? "Critical" : "Material";
+        why = isOverdue
+          ? `Founder-owned ${objectType.toLowerCase()} '${title}' is overdue (${urgencyText}). Reassignment now would create handover drag; finishing it is the fastest path.`
+          : `Founder-owned ${objectType.toLowerCase()} '${title}' is urgent (${urgencyText}) and high-priority. Finish directly to preserve momentum.`;
+        releasePath = "Complete execution directly to clear the immediate backlog item.";
+      }
+      // 4. Check DELEGATE NOW vs PREPARE TO DELEGATE
+      else {
+        if (hasDelegationReadyPeople) {
+          releaseAction = "Delegate Now";
+          severity = "Material";
+          why = `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation and delegation-ready team capacity exists.`;
+          releasePath = `Transfer ownership to an active delegation-ready team member (${delegationReadyNonFounderPeople.map((p) => p.name).join(", ")}).`;
+        } else {
+          releaseAction = "Prepare to Delegate";
+          severity = "Material";
+          why = activeNonFounderPeople.length === 0
+            ? `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but no active non-founder team member exists in People.`
+            : `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but active team members (${empireDecisionQueue.delegationReadinessGapNames.join(", ")}) miss role, responsibilities, or authority definitions in People.`;
+          releasePath = activeNonFounderPeople.length === 0
+            ? "Onboard or activate non-founder team members in People to absorb operational load."
+            : "Define role, responsibilities, and authority in People to enable delegated ownership.";
+        }
+      }
+
+      // Calculate Release Priority Score
+      let priorityScore = 0;
+      if (releaseAction === "Delegate Now") priorityScore += 500;
+      else if (releaseAction === "Prepare to Delegate") priorityScore += 400;
+      else if (releaseAction === "Unblock First") priorityScore += 350;
+      else if (releaseAction === "Complete Personally") priorityScore += 300;
+      else if (releaseAction === "Retain — Founder Authority Required") priorityScore += 200;
+      else priorityScore += 100;
+
+      if (isOverdue) priorityScore += 150;
+      if (isDueSoon) priorityScore += 80;
+      if (priorityOrSeverity === "Critical") priorityScore += 100;
+      if (priorityOrSeverity === "High") priorityScore += 50;
+
+      rawItems.push({
+        id,
+        objectType,
+        title,
+        area,
+        owner,
+        status,
+        releaseAction,
+        severity,
+        urgencyText,
+        why,
+        releasePath,
+        hasCapacity: hasDelegationReadyPeople,
+        requiresAuthority,
+        priorityScore,
+        onOpen: () => handleOpenAttentionRecord(objectType, id),
+        delegateAction: (personId: string) => handleDelegateItem(objectType, id, personId),
+      });
+
+      usedRecordKeys.add(recordKey);
+    };
+
+    // Scan Founder-owned Actions
+    actionRecords.filter(isActionActive).forEach((action) => {
+      if (isFounderOwned(action.owner, action.ownerPersonId)) {
+        const dependencyBlocker = getActionDependencyBlocker(action);
+        processFounderItem(
+          "Action",
+          action.id,
+          action.actionTitle || action.title,
+          getAreaText(action),
+          getActionOwnerDisplay(action, people),
+          action.status,
+          action.dueDate,
+          action.priority,
+          action.status === "Blocked",
+          dependencyBlocker ? dependencyBlocker.reason.replace("BLOCKED BY PROBLEM: ", "").replace("WAITING ON DECISION: ", "") : null,
+        );
+      }
+    });
+
+    // Scan Founder-owned Projects
+    projects.filter(isProjectActive).forEach((project) => {
+      if (isFounderOwned(project.owner)) {
+        const isBlocked = project.status.trim().toLowerCase() === "blocked";
+        processFounderItem(
+          "Project",
+          project.id,
+          project.projectName,
+          project.area,
+          project.owner || "Founder",
+          project.status,
+          project.targetCompletionDate,
+          undefined,
+          isBlocked,
+          isBlocked ? "Project is blocked" : null,
+        );
+      }
+    });
+
+    // Scan Founder-owned Leads
+    activeLeads.filter((lead) => !["Won", "Lost"].includes(lead.status)).forEach((lead) => {
+      if (isFounderOwned(lead.owner)) {
+        processFounderItem(
+          "Lead",
+          lead.id,
+          lead.leadName,
+          lead.relatedPillar,
+          lead.owner || "Founder",
+          lead.status,
+          lead.followUpDate,
+          undefined,
+          false,
+          null,
+        );
+      }
+    });
+
+    // Scan Founder-owned Problems
+    problemRecords.filter(isProblemUnresolved).forEach((problem) => {
+      if (isFounderOwned(problem.owner)) {
+        processFounderItem(
+          "Problem",
+          problem.id,
+          problem.problemStatement || problem.title,
+          getAreaText(problem),
+          problem.owner || "Founder",
+          problem.problemStatus,
+          undefined,
+          problem.severity,
+          false,
+          null,
+        );
+      }
+    });
+
+    const sortedItems = [...rawItems].sort((left, right) =>
+      right.priorityScore - left.priorityScore || left.title.localeCompare(right.title)
+    );
+
+    const totalFounderOwned = sortedItems.length;
+    const delegateNowCount = sortedItems.filter((i) => i.releaseAction === "Delegate Now").length;
+    const prepareToDelegateCount = sortedItems.filter((i) => i.releaseAction === "Prepare to Delegate").length;
+    const retainAuthorityCount = sortedItems.filter((i) => i.releaseAction === "Retain — Founder Authority Required").length;
+    const unblockFirstCount = sortedItems.filter((i) => i.releaseAction === "Unblock First").length;
+    const completePersonallyCount = sortedItems.filter((i) => i.releaseAction === "Complete Personally").length;
+    const monitorCount = sortedItems.filter((i) => i.releaseAction === "Monitor / Retain Temporarily").length;
+
+    const releasableCount = delegateNowCount + prepareToDelegateCount;
+    const releasablePct = totalFounderOwned > 0 ? Math.round((releasableCount / totalFounderOwned) * 100) : 0;
+
+    let headline = "";
+    if (totalFounderOwned === 0) {
+      headline = "Founder execution load is fully distributed — no active founder-owned execution items.";
+    } else if (releasableCount === totalFounderOwned) {
+      headline = "Founder execution load is broadly releasable.";
+    } else if (delegateNowCount > 0) {
+      headline = `${releasableCount} of ${totalFounderOwned} founder-owned execution items are structurally releasable.`;
+    } else if (prepareToDelegateCount > 0 && !hasDelegationReadyPeople) {
+      headline = "Founder load is constrained by delegation capacity, not work suitability.";
+    } else if (retainAuthorityCount > 0 && releasableCount === 0) {
+      headline = "Most founder-owned execution is authority-bound; limited delegation leverage exists.";
+    } else {
+      headline = `${releasableCount} of ${totalFounderOwned} founder-owned execution items can be released.`;
+    }
+
+    return {
+      summary: {
+        headline,
+        totalFounderOwned,
+        delegateNowCount,
+        prepareToDelegateCount,
+        retainAuthorityCount,
+        unblockFirstCount,
+        completePersonallyCount,
+        monitorCount,
+        releasableCount,
+        releasablePct,
+      },
+      items: sortedItems,
+    };
+  })();
+
   const decisionControlLayer = (() => {
     const items: DecisionControlItem[] = [];
     const onTrackItems: DecisionControlItem[] = [];
@@ -10895,7 +11444,8 @@ export default function Home() {
         ...implementationActiveActions.map((a) => getValidActiveOwnerKey(a.owner, a.ownerPersonId)),
         ...linkedActiveProjects.map((p) => getValidActiveOwnerKey(p.owner, undefined)),
       ];
-       const hasDelegationSuitableFounderOwnedExecution =
+
+      const hasDelegationSuitableFounderOwnedExecution =
   implementationActiveActions.some((action) =>
     empireDecisionQueue.delegateItems.some(
       (item) => item.objectType === "Action" && item.id === action.id,
@@ -10907,9 +11457,7 @@ export default function Home() {
     ),
   );
 
-
-
-      const isOwnershipGap =
+const isOwnershipGap =
   hasExecutionPath &&
   (
     allLinkedExecutionOwners.some((key) => key === null) ||
@@ -10945,7 +11493,8 @@ export default function Home() {
           controlStatus = "No execution path";
           const isHighRisk =
             decision.riskLevel === "Critical" ||
-            decision.riskLevel === "High";
+            decision.riskLevel === "High"
+
           severity = isHighRisk ? "Critical" : "Material";
           why = `Active decision '${decision.decisionTitle || decision.title}' has no direct linked actions or projects, leaving implementation stalled.`;
           if (reviewDue) {
@@ -11075,9 +11624,9 @@ export default function Home() {
       const reviewDueGaps = items.filter((i) => i.controlStatus === "Review due").length;
       headline = `Decision delivery is broadly on track; ${reviewDueGaps} review control gap${reviewDueGaps === 1 ? " remains." : "s remain."}`;
     } else if (learningIncompleteCount > 0) {
-headline = activeTrackedCount > 0
+  headline = activeTrackedCount > 0
   ? `Active decision delivery is on track; ${learningIncompleteCount} closed decision${learningIncompleteCount === 1 ? " needs" : "s need"} outcome rating.`
-  : `${learningIncompleteCount} closed decision${learningIncompleteCount === 1 ? " needs" : "s need"} outcome rating; no active decisions are currently being tracked.`;    } else {
+  : `${learningIncompleteCount} closed decision${learningIncompleteCount === 1 ? " needs" : "s need"} outcome rating; no active decisions are currently being tracked.`;  } else {
       headline = "No active decision-execution control gaps detected.";
     }
 
@@ -13595,6 +14144,16 @@ headline = activeTrackedCount > 0
                   items={decisionControlLayer.items}
                   onTrackItems={decisionControlLayer.onTrackItems}
                   learningIncompleteItems={decisionControlLayer.learningIncompleteItems}
+                />
+              </div>
+
+              <div className="mt-5">
+                <FounderExecutionReleaseSystem
+                  summary={founderExecutionReleaseSystem.summary}
+                  items={founderExecutionReleaseSystem.items}
+                  delegationReadyPeople={delegationReadyNonFounderPeople}
+                  delegationReadinessGapNames={empireDecisionQueue.delegationReadinessGapNames}
+                  onNavigateToPeople={() => setActiveView("People")}
                 />
               </div>
 
