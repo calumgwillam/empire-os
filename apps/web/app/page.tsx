@@ -3057,6 +3057,317 @@ function FounderFocusList({ items, totalCount, onOpen }: { items: FocusListItem[
   );
 }
 
+type OperatingBriefItem = {
+  id: string;
+  objectType: string;
+  title: string;
+  area?: string;
+  owner?: string;
+  why: string;
+  onOpen: () => void;
+  delegateAction?: (personId: string) => void;
+};
+
+function FounderOperatingBrief({
+  doNow,
+  delegate,
+  decide,
+  watch,
+  hasDelegationCapacity,
+  delegationCapacityNames,
+  delegationReadinessGapNames,
+  delegationReadyPeople,
+  onOpenRecord,
+  onNavigateToPeople,
+}: {
+  doNow: OperatingBriefItem[];
+  delegate: OperatingBriefItem[];
+  decide: OperatingBriefItem[];
+  watch: OperatingBriefItem[];
+  hasDelegationCapacity: boolean;
+  delegationCapacityNames: string[];
+  delegationReadinessGapNames: string[];
+  delegationReadyPeople: PersonRecord[];
+  onOpenRecord: (objectType: string, id: string) => void;
+  onNavigateToPeople: () => void;
+}) {
+  return (
+    <section className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">
+            Operating Picture
+          </p>
+          <h2 className="mt-1 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">
+            Founder Operating Brief
+          </h2>
+        </div>
+        <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.14em] text-[#2f2b28]">
+          4 Core Directions
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        {/* DO NOW Group */}
+        <div className="rounded-xl border border-[#d3cbc3] bg-white p-3.5">
+          <div className="flex items-center justify-between gap-2 border-b border-[#e0dad4] pb-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#171717]">
+              1. Do now
+            </h3>
+            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] font-medium text-[#2f2b28]">
+              {doNow.length} item{doNow.length === 1 ? "" : "s"}
+            </span>
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {doNow.length === 0 ? (
+              <p className="py-2 text-[12px] italic text-[#6a625d]">
+                No immediate high-priority founder intervention required right now.
+              </p>
+            ) : (
+              doNow.map((item) => (
+                <button
+                  key={`donow-${item.objectType}-${item.id}`}
+                  type="button"
+                  onClick={item.onOpen}
+                  className="block w-full rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] p-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-[#171717] bg-[#171717] px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-[#f7f4f1]">
+                      {item.objectType}
+                    </span>
+                    {item.area ? (
+                      <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#4d4944]">
+                        {item.area}
+                      </span>
+                    ) : null}
+                    {item.owner ? (
+                      <span className="text-[10px] text-[#6a625d]">
+                        Owner: {item.owner}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-1.5 text-[14px] font-medium tracking-[-0.03em] text-[#171717]">
+                    {item.title}
+                  </div>
+                  <div className="mt-1 text-[11px] leading-4 text-[#524d49]">
+                    <span className="font-medium text-[#171717]">Why this is here: </span>
+                    {item.why}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* DELEGATE Group */}
+        <div className="rounded-xl border border-[#d3cbc3] bg-white p-3.5">
+          <div className="flex items-center justify-between gap-2 border-b border-[#e0dad4] pb-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#171717]">
+              2. Delegate
+            </h3>
+            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] font-medium text-[#2f2b28]">
+              {delegate.length} item{delegate.length === 1 ? "" : "s"}
+            </span>
+          </div>
+
+          <div className="mt-2 text-[11px] leading-4 text-[#4d4944]">
+            {hasDelegationCapacity ? (
+              <span className="text-[#2f5d3a]">
+                Delegation capacity available: {delegationCapacityNames.join(", ")}
+              </span>
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#c9b8a3] bg-[#f5efe6] p-2 text-[#524d49]">
+                <span>
+                  No delegation-ready non-founder exists.
+                  {delegationReadinessGapNames.length > 0
+                    ? ` (${delegationReadinessGapNames.join(", ")} missing role/responsibilities/authority)`
+                    : ""}
+                </span>
+                <button
+                  type="button"
+                  onClick={onNavigateToPeople}
+                  className="rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]"
+                >
+                  Manage People
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {delegate.length === 0 ? (
+              <p className="py-2 text-[12px] italic text-[#6a625d]">
+                No routine founder-owned items currently flagged for delegation.
+              </p>
+            ) : (
+              delegate.map((item) => (
+                <div
+                  key={`delegate-${item.objectType}-${item.id}`}
+                  className="rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] p-3"
+                >
+                  <button
+                    type="button"
+                    onClick={item.onOpen}
+                    className="block w-full text-left transition hover:text-[#6a3328]"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-[#2f2b28]">
+                        {item.objectType}
+                      </span>
+                      {item.area ? (
+                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#4d4944]">
+                          {item.area}
+                        </span>
+                      ) : null}
+                      <span className="text-[10px] text-[#6a625d]">
+                        Owner: {item.owner || "Founder"}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 text-[14px] font-medium tracking-[-0.03em] text-[#171717]">
+                      {item.title}
+                    </div>
+                    <div className="mt-1 text-[11px] leading-4 text-[#524d49]">
+                      <span className="font-medium text-[#171717]">Why this is here: </span>
+                      {item.why}
+                    </div>
+                  </button>
+
+                  {hasDelegationCapacity && item.delegateAction ? (
+                    <div className="mt-2.5 flex items-center gap-2 border-t border-[#e0dad4] pt-2">
+                      <select
+                        defaultValue=""
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            item.delegateAction?.(e.target.value);
+                            e.target.value = "";
+                          }
+                        }}
+                        className="w-full rounded-lg border border-[#cfc8c1] bg-white px-2 py-1 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
+                      >
+                        <option value="">Delegate to...</option>
+                        {delegationReadyPeople.map((person) => (
+                          <option key={person.id} value={person.id}>
+                            {person.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : null}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* DECIDE Group */}
+        <div className="rounded-xl border border-[#d3cbc3] bg-white p-3.5">
+          <div className="flex items-center justify-between gap-2 border-b border-[#e0dad4] pb-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#171717]">
+              3. Decide
+            </h3>
+            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] font-medium text-[#2f2b28]">
+              {decide.length} item{decide.length === 1 ? "" : "s"}
+            </span>
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {decide.length === 0 ? (
+              <p className="py-2 text-[12px] italic text-[#6a625d]">
+                No pending decisions or authority reviews requiring founder judgement.
+              </p>
+            ) : (
+              decide.map((item) => (
+                <button
+                  key={`decide-${item.objectType}-${item.id}`}
+                  type="button"
+                  onClick={item.onOpen}
+                  className="block w-full rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] p-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-[#2f2b28]">
+                      {item.objectType}
+                    </span>
+                    {item.area ? (
+                      <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#4d4944]">
+                        {item.area}
+                      </span>
+                    ) : null}
+                    {item.owner ? (
+                      <span className="text-[10px] text-[#6a625d]">
+                        Decision maker: {item.owner}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-1.5 text-[14px] font-medium tracking-[-0.03em] text-[#171717]">
+                    {item.title}
+                  </div>
+                  <div className="mt-1 text-[11px] leading-4 text-[#524d49]">
+                    <span className="font-medium text-[#171717]">Why this is here: </span>
+                    {item.why}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* WATCH Group */}
+        <div className="rounded-xl border border-[#d3cbc3] bg-white p-3.5">
+          <div className="flex items-center justify-between gap-2 border-b border-[#e0dad4] pb-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#171717]">
+              4. Watch
+            </h3>
+            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] font-medium text-[#2f2b28]">
+              {watch.length} item{watch.length === 1 ? "" : "s"}
+            </span>
+          </div>
+
+          <div className="mt-3 space-y-2">
+            {watch.length === 0 ? (
+              <p className="py-2 text-[12px] italic text-[#6a625d]">
+                No approaching deadlines or upcoming signals to watch.
+              </p>
+            ) : (
+              watch.map((item) => (
+                <button
+                  key={`watch-${item.objectType}-${item.id}`}
+                  type="button"
+                  onClick={item.onOpen}
+                  className="block w-full rounded-lg border border-[#d3cbc3] bg-[#f9f7f4] p-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-[#2f2b28]">
+                      {item.objectType}
+                    </span>
+                    {item.area ? (
+                      <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#4d4944]">
+                        {item.area}
+                      </span>
+                    ) : null}
+                    {item.owner ? (
+                      <span className="text-[10px] text-[#6a625d]">
+                        Owner: {item.owner}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-1.5 text-[14px] font-medium tracking-[-0.03em] text-[#171717]">
+                    {item.title}
+                  </div>
+                  <div className="mt-1 text-[11px] leading-4 text-[#524d49]">
+                    <span className="font-medium text-[#171717]">Why this is here: </span>
+                    {item.why}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function PillarCard({ pillar, summary, onSelect }: { pillar: string; summary: { activeProjects: number; blockedProjects: number; openActions: number; openProblems: number; openOpportunities: number; leadsWaiting: number; wonLeadValue: number; priorityScore: number; }; onSelect: (pillar: string) => void; }) {
   return (
     <button
@@ -8412,6 +8723,207 @@ export default function Home() {
   })();
   const founderFocusList = founderFocusCandidates.slice(0, 3);
 
+  const founderOperatingBrief = (() => {
+    const usedRecordKeys = new Set<string>();
+
+    // 1. DO NOW (top 3)
+    const doNowItems: OperatingBriefItem[] = [];
+    for (const candidate of founderFocusCandidates) {
+      if (doNowItems.length >= 3) break;
+      const candidateKey = candidate.key;
+      const recordKey = `${candidate.objectType}:${candidate.id}`;
+      if (usedRecordKeys.has(candidateKey) || usedRecordKeys.has(recordKey)) continue;
+
+      doNowItems.push({
+        id: candidate.id,
+        objectType: candidate.objectType,
+        title: candidate.title,
+        area: candidate.area,
+        why: candidate.reason,
+        onOpen: () => handleOpenAttentionRecord(candidate.objectType, candidate.id),
+      });
+      usedRecordKeys.add(candidateKey);
+      usedRecordKeys.add(recordKey);
+    }
+
+    // 2. DELEGATE (top 3)
+    const delegateItemsList: OperatingBriefItem[] = [];
+    for (const item of empireDecisionQueue.delegateItems) {
+      if (delegateItemsList.length >= 3) break;
+      const key = `${item.objectType}:${item.id}`;
+      if (usedRecordKeys.has(key)) continue;
+
+      delegateItemsList.push({
+        id: item.id,
+        objectType: item.objectType,
+        title: item.title,
+        area: item.pillar,
+        owner: item.owner,
+        why: item.whatIsChanging || item.whyItMatters,
+        onOpen: () => handleOpenAttentionRecord(item.objectType, item.id),
+        delegateAction: (personId: string) => handleDelegateItem(item.objectType as "Action" | "Project" | "Lead" | "Problem", item.id, personId),
+      });
+      usedRecordKeys.add(key);
+    }
+
+    // 3. DECIDE (top 3)
+    const decideItemsList: OperatingBriefItem[] = [];
+    for (const item of empireDecisionQueue.founderReviewQueue) {
+      if (decideItemsList.length >= 3) break;
+      const key = `${item.kind}:${item.id}`;
+      if (usedRecordKeys.has(key)) continue;
+
+      decideItemsList.push({
+        id: item.id,
+        objectType: item.kind,
+        title: item.title,
+        area: item.pillar,
+        owner: item.owner,
+        why: `${item.reasonCategory}: ${item.whyItMatters}`,
+        onOpen: () => handleOpenAttentionRecord(item.kind, item.id),
+      });
+      usedRecordKeys.add(key);
+    }
+
+    // 4. WATCH (top 3)
+    const watchCandidates: Array<{ item: OperatingBriefItem; urgencyDays: number }> = [];
+    const nowMs = Date.now();
+    const dayMs = 1000 * 60 * 60 * 24;
+
+    // Actions with due date coming up
+    actionRecords.filter(isActionActive).forEach((action) => {
+      const key = `Action:${action.id}`;
+      if (usedRecordKeys.has(key)) return;
+      if (action.dueDate) {
+        const dueMs = new Date(action.dueDate).getTime();
+        if (!Number.isNaN(dueMs)) {
+          const days = Math.round((dueMs - nowMs) / dayMs);
+          if (days >= 0 && days <= 14) {
+            watchCandidates.push({
+              item: {
+                id: action.id,
+                objectType: "Action",
+                title: action.actionTitle || action.title,
+                area: getAreaText(action),
+                owner: getActionOwnerDisplay(action, people),
+                why: days === 0 ? "Due today — review execution momentum" : `Due in ${days} day${days === 1 ? "" : "s"} (${action.dueDate.slice(0, 10)})`,
+                onOpen: () => handleOpenAttentionRecord("Action", action.id),
+              },
+              urgencyDays: days,
+            });
+          }
+        }
+      }
+    });
+
+    // Active projects with target completion date in next 21 days
+    projects.filter(isProjectActive).forEach((project) => {
+      const key = `Project:${project.id}`;
+      if (usedRecordKeys.has(key)) return;
+      if (project.targetCompletionDate && project.status.trim().toLowerCase() !== "blocked") {
+        const targetMs = new Date(`${project.targetCompletionDate}T00:00:00`).getTime();
+        if (!Number.isNaN(targetMs)) {
+          const days = Math.round((targetMs - nowMs) / dayMs);
+          if (days >= 0 && days <= 21) {
+            watchCandidates.push({
+              item: {
+                id: project.id,
+                objectType: "Project",
+                title: project.projectName,
+                area: project.area,
+                owner: project.owner || "Unassigned",
+                why: days === 0 ? "Target completion date is today" : `Target completion in ${days} day${days === 1 ? "" : "s"} (${project.targetCompletionDate})`,
+                onOpen: () => handleOpenAttentionRecord("Project", project.id),
+              },
+              urgencyDays: days,
+            });
+          }
+        }
+      }
+    });
+
+    // Active leads with upcoming follow-up
+    activeLeads.filter((lead) => !["Won", "Lost"].includes(lead.status)).forEach((lead) => {
+      const key = `Lead:${lead.id}`;
+      if (usedRecordKeys.has(key)) return;
+      if (lead.followUpDate) {
+        const followMs = new Date(lead.followUpDate).getTime();
+        if (!Number.isNaN(followMs)) {
+          const days = Math.round((followMs - nowMs) / dayMs);
+          if (days >= 0 && days <= 14) {
+            watchCandidates.push({
+              item: {
+                id: lead.id,
+                objectType: "Lead",
+                title: lead.leadName,
+                area: lead.relatedPillar,
+                owner: lead.owner || "Unassigned",
+                why: days === 0 ? "Commercial follow-up date is today" : `Commercial follow-up in ${days} day${days === 1 ? "" : "s"} (${lead.followUpDate})`,
+                onOpen: () => handleOpenAttentionRecord("Lead", lead.id),
+              },
+              urgencyDays: days,
+            });
+          }
+        }
+      }
+    });
+
+    // Decisions with review date approaching
+    decisionRecords.filter(isDecisionActive).forEach((decision) => {
+      const key = `Decision:${decision.id}`;
+      if (usedRecordKeys.has(key)) return;
+      if (decision.reviewDate) {
+        const reviewMs = new Date(decision.reviewDate).getTime();
+        if (!Number.isNaN(reviewMs)) {
+          const days = Math.round((reviewMs - nowMs) / dayMs);
+          if (days > 0 && days <= 21) {
+            watchCandidates.push({
+              item: {
+                id: decision.id,
+                objectType: "Decision",
+                title: decision.decisionTitle || decision.title,
+                area: getAreaText(decision),
+                owner: decision.decisionMaker || "Unassigned",
+                why: `Review date approaching in ${days} day${days === 1 ? "" : "s"} (${decision.reviewDate.slice(0, 10)})`,
+                onOpen: () => handleOpenAttentionRecord("Decision", decision.id),
+              },
+              urgencyDays: days,
+            });
+          }
+        }
+      }
+    });
+
+    // High/Exceptional fit evaluating opportunities
+    opportunityRecords.filter((opp) => ["Evaluating", "On Hold"].includes(opp.status) && ["High", "Exceptional"].includes(opp.strategicFit)).forEach((opp) => {
+      const key = `Opportunity:${opp.id}`;
+      if (usedRecordKeys.has(key)) return;
+      watchCandidates.push({
+        item: {
+          id: opp.id,
+          objectType: "Opportunity",
+          title: opp.opportunityTitle || opp.title,
+          area: getAreaText(opp),
+          owner: opp.owner || "Unassigned",
+          why: `${opp.strategicFit} strategic-fit opportunity currently ${opp.status.toLowerCase()} — watch for timing trigger`,
+          onOpen: () => handleOpenAttentionRecord("Opportunity", opp.id),
+        },
+        urgencyDays: opp.strategicFit === "Exceptional" ? 5 : 10,
+      });
+    });
+
+    watchCandidates.sort((a, b) => a.urgencyDays - b.urgencyDays || a.item.title.localeCompare(b.item.title));
+
+    const watchItemsList = watchCandidates.slice(0, 3).map((candidate) => candidate.item);
+
+    return {
+      doNow: doNowItems,
+      delegate: delegateItemsList,
+      decide: decideItemsList,
+      watch: watchItemsList,
+    };
+  })();
+
   const todayBrief = (() => {
     const authorityCount = empireDecisionQueue.founderAuthorityItems.length;
     const reviewDueCount = decisionTrackRecord.reviewsDue.length;
@@ -11400,6 +11912,21 @@ export default function Home() {
 
               <div className="mt-5">
                 <FounderFocusList items={founderFocusList} totalCount={founderFocusCandidates.length} onOpen={handleOpenAttentionRecord} />
+              </div>
+
+              <div className="mt-5">
+                <FounderOperatingBrief
+                  doNow={founderOperatingBrief.doNow}
+                  delegate={founderOperatingBrief.delegate}
+                  decide={founderOperatingBrief.decide}
+                  watch={founderOperatingBrief.watch}
+                  hasDelegationCapacity={delegationReadyNonFounderPeople.length > 0}
+                  delegationCapacityNames={empireDecisionQueue.delegationCapacityNames}
+                  delegationReadinessGapNames={empireDecisionQueue.delegationReadinessGapNames}
+                  delegationReadyPeople={delegationReadyNonFounderPeople}
+                  onOpenRecord={handleOpenAttentionRecord}
+                  onNavigateToPeople={() => setActiveView("People")}
+                />
               </div>
 
               <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
