@@ -3848,6 +3848,243 @@ type DecisionControlSummary = {
   learningIncompleteCount: number;
 };
 
+type LearningClosureStage = "Needs Review" | "Needs System" | "System in Development" | "Needs SOP" | "Institutionalised";
+
+type LearningClosureItem = {
+  id: string;
+  title: string;
+  area: string;
+  owner: string;
+  lessonStatus: LessonStatus;
+  closureStage: LearningClosureStage;
+  linkedSystemCount: number;
+  activeSystemCount: number;
+  linkedSopCount: number;
+  activeSopCount: number;
+  sourceContext: string;
+  why: string;
+  nextMove: string;
+  onOpen: () => void;
+};
+
+type LearningClosureSummary = {
+  headline: string;
+  activeLearningLoops: number;
+  needsReview: number;
+  needsSystem: number;
+  systemInDevelopment: number;
+  needsSop: number;
+  institutionalised: number;
+  closureRate: number;
+  openLoops: number;
+};
+
+type LearningClosureEngine = {
+  items: LearningClosureItem[];
+  openItems: LearningClosureItem[];
+  institutionalisedItems: LearningClosureItem[];
+  summary: LearningClosureSummary;
+};
+
+function deriveLearningClosure(
+  lessonRecords: LessonRecord[],
+  systemRecords: SystemRecord[],
+  sopRecords: SopRecord[],
+  decisionRecords: DecisionRecord[],
+  problemRecords: ProblemRecord[],
+  projects: ProjectRecord[],
+  onOpenLesson: (lesson: LessonRecord) => void,
+  onOpenSystem: (system: SystemRecord) => void,
+  onOpenSop: (sop: SopRecord) => void,
+): LearningClosureEngine {
+  const activeLessons = lessonRecords.filter((lesson) => lesson.status !== "Archived");
+  const priority: LearningClosureStage[] = ["Needs Review", "Needs System", "System in Development", "Needs SOP"];
+
+  const items = activeLessons.map((lesson) => {
+    const linkedSystems = systemRecords.filter((system) =>
+      system.relatedLesson === lesson.id || lesson.relatedSystem === system.id,
+    );
+    const linkedSystemIds = new Set(linkedSystems.map((system) => system.id));
+    const activeSystems = linkedSystems.filter((system) => ["Active", "Reviewing"].includes(system.status));
+    const linkedSops = sopRecords.filter((sop) =>
+      sop.relatedLesson === lesson.id || linkedSystemIds.has(sop.relatedSystem),
+    );
+    const activeSops = linkedSops.filter((sop) => ["Active", "Reviewing"].includes(sop.status));
+
+    let closureStage: LearningClosureStage;
+if (activeSystems.length > 0 && activeSops.length > 0) {
+  closureStage = "Institutionalised";
+} else if (["New", "Change Required"].includes(lesson.status)) {
+  closureStage = "Needs Review";
+} else if (linkedSystems.length === 0) {
+  closureStage = "Needs System";
+} else if (activeSystems.length === 0) {
+  closureStage = "System in Development";
+} else {
+  closureStage = "Needs SOP";
+}
+
+
+    const sourceParts = [
+      lesson.relatedDecision ? `Decision: ${decisionRecords.find((decision) => decision.id === lesson.relatedDecision)?.decisionTitle || "Linked"}` : "",
+      lesson.relatedProblem ? `Problem: ${problemRecords.find((problem) => problem.id === lesson.relatedProblem)?.problemStatement || "Linked"}` : "",
+      lesson.relatedProject ? `Project: ${projects.find((project) => project.id === lesson.relatedProject)?.projectName || "Linked"}` : "",
+    ].filter(Boolean);
+    const relevantSystem = activeSystems[0] || linkedSystems[0];
+    const relevantSop = activeSops[0] || linkedSops[0];
+
+    const onOpen = closureStage === "System in Development" || closureStage === "Needs SOP"
+      ? () => relevantSystem && onOpenSystem(relevantSystem)
+      : closureStage === "Institutionalised" && relevantSop
+        ? () => onOpenSop(relevantSop)
+        : () => onOpenLesson(lesson);
+
+    const why = closureStage === "Needs Review"
+      ? "The lesson is new or marked for change, so its learning has not yet reached a reviewed or implemented state."
+      : closureStage === "Needs System"
+        ? "The lesson is reviewed or implemented, but no linked System has carried the learning into operating doctrine."
+        : closureStage === "System in Development"
+          ? "A linked System exists, but none is active or under review yet."
+          : closureStage === "Needs SOP"
+            ? "A linked System is active or under review, but no linked SOP is active or under review yet."
+            : "An active or reviewing System and SOP now carry this learning into operating practice.";
+    const nextMove = closureStage === "Needs Review"
+      ? "Open the Lesson for review"
+      : closureStage === "Needs System"
+        ? "Open the Lesson and create or link a System"
+        : closureStage === "System in Development"
+          ? `Open ${relevantSystem?.systemName || "the linked System"} for development`
+          : closureStage === "Needs SOP"
+            ? `Open ${relevantSystem?.systemName || "the active System"} and create or link a SOP`
+            : "Inspect the active operating record";
+
+    return {
+      id: lesson.id,
+      title: lesson.lessonTitle || lesson.title,
+      area: lesson.relatedPillar || lesson.relatedArea || "Unassigned",
+      owner: lesson.owner || "Unassigned",
+      lessonStatus: lesson.status,
+      closureStage,
+      linkedSystemCount: linkedSystems.length,
+      activeSystemCount: activeSystems.length,
+      linkedSopCount: linkedSops.length,
+      activeSopCount: activeSops.length,
+      sourceContext: sourceParts.join(" • "),
+      why,
+      nextMove,
+      onOpen,
+    };
+  });
+
+  const openItems = items
+    .filter((item) => item.closureStage !== "Institutionalised")
+    .sort((left, right) => priority.indexOf(left.closureStage) - priority.indexOf(right.closureStage) || left.title.localeCompare(right.title));
+  const institutionalisedItems = items.filter((item) => item.closureStage === "Institutionalised");
+  const institutionalised = institutionalisedItems.length;
+  const headline = items.length === 0
+    ? "No active organisational learning loops are currently tracked."
+    : institutionalised === items.length
+      ? "Organisational learning is fully closed into operating practice."
+      : institutionalised > 0
+        ? `Learning is being institutionalised, but ${items.length - institutionalised} loop${items.length - institutionalised === 1 ? "" : "s"} remain open.`
+        : "Organisational learning is being captured but has not yet fully closed into operating practice.";
+
+  return {
+    items,
+    openItems,
+    institutionalisedItems,
+    summary: {
+      headline,
+      activeLearningLoops: items.length,
+      needsReview: items.filter((item) => item.closureStage === "Needs Review").length,
+      needsSystem: items.filter((item) => item.closureStage === "Needs System").length,
+      systemInDevelopment: items.filter((item) => item.closureStage === "System in Development").length,
+      needsSop: items.filter((item) => item.closureStage === "Needs SOP").length,
+      institutionalised,
+      closureRate: items.length === 0 ? 0 : Math.round((institutionalised / items.length) * 100),
+      openLoops: openItems.length,
+    },
+  };
+}
+
+function LearningClosureLayer({ engine }: { engine: LearningClosureEngine }) {
+  const { summary, openItems, institutionalisedItems } = engine;
+  const displayedOpenItems = openItems.slice(0, 8);
+  const stageClass = (stage: LearningClosureStage) => stage === "Needs Review"
+    ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"
+    : stage === "Needs SOP"
+      ? "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"
+      : stage === "Institutionalised"
+        ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
+        : "border-[#d3cbc3] bg-[#f1eee9] text-[#4d4944]";
+
+  return (
+    <section className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Closed-Loop Learning</p>
+          <h2 className="mt-1 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">Learning Closure &amp; Institutionalisation</h2>
+          <p className="mt-1 text-[12px] font-medium text-[#4d4944]">{summary.headline}</p>
+        </div>
+        <div className="rounded-xl border border-[#b8c9ba] bg-[#eef4ee] px-3 py-2 text-right">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#2f5d3a]">Closure rate</div>
+          <div className="mt-0.5 text-[22px] font-semibold tracking-[-0.04em] text-[#2f5d3a]">{summary.closureRate}%</div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-7">
+        {[
+          ["Active learning loops", summary.activeLearningLoops, "text-[#171717]"],
+          ["Needs Review", summary.needsReview, "text-[#6a3328]"],
+          ["Needs System", summary.needsSystem, "text-[#4d4944]"],
+          ["System in Development", summary.systemInDevelopment, "text-[#4d4944]"],
+          ["Needs SOP", summary.needsSop, "text-[#6a4a28]"],
+          ["Institutionalised", summary.institutionalised, "text-[#2f5d3a]"],
+          ["Open loops", summary.openLoops, "text-[#6a3328]"],
+        ].map(([label, count, color]) => (
+          <div key={label} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
+            <div className="text-[9px] font-medium uppercase tracking-[0.12em] text-[#4d4944]">{label}</div>
+            <div className={`mt-1 text-[20px] font-semibold tracking-[-0.04em] ${color}`}>{count}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Open-loop queue</div>
+        {displayedOpenItems.length === 0 ? (
+          <div className="rounded-xl border border-[#b8c9ba] bg-[#eef4ee] px-4 py-4 text-[13px] text-[#2f5d3a]">Every active lesson is closed into active or reviewing operating structure and procedure.</div>
+        ) : (
+          <div className="space-y-2">
+            {displayedOpenItems.map((item) => (
+              <button key={item.id} type="button" onClick={item.onOpen} className="block w-full rounded-xl border border-[#d3cbc3] bg-white p-3.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${stageClass(item.closureStage)}`}>{item.closureStage}</span>
+                  <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#2f2b28]">Lesson: {item.lessonStatus}</span>
+                  <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#4d4944]">{item.area}</span>
+                  <span className="text-[10px] text-[#6a625d]">Owner: {item.owner}</span>
+                </div>
+                <div className="mt-2 text-[14px] font-medium tracking-[-0.03em] text-[#171717]">{item.title}</div>
+                {item.sourceContext ? <div className="mt-1 text-[10px] uppercase tracking-[0.1em] text-[#7a726b]">{item.sourceContext}</div> : null}
+                <div className="mt-1.5 text-[11px] leading-4 text-[#524d49]"><span className="font-medium text-[#171717]">Why this is here: </span>{item.why}</div>
+                <div className="mt-1 text-[11px] leading-4 text-[#2f5d3a]"><span className="font-medium text-[#171717]">Next closure move: </span>{item.nextMove}</div>
+                <div className="mt-2 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.1em] text-[#6a625d]"><span>{item.linkedSystemCount} System{item.linkedSystemCount === 1 ? "" : "s"} ({item.activeSystemCount} active/reviewing)</span><span>{item.linkedSopCount} SOP{item.linkedSopCount === 1 ? "" : "s"} ({item.activeSopCount} active/reviewing)</span><span className="text-[#171717]">Open record</span></div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 border-t border-[#d3cbc3] pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Institutionalised evidence</div>
+          <span className="rounded-full border border-[#b8c9ba] bg-[#eef4ee] px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.14em] text-[#2f5d3a]">{institutionalisedItems.length} closed</span>
+        </div>
+        {institutionalisedItems.length > 0 ? <div className="mt-2 flex flex-wrap gap-1.5">{institutionalisedItems.slice(0, 6).map((item) => <button key={item.id} type="button" onClick={item.onOpen} className="rounded-lg border border-[#b8c9ba] bg-white px-2.5 py-1.5 text-left text-[11px] text-[#2f5d3a] transition hover:border-[#2f5d3a]">{item.title}</button>)}</div> : <div className="mt-2 text-[11px] text-[#4d4944]">No active or reviewing System + SOP evidence has closed a learning loop yet.</div>}
+      </div>
+    </section>
+  );
+}
+
 function DecisionExecutionControlLayer({
   summary,
   items,
@@ -14004,6 +14241,17 @@ const isOwnershipGap =
       });
     }
   }
+  const learningClosure = deriveLearningClosure(
+    lessonRecords,
+    systemRecords,
+    sopRecords,
+    decisionRecords,
+    problemRecords,
+    projects,
+    handleLessonEditOpen,
+    handleSystemEditOpen,
+    handleSopEditOpen,
+  );
 
   return (
     <div className="min-h-screen bg-[#f1efe9] text-[#171717]">
@@ -14188,6 +14436,10 @@ const isOwnershipGap =
                   onTrackItems={decisionControlLayer.onTrackItems}
                   learningIncompleteItems={decisionControlLayer.learningIncompleteItems}
                 />
+              </div>
+
+              <div className="mt-5">
+                <LearningClosureLayer engine={learningClosure} />
               </div>
 
               <div className="mt-5">
