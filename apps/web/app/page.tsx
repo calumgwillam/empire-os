@@ -5929,12 +5929,13 @@ type SystemDetailPanelProps = {
   onClose: () => void;
   onChange: (field: keyof SystemRecord, value: string) => void;
   onSave: () => void;
+  onCaptureReviewLearning: () => void;
   onCreateLinkedSop: () => void;
   onOpenLinkedSop: (sop: SopRecord) => void;
   onOpenRelatedLesson?: () => void;
 };
 
-function SystemDetailPanel({ system, linkedSops, upstream, downstream, onClose, onChange, onSave, onCreateLinkedSop, onOpenLinkedSop, onOpenRelatedLesson }: SystemDetailPanelProps) {
+function SystemDetailPanel({ system, linkedSops, upstream, downstream, onClose, onChange, onSave, onCaptureReviewLearning, onCreateLinkedSop, onOpenLinkedSop, onOpenRelatedLesson }: SystemDetailPanelProps) {
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
@@ -6130,6 +6131,13 @@ function SystemDetailPanel({ system, linkedSops, upstream, downstream, onClose, 
           </button>
           <button
             type="button"
+            onClick={onCaptureReviewLearning}
+            className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]"
+          >
+            Capture review learning
+          </button>
+          <button
+            type="button"
             onClick={onCreateLinkedSop}
             className="rounded-lg border border-[#171717] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#171717]"
           >
@@ -6180,10 +6188,11 @@ type SopDetailPanelProps = {
   onClose: () => void;
   onChange: (field: keyof SopRecord, value: string) => void;
   onSave: () => void;
+  onCaptureReviewLearning: () => void;
   onOpenRelatedSystem?: () => void;
 };
 
-function SopDetailPanel({ sop, upstream, downstream, onClose, onChange, onSave, onOpenRelatedSystem }: SopDetailPanelProps) {
+function SopDetailPanel({ sop, upstream, downstream, onClose, onChange, onSave, onCaptureReviewLearning, onOpenRelatedSystem }: SopDetailPanelProps) {
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
@@ -6389,6 +6398,13 @@ function SopDetailPanel({ sop, upstream, downstream, onClose, onChange, onSave, 
             className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]"
           >
             Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onCaptureReviewLearning}
+            className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]"
+          >
+            Capture review learning
           </button>
           <button
             type="button"
@@ -6847,13 +6863,14 @@ export default function Home() {
   const [creatingLinkedLessonForDecisionId, setCreatingLinkedLessonForDecisionId] = useState<string | null>(null);
   const [creatingLinkedLessonForProblemId, setCreatingLinkedLessonForProblemId] = useState<string | null>(null);
   const [creatingLinkedSopForSystemId, setCreatingLinkedSopForSystemId] = useState<string | null>(null);
+  const [creatingReviewLearningKey, setCreatingReviewLearningKey] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<DestinationKey>("Capture");
   const [selectedPillar, setSelectedPillar] = useState<string | null>(null);
   const [selectedAccountabilityKey, setSelectedAccountabilityKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   useEffect(() => {
-    if (feedback?.message !== "Action details saved." && feedback?.message !== "Decision details saved." && feedback?.message !== "Problem details saved." && feedback?.message !== "Opportunity details saved." && feedback?.message !== "Lesson details saved.") {
+    if (feedback?.message !== "Action details saved." && feedback?.message !== "Decision details saved." && feedback?.message !== "Problem details saved." && feedback?.message !== "Opportunity details saved." && feedback?.message !== "Lesson details saved." && feedback?.message !== "Review learning captured from System." && feedback?.message !== "Review learning captured from SOP.") {
       return;
     }
 
@@ -12954,6 +12971,7 @@ const isOwnershipGap =
   };
 
   const handleSystemEditOpen = (system: SystemRecord) => {
+    setCreatingReviewLearningKey(null);
     setSelectedSystemId(system.id);
     setSystemEditor(system);
   };
@@ -13002,6 +13020,7 @@ const isOwnershipGap =
   };
 
   const handleSopEditOpen = (sop: SopRecord) => {
+    setCreatingReviewLearningKey(null);
     setSelectedSopId(sop.id);
     setSopEditor(sop);
   };
@@ -13049,6 +13068,97 @@ const isOwnershipGap =
     setFeedback({
       type: "success",
       message: "SOP details saved.",
+    });
+  };
+
+  const handleCaptureSystemReviewLearning = (system: SystemRecord) => {
+    const creationKey = `System:${system.id}`;
+    if (creatingReviewLearningKey === creationKey) {
+      return;
+    }
+
+    setCreatingReviewLearningKey(creationKey);
+    const createdLesson = normalizeLessonRecord({
+      id: generateConversionId(),
+      sourceCaptureId: system.sourceCaptureId,
+      targetType: "Convert to Lesson",
+      createdAt: new Date().toISOString(),
+      title: system.systemName || system.title,
+      originalRawNote: system.purpose || system.originalRawNote || system.systemName,
+      relatedArea: system.relatedArea || system.area,
+      importance: system.importance,
+      status: "New",
+      lessonTitle: `Review: ${system.systemName || system.title}`,
+      lessonDescription: `Learning captured from a review of the System: ${system.systemName || system.title}. Record what should improve future operating practice.`,
+      sourceEvent: `System review: ${system.systemName || system.title}`,
+      dateLearned: new Date().toISOString(),
+      relatedPillar: system.relatedPillar || system.area || system.relatedArea,
+      whyItMatters: "Review learning should improve future operating practice and prevent the organisation from repeating avoidable lessons.",
+      recommendedChange: "",
+      relatedProblem: "",
+      relatedProject: "",
+      relatedDecision: "",
+      relatedSystem: system.id,
+      owner: system.owner || "",
+      lessonStatus: "New",
+      relatedCapture: system.relatedCapture || system.sourceCaptureId,
+    });
+
+    setConversions((currentConversions) => [createdLesson, ...currentConversions]);
+    setSelectedSystemId(null);
+    setSystemEditor(null);
+    setSelectedLessonId(createdLesson.id);
+    setLessonEditor(createdLesson);
+
+    setFeedback({
+      type: "success",
+      message: "Review learning captured from System.",
+    });
+  };
+
+  const handleCaptureSopReviewLearning = (sop: SopRecord) => {
+    const creationKey = `SOP:${sop.id}`;
+    if (creatingReviewLearningKey === creationKey) {
+      return;
+    }
+
+    setCreatingReviewLearningKey(creationKey);
+    const sopTitle = sop.sopTitle || sop.title;
+    const createdLesson = normalizeLessonRecord({
+      id: generateConversionId(),
+      sourceCaptureId: sop.sourceCaptureId,
+      targetType: "Convert to Lesson",
+      createdAt: new Date().toISOString(),
+      title: sopTitle,
+      originalRawNote: sop.purpose || sop.originalRawNote || sopTitle,
+      relatedArea: sop.relatedArea || sop.relatedPillar || "",
+      importance: sop.importance,
+      status: "New",
+      lessonTitle: `Review: ${sopTitle}`,
+      lessonDescription: `Learning captured from a review of the SOP: ${sopTitle}. Record what should improve future operating practice.`,
+      sourceEvent: `SOP review: ${sopTitle}`,
+      dateLearned: new Date().toISOString(),
+      relatedPillar: sop.relatedPillar || sop.relatedArea || "",
+      whyItMatters: "Review learning should improve future operating practice and prevent the organisation from repeating avoidable lessons.",
+      recommendedChange: "",
+      relatedProblem: "",
+      relatedProject: "",
+      relatedDecision: "",
+      relatedSystem: sop.relatedSystem || "",
+      owner: sop.owner || "",
+      lessonStatus: "New",
+      relatedCapture: sop.relatedCapture || sop.sourceCaptureId,
+    });
+
+    setConversions((currentConversions) => [createdLesson, ...currentConversions]);
+    setSelectedSopId(null);
+    setSopEditor(null);
+    setSelectedLessonId(createdLesson.id);
+    setLessonEditor(createdLesson);
+
+    setFeedback({
+      type: "success",
+      message: "Review learning captured from SOP.",
     });
   };
 
@@ -17252,6 +17362,7 @@ const isOwnershipGap =
           }}
           onChange={handleSystemEditorChange}
           onSave={handleSystemSave}
+          onCaptureReviewLearning={() => handleCaptureSystemReviewLearning(systemEditor)}
           onCreateLinkedSop={() => handleCreateLinkedSop(systemEditor)}
           onOpenLinkedSop={(sop) => handleSopEditOpen(sop)}
           onOpenRelatedLesson={() => handleOpenRelatedLesson(systemEditor)}
@@ -17290,6 +17401,7 @@ const isOwnershipGap =
           }}
           onChange={handleSopEditorChange}
           onSave={handleSopSave}
+          onCaptureReviewLearning={() => handleCaptureSopReviewLearning(sopEditor)}
           onOpenRelatedSystem={() => handleOpenRelatedSystem(sopEditor)}
         />
       ) : null}
