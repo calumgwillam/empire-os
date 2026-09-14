@@ -11340,7 +11340,7 @@ export default function Home() {
       const key = "People:cofounder-readiness-gap";
       if (!usedKeys.has(key)) {
         rawBottlenecks.push({
-          id: "unassigned",
+          id: "cofounder-readiness-gap",
           category: "Capability",
           title: "Co-founder delegation readiness gap",
           objectType: "People",
