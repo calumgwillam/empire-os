@@ -860,7 +860,7 @@ function normalizeActionRecord(record: CaptureConversionRecord): ActionRecord {
   return {
     ...record,
     actionTitle: record.title?.trim() || "Untitled action",
-    description: record.actionDescription?.trim() || record.originalRawNote?.trim() || "",
+    description: (record as Partial<ActionRecord>).description?.trim() || record.actionDescription?.trim() || record.originalRawNote?.trim() || "",
     owner: record.owner?.trim() || "",
     createdBy: record.createdBy?.trim() || "",
     createdDate: record.createdDate || record.createdAt || new Date().toISOString(),
