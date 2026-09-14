@@ -7418,15 +7418,33 @@ export default function Home() {
     return missing;
   };
 
-  const founderPerson = orderedPeople.find((person) => person.accessLevel === "Founder" && person.status === "Active") || null;
+  // Founder-class covers the Founder access level and any Co-founder role, so Co-founders are never
+  // treated as ordinary non-founder team members in delegation/founder-dependency logic.
+  const isFounderClassPerson = (person: PersonRecord) =>
+    person.accessLevel === "Founder" || /\bco[- ]?founder\b/i.test(person.role);
+
+  // Among active Founder-access people, prefer the one whose role is exactly "Founder" so a
+  // Co-founder with the same access level is never mistaken for the primary Founder.
+  const activeFounderAccessPeople = orderedPeople.filter((person) => person.accessLevel === "Founder" && person.status === "Active");
+  const founderPerson = activeFounderAccessPeople.find((person) => person.role.trim().toLowerCase() === "founder")
+    || activeFounderAccessPeople[0]
+    || null;
   const activeNonFounderPeople = orderedPeople.filter(
-    (person) => person.status === "Active" && person.accessLevel !== "Founder",
+    (person) => person.status === "Active" && !isFounderClassPerson(person),
   );
   const delegationReadyNonFounderPeople = activeNonFounderPeople.filter(
     (person) => getDelegationReadinessMissingFields(person).length === 0,
   );
   const delegationReadinessGapPeople = activeNonFounderPeople.filter(
     (person) => !delegationReadyNonFounderPeople.some((readyPerson) => readyPerson.id === person.id),
+  );
+  // Active Co-founders (founder-class but not the primary Founder) keep their readiness gap visible,
+  // described accurately instead of being folded into the non-founder team-member pool.
+  const activeCofounderPeople = orderedPeople.filter(
+    (person) => person.status === "Active" && isFounderClassPerson(person) && person.id !== founderPerson?.id,
+  );
+  const cofounderReadinessGapPeople = activeCofounderPeople.filter(
+    (person) => getDelegationReadinessMissingFields(person).length > 0,
   );
   const founderOwnerKey = founderPerson?.name.trim().toLowerCase() || null;
   const getValidActiveOwnerKey = (ownerText: string | undefined, ownerPersonId?: string) => {
@@ -11314,6 +11332,25 @@ export default function Home() {
           });
           usedKeys.add(key);
         }
+      }
+    }
+
+    // Co-founder readiness gap is surfaced on its own, without labelling a Co-founder as a non-founder team member.
+    if (cofounderReadinessGapPeople.length > 0) {
+      const key = "People:cofounder-readiness-gap";
+      if (!usedKeys.has(key)) {
+        rawBottlenecks.push({
+          id: "unassigned",
+          category: "Capability",
+          title: "Co-founder delegation readiness gap",
+          objectType: "People",
+          area: "People",
+          severity: "Emerging",
+          why: `${cofounderReadinessGapPeople.map((person) => person.name).join(", ")} ${cofounderReadinessGapPeople.length === 1 ? "is" : "are"} an active Co-founder without full role, responsibilities, or authority definitions in People.`,
+          releasePath: "Define role, responsibilities, and authority in People to formalise Co-founder delegation readiness.",
+          onOpen: () => setActiveView("People"),
+        });
+        usedKeys.add(key);
       }
     }
 
