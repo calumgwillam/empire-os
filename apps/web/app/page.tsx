@@ -851,11 +851,12 @@ function normalizeProblemRecord(record: CaptureConversionRecord): ProblemRecord 
 }
 
 function normalizeActionRecord(record: CaptureConversionRecord): ActionRecord {
-  const actionStatus =
-    (record.status as ActionStatus | undefined) ??
-    ((record.status === "Open" || record.status === "In Progress" || record.status === "Blocked" || record.status === "Completed" || record.status === "Cancelled")
-      ? (record.status as ActionStatus)
-      : "Open");
+  // record.status holds the generic conversion status (e.g. "Converted") until
+  // set to a real ActionStatus, so it must be validated rather than passed through via `??`.
+  const actionStatus: ActionStatus =
+    record.status === "Open" || record.status === "In Progress" || record.status === "Blocked" || record.status === "Completed" || record.status === "Cancelled"
+      ? record.status
+      : "Open";
 
   return {
     ...record,
@@ -10098,15 +10099,16 @@ export default function Home() {
     const watchCandidates: Array<{ item: OperatingBriefItem; urgencyDays: number }> = [];
     const nowMs = Date.now();
     const dayMs = 1000 * 60 * 60 * 24;
+    const startOfTodayMs = new Date().setHours(0, 0, 0, 0);
 
-    // Actions with due date coming up
+    // Actions with due date coming up. Not gated by usedRecordKeys: due-soon items must
+    // still surface here even if already claimed by Do Now/Delegate/Decide.
     actionRecords.filter(isActionActive).forEach((action) => {
-      const key = `Action:${action.id}`;
-      if (usedRecordKeys.has(key)) return;
       if (action.dueDate) {
-        const dueMs = new Date(action.dueDate).getTime();
+        // Compare calendar dates (local midnight) so time-of-day never shifts the day count.
+        const dueMs = new Date(`${action.dueDate.slice(0, 10)}T00:00:00`).getTime();
         if (!Number.isNaN(dueMs)) {
-          const days = Math.round((dueMs - nowMs) / dayMs);
+          const days = Math.round((dueMs - startOfTodayMs) / dayMs);
           if (days >= 0 && days <= 14) {
             watchCandidates.push({
               item: {
@@ -11485,9 +11487,11 @@ export default function Home() {
       let releasePath = "";
       let urgencyText = "";
 
-      const dueTimestamp = dueDateValue ? new Date(dueDateValue.includes("T") ? dueDateValue : `${dueDateValue}T00:00:00`).getTime() : 0;
+      // Compare calendar dates (local midnight) so time-of-day never mislabels tomorrow as today.
+      const dueTimestamp = dueDateValue ? new Date(`${dueDateValue.slice(0, 10)}T00:00:00`).getTime() : 0;
       const isValidDate = dueTimestamp > 0 && !Number.isNaN(dueTimestamp);
-      const daysUntilDue = isValidDate ? Math.round((dueTimestamp - nowMs) / dayMs) : null;
+      const startOfTodayForItemMs = new Date().setHours(0, 0, 0, 0);
+      const daysUntilDue = isValidDate ? Math.round((dueTimestamp - startOfTodayForItemMs) / dayMs) : null;
       const isOverdue = daysUntilDue !== null && daysUntilDue < 0;
       const isDueSoon = daysUntilDue !== null && daysUntilDue >= 0 && daysUntilDue <= 7;
 
