@@ -7492,6 +7492,65 @@ export default function Home() {
     ? 0
     : activeLeads.filter((lead) => lead.status === "Won").reduce((total, lead) => total + wonLeadsValue(lead), 0) / metricsJobsWon;
 
+  // Evidence indicator describes sample size only — it is not a quality or performance judgement.
+  const acquisitionEvidenceLabel = (leadCount: number) =>
+    leadCount >= 6 ? "Stronger evidence" : leadCount >= 3 ? "Emerging evidence" : leadCount >= 1 ? "Early signal" : "";
+  const isLeadQuoted = (lead: LeadRecord) =>
+    lead.status === "Quote Sent" || lead.status === "Follow-Up" || lead.status === "Won" || Boolean(lead.quoteSentDate);
+  const isLeadWon = (lead: LeadRecord) => lead.status === "Won";
+
+  const acquisitionChannelPerformance = leadSourceOptions
+    .map((channel) => {
+      const channelLeads = activeLeads.filter((lead) => lead.sourceChannel === channel);
+      const leadCount = channelLeads.length;
+      const wonLeads = channelLeads.filter(isLeadWon);
+      const jobsWon = wonLeads.length;
+      const revenue = wonLeads.reduce((total, lead) => total + wonLeadsValue(lead), 0);
+      return {
+        channel,
+        leadCount,
+        quotesSent: channelLeads.filter(isLeadQuoted).length,
+        jobsWon,
+        conversionRate: leadCount === 0 ? 0 : (jobsWon / leadCount) * 100,
+        revenue,
+        averageWonJobValue: jobsWon === 0 ? 0 : revenue / jobsWon,
+        evidenceLabel: acquisitionEvidenceLabel(leadCount),
+      };
+    })
+    .filter((entry) => entry.leadCount > 0);
+
+  // sourceDetail is grouped per sourceChannel so identical detail text under different channels stays distinct.
+  const acquisitionSourceDetailPerformance = Array.from(
+    activeLeads.reduce((groups, lead) => {
+      const detail = lead.sourceDetail.trim();
+      if (!detail) return groups;
+      const key = `${lead.sourceChannel}::${detail.toLowerCase()}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.leads.push(lead);
+      } else {
+        groups.set(key, { sourceDetail: detail, sourceChannel: lead.sourceChannel, leads: [lead] });
+      }
+      return groups;
+    }, new Map<string, { sourceDetail: string; sourceChannel: LeadSource; leads: LeadRecord[] }>()).values(),
+  )
+    .map(({ sourceDetail, sourceChannel, leads: detailLeads }) => {
+      const leadCount = detailLeads.length;
+      const wonLeads = detailLeads.filter(isLeadWon);
+      const jobsWon = wonLeads.length;
+      const revenue = wonLeads.reduce((total, lead) => total + wonLeadsValue(lead), 0);
+      return {
+        sourceDetail,
+        sourceChannel,
+        leadCount,
+        jobsWon,
+        conversionRate: leadCount === 0 ? 0 : (jobsWon / leadCount) * 100,
+        revenue,
+        evidenceLabel: acquisitionEvidenceLabel(leadCount),
+      };
+    })
+    .sort((first, second) => second.leadCount - first.leadCount || first.sourceDetail.localeCompare(second.sourceDetail));
+
   const metricsOpenActions = actionRecords.filter((action) => action.status === "Open").length;
   const metricsInProgressActions = actionRecords.filter((action) => action.status === "In Progress").length;
   const metricsCompletedActions = actionRecords.filter((action) => action.status === "Completed").length;
@@ -15805,7 +15864,69 @@ const isOwnershipGap =
                 Lead records track incoming work from first contact through quote, follow-up and outcome so no potential job disappears into messages.
               </p>
 
-              <div className="mt-6 flex flex-wrap items-center gap-2">
+              <section className="mt-7">
+                <h2 className="border-b border-[#d7d1ca] pb-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Marketing acquisition performance</h2>
+                {acquisitionChannelPerformance.length === 0 ? (
+                  <div className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">
+                    No usable acquisition data yet. Channel performance will populate as genuine leads are recorded against a source channel.
+                  </div>
+                ) : (
+                  <>
+                    <p className="mt-3 max-w-3xl text-[13px] leading-6 text-[#4d4944]">
+                      Active, non-archived leads grouped by source channel. The evidence label reflects sample size only, not a judgement of channel quality.
+                    </p>
+                    <div className="mt-4 space-y-3">
+                      {acquisitionChannelPerformance.map((entry) => (
+                        <div key={entry.channel} className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <h3 className="text-[16px] font-medium tracking-[-0.03em] text-[#171717]">{entry.channel}</h3>
+                            <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">{entry.evidenceLabel}</span>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Leads: {entry.leadCount}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Quotes sent: {entry.quotesSent}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Jobs won: {entry.jobsWon}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Conversion: {formatMetricPercent(entry.conversionRate)}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Revenue: {formatFinanceAmount(entry.revenue)}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Avg won job: {entry.jobsWon === 0 ? "—" : formatFinanceAmount(entry.averageWonJobValue)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                <div className="mt-6">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Source-detail performance</h3>
+                  {acquisitionSourceDetailPerformance.length === 0 ? (
+                    <div className="mt-3 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-6 text-[14px] text-[#4d4944]">
+                      No leads with a recorded source detail yet. Exact sources (specific groups, agents, or contacts) will appear here once leads capture that detail.
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {acquisitionSourceDetailPerformance.map((entry) => (
+                        <div key={`${entry.sourceChannel}::${entry.sourceDetail}`} className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <h4 className="text-[14px] font-medium tracking-[-0.02em] text-[#171717]">{entry.sourceDetail}</h4>
+                              <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-[#5d584f]">{entry.sourceChannel}</p>
+                            </div>
+                            <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">{entry.evidenceLabel}</span>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Leads: {entry.leadCount}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Jobs won: {entry.jobsWon}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Conversion: {formatMetricPercent(entry.conversionRate)}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Revenue: {formatFinanceAmount(entry.revenue)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <div className="mt-8 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setShowArchivedLeads(false)}
