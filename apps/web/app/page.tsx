@@ -410,7 +410,7 @@ const projectStatusOptions = ["Open", "In Progress", "Blocked", "Completed", "Ca
 const leadStatusOptions = ["New", "Contacted", "Quote Needed", "Quote Sent", "Follow-Up", "Won", "Lost", "On Hold"] as const;
 type LeadStatus = (typeof leadStatusOptions)[number];
 
-const leadSourceOptions = ["Nextdoor", "Facebook Group", "Referral", "Community Page", "Direct Outreach", "Website", "Repeat Customer", "Other"] as const;
+const leadSourceOptions = ["Nextdoor", "Facebook Group", "Referral", "Community Page", "Direct Outreach", "Website", "Google Business Profile", "Instagram", "Estate Agent / Property Manager", "Repeat Customer", "Other"] as const;
 type LeadSource = (typeof leadSourceOptions)[number];
 
 const leadOutcomeOptions = ["", "Won", "Lost", "No Response", "Cancelled"] as const;
@@ -424,6 +424,7 @@ type LeadRecord = {
   location: string;
   serviceRequested: string;
   sourceChannel: LeadSource;
+  sourceDetail: string;
   dateReceived: string;
   status: LeadStatus;
   quoteValue: string;
@@ -448,6 +449,7 @@ const defaultLeadForm: LeadFormValues = {
   location: "",
   serviceRequested: "",
   sourceChannel: "Other",
+  sourceDetail: "",
   dateReceived: "",
   status: "New",
   quoteValue: "",
@@ -2266,6 +2268,10 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
               {!leadSourceOptions.includes(lead.sourceChannel as LeadSource) && lead.sourceChannel ? <option value={lead.sourceChannel}>{lead.sourceChannel}</option> : null}
               {leadSourceOptions.map((source) => <option key={source} value={source}>{source}</option>)}
             </select>
+          </div>
+                    <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Source detail</label>
+            <input value={lead.sourceDetail} onChange={(event) => onChange("sourceDetail", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
           </div>
           <div>
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Date received</label>
@@ -7004,7 +7010,12 @@ export default function Home() {
         const parsedLeads = JSON.parse(storedLeads);
 
         if (Array.isArray(parsedLeads)) {
-          setLeads(parsedLeads);
+          setLeads(
+  parsedLeads.map((lead) => ({
+    ...lead,
+    sourceDetail: typeof lead.sourceDetail === "string" ? lead.sourceDetail : "",
+  })),
+);
         }
       }
 
@@ -13747,6 +13758,7 @@ const isOwnershipGap =
       location: leadEditor.location.trim(),
       serviceRequested: leadEditor.serviceRequested.trim(),
       sourceChannel: leadSourceOptions.includes(selectedSource as LeadSource) ? (selectedSource as LeadSource) : "Other",
+      sourceDetail: leadEditor.sourceDetail.trim(),
       dateReceived: leadEditor.dateReceived,
       status: leadStatusOptions.includes(selectedStatus as LeadStatus) ? (selectedStatus as LeadStatus) : "New",
       quoteValue: leadEditor.quoteValue.trim(),
