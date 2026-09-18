@@ -7441,15 +7441,17 @@ export default function Home() {
   const founderPerson = activeFounderAccessPeople.find((person) => person.role.trim().toLowerCase() === "founder")
     || activeFounderAccessPeople[0]
     || null;
-  const activeNonFounderPeople = orderedPeople.filter(
-    (person) => person.status === "Active" && !isFounderClassPerson(person),
-  );
-  const delegationReadyNonFounderPeople = activeNonFounderPeople.filter(
-    (person) => getDelegationReadinessMissingFields(person).length === 0,
-  );
-  const delegationReadinessGapPeople = activeNonFounderPeople.filter(
-    (person) => !delegationReadyNonFounderPeople.some((readyPerson) => readyPerson.id === person.id),
-  );
+  const activeOperationalDelegationPeople = orderedPeople.filter(
+  (person) => person.status === "Active" && person.id !== founderPerson?.id,
+);
+
+const delegationReadyPeople = activeOperationalDelegationPeople.filter(
+  (person) => getDelegationReadinessMissingFields(person).length === 0,
+);
+
+const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
+  (person) => !delegationReadyPeople.some((readyPerson) => readyPerson.id === person.id),
+);
   // Active Co-founders (founder-class but not the primary Founder) keep their readiness gap visible,
   // described accurately instead of being folded into the non-founder team-member pool.
   const activeCofounderPeople = orderedPeople.filter(
@@ -7903,7 +7905,7 @@ export default function Home() {
       founderReviewQueue,
       crossPillarIssues,
       delegateItems,
-      delegationCapacityNames: delegationReadyNonFounderPeople.map((person) => person.name),
+      delegationCapacityNames: delegationReadyPeople.map((person) => person.name),
       delegationReadinessGapNames: delegationReadinessGapPeople.map((person) => person.name),
       founderAuthorityItems,
       founderAuthorityDisplayItems,
@@ -11372,7 +11374,7 @@ export default function Home() {
 
     // 4. CAPABILITY BOTTLENECK
     if (empireDecisionQueue.delegateItems.length > 0) {
-      if (activeNonFounderPeople.length === 0) {
+      if (activeOperationalDelegationPeople.length === 0) {
         const key = "People:no-nonfounder";
         if (!usedKeys.has(key)) {
           rawBottlenecks.push({
@@ -11388,7 +11390,7 @@ export default function Home() {
           });
           usedKeys.add(key);
         }
-      } else if (delegationReadyNonFounderPeople.length === 0 && delegationReadinessGapPeople.length > 0) {
+      } else if (delegationReadyPeople.length === 0 && delegationReadinessGapPeople.length > 0) {
         const key = "People:readiness-gap";
         if (!usedKeys.has(key)) {
           rawBottlenecks.push({
@@ -11441,8 +11443,8 @@ export default function Home() {
         owner: item.owner,
         severity: "Material",
         why: `Founder carries routine ${item.objectType.toLowerCase()} execution ('${item.title}') that is suitable for delegation.`,
-        releasePath: delegationReadyNonFounderPeople.length > 0
-          ? `Delegate ownership to an active team member (${delegationReadyNonFounderPeople.map((p) => p.name).join(", ")}).`
+        releasePath: delegationReadyPeople.length > 0
+          ? `Delegate ownership to an active team member (${delegationReadyPeople.map((p) => p.name).join(", ")}).`
           : "Define delegation readiness for active team members in People, then transfer ownership.",
         onOpen: () => handleOpenAttentionRecord(item.objectType, item.id),
       });
@@ -11527,7 +11529,7 @@ export default function Home() {
 ]);
 
 
-    const hasDelegationReadyPeople = delegationReadyNonFounderPeople.length > 0;
+    const hasDelegationReadyPeople = delegationReadyPeople.length > 0;
     const nowMs = Date.now();
     const dayMs = 1000 * 60 * 60 * 24;
 
@@ -11606,14 +11608,14 @@ export default function Home() {
           releaseAction = "Delegate Now";
           severity = "Material";
           why = `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation and delegation-ready team capacity exists.`;
-          releasePath = `Transfer ownership to an active delegation-ready team member (${delegationReadyNonFounderPeople.map((p) => p.name).join(", ")}).`;
+          releasePath = `Transfer ownership to an active delegation-ready team member (${delegationReadyPeople.map((p) => p.name).join(", ")}).`;
         } else {
           releaseAction = "Prepare to Delegate";
           severity = "Material";
-          why = activeNonFounderPeople.length === 0
+          why = activeOperationalDelegationPeople.length === 0
             ? `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but no active non-founder team member exists in People.`
             : `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but active team members (${empireDecisionQueue.delegationReadinessGapNames.join(", ")}) miss role, responsibilities, or authority definitions in People.`;
-          releasePath = activeNonFounderPeople.length === 0
+          releasePath = activeOperationalDelegationPeople.length === 0
             ? "Onboard or activate non-founder team members in People to absorb operational load."
             : "Define role, responsibilities, and authority in People to enable delegated ownership.";
         }
@@ -12887,7 +12889,7 @@ const isOwnershipGap =
     id: string,
     personId: string,
   ) => {
-    const person = delegationReadyNonFounderPeople.find((entry) => entry.id === personId);
+    const person = delegationReadyPeople.find((entry) => entry.id === personId);
 
     if (!person) {
       setFeedback({
@@ -14621,10 +14623,10 @@ const isOwnershipGap =
                   delegate={founderOperatingBrief.delegate}
                   decide={founderOperatingBrief.decide}
                   watch={founderOperatingBrief.watch}
-                  hasDelegationCapacity={delegationReadyNonFounderPeople.length > 0}
+                  hasDelegationCapacity={delegationReadyPeople.length > 0}
                   delegationCapacityNames={empireDecisionQueue.delegationCapacityNames}
                   delegationReadinessGapNames={empireDecisionQueue.delegationReadinessGapNames}
-                  delegationReadyPeople={delegationReadyNonFounderPeople}
+                  delegationReadyPeople={delegationReadyPeople}
                   onOpenRecord={handleOpenAttentionRecord}
                   onNavigateToPeople={() => setActiveView("People")}
                 />
@@ -14668,7 +14670,7 @@ const isOwnershipGap =
                 <FounderExecutionReleaseSystem
                   summary={founderExecutionReleaseSystem.summary}
                   items={founderExecutionReleaseSystem.items}
-                  delegationReadyPeople={delegationReadyNonFounderPeople}
+                  delegationReadyPeople={delegationReadyPeople}
                   delegationReadinessGapNames={empireDecisionQueue.delegationReadinessGapNames}
                   onNavigateToPeople={() => setActiveView("People")}
                 />
@@ -15759,7 +15761,7 @@ const isOwnershipGap =
                                   <div className="mt-1 text-[11px] text-[#4d4944]">{item.pillar} • {item.owner}</div>
                                 </button>
 
-                                {delegationReadyNonFounderPeople.length > 0 ? (
+                                {delegationReadyPeople.length > 0 ? (
                                   <div className="border-t border-[#d3cbc3] px-2.5 py-2">
                                     <select
                                       defaultValue=""
@@ -15772,7 +15774,7 @@ const isOwnershipGap =
                                       className="w-full rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-2 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
                                     >
                                       <option value="">Delegate to...</option>
-                                      {delegationReadyNonFounderPeople.map((person) => (
+                                      {delegationReadyPeople.map((person) => (
                                         <option key={person.id} value={person.id}>
                                           {person.name}
                                         </option>
