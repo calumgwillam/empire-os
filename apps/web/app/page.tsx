@@ -27,6 +27,7 @@ const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
 const PERSON_STORAGE_KEY = "empire-os-people";
 const PROJECT_STORAGE_KEY = "empire-os-projects";
 const LEAD_STORAGE_KEY = "empire-os-leads";
+const DELEGATION_HANDOFF_STORAGE_KEY = "empire-os-delegation-handoffs";
 const CASH_POSITION_STORAGE_KEY = "empire-os-cash-position";
 const INCOME_STORAGE_KEY = "empire-os-income-records";
 const EXPENSE_STORAGE_KEY = "empire-os-expense-records";
@@ -362,6 +363,19 @@ type PersonRecord = {
 };
 
 type PersonFormValues = Omit<PersonRecord, "id" | "dateCreated">;
+
+type DelegationHandoffRecord = {
+  id: string;
+  objectType: "Action" | "Project" | "Lead" | "Problem";
+  objectId: string;
+  title: string;
+  area: string;
+  previousOwner: string;
+  newOwner: string;
+  newOwnerPersonId: string;
+  transferredAt: string;
+  handoffContext: string;
+};
 
 type ProjectRecord = {
   id: string;
@@ -6864,6 +6878,7 @@ export default function Home() {
   const [conversions, setConversions] = useState<CaptureConversionRecord[]>([]);
   const [people, setPeople] = useState<PersonRecord[]>([]);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [delegationHandoffs, setDelegationHandoffs] = useState<DelegationHandoffRecord[]>([]);
   const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<ReviewOutcome>("Keep as Capture");
   const [selectedProblemId, setSelectedProblemId] = useState<string | null>(null);
@@ -6937,6 +6952,7 @@ export default function Home() {
       const storedPeople = window.localStorage.getItem(PERSON_STORAGE_KEY);
       const storedProjects = window.localStorage.getItem(PROJECT_STORAGE_KEY);
       const storedLeads = window.localStorage.getItem(LEAD_STORAGE_KEY);
+      const storedDelegationHandoffs = window.localStorage.getItem(DELEGATION_HANDOFF_STORAGE_KEY);
       const storedCashPosition = window.localStorage.getItem(CASH_POSITION_STORAGE_KEY);
       const storedIncome = window.localStorage.getItem(INCOME_STORAGE_KEY);
       const storedExpenses = window.localStorage.getItem(EXPENSE_STORAGE_KEY);
@@ -6951,6 +6967,7 @@ export default function Home() {
           PERSON_STORAGE_KEY,
           PROJECT_STORAGE_KEY,
           LEAD_STORAGE_KEY,
+          DELEGATION_HANDOFF_STORAGE_KEY,
           CASH_POSITION_STORAGE_KEY,
           INCOME_STORAGE_KEY,
           EXPENSE_STORAGE_KEY,
@@ -7061,6 +7078,30 @@ export default function Home() {
     sourceDetail: typeof lead.sourceDetail === "string" ? lead.sourceDetail : "",
   })),
 );
+        }
+      }
+
+      if (storedDelegationHandoffs) {
+        try {
+          const parsedDelegationHandoffs = JSON.parse(storedDelegationHandoffs);
+          if (Array.isArray(parsedDelegationHandoffs)) {
+            setDelegationHandoffs(parsedDelegationHandoffs.filter((entry: unknown): entry is DelegationHandoffRecord => {
+              if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+              const record = entry as Record<string, unknown>;
+              return typeof record.id === "string"
+                && ["Action", "Project", "Lead", "Problem"].includes(String(record.objectType))
+                && typeof record.objectId === "string"
+                && typeof record.title === "string"
+                && typeof record.area === "string"
+                && typeof record.previousOwner === "string"
+                && typeof record.newOwner === "string"
+                && typeof record.newOwnerPersonId === "string"
+                && typeof record.transferredAt === "string"
+                && typeof record.handoffContext === "string";
+            }));
+          }
+        } catch {
+          setDelegationHandoffs([]);
         }
       }
 
@@ -7206,6 +7247,18 @@ export default function Home() {
       window.localStorage.setItem(LEAD_STORAGE_KEY, JSON.stringify(leads));
     }
   }, [leads, operatingDataLoaded]);
+
+  useEffect(() => {
+    if (!operatingDataLoaded) {
+      return;
+    }
+
+    if (delegationHandoffs.length === 0) {
+      window.localStorage.removeItem(DELEGATION_HANDOFF_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(DELEGATION_HANDOFF_STORAGE_KEY, JSON.stringify(delegationHandoffs));
+    }
+  }, [delegationHandoffs, operatingDataLoaded]);
 
   useEffect(() => {
     // The first run happens before the stored cash position has been read back into state.
@@ -13199,6 +13252,16 @@ const isOwnershipGap =
     const project = objectType === "Project" ? projects.find((record) => record.id === id) : undefined;
     const lead = objectType === "Lead" ? leads.find((record) => record.id === id) : undefined;
     const problem = objectType === "Problem" ? problemRecords.find((record) => record.id === id) : undefined;
+    const sourceRecord = action || project || lead || problem;
+
+    if (!sourceRecord) {
+      setFeedback({
+        type: "error",
+        message: "The work item could not be found, so ownership was not changed.",
+      });
+      return;
+    }
+
     const itemArea = action
       ? getAreaText(action)
       : project
@@ -13228,6 +13291,16 @@ const isOwnershipGap =
       return;
     }
 
+    const previousOwner = sourceRecord.owner?.trim() || "Unassigned";
+    const transferredAt = new Date().toISOString();
+    const handoffContext = action
+      ? action.description.trim() || action.actionTitle || action.title
+      : project
+        ? `${project.projectName}${project.targetCompletionDate ? `; target completion ${project.targetCompletionDate}` : ""}`
+        : lead
+          ? `${lead.serviceRequested.trim() || lead.leadName}${lead.followUpDate ? `; follow up ${lead.followUpDate}` : ""}`
+          : problem!.impact.trim() || problem!.problemStatement || problem!.title;
+
     if (objectType === "Action") {
       setConversions((currentConversions) =>
         currentConversions.map((conversion) =>
@@ -13255,6 +13328,22 @@ const isOwnershipGap =
         ),
       );
     }
+
+    setDelegationHandoffs((currentHandoffs) => [
+      ...currentHandoffs,
+      {
+        id: `handoff-${transferredAt}-${objectType}-${id}`,
+        objectType,
+        objectId: id,
+        title: itemTitle || "Untitled work item",
+        area: itemArea || "Unassigned",
+        previousOwner,
+        newOwner: person.name,
+        newOwnerPersonId: person.id,
+        transferredAt,
+        handoffContext,
+      },
+    ]);
 
     setFeedback({
       type: "success",
@@ -14456,6 +14545,7 @@ const isOwnershipGap =
       PERSON_STORAGE_KEY,
       PROJECT_STORAGE_KEY,
       LEAD_STORAGE_KEY,
+      DELEGATION_HANDOFF_STORAGE_KEY,
       CASH_POSITION_STORAGE_KEY,
       INCOME_STORAGE_KEY,
       EXPENSE_STORAGE_KEY,
@@ -14541,6 +14631,7 @@ const isOwnershipGap =
           PERSON_STORAGE_KEY,
           PROJECT_STORAGE_KEY,
           LEAD_STORAGE_KEY,
+          DELEGATION_HANDOFF_STORAGE_KEY,
           CASH_POSITION_STORAGE_KEY,
           INCOME_STORAGE_KEY,
           EXPENSE_STORAGE_KEY,
@@ -14551,23 +14642,29 @@ const isOwnershipGap =
         ];
 
         for (const key of storageKeys) {
-          if (!Object.prototype.hasOwnProperty.call(storage, key)) {
-            throw new Error(`Backup is missing required storage key: ${key}`);
-          }
+  const isOptionalLegacyKey = key === DELEGATION_HANDOFF_STORAGE_KEY;
 
-          const value = storage[key];
+  if (!Object.prototype.hasOwnProperty.call(storage, key)) {
+    if (isOptionalLegacyKey) {
+      continue;
+    }
 
-          if (value !== null && typeof value !== "string") {
-            throw new Error(`Invalid stored value for: ${key}`);
-          }
-        }
+    throw new Error(`Backup is missing required storage key: ${key}`);
+  }
 
+  const value = storage[key];
+
+  if (value !== null && typeof value !== "string") {
+    throw new Error(`Invalid stored value for: ${key}`);
+  }
+}
         const arrayStorageKeys = [
           STORAGE_KEY,
           CONVERSION_STORAGE_KEY,
           PERSON_STORAGE_KEY,
           PROJECT_STORAGE_KEY,
           LEAD_STORAGE_KEY,
+          DELEGATION_HANDOFF_STORAGE_KEY,
           INCOME_STORAGE_KEY,
           EXPENSE_STORAGE_KEY,
           COMMITMENT_STORAGE_KEY,
@@ -14701,6 +14798,7 @@ const isOwnershipGap =
         PERSON_STORAGE_KEY,
         PROJECT_STORAGE_KEY,
         LEAD_STORAGE_KEY,
+        DELEGATION_HANDOFF_STORAGE_KEY,
         CASH_POSITION_STORAGE_KEY,
         INCOME_STORAGE_KEY,
         EXPENSE_STORAGE_KEY,
@@ -14711,16 +14809,22 @@ const isOwnershipGap =
       ];
 
       for (const key of storageKeys) {
-        if (!Object.prototype.hasOwnProperty.call(storage, key)) {
-          throw new Error(`Emergency snapshot is missing required storage key: ${key}`);
-        }
+  const isOptionalLegacyKey = key === DELEGATION_HANDOFF_STORAGE_KEY;
 
-        const value = storage[key];
+  if (!Object.prototype.hasOwnProperty.call(storage, key)) {
+    if (isOptionalLegacyKey) {
+      continue;
+    }
 
-        if (value !== null && typeof value !== "string") {
-          throw new Error(`Invalid emergency snapshot value for: ${key}`);
-        }
-      }
+    throw new Error(`Emergency snapshot is missing required storage key: ${key}`);
+  }
+
+  const value = storage[key];
+
+  if (value !== null && typeof value !== "string") {
+    throw new Error(`Invalid emergency snapshot value for: ${key}`);
+  }
+}
 
       const arrayStorageKeys = [
         STORAGE_KEY,
@@ -14728,6 +14832,7 @@ const isOwnershipGap =
         PERSON_STORAGE_KEY,
         PROJECT_STORAGE_KEY,
         LEAD_STORAGE_KEY,
+        DELEGATION_HANDOFF_STORAGE_KEY,
         INCOME_STORAGE_KEY,
         EXPENSE_STORAGE_KEY,
         COMMITMENT_STORAGE_KEY,
@@ -16911,6 +17016,33 @@ const isOwnershipGap =
                       </button>
                     )}
                   </div>
+
+                  <section className="mt-6 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Delegation handoffs</div>
+                      <span className="text-[10px] text-[#6a625d]">{delegationHandoffs.length} recorded</span>
+                    </div>
+                    {delegationHandoffs.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[12px] text-[#4d4944]">
+                        No delegation handoffs recorded yet.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {[...delegationHandoffs]
+                          .sort((left, right) => new Date(right.transferredAt).getTime() - new Date(left.transferredAt).getTime())
+                          .map((handoff) => (
+                            <div key={handoff.id} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div className="text-[14px] font-medium text-[#171717]">{handoff.objectType} • {handoff.title}</div>
+                                <div className="text-[10px] text-[#6a625d]">{formatCapturedAt(handoff.transferredAt)}</div>
+                              </div>
+                              <div className="mt-1 text-[11px] text-[#4d4944]">{handoff.previousOwner} → {handoff.newOwner} • {handoff.area}</div>
+                              <div className="mt-2 text-[12px] leading-5 text-[#524d49]">{handoff.handoffContext}</div>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </section>
                 </div>
               )}
             </div>
