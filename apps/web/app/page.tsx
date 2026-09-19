@@ -2021,7 +2021,7 @@ function ProjectDetailPanel({ project, people, actions, decisions, systems, sops
   sops: SopRecord[];
   onClose: () => void;
   onChange: (field: keyof ProjectRecord, value: string) => void;
-  onSave: () => void;
+  onSave: () => boolean;
   onAddLink: (field: ProjectLinkSectionKey, id: string) => void;
   onRemoveLink: (field: ProjectLinkSectionKey, id: string) => void;
   onOpenRecord: (objectType: "Action" | "Decision" | "System" | "SOP", id: string) => void;
@@ -2136,7 +2136,7 @@ function ProjectDetailPanel({ project, people, actions, decisions, systems, sops
 
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-          <button type="button" onClick={() => { onSave(); setHasSaved(true); }} disabled={hasInvalidProjectName || hasInvalidDateOrder} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save project"}</button>
+          <button type="button" onClick={() => { if (onSave()) setHasSaved(true); }} disabled={hasInvalidProjectName || hasInvalidDateOrder} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save project"}</button>
         </div>
       </div>
     </div>
@@ -2221,7 +2221,7 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
   people: PersonRecord[];
   onClose: () => void;
   onChange: (field: keyof LeadRecord, value: string) => void;
-  onSave: () => void;
+  onSave: () => boolean;
   onArchiveToggle: (lead: LeadRecord, archived: boolean) => void;
 }) {
   const hasInvalidLeadName = !lead.leadName.trim();
@@ -2361,7 +2361,7 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
           </div>
           <div className="flex justify-end gap-2">
             <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-            <button type="button" onClick={() => { onSave(); setHasSaved(true); }} disabled={hasInvalidLeadName} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save lead"}</button>
+            <button type="button" onClick={() => { if (onSave()) setHasSaved(true); }} disabled={hasInvalidLeadName} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save lead"}</button>
           </div>
         </div>
       </div>
@@ -14359,7 +14359,7 @@ const isOwnershipGap =
 
   const handleProjectSave = () => {
     if (!projectEditor) {
-      return;
+      return false;
     }
 
     const projectName = projectEditor.projectName.trim();
@@ -14379,7 +14379,7 @@ const isOwnershipGap =
     const targetCompletionDate = normalizeProjectDate(projectEditor.targetCompletionDate);
 
     if (!projectName || (startDate && targetCompletionDate && targetCompletionDate < startDate)) {
-      return;
+      return false;
     }
 
     const selectedOwner = people.find((person) =>
@@ -14422,10 +14422,11 @@ const isOwnershipGap =
         })
       : (applySave(), true);
 
-    if (!saveSucceeded) return;
+    if (!saveSucceeded) return false;
 
     setSelectedProjectId(nextProject.id);
     setProjectEditor(nextProject);
+    return true;
   };
 
   const handleCreateProject = () => {
@@ -14453,12 +14454,12 @@ const isOwnershipGap =
 
   const handleLeadSave = () => {
     if (!leadEditor) {
-      return;
+      return false;
     }
 
     const leadName = leadEditor.leadName.trim();
     if (!leadName) {
-      return;
+      return false;
     }
 
     const selectedOwner = people.find((person) =>
@@ -14511,7 +14512,7 @@ const isOwnershipGap =
         })
       : (applySave(), true);
 
-    if (!saveSucceeded) return;
+    if (!saveSucceeded) return false;
 
     setSelectedLeadId(nextLead.id);
     setLeadEditor(nextLead);
@@ -14519,6 +14520,7 @@ const isOwnershipGap =
       type: "success",
       message: isNewLead ? "Lead created." : "Lead details saved.",
     });
+    return true;
   };
 
   const handleCreateLead = () => {
