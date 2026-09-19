@@ -111,6 +111,9 @@ type CaptureConversionRecord = {
   relatedPillar?: string;
   completionEvidence?: string;
   completionDate?: string;
+  releaseSourceType?: "Action" | "Project" | "Lead" | "Problem";
+  releaseSourceId?: string;
+  releaseIntent?: "Prepare to Delegate" | "Unblock First";
   decisionTitle?: string;
   decisionStatement?: string;
   decisionMaker?: string;
@@ -218,6 +221,9 @@ type ActionRecord = CaptureConversionRecord & {
   relatedPillar: string;
   completionEvidence: string;
   completionDate: string;
+  releaseSourceType?: "Action" | "Project" | "Lead" | "Problem";
+  releaseSourceId?: string;
+  releaseIntent?: "Prepare to Delegate" | "Unblock First";
 };
 
 const decisionRiskOptions = ["Low", "Medium", "High", "Critical"] as const;
@@ -4341,6 +4347,7 @@ type ExecutionReleaseItem = {
   priorityScore: number;
   onOpen: () => void;
   delegateAction?: (personId: string) => void;
+  releaseActionId?: string;
 };
 
 type ReleaseSystemSummary = {
@@ -4362,12 +4369,16 @@ function FounderExecutionReleaseSystem({
   delegationReadyPeople,
   delegationReadinessGapNames,
   onNavigateToPeople,
+  onCreateReleaseAction,
+  onOpenReleaseAction,
 }: {
   summary: ReleaseSystemSummary;
   items: ExecutionReleaseItem[];
   delegationReadyPeople: PersonRecord[];
   delegationReadinessGapNames: string[];
   onNavigateToPeople: () => void;
+  onCreateReleaseAction: (item: ExecutionReleaseItem) => void;
+  onOpenReleaseAction: (actionId: string) => void;
 }) {
   const displayedItems = items.slice(0, 8);
   const topReleaseMove = items[0] || null;
@@ -4492,7 +4503,7 @@ function FounderExecutionReleaseSystem({
       <div className="mt-4 space-y-2.5">
         {summary.totalFounderOwned === 0 ? (
           <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-4 py-5 text-[13px] text-[#4d4944]">
-            No active founder-owned execution items detected. Operational execution is fully distributed across non-founder team members.
+            No active founder-owned execution items detected. Operational execution is fully distributed across active operational delegation people excluding the primary founder.
           </div>
         ) : (
           displayedItems.map((item) => (
@@ -4587,7 +4598,7 @@ function FounderExecutionReleaseSystem({
                   <span className="text-[10px] text-[#6a625d]">
                     {delegationReadinessGapNames.length > 0
                       ? `Readiness gap: ${delegationReadinessGapNames.join(", ")} missing role/responsibilities/authority.`
-                      : "No active non-founder team members available in People."}
+                      : "No active operational delegation people excluding the primary founder are available in People."}
                   </span>
                   <button
                     type="button"
@@ -4595,6 +4606,21 @@ function FounderExecutionReleaseSystem({
                     className="shrink-0 rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]"
                   >
                     Configure People
+                  </button>
+                </div>
+              ) : null}
+
+              {item.releaseAction === "Prepare to Delegate" || item.releaseAction === "Unblock First" ? (
+                <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-[#e0dad4] pt-2">
+                  <span className="text-[10px] text-[#6a625d]">
+                    Release loop: {item.releaseActionId ? "In progress" : "Not started"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => item.releaseActionId ? onOpenReleaseAction(item.releaseActionId) : onCreateReleaseAction(item)}
+                    className="shrink-0 rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]"
+                  >
+                    {item.releaseActionId ? "Open Release Action" : "Create Release Action"}
                   </button>
                 </div>
               ) : null}
@@ -11723,10 +11749,10 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
           releaseAction = "Prepare to Delegate";
           severity = "Material";
           why = activeOperationalDelegationPeople.length === 0
-            ? `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but no active non-founder team member exists in People.`
+            ? `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but no active operational delegation person excluding the primary founder exists in People.`
             : `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but active team members (${empireDecisionQueue.delegationReadinessGapNames.join(", ")}) miss role, responsibilities, or authority definitions in People.`;
           releasePath = activeOperationalDelegationPeople.length === 0
-            ? "Onboard or activate non-founder team members in People to absorb operational load."
+            ? "Onboard or activate operational delegation people excluding the primary founder in People to absorb operational load."
             : "Define role, responsibilities, and authority in People to enable delegated ownership.";
         }
       }
@@ -11762,6 +11788,14 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
         priorityScore,
         onOpen: () => handleOpenAttentionRecord(objectType, id),
         delegateAction: (personId: string) => handleDelegateItem(objectType, id, personId),
+        releaseActionId: releaseAction === "Prepare to Delegate" || releaseAction === "Unblock First"
+          ? actionRecords.find((action) =>
+            action.releaseSourceType === objectType
+            && action.releaseSourceId === id
+            && action.releaseIntent === releaseAction
+            && isActionActive(action),
+          )?.id
+          : undefined,
       });
 
       usedRecordKeys.add(recordKey);
@@ -12613,6 +12647,66 @@ const isOwnershipGap =
   const handleActionEditOpen = (action: ActionRecord) => {
     setSelectedActionId(action.id);
     setActionEditor(action);
+  };
+
+  const handleCreateReleaseAction = (item: ExecutionReleaseItem) => {
+    if (item.releaseAction !== "Prepare to Delegate" && item.releaseAction !== "Unblock First") {
+      return;
+    }
+
+    const existingAction = actionRecords.find((action) =>
+      action.releaseSourceType === item.objectType
+      && action.releaseSourceId === item.id
+      && action.releaseIntent === item.releaseAction
+      && isActionActive(action),
+    );
+
+    if (existingAction) {
+      handleActionEditOpen(existingAction);
+      setFeedback({ type: "success", message: "An active release action already exists." });
+      return;
+    }
+
+    const createdAt = new Date();
+    const dueDate = new Date(createdAt);
+    dueDate.setDate(dueDate.getDate() + 7);
+    const actionTitle = item.releaseAction === "Prepare to Delegate"
+      ? `Prepare delegation capacity for ${item.area || "this area"}`
+      : `Unblock ${item.area || "this area"} execution`;
+    const createdAction = {
+      ...normalizeActionRecord({
+      id: generateConversionId(),
+      sourceCaptureId: "",
+      targetType: "Convert to Action",
+      createdAt: createdAt.toISOString(),
+      title: actionTitle,
+      originalRawNote: item.why,
+      relatedArea: item.area || "",
+      importance: "High",
+      status: "Open",
+      actionTitle,
+      actionDescription: `Founder Release System intervention for ${item.objectType}: ${item.title}\n\nWhy: ${item.why}\n\nRelease path: ${item.releasePath}`,
+      createdBy: founderPerson?.name || "",
+      createdDate: createdAt.toISOString(),
+      dueDate: dueDate.toISOString(),
+      priority: "High",
+      relatedProblem: item.objectType === "Problem" ? item.id : "",
+      relatedDecision: "",
+      relatedCapture: "",
+      relatedPillar: item.area || "",
+      completionEvidence: "",
+      completionDate: "",
+      owner: founderPerson?.name || "",
+      releaseSourceType: item.objectType,
+      releaseSourceId: item.id,
+      releaseIntent: item.releaseAction,
+      }),
+      ownerPersonId: founderPerson?.id,
+    };
+
+    setConversions((currentConversions) => [createdAction, ...currentConversions]);
+    handleActionEditOpen(createdAction);
+    setFeedback({ type: "success", message: "Release action created." });
   };
 
   const handleActionEditorChange = (
@@ -14783,6 +14877,11 @@ const isOwnershipGap =
                   delegationReadyPeople={delegationReadyPeople}
                   delegationReadinessGapNames={empireDecisionQueue.delegationReadinessGapNames}
                   onNavigateToPeople={() => setActiveView("People")}
+                  onCreateReleaseAction={handleCreateReleaseAction}
+                  onOpenReleaseAction={(actionId) => {
+                    const action = actionRecords.find((item) => item.id === actionId);
+                    if (action) handleActionEditOpen(action);
+                  }}
                 />
               </div>
 
