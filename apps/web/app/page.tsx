@@ -14967,7 +14967,7 @@ const isOwnershipGap =
         for (const key of storageKeys) {
           const value = storage[key];
 
-          if (value === null) {
+          if (value === null || value === undefined) {
             window.localStorage.removeItem(key);
           } else {
             window.localStorage.setItem(key, value as string);
@@ -15137,7 +15137,7 @@ const isOwnershipGap =
       for (const key of storageKeys) {
         const value = storage[key];
 
-        if (value === null) {
+        if (value === null || value === undefined) {
           window.localStorage.removeItem(key);
         } else {
           window.localStorage.setItem(key, value as string);
