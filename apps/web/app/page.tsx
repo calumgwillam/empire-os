@@ -12007,7 +12007,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
             ? "Onboard or activate operational delegation people excluding the primary founder in People to absorb operational load."
             : delegationReadyPeople.length > 0
               ? `Assign a delegation-ready Person to ${area || "the work item's area"}.`
-              : "Define role, responsibilities, and authority in People to enable delegated ownership.";
+              : `Complete delegation readiness in People: ${delegationReadinessGapPeople.map((person) => `${person.name} — ${getDelegationReadinessMissingFields(person).join(", ")}`).join("; ")}.`;
         }
       }
 
