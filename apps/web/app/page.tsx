@@ -11786,7 +11786,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
             area: "People",
             severity: "Material",
             why: `${empireDecisionQueue.delegateItems.length} founder-owned routine item(s) are ready for delegation, but readiness gaps remain: ${delegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`,
-            releasePath: "Define role, responsibilities, and authority in People to enable delegated ownership.",
+            releasePath: `Complete delegation readiness in People: ${delegationReadinessGapPeople.map((person) => `${person.name} — ${getDelegationReadinessMissingFields(person).join(", ")}`).join("; ")}.`,
             onOpen: () => setActiveView("People"),
           });
           usedKeys.add(key);
@@ -11805,8 +11805,8 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
           objectType: "People",
           area: "People",
           severity: "Emerging",
-          why: `${cofounderReadinessGapPeople.map((person) => person.name).join(", ")} ${cofounderReadinessGapPeople.length === 1 ? "is" : "are"} an active Co-founder without full role, responsibilities, or authority definitions in People.`,
-          releasePath: "Define role, responsibilities, and authority in People to formalise Co-founder delegation readiness.",
+          why: `${cofounderReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")} ${cofounderReadinessGapPeople.length === 1 ? "has" : "have"} incomplete Co-founder delegation readiness in People.`,
+          releasePath: `Complete Co-founder delegation readiness in People: ${cofounderReadinessGapPeople.map((person) => `${person.name} — ${getDelegationReadinessMissingFields(person).join(", ")}`).join("; ")}.`,
           onOpen: () => setActiveView("People"),
         });
         usedKeys.add(key);
