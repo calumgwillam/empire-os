@@ -12873,6 +12873,79 @@ const isOwnershipGap =
     });
   };
 
+  const applyOwnershipChangeWithDelegationIntegrity = ({
+    objectType,
+    objectId,
+    title,
+    area,
+    previousOwner,
+    previousOwnerPersonId,
+    newOwner,
+    newOwnerPersonId,
+    handoffContext,
+    applyOwnershipChange,
+  }: {
+    objectType: DelegationHandoffRecord["objectType"];
+    objectId: string;
+    title: string;
+    area: string;
+    previousOwner: string;
+    previousOwnerPersonId?: string;
+    newOwner: string;
+    newOwnerPersonId?: string;
+    handoffContext: string;
+    applyOwnershipChange: () => void;
+  }) => {
+    const previousOwnerName = previousOwner.trim() || "Unassigned";
+    const newOwnerName = newOwner.trim() || "Unassigned";
+    const ownerChanged = previousOwnerPersonId && newOwnerPersonId
+      ? previousOwnerPersonId !== newOwnerPersonId
+      : previousOwnerName.toLowerCase() !== newOwnerName.toLowerCase();
+
+    if (!ownerChanged || newOwnerName.toLowerCase() === "unassigned" || isFounderOwned(newOwnerName, newOwnerPersonId)) {
+      applyOwnershipChange();
+      return true;
+    }
+
+    const destinationPerson = delegationReadyPeople.find((person) =>
+      newOwnerPersonId
+        ? person.id === newOwnerPersonId
+        : person.name.trim().toLowerCase() === newOwnerName.toLowerCase(),
+    );
+    const isAreaEligible = destinationPerson
+      ? getDelegationReadyPeopleForArea(area).some((person) => person.id === destinationPerson.id)
+      : false;
+
+    if (!destinationPerson || !isAreaEligible) {
+      setFeedback({
+        type: "error",
+        message: destinationPerson
+          ? `Choose a delegation-ready owner assigned to ${area || "this work item's area"}.`
+          : "Choose an active delegation-ready non-founder owner.",
+      });
+      return false;
+    }
+
+    applyOwnershipChange();
+    const transferredAt = new Date().toISOString();
+    setDelegationHandoffs((currentHandoffs) => [
+      ...currentHandoffs,
+      {
+        id: `handoff-${transferredAt}-${objectType}-${objectId}`,
+        objectType,
+        objectId,
+        title: title || "Untitled work item",
+        area: area || "Unassigned",
+        previousOwner: previousOwnerName,
+        newOwner: destinationPerson.name,
+        newOwnerPersonId: destinationPerson.id,
+        transferredAt,
+        handoffContext,
+      },
+    ]);
+    return true;
+  };
+
   const handleProblemEditOpen = (problem: ProblemRecord) => {
     setSelectedProblemId(problem.id);
     setProblemEditor(problem);
@@ -12901,12 +12974,26 @@ const isOwnershipGap =
       ...problemEditor,
       status: problemEditor.problemStatus,
     });
-
-    setConversions((currentConversions) =>
+    const persistedProblem = problemRecords.find((problem) => problem.id === selectedProblemId);
+    const applySave = () => setConversions((currentConversions) =>
       currentConversions.map((conversion) =>
         conversion.id === selectedProblemId ? updatedProblem : conversion,
       ),
     );
+    const saveSucceeded = persistedProblem
+      ? applyOwnershipChangeWithDelegationIntegrity({
+          objectType: "Problem",
+          objectId: updatedProblem.id,
+          title: updatedProblem.problemStatement || updatedProblem.title,
+          area: getAreaText(updatedProblem),
+          previousOwner: persistedProblem.owner,
+          newOwner: updatedProblem.owner,
+          handoffContext: updatedProblem.impact.trim() || updatedProblem.problemStatement,
+          applyOwnershipChange: applySave,
+        })
+      : (applySave(), true);
+
+    if (!saveSucceeded) return;
 
     setSelectedProblemId(null);
     setProblemEditor(null);
@@ -13042,12 +13129,28 @@ const isOwnershipGap =
       completionDate: actionEditor.completionDate,
       completionEvidence: actionEditor.completionEvidence,
     });
-
-    setConversions((currentConversions) =>
+    const persistedAction = actionRecords.find((action) => action.id === selectedActionId);
+    const applySave = () => setConversions((currentConversions) =>
       currentConversions.map((conversion) =>
         conversion.id === selectedActionId ? updatedAction : conversion,
       ),
     );
+    const saveSucceeded = persistedAction
+      ? applyOwnershipChangeWithDelegationIntegrity({
+          objectType: "Action",
+          objectId: updatedAction.id,
+          title: updatedAction.actionTitle || updatedAction.title,
+          area: getAreaText(updatedAction),
+          previousOwner: getActionOwnerDisplay(persistedAction, people),
+          previousOwnerPersonId: persistedAction.ownerPersonId,
+          newOwner: getActionOwnerDisplay(updatedAction, people),
+          newOwnerPersonId: updatedAction.ownerPersonId,
+          handoffContext: updatedAction.description.trim() || updatedAction.actionTitle,
+          applyOwnershipChange: applySave,
+        })
+      : (applySave(), true);
+
+    if (!saveSucceeded) return;
 
     setSelectedActionId(null);
     setActionEditor(null);
@@ -13417,8 +13520,6 @@ const isOwnershipGap =
       return;
     }
 
-    const previousOwner = sourceRecord.owner?.trim() || "Unassigned";
-    const transferredAt = new Date().toISOString();
     const handoffContext = action
       ? action.description.trim() || action.actionTitle || action.title
       : project
@@ -13427,49 +13528,48 @@ const isOwnershipGap =
           ? `${lead.serviceRequested.trim() || lead.leadName}${lead.followUpDate ? `; follow up ${lead.followUpDate}` : ""}`
           : problem!.impact.trim() || problem!.problemStatement || problem!.title;
 
-    if (objectType === "Action") {
-      setConversions((currentConversions) =>
-        currentConversions.map((conversion) =>
-          conversion.id === id
-            ? { ...conversion, owner: person.name, ownerPersonId: person.id }
-            : conversion,
-        ),
-      );
-    } else if (objectType === "Problem") {
-      setConversions((currentConversions) =>
-        currentConversions.map((conversion) =>
-          conversion.id === id ? { ...conversion, owner: person.name } : conversion,
-        ),
-      );
-    } else if (objectType === "Project") {
-      setProjects((currentProjects) =>
-        currentProjects.map((project) =>
-          project.id === id ? { ...project, owner: person.name } : project,
-        ),
-      );
-    } else if (objectType === "Lead") {
-      setLeads((currentLeads) =>
-        currentLeads.map((lead) =>
-          lead.id === id ? { ...lead, owner: person.name } : lead,
-        ),
-      );
-    }
-
-    setDelegationHandoffs((currentHandoffs) => [
-      ...currentHandoffs,
-      {
-        id: `handoff-${transferredAt}-${objectType}-${id}`,
-        objectType,
-        objectId: id,
-        title: itemTitle || "Untitled work item",
-        area: itemArea || "Unassigned",
-        previousOwner,
-        newOwner: person.name,
-        newOwnerPersonId: person.id,
-        transferredAt,
-        handoffContext,
+    const transferSucceeded = applyOwnershipChangeWithDelegationIntegrity({
+      objectType,
+      objectId: id,
+      title: itemTitle || "Untitled work item",
+      area: itemArea,
+      previousOwner: sourceRecord.owner,
+      previousOwnerPersonId: action?.ownerPersonId,
+      newOwner: person.name,
+      newOwnerPersonId: person.id,
+      handoffContext,
+      applyOwnershipChange: () => {
+        if (objectType === "Action") {
+          setConversions((currentConversions) =>
+            currentConversions.map((conversion) =>
+              conversion.id === id
+                ? { ...conversion, owner: person.name, ownerPersonId: person.id }
+                : conversion,
+            ),
+          );
+        } else if (objectType === "Problem") {
+          setConversions((currentConversions) =>
+            currentConversions.map((conversion) =>
+              conversion.id === id ? { ...conversion, owner: person.name } : conversion,
+            ),
+          );
+        } else if (objectType === "Project") {
+          setProjects((currentProjects) =>
+            currentProjects.map((project) =>
+              project.id === id ? { ...project, owner: person.name } : project,
+            ),
+          );
+        } else if (objectType === "Lead") {
+          setLeads((currentLeads) =>
+            currentLeads.map((lead) =>
+              lead.id === id ? { ...lead, owner: person.name } : lead,
+            ),
+          );
+        }
       },
-    ]);
+    });
+
+    if (!transferSucceeded) return;
 
     setFeedback({
       type: "success",
@@ -14303,12 +14403,27 @@ const isOwnershipGap =
       relatedSopIds: projectEditor.relatedSopIds ?? [],
     };
     const isNewProject = !projects.some((project) => project.id === nextProject.id);
-
-    setProjects((currentProjects) =>
+    const persistedProject = projects.find((project) => project.id === nextProject.id);
+    const applySave = () => setProjects((currentProjects) =>
       isNewProject
         ? [nextProject, ...currentProjects]
         : currentProjects.map((project) => project.id === nextProject.id ? nextProject : project),
     );
+    const saveSucceeded = persistedProject
+      ? applyOwnershipChangeWithDelegationIntegrity({
+          objectType: "Project",
+          objectId: nextProject.id,
+          title: nextProject.projectName,
+          area: nextProject.area,
+          previousOwner: persistedProject.owner,
+          newOwner: nextProject.owner,
+          handoffContext: `${nextProject.projectName}${nextProject.targetCompletionDate ? `; target completion ${nextProject.targetCompletionDate}` : ""}`,
+          applyOwnershipChange: applySave,
+        })
+      : (applySave(), true);
+
+    if (!saveSucceeded) return;
+
     setSelectedProjectId(nextProject.id);
     setProjectEditor(nextProject);
   };
@@ -14377,12 +14492,27 @@ const isOwnershipGap =
       dateCreated: leadEditor.dateCreated || new Date().toISOString(),
     };
     const isNewLead = !leads.some((lead) => lead.id === nextLead.id);
-
-    setLeads((currentLeads) =>
+    const persistedLead = leads.find((lead) => lead.id === nextLead.id);
+    const applySave = () => setLeads((currentLeads) =>
       isNewLead
         ? [nextLead, ...currentLeads]
         : currentLeads.map((lead) => lead.id === nextLead.id ? nextLead : lead),
     );
+    const saveSucceeded = persistedLead
+      ? applyOwnershipChangeWithDelegationIntegrity({
+          objectType: "Lead",
+          objectId: nextLead.id,
+          title: nextLead.leadName,
+          area: nextLead.relatedPillar,
+          previousOwner: persistedLead.owner,
+          newOwner: nextLead.owner,
+          handoffContext: `${nextLead.serviceRequested.trim() || nextLead.leadName}${nextLead.followUpDate ? `; follow up ${nextLead.followUpDate}` : ""}`,
+          applyOwnershipChange: applySave,
+        })
+      : (applySave(), true);
+
+    if (!saveSucceeded) return;
+
     setSelectedLeadId(nextLead.id);
     setLeadEditor(nextLead);
     setFeedback({
@@ -15039,6 +15169,20 @@ const isOwnershipGap =
 
   return (
     <div className="min-h-screen bg-[#f1efe9] text-[#171717]">
+      {feedback ? (
+        <div
+          className={[
+            "fixed right-4 top-4 z-50 max-w-sm rounded-xl border px-4 py-3 text-[12px] shadow-lg",
+            feedback.type === "success"
+              ? "border-[#cfc8c1] bg-[#f7f4f1] text-[#2f2b28]"
+              : "border-[#d4b4a7] bg-[#f8f1ee] text-[#4b312b]",
+          ].join(" ")}
+          role="status"
+          aria-live="polite"
+        >
+          {feedback.message}
+        </div>
+      ) : null}
       <div className="flex min-h-screen">
         <aside className="w-[260px] shrink-0 border-r border-[#cfc8c1] bg-[#f7f4f1] px-4 py-5">
           <div className="px-2 pb-6">
@@ -17271,19 +17415,6 @@ const isOwnershipGap =
                   <span className="text-[11px] text-[#5d584f]">Local prototype</span>
                 </div>
 
-                {feedback ? (
-                  <div
-                    className={[
-                      "mt-4 rounded-xl border px-3 py-2 text-[12px]",
-                      feedback.type === "success"
-                        ? "border-[#cfc8c1] bg-[#f2efe9] text-[#2f2b28]"
-                        : "border-[#d4b4a7] bg-[#f8f1ee] text-[#4b312b]",
-                    ].join(" ")}
-                    aria-live="polite"
-                  >
-                    {feedback.message}
-                  </div>
-                ) : null}
 
                 <form className="mt-5 space-y-5" onSubmit={handleSubmit}>
                   <div>
