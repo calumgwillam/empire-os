@@ -9266,6 +9266,9 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
     ? unassignedAccountability
     : personAccountabilitySummaries.find((entry) => entry.person.id === selectedAccountabilityKey) ?? null;
   const selectedAccountabilityPerson = selectedAccountability?.person ?? null;
+  const selectedPersonDelegationHandoffs = selectedAccountabilityPerson
+    ? delegationHandoffFollowThrough.items.filter((handoff) => handoff.newOwnerPersonId === selectedAccountabilityPerson.id)
+    : [];
 
   const selectedAccountabilityDetail = selectedAccountability ? (() => {
     const snapshot = selectedAccountability;
@@ -16906,6 +16909,7 @@ const isOwnershipGap =
                       </section>
                     ))}
                   </div>
+
                 </div>
               ) : (
                 <div className="mt-6 grid gap-4 xl:grid-cols-3">
@@ -17038,6 +17042,37 @@ const isOwnershipGap =
                       </section>
                     ))}
                   </div>
+
+                  {selectedAccountabilityPerson ? (
+                    <section className="mt-5 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                      <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Delegation history</div>
+                      {selectedPersonDelegationHandoffs.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[12px] text-[#4d4944]">
+                          No delegation handoffs recorded for this person.
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {selectedPersonDelegationHandoffs.map((handoff) => (
+                            <div key={handoff.id} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div className="text-[14px] font-medium text-[#171717]">{handoff.objectType} • {handoff.title}</div>
+                                <span className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] ${
+                                  handoff.state === "Completed"
+                                    ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
+                                    : handoff.state === "At risk" || handoff.state === "Source missing"
+                                      ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]"
+                                      : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
+                                }`}>{handoff.state}</span>
+                              </div>
+                              <div className="mt-1 text-[11px] text-[#4d4944]">{handoff.previousOwner} → {handoff.newOwner} • {handoff.area}</div>
+                              <div className="mt-1 text-[10px] text-[#6a625d]">{handoff.currentStatus} • {formatCapturedAt(handoff.transferredAt)}</div>
+                              <div className="mt-2 text-[12px] leading-5 text-[#524d49]">{handoff.handoffContext}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  ) : null}
                 </div>
               ) : (
                 <div className="mt-6">
