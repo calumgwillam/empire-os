@@ -13141,6 +13141,21 @@ const isOwnershipGap =
       return;
     }
 
+    const itemTitle = objectType === "Action"
+      ? actionRecords.find((action) => action.id === id)?.actionTitle || actionRecords.find((action) => action.id === id)?.title
+      : objectType === "Project"
+        ? projects.find((project) => project.id === id)?.projectName
+        : objectType === "Lead"
+          ? activeLeads.find((lead) => lead.id === id)?.leadName
+          : problemRecords.find((problem) => problem.id === id)?.problemStatement || problemRecords.find((problem) => problem.id === id)?.title;
+    const confirmed = window.confirm(
+      `Transfer ownership of this ${objectType} (${itemTitle || "Untitled work item"}) to ${person.name}? Confirming will transfer ownership.`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
     if (objectType === "Action") {
       setConversions((currentConversions) =>
         currentConversions.map((conversion) =>
