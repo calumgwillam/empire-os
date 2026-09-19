@@ -377,7 +377,7 @@ type DelegationHandoffRecord = {
   handoffContext: string;
 };
 
-type DelegationHandoffState = "Healthy" | "At risk" | "Completed" | "Cancelled" | "Ownership changed" | "Source missing";
+type DelegationHandoffState = "Healthy" | "At risk" | "Completed" | "Cancelled" | "Returned to Founder" | "Ownership changed" | "Source missing";
 
 type ProjectRecord = {
   id: string;
@@ -8475,6 +8475,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
         let sourceExists = false;
         let isCompleted = false;
         let isAtRisk = false;
+        let isCurrentFounderOwned = false;
 
         if (handoff.objectType === "Action") {
           const action = actionRecords.find((record) => record.id === handoff.objectId);
@@ -8485,6 +8486,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
             isCompleted = action.status === "Completed";
             isAtRisk = action.status !== "Cancelled"
               && (action.status === "Blocked" || (Boolean(action.dueDate) && new Date(action.dueDate).getTime() < nowMs));
+            isCurrentFounderOwned = isFounderOwned(action.owner, action.ownerPersonId);
           }
         } else if (handoff.objectType === "Project") {
           const project = projects.find((record) => record.id === handoff.objectId);
@@ -8496,6 +8498,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
             isCompleted = ["completed", "closed", "final"].includes(normalisedStatus);
             isAtRisk = !["cancelled", "canceled"].includes(normalisedStatus)
               && (normalisedStatus === "blocked" || (Boolean(project.targetCompletionDate) && new Date(project.targetCompletionDate).getTime() < nowMs));
+            isCurrentFounderOwned = isFounderOwned(project.owner);
           }
         } else if (handoff.objectType === "Lead") {
           const lead = leads.find((record) => record.id === handoff.objectId);
@@ -8506,6 +8509,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
             isCompleted = lead.status === "Won" || lead.status === "Lost";
             isAtRisk = (lead.status === "Quote Sent" && !lead.followUpDate)
               || (Boolean(lead.followUpDate) && new Date(lead.followUpDate).getTime() < nowMs);
+            isCurrentFounderOwned = isFounderOwned(lead.owner);
           }
         } else {
           const problem = problemRecords.find((record) => record.id === handoff.objectId);
@@ -8515,25 +8519,25 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
             currentStatus = problem.problemStatus;
             isCompleted = problem.problemStatus === "Resolved" || problem.problemStatus === "Closed";
             isAtRisk = problem.severity === "High" || problem.severity === "Critical";
+            isCurrentFounderOwned = isFounderOwned(problem.owner);
           }
         }
 
-
-    let state: DelegationHandoffState = "Healthy";
+        let state: DelegationHandoffState = "Healthy";
         if (!sourceExists) {
           state = "Source missing";
         } else if (currentOwner.trim().toLowerCase() !== handoff.newOwner.trim().toLowerCase()) {
-          state = "Ownership changed";
+          state = isCurrentFounderOwned ? "Returned to Founder" : "Ownership changed";
         } else if (isCompleted) {
-  state = "Completed";
-} else if (
-  (handoff.objectType === "Action" && currentStatus === "Cancelled")
-  || (handoff.objectType === "Project" && ["cancelled", "canceled"].includes(currentStatus.trim().toLowerCase()))
-) {
-  state = "Cancelled";
-} else if (isAtRisk) {
-  state = "At risk";
-} else {
+          state = "Completed";
+        } else if (
+          (handoff.objectType === "Action" && currentStatus === "Cancelled")
+          || (handoff.objectType === "Project" && ["cancelled", "canceled"].includes(currentStatus.trim().toLowerCase()))
+        ) {
+          state = "Cancelled";
+        } else if (isAtRisk) {
+          state = "At risk";
+        } else {
           state = "Healthy";
         }
 
@@ -8547,6 +8551,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
       atRisk: items.filter((item) => item.state === "At risk").length,
       completed: items.filter((item) => item.state === "Completed").length,
       cancelled: items.filter((item) => item.state === "Cancelled").length,
+      returnedToFounder: items.filter((item) => item.state === "Returned to Founder").length,
       ownershipChanged: items.filter((item) => item.state === "Ownership changed").length,
       sourceMissing: items.filter((item) => item.state === "Source missing").length,
     };
@@ -8558,6 +8563,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
       atRisk: 0,
       completed: 0,
       cancelled: 0,
+      returnedToFounder: 0,
       ownershipChanged: 0,
       sourceMissing: 0,
     };
@@ -8566,6 +8572,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
     if (handoff.state === "At risk") facts.atRisk += 1;
     if (handoff.state === "Completed") facts.completed += 1;
     if (handoff.state === "Cancelled") facts.cancelled += 1;
+    if (handoff.state === "Returned to Founder") facts.returnedToFounder += 1;
     if (handoff.state === "Ownership changed") facts.ownershipChanged += 1;
     if (handoff.state === "Source missing") facts.sourceMissing += 1;
     factsByPerson.set(handoff.newOwnerPersonId, facts);
@@ -8576,6 +8583,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
     atRisk: number;
     completed: number;
     cancelled: number;
+    returnedToFounder: number;
     ownershipChanged: number;
     sourceMissing: number;
   }>());
@@ -17059,7 +17067,7 @@ const isOwnershipGap =
                                 <span className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] ${
                                   handoff.state === "Completed"
                                     ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
-                                    : handoff.state === "At risk" || handoff.state === "Source missing"
+                                    : handoff.state === "At risk" || handoff.state === "Source missing" || handoff.state === "Returned to Founder"
                                       ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]"
                                       : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
                                 }`}>{handoff.state}</span>
@@ -17124,6 +17132,7 @@ const isOwnershipGap =
                             <div className="mt-3 text-[11px] leading-4 text-[#4d4944]">
                               Delegation: {handoffFacts.received} received • {handoffFacts.completed} completed • {handoffFacts.healthy} healthy • {handoffFacts.atRisk} at risk
                               {handoffFacts.cancelled > 0 ? ` • ${handoffFacts.cancelled} cancelled` : ""}
+                              {handoffFacts.returnedToFounder > 0 ? ` • ${handoffFacts.returnedToFounder} returned to Founder` : ""}
                               {handoffFacts.ownershipChanged > 0 ? ` • ${handoffFacts.ownershipChanged} ownership changed` : ""}
                               {handoffFacts.sourceMissing > 0 ? ` • ${handoffFacts.sourceMissing} source missing` : ""}
                             </div>
@@ -17184,6 +17193,7 @@ const isOwnershipGap =
                       <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Delegation handoffs</div>
                       <span className="text-[10px] text-[#6a625d]">
                        {delegationHandoffFollowThrough.healthy} healthy • {delegationHandoffFollowThrough.atRisk} at risk • {delegationHandoffFollowThrough.completed} completed • {delegationHandoffFollowThrough.cancelled} cancelled
+                        {delegationHandoffFollowThrough.returnedToFounder > 0 ? ` • ${delegationHandoffFollowThrough.returnedToFounder} returned to Founder` : ""}
                         {delegationHandoffFollowThrough.ownershipChanged > 0 ? ` • ${delegationHandoffFollowThrough.ownershipChanged} ownership changed` : ""}
                         {delegationHandoffFollowThrough.sourceMissing > 0 ? ` • ${delegationHandoffFollowThrough.sourceMissing} source missing` : ""}
                       </span>
@@ -17202,7 +17212,7 @@ const isOwnershipGap =
                                   <span className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] ${
                                     handoff.state === "Completed"
                                       ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
-                                      : handoff.state === "At risk" || handoff.state === "Source missing"
+                                      : handoff.state === "At risk" || handoff.state === "Source missing" || handoff.state === "Returned to Founder"
                                         ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]"
                                         : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
                                   }`}>{handoff.state}</span>
