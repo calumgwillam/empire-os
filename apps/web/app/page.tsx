@@ -4329,6 +4329,7 @@ type ReleaseAction =
   | "Monitor / Retain Temporarily";
 
 type ReleaseSeverity = "Critical" | "Material" | "Low";
+type ReleaseClosureState = "Not started" | "In progress" | "Resolved" | "Closure incomplete" | "Cancelled";
 
 type ExecutionReleaseItem = {
   id: string;
@@ -4348,6 +4349,8 @@ type ExecutionReleaseItem = {
   onOpen: () => void;
   delegateAction?: (personId: string) => void;
   releaseActionId?: string;
+  releaseClosureState: ReleaseClosureState;
+  releaseClosureReason: string;
 };
 
 type ReleaseSystemSummary = {
@@ -4610,11 +4613,14 @@ function FounderExecutionReleaseSystem({
                 </div>
               ) : null}
 
-              {item.releaseAction === "Prepare to Delegate" || item.releaseAction === "Unblock First" ? (
-                <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-[#e0dad4] pt-2">
-                  <span className="text-[10px] text-[#6a625d]">
-                    Release loop: {item.releaseActionId ? "In progress" : "Not started"}
-                  </span>
+              {item.releaseActionId || item.releaseAction === "Prepare to Delegate" || item.releaseAction === "Unblock First" ? (
+                <div className="mt-2.5 flex items-start justify-between gap-2 border-t border-[#e0dad4] pt-2">
+                  <div className="text-[10px] leading-4 text-[#6a625d]">
+                    <div>Release loop: {item.releaseClosureState}</div>
+                    {item.releaseClosureState === "Resolved" || item.releaseClosureState === "Closure incomplete" ? (
+                      <div>{item.releaseClosureReason}</div>
+                    ) : null}
+                  </div>
                   <button
                     type="button"
                     onClick={() => item.releaseActionId ? onOpenReleaseAction(item.releaseActionId) : onCreateReleaseAction(item)}
@@ -11688,6 +11694,11 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
       if (usedRecordKeys.has(recordKey)) return;
 
       const requiresAuthority = authorityKeys.has(recordKey);
+      const linkedReleaseAction = actionRecords.find((action) =>
+        action.releaseSourceType === objectType
+        && action.releaseSourceId === id
+        && (action.releaseIntent === "Prepare to Delegate" || action.releaseIntent === "Unblock First"),
+      );
 
       let releaseAction: ReleaseAction = "Monitor / Retain Temporarily";
       let severity: ReleaseSeverity = "Low";
@@ -11771,6 +11782,39 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
       if (priorityOrSeverity === "Critical") priorityScore += 100;
       if (priorityOrSeverity === "High") priorityScore += 50;
 
+      let releaseClosureState: ReleaseClosureState = "Not started";
+      let releaseClosureReason = "No linked release Action exists.";
+      if (linkedReleaseAction) {
+        if (linkedReleaseAction.status === "Cancelled") {
+          releaseClosureState = "Cancelled";
+          releaseClosureReason = "The linked release Action was cancelled.";
+        } else if (linkedReleaseAction.status !== "Completed") {
+          releaseClosureState = "In progress";
+          releaseClosureReason = `The linked release Action is ${linkedReleaseAction.status.toLowerCase()}.`;
+        } else if (linkedReleaseAction.releaseIntent === "Prepare to Delegate") {
+          if (activeOperationalDelegationPeople.length > 0 && delegationReadyPeople.length > 0) {
+            releaseClosureState = "Resolved";
+            releaseClosureReason = `Delegation capacity now exists through ${delegationReadyPeople.map((person) => person.name).join(", ")}.`;
+          } else {
+            releaseClosureState = "Closure incomplete";
+            releaseClosureReason = activeOperationalDelegationPeople.length === 0
+              ? "No active operational delegation person is available yet."
+              : `Readiness gaps remain: ${delegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`;
+          }
+        } else {
+          const sourceStillRequiresIntervention = isBlocked || Boolean(dependencyBlockerReason) || requiresAuthority;
+          if (sourceStillRequiresIntervention) {
+            releaseClosureState = "Closure incomplete";
+            releaseClosureReason = requiresAuthority
+              ? "The source item still requires Founder authority or intervention."
+              : "The source item is still blocked or waiting on an unresolved dependency.";
+          } else {
+            releaseClosureState = "Resolved";
+            releaseClosureReason = "The source item is no longer blocked and no longer carries a Founder-authority signal.";
+          }
+        }
+      }
+
       rawItems.push({
         id,
         objectType,
@@ -11788,14 +11832,9 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
         priorityScore,
         onOpen: () => handleOpenAttentionRecord(objectType, id),
         delegateAction: (personId: string) => handleDelegateItem(objectType, id, personId),
-        releaseActionId: releaseAction === "Prepare to Delegate" || releaseAction === "Unblock First"
-          ? actionRecords.find((action) =>
-            action.releaseSourceType === objectType
-            && action.releaseSourceId === id
-            && action.releaseIntent === releaseAction
-            && isActionActive(action),
-          )?.id
-          : undefined,
+        releaseActionId: linkedReleaseAction?.id,
+        releaseClosureState,
+        releaseClosureReason,
       });
 
       usedRecordKeys.add(recordKey);
@@ -12658,7 +12697,6 @@ const isOwnershipGap =
       action.releaseSourceType === item.objectType
       && action.releaseSourceId === item.id
       && action.releaseIntent === item.releaseAction
-      && isActionActive(action),
     );
 
     if (existingAction) {
