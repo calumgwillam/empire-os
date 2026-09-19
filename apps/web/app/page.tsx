@@ -4376,6 +4376,7 @@ type ExecutionReleaseItem = {
   delegateAction?: (personId: string) => void;
   eligibleDelegationPeople: CapacityRankedDelegationPerson[];
   releaseActionId?: string;
+  releaseClosureActionId?: string;
   releaseClosureState: ReleaseClosureState;
   releaseClosureReason: string;
 };
@@ -4644,7 +4645,7 @@ function FounderExecutionReleaseSystem({
                 </div>
               ) : null}
 
-              {item.releaseActionId || item.releaseAction === "Prepare to Delegate" || item.releaseAction === "Unblock First" ? (
+              {item.releaseActionId || item.releaseClosureActionId || item.releaseAction === "Prepare to Delegate" || item.releaseAction === "Unblock First" || item.releaseClosureState !== "Not started" ? (
                 <div className="mt-2.5 flex items-start justify-between gap-2 border-t border-[#e0dad4] pt-2">
                   <div className="text-[10px] leading-4 text-[#6a625d]">
                     <div>Release loop: {item.releaseClosureState}</div>
@@ -4652,13 +4653,19 @@ function FounderExecutionReleaseSystem({
                       <div>{item.releaseClosureReason}</div>
                     ) : null}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => item.releaseActionId ? onOpenReleaseAction(item.releaseActionId) : onCreateReleaseAction(item)}
-                    className="shrink-0 rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]"
-                  >
-                    {item.releaseActionId ? "Open Release Action" : "Create Release Action"}
-                  </button>
+                  {item.releaseActionId || item.releaseClosureActionId || item.releaseAction === "Prepare to Delegate" || item.releaseAction === "Unblock First" ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (item.releaseActionId) onOpenReleaseAction(item.releaseActionId);
+                        else if (item.releaseClosureActionId) onOpenReleaseAction(item.releaseClosureActionId);
+                        else onCreateReleaseAction(item);
+                      }}
+                      className="shrink-0 rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]"
+                    >
+                      {item.releaseActionId || item.releaseClosureActionId ? "Open Release Action" : "Create Release Action"}
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -12017,6 +12024,20 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
             )
           : undefined;
 
+      const latestHistoricalReleaseAction = actionRecords.find((action) =>
+        action.releaseSourceType === objectType
+        && action.releaseSourceId === id
+        && (action.releaseIntent === "Prepare to Delegate" || action.releaseIntent === "Unblock First"),
+      );
+
+      const closureReleaseAction =
+        linkedReleaseAction
+        ?? (
+          releaseAction !== "Prepare to Delegate" && releaseAction !== "Unblock First"
+            ? latestHistoricalReleaseAction
+            : undefined
+        );
+
       // Calculate Release Priority Score
       let priorityScore = 0;
       if (releaseAction === "Delegate Now") priorityScore += 500;
@@ -12033,14 +12054,14 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
 
       let releaseClosureState: ReleaseClosureState = "Not started";
       let releaseClosureReason = "No linked release Action exists.";
-      if (linkedReleaseAction) {
-        if (linkedReleaseAction.status === "Cancelled") {
+      if (closureReleaseAction) {
+        if (closureReleaseAction.status === "Cancelled") {
           releaseClosureState = "Cancelled";
           releaseClosureReason = "The linked release Action was cancelled.";
-        } else if (linkedReleaseAction.status !== "Completed") {
+        } else if (closureReleaseAction.status !== "Completed") {
           releaseClosureState = "In progress";
-          releaseClosureReason = `The linked release Action is ${linkedReleaseAction.status.toLowerCase()}.`;
-        } else if (linkedReleaseAction.releaseIntent === "Prepare to Delegate") {
+          releaseClosureReason = `The linked release Action is ${closureReleaseAction.status.toLowerCase()}.`;
+        } else if (closureReleaseAction.releaseIntent === "Prepare to Delegate") {
           if (areaDelegationReadyPeople.length > 0) {
             releaseClosureState = "Resolved";
             releaseClosureReason = `Area-qualified delegation capacity now exists through ${areaDelegationReadyPeople.map((person) => person.name).join(", ")}.`;
@@ -12085,6 +12106,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
         delegateAction: (personId: string) => handleDelegateItem(objectType, id, personId),
         eligibleDelegationPeople: capacityRankedDelegationPeople,
         releaseActionId: linkedReleaseAction?.id,
+        releaseClosureActionId: closureReleaseAction?.id,
         releaseClosureState,
         releaseClosureReason,
       });
