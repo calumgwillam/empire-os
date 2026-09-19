@@ -7433,6 +7433,9 @@ export default function Home() {
   const isActionActive = (action: ActionRecord) =>
     ["Open", "In Progress", "Blocked"].includes(action.status);
 
+  const isReleaseInterventionAction = (action: ActionRecord) =>
+    Boolean(action.releaseSourceType && action.releaseSourceId && action.releaseIntent);
+
   const isProblemUnresolved = (problem: ProblemRecord) =>
     ["Open", "Investigating", "Action required"].includes(problem.problemStatus);
 
@@ -7506,7 +7509,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
   };
   const isFounderOwned = (ownerText: string | undefined, ownerPersonId?: string) =>
     founderOwnerKey !== null && getValidActiveOwnerKey(ownerText, ownerPersonId) === founderOwnerKey;
-  const activeOwnershipActions = actionRecords.filter(isActionActive);
+  const activeOwnershipActions = actionRecords.filter((action) => isActionActive(action) && !isReleaseInterventionAction(action));
   const activeOwnershipProjects = projects.filter(isProjectActive);
   const activeOwnershipLeads = activeLeads.filter((lead) => !["Won", "Lost"].includes(lead.status));
   const activeOwnershipProblems = problemRecords.filter(isProblemUnresolved);
@@ -7676,7 +7679,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
           delegationAction: "Escalate to founder and accountable owner",
         })),
       ...actionRecords
-        .filter((action) => isActionActive(action) && action.priority === "Critical")
+        .filter((action) => isActionActive(action) && !isReleaseInterventionAction(action) && action.priority === "Critical")
         .map((action) => ({
           id: action.id,
           objectType: "Action" as const,
@@ -11420,7 +11423,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
     });
 
     // Blocked actions with upstream blockers
-    actionRecords.filter(isActionActive).forEach((action) => {
+    actionRecords.filter((action) => isActionActive(action) && !isReleaseInterventionAction(action)).forEach((action) => {
       const key = `Action:${action.id}`;
       if (usedKeys.has(key)) return;
 
@@ -11449,7 +11452,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
     });
 
     // Founder-owned overdue execution work
-    actionRecords.filter(isActionActive).forEach((action) => {
+    actionRecords.filter((action) => isActionActive(action) && !isReleaseInterventionAction(action)).forEach((action) => {
       const key = `Action:${action.id}`;
       if (usedKeys.has(key)) return;
 
@@ -11841,7 +11844,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
     };
 
     // Scan Founder-owned Actions
-    actionRecords.filter(isActionActive).forEach((action) => {
+    actionRecords.filter((action) => isActionActive(action) && !isReleaseInterventionAction(action)).forEach((action) => {
       if (isFounderOwned(action.owner, action.ownerPersonId)) {
         const dependencyBlocker = getActionDependencyBlocker(action);
         processFounderItem(
