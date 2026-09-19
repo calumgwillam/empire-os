@@ -7863,7 +7863,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
             whatIsChanging: "This active action is still carried by the founder but does not have a critical or blocked authority signal.",
             whyItMatters: "Transferring routine execution creates founder capacity while preserving accountability through a named owner.",
             founderIntervention: "No",
-            delegationAction: "Transfer to an active non-founder owner with a clear outcome and follow-up",
+            delegationAction: "Transfer to an active operational owner with a clear outcome and follow-up",
             suitability,
           };
         }),
@@ -7882,7 +7882,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
             whatIsChanging: "This active, unblocked project is currently carried by the founder.",
             whyItMatters: "Moving delivery ownership away from the founder improves operating leverage and tests whether the project can run autonomously.",
             founderIntervention: "No",
-            delegationAction: "Transfer delivery ownership to an active non-founder owner",
+            delegationAction: "Transfer delivery ownership to an active operational owner",
             suitability,
           };
         }),
@@ -7901,7 +7901,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
             whatIsChanging: "This live lead is currently carried by the founder.",
             whyItMatters: "Delegating routine pipeline ownership reduces founder dependency while keeping commercial follow-up accountable.",
             founderIntervention: "No",
-            delegationAction: "Transfer pipeline ownership to an active non-founder owner",
+            delegationAction: "Transfer pipeline ownership to an active operational owner",
             suitability,
           };
         }),
@@ -7916,7 +7916,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           whatIsChanging: "This unresolved, non-critical problem is currently carried by the founder.",
           whyItMatters: "Assigning investigation and resolution to an operational owner reduces founder dependency without delegating an explicit authority decision.",
           founderIntervention: "No",
-          delegationAction: "Transfer investigation and resolution to an active non-founder owner",
+          delegationAction: "Transfer investigation and resolution to an active operational owner",
           suitability: problem.severity === "Low" ? 5 : problem.severity === "Medium" ? 20 : 40,
         })),
     ]
