@@ -10133,7 +10133,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     if (organisationalHealth.delegationQuality.label === "Needs attention" && organisationalHealth.selfSufficiencyPct !== null) {
       empireWide.push({
         label: "Founder dependency",
-        detail: `${organisationalHealth.selfSufficiencyPct}% of validly owned active work is non-founder owned; ${operationalIndependence.operationalIndependencePct ?? 0}% can run without routine Founder intervention; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${empireDecisionQueue.delegateItems.length > 0 && empireDecisionQueue.delegationCapacityNames.length === 0 ? `; ${empireDecisionQueue.delegateItems.length} founder-owned item${empireDecisionQueue.delegateItems.length === 1 ? " is" : "s are"} suitable for delegation, but ${empireDecisionQueue.delegationReadinessGapNames.length > 0 ? `${empireDecisionQueue.delegationReadinessGapNames.length} active operational delegation person${empireDecisionQueue.delegationReadinessGapNames.length === 1 ? " is" : "s are"} not yet delegation-ready` : "no active operational delegation person is available"}.` : "."}`,
+        detail: `${organisationalHealth.selfSufficiencyPct}% of validly owned active work is owned outside the primary Founder; ${operationalIndependence.operationalIndependencePct ?? 0}% can run without routine Founder intervention; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${empireDecisionQueue.delegateItems.length > 0 && empireDecisionQueue.delegationCapacityNames.length === 0 ? `; ${empireDecisionQueue.delegateItems.length} founder-owned item${empireDecisionQueue.delegateItems.length === 1 ? " is" : "s are"} suitable for delegation, but ${empireDecisionQueue.delegationReadinessGapNames.length > 0 ? `${empireDecisionQueue.delegationReadinessGapNames.length} active operational delegation person${empireDecisionQueue.delegationReadinessGapNames.length === 1 ? " is" : "s are"} not yet delegation-ready` : "no active operational delegation person is available"}.` : "."}`,
       });
     }
     if (cashAttention.buffer) {
@@ -10777,7 +10777,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       : `${ownershipHygieneGapCount} active item${ownershipHygieneGapCount === 1 ? "" : "s"} lack${ownershipHygieneGapCount === 1 ? "s" : ""} a valid active owner. ${peopleWithAttention.length} ${peopleWithAttention.length === 1 ? "person is" : "people are"} carrying attention items.`;
     const delegationCandidateCount = empireDecisionQueue.delegateItems.length;
     const founderDependency = organisationalHealth.delegationQuality.label === "Needs attention" && organisationalHealth.selfSufficiencyPct !== null
-      ? `${organisationalHealth.selfSufficiencyPct}% of validly owned active work is non-founder owned; ${operationalIndependence.operationalIndependencePct ?? 0}% can run without routine Founder intervention; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${delegationCandidateCount > 0 ? `, and ${delegationCandidateCount} founder-owned item${delegationCandidateCount === 1 ? " is" : "s are"} suitable for delegation${empireDecisionQueue.delegationCapacityNames.length === 0 ? `, but ${empireDecisionQueue.delegationReadinessGapNames.length > 0 ? `${empireDecisionQueue.delegationReadinessGapNames.length} active operational delegation person${empireDecisionQueue.delegationReadinessGapNames.length === 1 ? " is" : "s are"} not yet delegation-ready` : "no active operational delegation person is available"}` : ""}.` : "."}`
+      ? `${organisationalHealth.selfSufficiencyPct}% of validly owned active work is owned outside the primary Founder; ${operationalIndependence.operationalIndependencePct ?? 0}% can run without routine Founder intervention; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${delegationCandidateCount > 0 ? `, and ${delegationCandidateCount} founder-owned item${delegationCandidateCount === 1 ? " is" : "s are"} suitable for delegation${empireDecisionQueue.delegationCapacityNames.length === 0 ? `, but ${empireDecisionQueue.delegationReadinessGapNames.length > 0 ? `${empireDecisionQueue.delegationReadinessGapNames.length} active operational delegation person${empireDecisionQueue.delegationReadinessGapNames.length === 1 ? " is" : "s are"} not yet delegation-ready` : "no active operational delegation person is available"}` : ""}.` : "."}`
       : null;
 
     const staleCount = staleRecords.length;
@@ -11351,7 +11351,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       );
 
       compareHigherIsBetter(
-        "Non-founder ownership share",
+        "Ownership outside primary Founder",
         organisationalHealth.selfSufficiencyPct,
         baselineSnapshot.selfSufficiencyPct,
         "Non-founder owners are carrying a larger share of active operational work.",
@@ -11447,13 +11447,13 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       const diff = currentSelfSufficiency - baseSelfSufficiency;
       if (diff > 2) {
         dependencyStatus = "Improving";
-        dependencySummary = `Non-founder ownership increased by +${diff}% (from ${baseSelfSufficiency}% to ${currentSelfSufficiency}%).`;
+        dependencySummary = `Ownership outside the primary Founder increased by +${diff}% (from ${baseSelfSufficiency}% to ${currentSelfSufficiency}%).`;
       } else if (diff < -2) {
         dependencyStatus = "Worsening";
         dependencySummary = `Founder dependency increased; non-founder share fell by ${Math.abs(diff)}% (from ${baseSelfSufficiency}% to ${currentSelfSufficiency}%).`;
       } else {
         dependencyStatus = "Flat";
-        dependencySummary = `Non-founder ownership share remains stable at ${currentSelfSufficiency}% (baseline: ${baseSelfSufficiency}%).`;
+        dependencySummary = `Ownership outside the primary Founder remains stable at ${currentSelfSufficiency}% (baseline: ${baseSelfSufficiency}%).`;
       }
       dependencyDetail = `Top owner carries ${organisationalHealth.topOwnerShare ?? 0}% of active work. ${empireDecisionQueue.delegateItems.length > 0 ? `${empireDecisionQueue.delegateItems.length} founder-owned item${empireDecisionQueue.delegateItems.length === 1 ? " is" : "s are"} ready for delegation.` : "No routine founder-owned items currently flagged for delegation."}`;
     } else {
@@ -16164,7 +16164,7 @@ const isOwnershipGap =
                       <div className="mt-1.5 space-y-0.5 text-[11px] leading-4 text-[#4d4944]">
                         <div>{organisationalHealth.validOwned} of {organisationalHealth.totalWork} active operational records have valid owners</div>
                         {organisationalHealth.pctValidOwner !== null ? <div>{organisationalHealth.pctValidOwner}% ownership coverage</div> : null}
-                        {organisationalHealth.pctNonFounder !== null ? <div>{organisationalHealth.pctNonFounder}% not founder-owned</div> : null}
+                        {organisationalHealth.pctNonFounder !== null ? <div>{organisationalHealth.pctNonFounder}% owned outside primary Founder</div> : null}
                         <div>{organisationalHealth.pctDelegatedStalled !== null ? `${organisationalHealth.pctDelegatedStalled}% of delegated work stalled / at risk` : "No delegated work — stalled share N/A"}</div>
                         {empireDecisionQueue.delegateItems.length > 0 && empireDecisionQueue.delegationCapacityNames.length === 0
                           ? <div>{empireDecisionQueue.delegateItems.length} founder-owned item{empireDecisionQueue.delegateItems.length === 1 ? " is" : "s are"} suitable for delegation, but {empireDecisionQueue.delegationReadinessGapNames.length > 0 ? `${empireDecisionQueue.delegationReadinessGapNames.length} active operational delegation person${empireDecisionQueue.delegationReadinessGapNames.length === 1 ? " is" : "s are"} not yet delegation-ready` : "no active operational delegation person is available"}.</div>
@@ -16175,7 +16175,7 @@ const isOwnershipGap =
                     </div>
 
                     <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
-                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Non-founder ownership</div>
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Ownership outside primary Founder</div>
                       <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">
                         {organisationalHealth.selfSufficiencyPct === null ? "—" : `${organisationalHealth.selfSufficiencyPct}%`}
                       </div>
@@ -16184,7 +16184,7 @@ const isOwnershipGap =
                           ? "No active operational work to measure."
                           : organisationalHealth.validOwned === 0
                             ? "Founder-independent ownership cannot be calculated until active work has valid owners."
-                            : `${organisationalHealth.nonFounderOwned} of ${organisationalHealth.validOwned} validly owned active records are non-founder-owned.`}
+                            : `${organisationalHealth.nonFounderOwned} of ${organisationalHealth.validOwned} validly owned active records are owned outside the primary Founder.`}
                       </div>
                       {healthTrend.selfSufficiency ? <div className="mt-1.5 text-[10px] text-[#4d4944]">{healthTrend.selfSufficiency}</div> : null}
                     </div>
@@ -16489,7 +16489,7 @@ const isOwnershipGap =
                           </div>
                         </div>
                         <p className="mt-1 text-[11px] leading-4 text-[#4d4944]">
-                          Non-founder ownership measures who owns the work; operational independence measures whether work can run without routine founder intervention.
+                          Ownership outside the primary Founder measures whether work has moved off the primary Founder; operational independence measures whether work can run without routine Founder intervention.
                         </p>
                         <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px] sm:grid-cols-5">
                           {[
