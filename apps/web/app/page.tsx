@@ -4398,6 +4398,7 @@ function FounderExecutionReleaseSystem({
   items,
   delegationReadyPeople,
   delegationReadinessGapNames,
+  delegationReadinessGapDetail,
   onNavigateToPeople,
   onCreateReleaseAction,
   onOpenReleaseAction,
@@ -4406,6 +4407,7 @@ function FounderExecutionReleaseSystem({
   items: ExecutionReleaseItem[];
   delegationReadyPeople: PersonRecord[];
   delegationReadinessGapNames: string[];
+  delegationReadinessGapDetail: string;
   onNavigateToPeople: () => void;
   onCreateReleaseAction: (item: ExecutionReleaseItem) => void;
   onOpenReleaseAction: (actionId: string) => void;
@@ -4629,7 +4631,7 @@ function FounderExecutionReleaseSystem({
                     {delegationReadyPeople.length > 0
                       ? `No delegation-ready owner is assigned to ${item.area || "this area"}.`
                       : delegationReadinessGapNames.length > 0
-                      ? `Readiness gap: ${delegationReadinessGapNames.join(", ")} missing role/responsibilities/authority.`
+                      ? `Readiness gap: ${delegationReadinessGapDetail}.`
                       : "No active operational delegation people excluding the primary founder are available in People."}
                   </span>
                   <button
@@ -15396,6 +15398,7 @@ const isOwnershipGap =
                   items={founderExecutionReleaseSystem.items}
                   delegationReadyPeople={delegationReadyPeople}
                   delegationReadinessGapNames={empireDecisionQueue.delegationReadinessGapNames}
+                  delegationReadinessGapDetail={delegationReadinessGapPeople.map((person) => `${person.name} missing ${getDelegationReadinessMissingFields(person).join("/")}`).join("; ")}
                   onNavigateToPeople={() => setActiveView("People")}
                   onCreateReleaseAction={handleCreateReleaseAction}
                   onOpenReleaseAction={(actionId) => {
