@@ -8640,43 +8640,39 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
 
     let validOwned = 0;
     let founderOwned = 0;
-    let stalledOrRiskyDelegated = 0;
     const ownerLoad = new Map<string, number>();
 
-    const tallyWork = (ownerText: string | undefined, ownerPersonId: string | undefined, isRisky: boolean) => {
+    const tallyWork = (ownerText: string | undefined, ownerPersonId?: string) => {
       const ownerKey = getValidActiveOwnerKey(ownerText, ownerPersonId);
       if (!ownerKey) return;
       validOwned += 1;
       ownerLoad.set(ownerKey, (ownerLoad.get(ownerKey) || 0) + 1);
       if (founderOwnerKey !== null && ownerKey === founderOwnerKey) {
         founderOwned += 1;
-      } else if (isRisky) {
-        stalledOrRiskyDelegated += 1;
       }
     };
 
-    const nowMs = Date.now();
     activeActions.forEach((action) => {
-      const isRisky = action.status === "Blocked" || (Boolean(action.dueDate) && new Date(action.dueDate).getTime() < nowMs);
-      tallyWork(action.owner, action.ownerPersonId, isRisky);
+      tallyWork(action.owner, action.ownerPersonId);
     });
+
     activeProjects.forEach((project) => {
-      const isRisky = project.status.trim().toLowerCase() === "blocked" || (Boolean(project.targetCompletionDate) && new Date(project.targetCompletionDate).getTime() < nowMs);
-      tallyWork(project.owner, undefined, isRisky);
+      tallyWork(project.owner);
     });
+
     pipelineLeadsAll.forEach((lead) => {
-      const isRisky = (lead.status === "Quote Sent" && !lead.followUpDate) || (Boolean(lead.followUpDate) && new Date(lead.followUpDate).getTime() < nowMs);
-      tallyWork(lead.owner, undefined, isRisky);
+      tallyWork(lead.owner);
     });
+
     unresolvedProblems.forEach((problem) => {
-      const isRisky = problem.severity === "Critical" || problem.severity === "High";
-      tallyWork(problem.owner, undefined, isRisky);
+      tallyWork(problem.owner);
     });
 
     const pctValidOwner = totalWork === 0 ? null : Math.round((validOwned / totalWork) * 100);
     const pctNonFounder = validOwned === 0 ? null : Math.round(((validOwned - founderOwned) / validOwned) * 100);
     const nonFounderOwned = validOwned - founderOwned;
-    const delegatedCount = validOwned - founderOwned;
+    const delegatedCount = delegationHandoffFollowThrough.healthy + delegationHandoffFollowThrough.atRisk;
+    const stalledOrRiskyDelegated = delegationHandoffFollowThrough.atRisk;
     const pctDelegatedStalled = delegatedCount === 0 ? null : Math.round((stalledOrRiskyDelegated / delegatedCount) * 100);
 
     let topOwnerShare: number | null = null;
@@ -8704,6 +8700,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       if (score >= 60) return { label: "Adequate", tone: "neutral" as const };
       return { label: "Needs attention", tone: "warn" as const };
     })();
+
+    const nowMs = Date.now();
 
     const openDecisions = decisionRecords.filter((decision) => ["Active", "Under Review"].includes(decision.decisionStatus));
     const openDecisionAges = openDecisions
