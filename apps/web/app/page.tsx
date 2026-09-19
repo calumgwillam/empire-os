@@ -3070,6 +3070,11 @@ function FounderFocusList({ items, totalCount, onOpen }: { items: FocusListItem[
   );
 }
 
+type CapacityRankedDelegationPerson = PersonRecord & {
+  carriedCount: number;
+  attentionCount: number;
+};
+
 type OperatingBriefItem = {
   id: string;
   objectType: string;
@@ -3079,7 +3084,7 @@ type OperatingBriefItem = {
   why: string;
   onOpen: () => void;
   delegateAction?: (personId: string) => void;
-  eligibleDelegationPeople?: PersonRecord[];
+  eligibleDelegationPeople?: CapacityRankedDelegationPerson[];
 };
 
 function FounderOperatingBrief({
@@ -3262,7 +3267,7 @@ function FounderOperatingBrief({
                         <option value="">Delegate to...</option>
                         {item.eligibleDelegationPeople.map((person) => (
                           <option key={person.id} value={person.id}>
-                            {person.name}
+                            {person.name} — carrying {person.carriedCount} • {person.attentionCount} needs attention
                           </option>
                         ))}
                       </select>
@@ -4353,7 +4358,7 @@ type ExecutionReleaseItem = {
   priorityScore: number;
   onOpen: () => void;
   delegateAction?: (personId: string) => void;
-  eligibleDelegationPeople: PersonRecord[];
+  eligibleDelegationPeople: CapacityRankedDelegationPerson[];
   releaseActionId?: string;
   releaseClosureState: ReleaseClosureState;
   releaseClosureReason: string;
@@ -4594,7 +4599,7 @@ function FounderExecutionReleaseSystem({
                     <option value="">Delegate to...</option>
                     {item.eligibleDelegationPeople.map((person) => (
                       <option key={person.id} value={person.id}>
-                        {person.name}
+                        {person.name} — carrying {person.carriedCount} • {person.attentionCount} needs attention
                       </option>
                     ))}
                   </select>
@@ -8406,6 +8411,21 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
 
   const personAccountabilitySummaries = orderedPeople.map((person) => ({ ...buildAccountabilitySnapshot(person), person }));
   const unassignedAccountability = buildAccountabilitySnapshot(null);
+  const getCapacityRankedDelegationPeopleForArea = (area: string): CapacityRankedDelegationPerson[] =>
+    getDelegationReadyPeopleForArea(area)
+      .map((person) => {
+        const summary = personAccountabilitySummaries.find((entry) => entry.person.id === person.id);
+        return {
+          ...person,
+          carriedCount: summary?.carriedCount ?? 0,
+          attentionCount: summary?.attentionCount ?? 0,
+        };
+      })
+      .sort((left, right) =>
+        left.attentionCount - right.attentionCount
+        || left.carriedCount - right.carriedCount
+        || left.name.localeCompare(right.name),
+      );
 
   const organisationalHealth = (() => {
     const activeActions = activeOwnershipActions;
@@ -10307,7 +10327,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
         why: item.whatIsChanging || item.whyItMatters,
         onOpen: () => handleOpenAttentionRecord(item.objectType, item.id),
         delegateAction: (personId: string) => handleDelegateItem(item.objectType as "Action" | "Project" | "Lead" | "Problem", item.id, personId),
-        eligibleDelegationPeople: getDelegationReadyPeopleForArea(item.pillar),
+        eligibleDelegationPeople: getCapacityRankedDelegationPeopleForArea(item.pillar),
       });
       usedRecordKeys.add(key);
     }
@@ -11597,7 +11617,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
     for (const item of empireDecisionQueue.delegateItems) {
       const key = `${item.objectType}:${item.id}`;
       if (usedKeys.has(key)) continue;
-      const areaDelegationReadyPeople = getDelegationReadyPeopleForArea(item.pillar);
+      const areaDelegationReadyPeople = getCapacityRankedDelegationPeopleForArea(item.pillar);
 
       rawBottlenecks.push({
         id: item.id,
@@ -11720,6 +11740,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
 
       const requiresAuthority = authorityKeys.has(recordKey);
       const areaDelegationReadyPeople = getDelegationReadyPeopleForArea(area);
+      const capacityRankedDelegationPeople = getCapacityRankedDelegationPeopleForArea(area);
       const linkedReleaseAction = actionRecords.find((action) =>
         action.releaseSourceType === objectType
         && action.releaseSourceId === id
@@ -11781,7 +11802,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
           releaseAction = "Delegate Now";
           severity = "Material";
           why = `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation and area-qualified capacity exists.`;
-          releasePath = `Transfer ownership to an active delegation-ready team member for ${area} (${areaDelegationReadyPeople.map((person) => person.name).join(", ")}).`;
+          releasePath = `Transfer ownership to an active delegation-ready team member for ${area} (${capacityRankedDelegationPeople.map((person) => person.name).join(", ")}).`;
         } else {
           releaseAction = "Prepare to Delegate";
           severity = "Material";
@@ -11864,7 +11885,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
         priorityScore,
         onOpen: () => handleOpenAttentionRecord(objectType, id),
         delegateAction: (personId: string) => handleDelegateItem(objectType, id, personId),
-        eligibleDelegationPeople: areaDelegationReadyPeople,
+        eligibleDelegationPeople: capacityRankedDelegationPeople,
         releaseActionId: linkedReleaseAction?.id,
         releaseClosureState,
         releaseClosureReason,
@@ -16086,7 +16107,7 @@ const isOwnershipGap =
                         ) : (
                           <div className="mt-2 space-y-2">
                             {empireDecisionQueue.delegateItems.map((item) => {
-                              const eligibleDelegationPeople = getDelegationReadyPeopleForArea(item.pillar);
+                              const eligibleDelegationPeople = getCapacityRankedDelegationPeopleForArea(item.pillar);
                               return (
                                 <div
                                   key={`delegate-${item.id}`}
@@ -16116,7 +16137,7 @@ const isOwnershipGap =
                                       <option value="">Delegate to...</option>
                                       {eligibleDelegationPeople.map((person) => (
                                         <option key={person.id} value={person.id}>
-                                          {person.name}
+                                          {person.name} — carrying {person.carriedCount} • {person.attentionCount} needs attention
                                         </option>
                                       ))}
                                     </select>
