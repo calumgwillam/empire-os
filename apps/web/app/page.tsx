@@ -11933,11 +11933,6 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
       const requiresAuthority = authorityKeys.has(recordKey);
       const areaDelegationReadyPeople = getDelegationReadyPeopleForArea(area);
       const capacityRankedDelegationPeople = getCapacityRankedDelegationPeopleForArea(area);
-      const linkedReleaseAction = actionRecords.find((action) =>
-        action.releaseSourceType === objectType
-        && action.releaseSourceId === id
-        && (action.releaseIntent === "Prepare to Delegate" || action.releaseIntent === "Unblock First"),
-      );
 
       let releaseAction: ReleaseAction = "Monitor / Retain Temporarily";
       let severity: ReleaseSeverity = "Low";
@@ -12010,6 +12005,15 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
               : `Complete delegation readiness in People: ${delegationReadinessGapPeople.map((person) => `${person.name} — ${getDelegationReadinessMissingFields(person).join(", ")}`).join("; ")}.`;
         }
       }
+
+      const linkedReleaseAction =
+        releaseAction === "Prepare to Delegate" || releaseAction === "Unblock First"
+          ? actionRecords.find((action) =>
+              action.releaseSourceType === objectType
+              && action.releaseSourceId === id
+              && action.releaseIntent === releaseAction,
+            )
+          : undefined;
 
       // Calculate Release Priority Score
       let priorityScore = 0;
