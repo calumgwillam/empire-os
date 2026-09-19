@@ -11778,7 +11778,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
             objectType: "People",
             area: "People",
             severity: "Material",
-            why: `${empireDecisionQueue.delegateItems.length} founder-owned routine item(s) are ready for delegation, but active team members (${empireDecisionQueue.delegationReadinessGapNames.join(", ")}) miss role, responsibilities, or authority definitions in People.`,
+            why: `${empireDecisionQueue.delegateItems.length} founder-owned routine item(s) are ready for delegation, but readiness gaps remain: ${delegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`,
             releasePath: "Define role, responsibilities, and authority in People to enable delegated ownership.",
             onOpen: () => setActiveView("People"),
           });
@@ -11999,7 +11999,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
             ? `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but no active operational delegation person excluding the primary founder exists in People.`
             : delegationReadyPeople.length > 0
               ? `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but no delegation-ready person is assigned to ${area || "its area"}.`
-              : `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but active team members (${empireDecisionQueue.delegationReadinessGapNames.join(", ")}) miss role, responsibilities, or authority definitions in People.`;
+              : `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but readiness gaps remain: ${delegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`;
           releasePath = activeOperationalDelegationPeople.length === 0
             ? "Onboard or activate operational delegation people excluding the primary founder in People to absorb operational load."
             : delegationReadyPeople.length > 0
