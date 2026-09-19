@@ -3079,6 +3079,7 @@ type OperatingBriefItem = {
   why: string;
   onOpen: () => void;
   delegateAction?: (personId: string) => void;
+  eligibleDelegationPeople?: PersonRecord[];
 };
 
 function FounderOperatingBrief({
@@ -3246,7 +3247,7 @@ function FounderOperatingBrief({
                     </div>
                   </button>
 
-                  {hasDelegationCapacity && item.delegateAction ? (
+                  {item.eligibleDelegationPeople && item.eligibleDelegationPeople.length > 0 && item.delegateAction ? (
                     <div className="mt-2.5 flex items-center gap-2 border-t border-[#e0dad4] pt-2">
                       <select
                         defaultValue=""
@@ -3259,14 +3260,18 @@ function FounderOperatingBrief({
                         className="w-full rounded-lg border border-[#cfc8c1] bg-white px-2 py-1 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
                       >
                         <option value="">Delegate to...</option>
-                        {delegationReadyPeople.map((person) => (
+                        {item.eligibleDelegationPeople.map((person) => (
                           <option key={person.id} value={person.id}>
                             {person.name}
                           </option>
                         ))}
                       </select>
                     </div>
-                  ) : null}
+                  ) : (
+                    <div className="mt-2.5 border-t border-[#e0dad4] pt-2 text-[10px] text-[#6a625d]">
+                      No delegation-ready owner for {item.area || "this area"}.
+                    </div>
+                  )}
                 </div>
               ))
             )}
@@ -4348,6 +4353,7 @@ type ExecutionReleaseItem = {
   priorityScore: number;
   onOpen: () => void;
   delegateAction?: (personId: string) => void;
+  eligibleDelegationPeople: PersonRecord[];
   releaseActionId?: string;
   releaseClosureState: ReleaseClosureState;
   releaseClosureReason: string;
@@ -4573,7 +4579,7 @@ function FounderExecutionReleaseSystem({
               </button>
 
               {/* Direct Delegation Control for DELEGATE NOW */}
-              {item.releaseAction === "Delegate Now" && item.delegateAction && delegationReadyPeople.length > 0 ? (
+              {item.releaseAction === "Delegate Now" && item.delegateAction && item.eligibleDelegationPeople.length > 0 ? (
                 <div className="mt-2.5 flex items-center gap-2 border-t border-[#e0dad4] pt-2">
                   <select
                     defaultValue=""
@@ -4586,7 +4592,7 @@ function FounderExecutionReleaseSystem({
                     className="w-full rounded-lg border border-[#cfc8c1] bg-white px-2 py-1 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
                   >
                     <option value="">Delegate to...</option>
-                    {delegationReadyPeople.map((person) => (
+                    {item.eligibleDelegationPeople.map((person) => (
                       <option key={person.id} value={person.id}>
                         {person.name}
                       </option>
@@ -4599,7 +4605,9 @@ function FounderExecutionReleaseSystem({
               {item.releaseAction === "Prepare to Delegate" ? (
                 <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-[#e0dad4] pt-2">
                   <span className="text-[10px] text-[#6a625d]">
-                    {delegationReadinessGapNames.length > 0
+                    {delegationReadyPeople.length > 0
+                      ? `No delegation-ready owner is assigned to ${item.area || "this area"}.`
+                      : delegationReadinessGapNames.length > 0
                       ? `Readiness gap: ${delegationReadinessGapNames.join(", ")} missing role/responsibilities/authority.`
                       : "No active operational delegation people excluding the primary founder are available in People."}
                   </span>
@@ -7484,6 +7492,12 @@ const delegationReadyPeople = activeOperationalDelegationPeople.filter(
   (person) => getDelegationReadinessMissingFields(person).length === 0,
 );
 
+const getDelegationReadyPeopleForArea = (area: string) => {
+  const normalisedArea = area.trim().toLowerCase();
+  if (!normalisedArea || normalisedArea === "unassigned") return [];
+  return delegationReadyPeople.filter((person) => person.pillar.trim().toLowerCase() === normalisedArea);
+};
+
 const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
   (person) => !delegationReadyPeople.some((readyPerson) => readyPerson.id === person.id),
 );
@@ -8014,9 +8028,13 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
         state = "Ownership gap";
         reason = "The item does not resolve to a valid active owner, so independent progress cannot be evidenced.";
       } else if (isFounderOwned(item.owner, item.ownerPersonId)) {
-        if (delegationReadyPeople.length > 0) {
+        const areaDelegationReadyPeople = getDelegationReadyPeopleForArea(item.pillar);
+        if (areaDelegationReadyPeople.length > 0) {
           state = "Ready to delegate";
-          reason = "This routine Founder-owned work has at least one active delegation-ready person available.";
+          reason = `This routine Founder-owned work has an active delegation-ready person assigned to ${item.pillar}.`;
+        } else if (delegationReadyPeople.length > 0) {
+          state = "Guardrail gap";
+          reason = `Delegation-ready people exist, but none are assigned to ${item.pillar}.`;
         } else if (delegationReadinessGapPeople.length > 0) {
           state = "Guardrail gap";
           reason = "Operational delegation is plausible, but available people lack a complete role, responsibilities, or authority definition.";
@@ -10289,6 +10307,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
         why: item.whatIsChanging || item.whyItMatters,
         onOpen: () => handleOpenAttentionRecord(item.objectType, item.id),
         delegateAction: (personId: string) => handleDelegateItem(item.objectType as "Action" | "Project" | "Lead" | "Problem", item.id, personId),
+        eligibleDelegationPeople: getDelegationReadyPeopleForArea(item.pillar),
       });
       usedRecordKeys.add(key);
     }
@@ -11578,6 +11597,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
     for (const item of empireDecisionQueue.delegateItems) {
       const key = `${item.objectType}:${item.id}`;
       if (usedKeys.has(key)) continue;
+      const areaDelegationReadyPeople = getDelegationReadyPeopleForArea(item.pillar);
 
       rawBottlenecks.push({
         id: item.id,
@@ -11588,9 +11608,11 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
         owner: item.owner,
         severity: "Material",
         why: `Founder carries routine ${item.objectType.toLowerCase()} execution ('${item.title}') that is suitable for delegation.`,
-        releasePath: delegationReadyPeople.length > 0
-          ? `Delegate ownership to an active team member (${delegationReadyPeople.map((p) => p.name).join(", ")}).`
-          : "Define delegation readiness for active team members in People, then transfer ownership.",
+        releasePath: areaDelegationReadyPeople.length > 0
+          ? `Delegate ownership to an active team member for ${item.pillar} (${areaDelegationReadyPeople.map((person) => person.name).join(", ")}).`
+          : delegationReadyPeople.length > 0
+            ? `Assign a delegation-ready Person to ${item.pillar} before transferring ownership.`
+            : "Define delegation readiness for active team members in People, then transfer ownership.",
         onOpen: () => handleOpenAttentionRecord(item.objectType, item.id),
       });
       usedKeys.add(key);
@@ -11697,6 +11719,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
       if (usedRecordKeys.has(recordKey)) return;
 
       const requiresAuthority = authorityKeys.has(recordKey);
+      const areaDelegationReadyPeople = getDelegationReadyPeopleForArea(area);
       const linkedReleaseAction = actionRecords.find((action) =>
         action.releaseSourceType === objectType
         && action.releaseSourceId === id
@@ -11754,20 +11777,24 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
       }
       // 4. Check DELEGATE NOW vs PREPARE TO DELEGATE
       else {
-        if (hasDelegationReadyPeople) {
+        if (areaDelegationReadyPeople.length > 0) {
           releaseAction = "Delegate Now";
           severity = "Material";
-          why = `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation and delegation-ready team capacity exists.`;
-          releasePath = `Transfer ownership to an active delegation-ready team member (${delegationReadyPeople.map((p) => p.name).join(", ")}).`;
+          why = `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation and area-qualified capacity exists.`;
+          releasePath = `Transfer ownership to an active delegation-ready team member for ${area} (${areaDelegationReadyPeople.map((person) => person.name).join(", ")}).`;
         } else {
           releaseAction = "Prepare to Delegate";
           severity = "Material";
           why = activeOperationalDelegationPeople.length === 0
             ? `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but no active operational delegation person excluding the primary founder exists in People.`
-            : `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but active team members (${empireDecisionQueue.delegationReadinessGapNames.join(", ")}) miss role, responsibilities, or authority definitions in People.`;
+            : delegationReadyPeople.length > 0
+              ? `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but no delegation-ready person is assigned to ${area || "its area"}.`
+              : `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but active team members (${empireDecisionQueue.delegationReadinessGapNames.join(", ")}) miss role, responsibilities, or authority definitions in People.`;
           releasePath = activeOperationalDelegationPeople.length === 0
             ? "Onboard or activate operational delegation people excluding the primary founder in People to absorb operational load."
-            : "Define role, responsibilities, and authority in People to enable delegated ownership.";
+            : delegationReadyPeople.length > 0
+              ? `Assign a delegation-ready Person to ${area || "the work item's area"}.`
+              : "Define role, responsibilities, and authority in People to enable delegated ownership.";
         }
       }
 
@@ -11795,14 +11822,16 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
           releaseClosureState = "In progress";
           releaseClosureReason = `The linked release Action is ${linkedReleaseAction.status.toLowerCase()}.`;
         } else if (linkedReleaseAction.releaseIntent === "Prepare to Delegate") {
-          if (activeOperationalDelegationPeople.length > 0 && delegationReadyPeople.length > 0) {
+          if (areaDelegationReadyPeople.length > 0) {
             releaseClosureState = "Resolved";
-            releaseClosureReason = `Delegation capacity now exists through ${delegationReadyPeople.map((person) => person.name).join(", ")}.`;
+            releaseClosureReason = `Area-qualified delegation capacity now exists through ${areaDelegationReadyPeople.map((person) => person.name).join(", ")}.`;
           } else {
             releaseClosureState = "Closure incomplete";
             releaseClosureReason = activeOperationalDelegationPeople.length === 0
               ? "No active operational delegation person is available yet."
-              : `Readiness gaps remain: ${delegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`;
+              : delegationReadyPeople.length > 0
+                ? `Delegation-ready people exist, but none are assigned to ${area || "the source item's area"}.`
+                : `Readiness gaps remain: ${delegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`;
           }
         } else {
           const sourceStillRequiresIntervention = isBlocked || Boolean(dependencyBlockerReason) || requiresAuthority;
@@ -11830,11 +11859,12 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
         urgencyText,
         why,
         releasePath,
-        hasCapacity: hasDelegationReadyPeople,
+        hasCapacity: areaDelegationReadyPeople.length > 0,
         requiresAuthority,
         priorityScore,
         onOpen: () => handleOpenAttentionRecord(objectType, id),
         delegateAction: (personId: string) => handleDelegateItem(objectType, id, personId),
+        eligibleDelegationPeople: areaDelegationReadyPeople,
         releaseActionId: linkedReleaseAction?.id,
         releaseClosureState,
         releaseClosureReason,
@@ -13144,13 +13174,31 @@ const isOwnershipGap =
       return;
     }
 
-    const itemTitle = objectType === "Action"
-      ? actionRecords.find((action) => action.id === id)?.actionTitle || actionRecords.find((action) => action.id === id)?.title
-      : objectType === "Project"
-        ? projects.find((project) => project.id === id)?.projectName
-        : objectType === "Lead"
-          ? activeLeads.find((lead) => lead.id === id)?.leadName
-          : problemRecords.find((problem) => problem.id === id)?.problemStatement || problemRecords.find((problem) => problem.id === id)?.title;
+    const action = objectType === "Action" ? actionRecords.find((record) => record.id === id) : undefined;
+    const project = objectType === "Project" ? projects.find((record) => record.id === id) : undefined;
+    const lead = objectType === "Lead" ? leads.find((record) => record.id === id) : undefined;
+    const problem = objectType === "Problem" ? problemRecords.find((record) => record.id === id) : undefined;
+    const itemArea = action
+      ? getAreaText(action)
+      : project
+        ? project.area
+        : lead
+          ? lead.relatedPillar
+          : problem
+            ? getAreaText(problem)
+            : "";
+
+    if (!getDelegationReadyPeopleForArea(itemArea).some((eligiblePerson) => eligiblePerson.id === person.id)) {
+      setFeedback({
+        type: "error",
+        message: itemArea.trim() && itemArea.trim().toLowerCase() !== "unassigned"
+          ? `Choose a delegation-ready owner assigned to ${itemArea}.`
+          : "This work item needs an assigned area before it can be delegated.",
+      });
+      return;
+    }
+
+    const itemTitle = action?.actionTitle || action?.title || project?.projectName || lead?.leadName || problem?.problemStatement || problem?.title;
     const confirmed = window.confirm(
       `Transfer ownership of this ${objectType} (${itemTitle || "Untitled work item"}) to ${person.name}? Confirming will transfer ownership.`,
     );
@@ -16037,11 +16085,13 @@ const isOwnershipGap =
                           </div>
                         ) : (
                           <div className="mt-2 space-y-2">
-                            {empireDecisionQueue.delegateItems.map((item) => (
-                              <div
-                                key={`delegate-${item.id}`}
-                                className="rounded-lg border border-[#d3cbc3] bg-[#f9f7f4]"
-                              >
+                            {empireDecisionQueue.delegateItems.map((item) => {
+                              const eligibleDelegationPeople = getDelegationReadyPeopleForArea(item.pillar);
+                              return (
+                                <div
+                                  key={`delegate-${item.id}`}
+                                  className="rounded-lg border border-[#d3cbc3] bg-[#f9f7f4]"
+                                >
                                 <button
                                   type="button"
                                   onClick={() => handleOpenAttentionRecord(item.objectType, item.id)}
@@ -16051,7 +16101,7 @@ const isOwnershipGap =
                                   <div className="mt-1 text-[11px] text-[#4d4944]">{item.pillar} • {item.owner}</div>
                                 </button>
 
-                                {delegationReadyPeople.length > 0 ? (
+                                {eligibleDelegationPeople.length > 0 ? (
                                   <div className="border-t border-[#d3cbc3] px-2.5 py-2">
                                     <select
                                       defaultValue=""
@@ -16064,16 +16114,21 @@ const isOwnershipGap =
                                       className="w-full rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-2 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
                                     >
                                       <option value="">Delegate to...</option>
-                                      {delegationReadyPeople.map((person) => (
+                                      {eligibleDelegationPeople.map((person) => (
                                         <option key={person.id} value={person.id}>
                                           {person.name}
                                         </option>
                                       ))}
                                     </select>
                                   </div>
-                                ) : null}
-                              </div>
-                            ))}
+                                ) : (
+                                  <div className="border-t border-[#d3cbc3] px-2.5 py-2 text-[10px] text-[#6a625d]">
+                                    No delegation-ready owner for {item.pillar || "this area"}.
+                                  </div>
+                                )}
+                                </div>
+                              );
+                            })}
                           </div>
                         )}                     </div>
 
