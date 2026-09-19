@@ -8468,8 +8468,19 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
   const unassignedAccountability = buildAccountabilitySnapshot(null);
   const delegationHandoffFollowThrough = (() => {
     const nowMs = Date.now();
+
+    const latestHandoffIdByObject = new Map<string, string>();
+    delegationHandoffs
+      .slice()
+      .sort((left, right) => new Date(right.transferredAt).getTime() - new Date(left.transferredAt).getTime())
+      .forEach((handoff) => {
+        const key = `${handoff.objectType}:${handoff.objectId}`;
+        if (!latestHandoffIdByObject.has(key)) latestHandoffIdByObject.set(key, handoff.id);
+      });
     const items = delegationHandoffs
       .map((handoff) => {
+        const handoffKey = `${handoff.objectType}:${handoff.objectId}`;
+        const isLatestHandoff = latestHandoffIdByObject.get(handoffKey) === handoff.id;
         let currentOwner = "Unassigned";
         let currentStatus = "Source missing";
         let sourceExists = false;
@@ -8524,7 +8535,9 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
         }
 
         let state: DelegationHandoffState = "Healthy";
-        if (!sourceExists) {
+        if (!isLatestHandoff) {
+          state = "Ownership changed";
+        } else if (!sourceExists) {
           state = "Source missing";
         } else if (currentOwner.trim().toLowerCase() !== handoff.newOwner.trim().toLowerCase()) {
           state = isCurrentFounderOwned ? "Returned to Founder" : "Ownership changed";
