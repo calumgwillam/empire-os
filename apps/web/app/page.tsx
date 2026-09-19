@@ -377,6 +377,8 @@ type DelegationHandoffRecord = {
   handoffContext: string;
 };
 
+type DelegationHandoffState = "Healthy" | "At risk" | "Completed" | "Cancelled" | "Ownership changed" | "Source missing";
+
 type ProjectRecord = {
   id: string;
   projectName: string;
@@ -8464,6 +8466,91 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
 
   const personAccountabilitySummaries = orderedPeople.map((person) => ({ ...buildAccountabilitySnapshot(person), person }));
   const unassignedAccountability = buildAccountabilitySnapshot(null);
+  const delegationHandoffFollowThrough = (() => {
+    const nowMs = Date.now();
+    const items = delegationHandoffs
+      .map((handoff) => {
+        let currentOwner = "Unassigned";
+        let currentStatus = "Source missing";
+        let sourceExists = false;
+        let isCompleted = false;
+        let isAtRisk = false;
+
+        if (handoff.objectType === "Action") {
+          const action = actionRecords.find((record) => record.id === handoff.objectId);
+          if (action) {
+            sourceExists = true;
+            currentOwner = getActionOwnerDisplay(action, people);
+            currentStatus = action.status;
+            isCompleted = action.status === "Completed";
+            isAtRisk = action.status !== "Cancelled"
+              && (action.status === "Blocked" || (Boolean(action.dueDate) && new Date(action.dueDate).getTime() < nowMs));
+          }
+        } else if (handoff.objectType === "Project") {
+          const project = projects.find((record) => record.id === handoff.objectId);
+          if (project) {
+            const normalisedStatus = project.status.trim().toLowerCase();
+            sourceExists = true;
+            currentOwner = project.owner || "Unassigned";
+            currentStatus = project.status || "No status";
+            isCompleted = ["completed", "closed", "final"].includes(normalisedStatus);
+            isAtRisk = !["cancelled", "canceled"].includes(normalisedStatus)
+              && (normalisedStatus === "blocked" || (Boolean(project.targetCompletionDate) && new Date(project.targetCompletionDate).getTime() < nowMs));
+          }
+        } else if (handoff.objectType === "Lead") {
+          const lead = leads.find((record) => record.id === handoff.objectId);
+          if (lead) {
+            sourceExists = true;
+            currentOwner = lead.owner || "Unassigned";
+            currentStatus = lead.status;
+            isCompleted = lead.status === "Won" || lead.status === "Lost";
+            isAtRisk = (lead.status === "Quote Sent" && !lead.followUpDate)
+              || (Boolean(lead.followUpDate) && new Date(lead.followUpDate).getTime() < nowMs);
+          }
+        } else {
+          const problem = problemRecords.find((record) => record.id === handoff.objectId);
+          if (problem) {
+            sourceExists = true;
+            currentOwner = problem.owner || "Unassigned";
+            currentStatus = problem.problemStatus;
+            isCompleted = problem.problemStatus === "Resolved" || problem.problemStatus === "Closed";
+            isAtRisk = problem.severity === "High" || problem.severity === "Critical";
+          }
+        }
+
+
+    let state: DelegationHandoffState = "Healthy";
+        if (!sourceExists) {
+          state = "Source missing";
+        } else if (currentOwner.trim().toLowerCase() !== handoff.newOwner.trim().toLowerCase()) {
+          state = "Ownership changed";
+        } else if (isCompleted) {
+  state = "Completed";
+} else if (
+  (handoff.objectType === "Action" && currentStatus === "Cancelled")
+  || (handoff.objectType === "Project" && ["cancelled", "canceled"].includes(currentStatus.trim().toLowerCase()))
+) {
+  state = "Cancelled";
+} else if (isAtRisk) {
+  state = "At risk";
+} else {
+          state = "Healthy";
+        }
+
+        return { ...handoff, state, currentOwner, currentStatus };
+      })
+      .sort((left, right) => new Date(right.transferredAt).getTime() - new Date(left.transferredAt).getTime());
+
+    return {
+      items,
+      healthy: items.filter((item) => item.state === "Healthy").length,
+      atRisk: items.filter((item) => item.state === "At risk").length,
+      completed: items.filter((item) => item.state === "Completed").length,
+      cancelled: items.filter((item) => item.state === "Cancelled").length,
+      ownershipChanged: items.filter((item) => item.state === "Ownership changed").length,
+      sourceMissing: items.filter((item) => item.state === "Source missing").length,
+    };
+  })();
   const getCapacityRankedDelegationPeopleForArea = (area: string): CapacityRankedDelegationPerson[] =>
     getDelegationReadyPeopleForArea(area)
       .map((person) => {
@@ -17020,26 +17107,38 @@ const isOwnershipGap =
                   <section className="mt-6 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Delegation handoffs</div>
-                      <span className="text-[10px] text-[#6a625d]">{delegationHandoffs.length} recorded</span>
+                      <span className="text-[10px] text-[#6a625d]">
+                       {delegationHandoffFollowThrough.healthy} healthy • {delegationHandoffFollowThrough.atRisk} at risk • {delegationHandoffFollowThrough.completed} completed • {delegationHandoffFollowThrough.cancelled} cancelled
+                        {delegationHandoffFollowThrough.ownershipChanged > 0 ? ` • ${delegationHandoffFollowThrough.ownershipChanged} ownership changed` : ""}
+                        {delegationHandoffFollowThrough.sourceMissing > 0 ? ` • ${delegationHandoffFollowThrough.sourceMissing} source missing` : ""}
+                      </span>
                     </div>
-                    {delegationHandoffs.length === 0 ? (
+                    {delegationHandoffFollowThrough.items.length === 0 ? (
                       <div className="rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[12px] text-[#4d4944]">
                         No delegation handoffs recorded yet.
                       </div>
                     ) : (
                       <div className="space-y-2">
-                        {[...delegationHandoffs]
-                          .sort((left, right) => new Date(right.transferredAt).getTime() - new Date(left.transferredAt).getTime())
-                          .map((handoff) => (
+                        {delegationHandoffFollowThrough.items.map((handoff) => (
                             <div key={handoff.id} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
                               <div className="flex flex-wrap items-start justify-between gap-2">
                                 <div className="text-[14px] font-medium text-[#171717]">{handoff.objectType} • {handoff.title}</div>
-                                <div className="text-[10px] text-[#6a625d]">{formatCapturedAt(handoff.transferredAt)}</div>
+                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                  <span className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] ${
+                                    handoff.state === "Completed"
+                                      ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
+                                      : handoff.state === "At risk" || handoff.state === "Source missing"
+                                        ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]"
+                                        : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
+                                  }`}>{handoff.state}</span>
+                                  <span className="text-[10px] text-[#6a625d]">{handoff.currentStatus}</span>
+                                  <span className="text-[10px] text-[#6a625d]">{formatCapturedAt(handoff.transferredAt)}</span>
+                                </div>
                               </div>
                               <div className="mt-1 text-[11px] text-[#4d4944]">{handoff.previousOwner} → {handoff.newOwner} • {handoff.area}</div>
                               <div className="mt-2 text-[12px] leading-5 text-[#524d49]">{handoff.handoffContext}</div>
                             </div>
-                          ))}
+                            ))}
                       </div>
                     )}
                   </section>
