@@ -8551,6 +8551,34 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
       sourceMissing: items.filter((item) => item.state === "Source missing").length,
     };
   })();
+  const delegationHandoffFactsByPerson = delegationHandoffFollowThrough.items.reduce((factsByPerson, handoff) => {
+    const facts = factsByPerson.get(handoff.newOwnerPersonId) || {
+      received: 0,
+      healthy: 0,
+      atRisk: 0,
+      completed: 0,
+      cancelled: 0,
+      ownershipChanged: 0,
+      sourceMissing: 0,
+    };
+    facts.received += 1;
+    if (handoff.state === "Healthy") facts.healthy += 1;
+    if (handoff.state === "At risk") facts.atRisk += 1;
+    if (handoff.state === "Completed") facts.completed += 1;
+    if (handoff.state === "Cancelled") facts.cancelled += 1;
+    if (handoff.state === "Ownership changed") facts.ownershipChanged += 1;
+    if (handoff.state === "Source missing") facts.sourceMissing += 1;
+    factsByPerson.set(handoff.newOwnerPersonId, facts);
+    return factsByPerson;
+  }, new Map<string, {
+    received: number;
+    healthy: number;
+    atRisk: number;
+    completed: number;
+    cancelled: number;
+    ownershipChanged: number;
+    sourceMissing: number;
+  }>());
   const getCapacityRankedDelegationPeopleForArea = (area: string): CapacityRankedDelegationPerson[] =>
     getDelegationReadyPeopleForArea(area)
       .map((person) => {
@@ -17019,8 +17047,10 @@ const isOwnershipGap =
                     </div>
                   ) : (
                     <div className="grid gap-4 xl:grid-cols-3">
-                      {personAccountabilitySummaries.map((summary) => (
-                        <button
+                      {personAccountabilitySummaries.map((summary) => {
+                        const handoffFacts = delegationHandoffFactsByPerson.get(summary.person.id);
+                        return (
+                          <button
                           key={summary.person.id}
                           type="button"
                           onClick={() => setSelectedAccountabilityKey(summary.person.id)}
@@ -17055,6 +17085,15 @@ const isOwnershipGap =
                             <MetricCard label="Open problems" value={String(summary.unresolvedProblems.length)} />
                           </div>
 
+                          {handoffFacts && handoffFacts.received > 0 ? (
+                            <div className="mt-3 text-[11px] leading-4 text-[#4d4944]">
+                              Delegation: {handoffFacts.received} received • {handoffFacts.completed} completed • {handoffFacts.healthy} healthy • {handoffFacts.atRisk} at risk
+                              {handoffFacts.cancelled > 0 ? ` • ${handoffFacts.cancelled} cancelled` : ""}
+                              {handoffFacts.ownershipChanged > 0 ? ` • ${handoffFacts.ownershipChanged} ownership changed` : ""}
+                              {handoffFacts.sourceMissing > 0 ? ` • ${handoffFacts.sourceMissing} source missing` : ""}
+                            </div>
+                          ) : null}
+
                           <div className="mt-4 rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#2f2b28]">
                             {summary.attentionCount > 0
                               ? `${summary.attentionCount} item${summary.attentionCount === 1 ? "" : "s"} need${summary.attentionCount === 1 ? "s" : ""} attention — check overdue, blocked, follow-up and decision items.`
@@ -17062,8 +17101,9 @@ const isOwnershipGap =
                                 ? "Carrying active work with nothing overdue or blocked."
                                 : "No active work assigned."}
                           </div>
-                        </button>
-                      ))}
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
 
