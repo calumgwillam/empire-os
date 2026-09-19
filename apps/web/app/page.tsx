@@ -13034,6 +13034,7 @@ const isOwnershipGap =
       action.releaseSourceType === item.objectType
       && action.releaseSourceId === item.id
       && action.releaseIntent === item.releaseAction
+      && isActionActive(action)
     );
 
     if (existingAction) {
