@@ -7570,6 +7570,11 @@ const getDelegationReadyPeopleForArea = (area: string) => {
 const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
   (person) => !delegationReadyPeople.some((readyPerson) => readyPerson.id === person.id),
 );
+
+const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
+  (person) => !isFounderClassPerson(person),
+);
+
   // Active Co-founders (founder-class but not the primary Founder) keep their readiness gap visible,
   // described accurately instead of being folded into the non-founder team-member pool.
   const activeCofounderPeople = orderedPeople.filter(
@@ -11775,7 +11780,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
           });
           usedKeys.add(key);
         }
-      } else if (delegationReadyPeople.length === 0 && delegationReadinessGapPeople.length > 0) {
+      } else if (delegationReadyPeople.length === 0 && teamDelegationReadinessGapPeople.length > 0) {
         const key = "People:readiness-gap";
         if (!usedKeys.has(key)) {
           rawBottlenecks.push({
@@ -11785,8 +11790,8 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
             objectType: "People",
             area: "People",
             severity: "Material",
-            why: `${empireDecisionQueue.delegateItems.length} founder-owned routine item(s) are ready for delegation, but readiness gaps remain: ${delegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`,
-            releasePath: `Complete delegation readiness in People: ${delegationReadinessGapPeople.map((person) => `${person.name} — ${getDelegationReadinessMissingFields(person).join(", ")}`).join("; ")}.`,
+            why: `${empireDecisionQueue.delegateItems.length} founder-owned routine item(s) are ready for delegation, but readiness gaps remain: ${teamDelegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`,
+            releasePath: `Complete delegation readiness in People: ${teamDelegationReadinessGapPeople.map((person) => `${person.name} — ${getDelegationReadinessMissingFields(person).join(", ")}`).join("; ")}.`,
             onOpen: () => setActiveView("People"),
           });
           usedKeys.add(key);
