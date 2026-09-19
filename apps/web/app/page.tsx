@@ -11833,7 +11833,7 @@ const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
           ? `Delegate ownership to an active team member for ${item.pillar} (${areaDelegationReadyPeople.map((person) => person.name).join(", ")}).`
           : delegationReadyPeople.length > 0
             ? `Assign a delegation-ready Person to ${item.pillar} before transferring ownership.`
-            : "Define delegation readiness for active team members in People, then transfer ownership.",
+            : `Complete delegation readiness in People: ${delegationReadinessGapPeople.map((person) => `${person.name} — ${getDelegationReadinessMissingFields(person).join(", ")}`).join("; ")}, then transfer ownership.`,
         onOpen: () => handleOpenAttentionRecord(item.objectType, item.id),
       });
       usedKeys.add(key);
