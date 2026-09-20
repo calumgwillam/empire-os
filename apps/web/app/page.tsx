@@ -582,6 +582,12 @@ function classifyOutreachFollowUp(contact: OutreachRecord, startOfTodayMs: numbe
     return null;
   }
 
+  // Not Contacted with no date hasn't entered the contact/follow-up lifecycle yet — it belongs to
+  // Ready for Initial Outreach instead, not "No follow-up scheduled".
+  if (contact.status === "Not Contacted" && !contact.nextFollowUpDate) {
+    return null;
+  }
+
   if (!contact.nextFollowUpDate) {
     return "No follow-up scheduled";
   }
