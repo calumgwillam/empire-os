@@ -596,6 +596,31 @@ function classifyOutreachFollowUp(contact: OutreachRecord, startOfTodayMs: numbe
   return "Upcoming";
 }
 
+// A virtual (non-stored) filter value for the Outreach status dropdown, used to focus on ready-now prospects.
+const READY_FOR_INITIAL_OUTREACH_FILTER = "Ready for Initial Outreach";
+
+// Derived execution state — not a stored status — for genuinely fresh, unconstrained prospects.
+// status === "Not Contacted" already excludes Future Phone Follow-Up, Converted to Lead, Closed / Not
+// Pursuing and Closed Supplier Network, since those are distinct status values on the same field.
+function isReadyForInitialOutreach(contact: OutreachRecord, startOfTodayMs: number): boolean {
+  if (contact.status !== "Not Contacted") {
+    return false;
+  }
+
+  if (!contact.businessName.trim()) {
+    return false;
+  }
+
+  if (contact.nextFollowUpDate) {
+    const constraintMs = new Date(`${contact.nextFollowUpDate.slice(0, 10)}T00:00:00`).getTime();
+    if (!Number.isNaN(constraintMs) && constraintMs > startOfTodayMs) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 const incomeStatusOptions = ["Expected", "Received"] as const;
 type IncomeStatus = (typeof incomeStatusOptions)[number];
 
@@ -3548,7 +3573,7 @@ type CapacityRankedDelegationPerson = PersonRecord & {
 };
 
 type StrategicNextMoveCandidate = {
-  objectType: "Action" | "Project" | "Opportunity";
+  objectType: "Action" | "Project" | "Opportunity" | "Outreach";
   id: string;
   title: string;
   area: string;
@@ -7911,9 +7936,13 @@ export default function Home() {
   const orderedOutreachContacts = [...outreachContacts].sort(
     (first, second) => new Date(second.dateCreated).getTime() - new Date(first.dateCreated).getTime(),
   );
-  const filteredOutreachContacts = orderedOutreachContacts.filter(
-    (contact) => outreachStatusFilter === "All statuses" || contact.status === outreachStatusFilter,
-  );
+  const outreachStartOfTodayMs = new Date().setHours(0, 0, 0, 0);
+  const outreachReadyForInitialOutreachContacts = orderedOutreachContacts.filter((contact) => isReadyForInitialOutreach(contact, outreachStartOfTodayMs));
+  const filteredOutreachContacts = orderedOutreachContacts.filter((contact) => {
+    if (outreachStatusFilter === "All statuses") return true;
+    if (outreachStatusFilter === READY_FOR_INITIAL_OUTREACH_FILTER) return isReadyForInitialOutreach(contact, outreachStartOfTodayMs);
+    return contact.status === outreachStatusFilter;
+  });
   const outreachBucketOrder = [
     "Active prospects",
     "Replies / positive interest",
@@ -7928,7 +7957,6 @@ export default function Home() {
     count: outreachContacts.filter((contact) => getOutreachBucket(contact.status) === bucket).length,
   }));
 
-  const outreachStartOfTodayMs = new Date().setHours(0, 0, 0, 0);
   const outreachFollowUpOrder = ["Due today", "Overdue", "Upcoming", "No follow-up scheduled"] as const;
   const outreachFollowUpCounts = outreachFollowUpOrder.map((bucket) => ({
     bucket,
@@ -13046,7 +13074,33 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         });
       });
 
-    // Tier first: concrete Actions, then concrete Projects, then standalone Opportunities — a broad
+    // Ready-for-first-contact Outreach prospects are grouped into a single commercial move —
+    // never one recommendation per contact, and never treated as attention/overdue.
+    const readyOutreachCheckMs = new Date().setHours(0, 0, 0, 0);
+    const readyOutreachContacts = outreachContacts.filter(
+      (contact) => isReadyForInitialOutreach(contact, readyOutreachCheckMs) && !attentionKeys.has(`Outreach:${contact.id}`),
+    );
+    if (readyOutreachContacts.length > 0) {
+      const count = readyOutreachContacts.length;
+      const countWeight = count >= 10 ? 3 : count >= 5 ? 2 : 1;
+
+      candidates.push({
+        objectType: "Outreach",
+        id: "ready-for-initial-outreach",
+        title: `Begin initial outreach to ${count} ready prospect${count === 1 ? "" : "s"}`,
+        area: "Marketing / Growth",
+        reasons: [`${count} prepared Outreach prospect${count === 1 ? " is" : "s are"} ready for first contact and no higher-ranked executable founder work is currently active`],
+        tier: 1,
+        score: countWeight + 2,
+        sortDate: Number.POSITIVE_INFINITY,
+        onOpen: () => {
+          setActiveView("Outreach");
+          setOutreachStatusFilter(READY_FOR_INITIAL_OUTREACH_FILTER);
+        },
+      });
+    }
+
+    // Tier first: concrete Actions, then concrete Projects/Outreach, then standalone Opportunities — a broad
     // Opportunity can never outrank a concrete Action or Project purely on strategic-fit score.
     const [best] = [...candidates].sort((left, right) =>
       left.tier - right.tier ||
@@ -17884,7 +17938,11 @@ const isOwnershipGap =
               </div>
 
               <h2 className="mt-7 border-b border-[#d7d1ca] pb-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Follow-up status</h2>
-              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                <div className={`rounded-2xl border p-3 ${outreachReadyForInitialOutreachContacts.length > 0 ? "border-[#b8c9ba] bg-[#eef4ee]" : "border-[#d3cbc3] bg-[#f9f7f4]"}`}>
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Ready for Initial Outreach</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{outreachReadyForInitialOutreachContacts.length}</div>
+                </div>
                 {outreachFollowUpCounts.map((entry) => (
                   <div key={entry.bucket} className={`rounded-2xl border p-3 ${entry.bucket === "Overdue" && entry.count > 0 ? "border-[#d4b4a7] bg-[#f8efeb]" : entry.bucket === "Due today" && entry.count > 0 ? "border-[#c9b8a3] bg-[#f5efe6]" : "border-[#d3cbc3] bg-[#f9f7f4]"}`}>
                     <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">{entry.bucket}</div>
@@ -17892,11 +17950,12 @@ const isOwnershipGap =
                   </div>
                 ))}
               </div>
-              <p className="mt-2 text-[11px] text-[#5d584f]">Only Due today and Overdue follow-ups surface in Command. Upcoming and unscheduled contacts stay here until they become due.</p>
+              <p className="mt-2 text-[11px] text-[#5d584f]">Only Due today and Overdue follow-ups surface in Command. Ready for Initial Outreach prospects can surface as a Strategic Next Move, never as attention.</p>
 
               <div className="mt-6 flex flex-wrap items-center gap-2">
                 <select value={outreachStatusFilter} onChange={(event) => setOutreachStatusFilter(event.target.value)} className="rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28] outline-none transition focus:border-[#171717]">
                   <option value="All statuses">All statuses</option>
+                  <option value={READY_FOR_INITIAL_OUTREACH_FILTER}>{READY_FOR_INITIAL_OUTREACH_FILTER}</option>
                   {outreachStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
                 </select>
                 <span className="text-[11px] text-[#5d584f]">{filteredOutreachContacts.length} of {orderedOutreachContacts.length} contact{orderedOutreachContacts.length === 1 ? "" : "s"}</span>
@@ -17908,6 +17967,7 @@ const isOwnershipGap =
                 <div className="mt-4 space-y-3">
                   {filteredOutreachContacts.map((contact) => {
                     const followUpState = classifyOutreachFollowUp(contact, outreachStartOfTodayMs);
+                    const isReadyNow = isReadyForInitialOutreach(contact, outreachStartOfTodayMs);
                     return (
                       <button key={contact.id} type="button" onClick={() => handleOutreachEditOpen(contact)} className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec]">
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -17922,6 +17982,7 @@ const isOwnershipGap =
                           <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{contact.nextFollowUpDate ? `Next follow-up ${formatCapturedAt(contact.nextFollowUpDate)}` : "No follow-up set"}</span>
                           <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{contact.owner || "Unassigned"}</span>
                           {contact.linkedLeadId ? <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1.5">Linked to Lead</span> : null}
+                          {isReadyNow ? <span className="rounded-full border border-[#b8c9ba] bg-[#eef4ee] px-2 py-1.5 text-[#2f5d3a]">Ready for Initial Outreach</span> : null}
                           {followUpState === "Overdue" || followUpState === "Due today" ? (
                             <span className="rounded-full border border-[#d4b4a7] bg-[#f8efeb] px-2 py-1.5 text-[#6a3328]">{followUpState} • in Command</span>
                           ) : null}
