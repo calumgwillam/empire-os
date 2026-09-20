@@ -27,6 +27,7 @@ const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
 const PERSON_STORAGE_KEY = "empire-os-people";
 const PROJECT_STORAGE_KEY = "empire-os-projects";
 const LEAD_STORAGE_KEY = "empire-os-leads";
+const OUTREACH_STORAGE_KEY = "empire-os-outreach-contacts";
 const DELEGATION_HANDOFF_STORAGE_KEY = "empire-os-delegation-handoffs";
 const CASH_POSITION_STORAGE_KEY = "empire-os-cash-position";
 const INCOME_STORAGE_KEY = "empire-os-income-records";
@@ -215,6 +216,7 @@ type ActionRecord = CaptureConversionRecord & {
   createdBy: string;
   createdDate: string;
   dueDate: string;
+  earliestExecutableDate?: string;
   priority: ActionPriority;
   status: ActionStatus;
   relatedProblem: string;
@@ -484,6 +486,87 @@ const defaultLeadForm: LeadFormValues = {
   owner: "",
   relatedPillar: "Garden Maintenance",
 };
+
+// Lightweight outbound prospecting tracker, kept fully separate from Leads so cold outreach never counts as a genuine lead.
+const outreachContactTypeOptions = ["Estate Agent", "Lettings Agent", "Property Manager", "Other"] as const;
+type OutreachContactType = (typeof outreachContactTypeOptions)[number];
+
+const outreachStatusOptions = [
+  "Not Contacted",
+  "Initial Outreach Sent",
+  "Follow-Up Due",
+  "Followed Up",
+  "Replied",
+  "Positive Interest",
+  "Closed Supplier Network",
+  "No Response",
+  "Future Phone Follow-Up",
+  "Converted to Lead",
+  "Closed / Not Pursuing",
+] as const;
+type OutreachStatus = (typeof outreachStatusOptions)[number];
+
+type OutreachRecord = {
+  id: string;
+  businessName: string;
+  contactName: string;
+  email: string;
+  phone: string;
+  contactType: OutreachContactType;
+  firstContactDate: string;
+  lastContactDate: string;
+  nextFollowUpDate: string;
+  status: OutreachStatus;
+  relationshipStatus: string;
+  notes: string;
+  owner: string;
+  linkedLeadId: string;
+  dateCreated: string;
+};
+
+type OutreachFormValues = Omit<OutreachRecord, "id" | "dateCreated">;
+
+const defaultOutreachForm: OutreachFormValues = {
+  businessName: "",
+  contactName: "",
+  email: "",
+  phone: "",
+  contactType: "Estate Agent",
+  firstContactDate: "",
+  lastContactDate: "",
+  nextFollowUpDate: "",
+  status: "Not Contacted",
+  relationshipStatus: "",
+  notes: "",
+  owner: "",
+  linkedLeadId: "",
+};
+
+// Groups outreach statuses into the distinct pipeline views the business needs to see at a glance.
+function getOutreachBucket(status: OutreachStatus) {
+  switch (status) {
+    case "Not Contacted":
+    case "Initial Outreach Sent":
+    case "Follow-Up Due":
+    case "Followed Up":
+      return "Active prospects";
+    case "Replied":
+    case "Positive Interest":
+      return "Replies / positive interest";
+    case "Closed Supplier Network":
+      return "Closed supplier networks";
+    case "No Response":
+      return "No response";
+    case "Future Phone Follow-Up":
+      return "Future phone-only targets";
+    case "Converted to Lead":
+      return "Converted to Lead";
+    case "Closed / Not Pursuing":
+      return "Closed / Not Pursuing";
+    default:
+      return "Active prospects";
+  }
+}
 
 const incomeStatusOptions = ["Expected", "Received"] as const;
 type IncomeStatus = (typeof incomeStatusOptions)[number];
@@ -1183,7 +1266,7 @@ const destinationDefinitions = [
   },
 ] as const;
 
-type DestinationKey = "Command" | "Empire" | "Capture" | "People" | "Projects" | "Leads" | "Finance" | "Tax" | "Metrics" | "Pillars" | (typeof destinationDefinitions)[number]["key"];
+type DestinationKey = "Command" | "Empire" | "Capture" | "People" | "Projects" | "Leads" | "Outreach" | "Finance" | "Tax" | "Metrics" | "Pillars" | (typeof destinationDefinitions)[number]["key"];
 
 type RelatedRecordItem = {
   label: string;
@@ -2454,6 +2537,134 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
           <div className="flex justify-end gap-2">
             <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
             <button type="button" onClick={() => { if (onSave()) setHasSaved(true); }} disabled={hasInvalidLeadName} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save lead"}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OutreachDetailPanel({ contact, leads, onClose, onChange, onSave, onDelete, onConvertToLead, onLinkToExistingLead }: {
+  contact: OutreachRecord;
+  leads: LeadRecord[];
+  onClose: () => void;
+  onChange: (field: keyof OutreachRecord, value: string) => void;
+  onSave: () => boolean;
+  onDelete: () => void;
+  onConvertToLead: (contact: OutreachRecord) => void;
+  onLinkToExistingLead: (contact: OutreachRecord, leadId: string) => void;
+}) {
+  const hasInvalidBusinessName = !contact.businessName.trim();
+  const [hasAttemptedSave, setHasAttemptedSave] = useState(false);
+  const [hasSaved, markSaved] = useFinanceSavedFeedback();
+  const [linkLeadId, setLinkLeadId] = useState("");
+  const linkedLead = leads.find((lead) => lead.id === contact.linkedLeadId);
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+        <div className="flex items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Outreach contact</p>
+            <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{contact.businessName || "New outreach contact"}</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
+        </div>
+
+        {hasSaved ? (
+          <div aria-live="polite" className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">Outreach contact saved.</div>
+        ) : null}
+
+        {linkedLead ? (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3.5 py-3">
+            <div className="text-[12px] text-[#2f2b28]">Linked to Lead: <span className="font-medium">{linkedLead.leadName}</span> ({linkedLead.status})</div>
+          </div>
+        ) : (
+          <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-[#d3cbc3] bg-white px-3.5 py-3">
+            <span className="text-[12px] text-[#524d49]">Not yet linked to a Lead.</span>
+            <button type="button" onClick={() => onConvertToLead(contact)} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Convert to new Lead</button>
+            {leads.length > 0 ? (
+              <div className="flex items-center gap-1.5">
+                <select value={linkLeadId} onChange={(event) => setLinkLeadId(event.target.value)} className="rounded-lg border border-[#cfc8c1] bg-white px-2 py-1.5 text-[11px] text-[#2f2b28] outline-none transition focus:border-[#171717]">
+                  <option value="">Link to existing lead…</option>
+                  {leads.map((lead) => <option key={lead.id} value={lead.id}>{lead.leadName}</option>)}
+                </select>
+                <button
+                  type="button"
+                  disabled={!linkLeadId}
+                  onClick={() => linkLeadId && onLinkToExistingLead(contact, linkLeadId)}
+                  className="rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-[#171717] transition hover:border-[#171717] disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  Link
+                </button>
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Business / organisation name</label>
+            <input value={contact.businessName} onChange={(event) => onChange("businessName", event.target.value)} className={financeFieldClass} />
+          </div>
+          {hasAttemptedSave && hasInvalidBusinessName ? (
+            <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Business / organisation name is required.</p>
+          ) : null}
+          <div>
+            <label className={financeLabelClass}>Contact name</label>
+            <input value={contact.contactName} onChange={(event) => onChange("contactName", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Contact type</label>
+            <select value={contact.contactType} onChange={(event) => onChange("contactType", event.target.value)} className={financeFieldClass}>
+              {outreachContactTypeOptions.map((type) => <option key={type} value={type}>{type}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Email</label>
+            <input type="email" value={contact.email} onChange={(event) => onChange("email", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Phone</label>
+            <input value={contact.phone} onChange={(event) => onChange("phone", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>First contact date</label>
+            <input type="date" value={contact.firstContactDate} onChange={(event) => onChange("firstContactDate", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Last contact / follow-up date</label>
+            <input type="date" value={contact.lastContactDate} onChange={(event) => onChange("lastContactDate", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Next follow-up date</label>
+            <input type="date" value={contact.nextFollowUpDate} onChange={(event) => onChange("nextFollowUpDate", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Outreach status</label>
+            <select value={contact.status} onChange={(event) => onChange("status", event.target.value)} className={financeFieldClass}>
+              {outreachStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Relationship / response status</label>
+            <input value={contact.relationshipStatus} onChange={(event) => onChange("relationshipStatus", event.target.value)} placeholder="e.g. Warm, gatekeeper only, ongoing supplier relationship" className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Owner</label>
+            <input value={contact.owner} onChange={(event) => onChange("owner", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Notes</label>
+            <textarea rows={3} value={contact.notes} onChange={(event) => onChange("notes", event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+        </div>
+
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+          <FinanceDeleteControl canDelete={Boolean(contact.id)} label="Delete outreach contact" onDelete={onDelete} />
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidBusinessName) { return; } if (onSave()) markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save outreach contact"}</button>
           </div>
         </div>
       </div>
@@ -5482,6 +5693,19 @@ function ActionDetailPanel({ action, people, problems, decisions, upstream, down
 
           <div>
             <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+              Earliest executable date (not before)
+            </label>
+            <input
+              type="date"
+              value={action.earliestExecutableDate ? action.earliestExecutableDate.slice(0, 10) : ""}
+              onChange={(event) => onChange("earliestExecutableDate", event.target.value ? new Date(event.target.value).toISOString() : "")}
+              className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+            />
+            <p className="mt-1.5 text-[11px] text-[#5d584f]">Optional. Use this when the work genuinely cannot start before a specific date, so it is not ranked as an immediate priority before then.</p>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
               Priority
             </label>
             <select
@@ -7135,6 +7359,10 @@ export default function Home() {
   const [leadSourceFilter, setLeadSourceFilter] = useState<string>("All sources");
   const [leadOwnerFilter, setLeadOwnerFilter] = useState<string>("All owners");
   const [showArchivedLeads, setShowArchivedLeads] = useState<boolean>(false);
+  const [outreachContacts, setOutreachContacts] = useState<OutreachRecord[]>([]);
+  const [selectedOutreachId, setSelectedOutreachId] = useState<string | null>(null);
+  const [outreachEditor, setOutreachEditor] = useState<OutreachRecord | null>(null);
+  const [outreachStatusFilter, setOutreachStatusFilter] = useState<string>("All statuses");
   const [cashPosition, setCashPosition] = useState<CashPositionRecord>(defaultCashPosition);
   const [incomeRecords, setIncomeRecords] = useState<IncomeRecord[]>([]);
   const [expenseRecords, setExpenseRecords] = useState<ExpenseRecord[]>([]);
@@ -7188,6 +7416,7 @@ export default function Home() {
       const storedExpenses = window.localStorage.getItem(EXPENSE_STORAGE_KEY);
       const storedCommitments = window.localStorage.getItem(COMMITMENT_STORAGE_KEY);
       const storedTaxPayments = window.localStorage.getItem(TAX_PAYMENT_STORAGE_KEY);
+      const storedOutreachContacts = window.localStorage.getItem(OUTREACH_STORAGE_KEY);
 
       // Preserve the untouched browser data before any startup parsing or persistence runs.
       // Recovery snapshot failures must never interrupt normal Empire OS loading.
@@ -7387,6 +7616,14 @@ export default function Home() {
         }
       }
 
+      if (storedOutreachContacts) {
+        const parsedOutreachContacts = JSON.parse(storedOutreachContacts);
+
+        if (Array.isArray(parsedOutreachContacts)) {
+          setOutreachContacts(parsedOutreachContacts);
+        }
+      }
+
       const storedSnapshots = window.localStorage.getItem(DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY);
       if (storedSnapshots) {
         const parsedSnapshots = JSON.parse(storedSnapshots);
@@ -7563,6 +7800,18 @@ export default function Home() {
     }
   }, [taxPaymentRecords, operatingDataLoaded]);
 
+  useEffect(() => {
+    if (!operatingDataLoaded) {
+      return;
+    }
+
+    if (outreachContacts.length === 0) {
+      window.localStorage.removeItem(OUTREACH_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(OUTREACH_STORAGE_KEY, JSON.stringify(outreachContacts));
+    }
+  }, [outreachContacts, operatingDataLoaded]);
+
   const orderedCaptures = [...captures].sort(
     (first, second) =>
       new Date(second.capturedAt).getTime() - new Date(first.capturedAt).getTime(),
@@ -7586,6 +7835,26 @@ export default function Home() {
   const leadOwnerFilterOptions = Array.from(
     new Set(orderedLeads.map((lead) => lead.owner.trim() || "Unassigned")),
   ).sort();
+
+  const orderedOutreachContacts = [...outreachContacts].sort(
+    (first, second) => new Date(second.dateCreated).getTime() - new Date(first.dateCreated).getTime(),
+  );
+  const filteredOutreachContacts = orderedOutreachContacts.filter(
+    (contact) => outreachStatusFilter === "All statuses" || contact.status === outreachStatusFilter,
+  );
+  const outreachBucketOrder = [
+    "Active prospects",
+    "Replies / positive interest",
+    "Future phone-only targets",
+    "Closed supplier networks",
+    "No response",
+    "Converted to Lead",
+    "Closed / Not Pursuing",
+  ] as const;
+  const outreachBucketCounts = outreachBucketOrder.map((bucket) => ({
+    bucket,
+    count: outreachContacts.filter((contact) => getOutreachBucket(contact.status) === bucket).length,
+  }));
 
   const filteredLeads = orderedLeads.filter((lead) => {
     const matchesStatus = leadStatusFilter === "All statuses" || lead.status === leadStatusFilter;
@@ -12207,6 +12476,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       priorityOrSeverity: string | undefined,
       isBlocked: boolean,
       dependencyBlockerReason: string | null,
+      earliestExecutableDateValue?: string,
     ) => {
       const recordKey = `${objectType}:${id}`;
       if (usedRecordKeys.has(recordKey)) return;
@@ -12229,10 +12499,24 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       const isOverdue = daysUntilDue !== null && daysUntilDue < 0;
       const isDueSoon = daysUntilDue !== null && daysUntilDue >= 0 && daysUntilDue <= 7;
 
+      // A future earliest-executable date suppresses due-soon urgency for ranking, but never hides overdue/blocked/authority signals.
+      const earliestExecutableTimestamp = earliestExecutableDateValue ? new Date(`${earliestExecutableDateValue.slice(0, 10)}T00:00:00`).getTime() : 0;
+      const isNotYetExecutable = earliestExecutableTimestamp > 0 && !Number.isNaN(earliestExecutableTimestamp) && earliestExecutableTimestamp > startOfTodayForItemMs;
+      const isDueSoonForRanking = isDueSoon && !isNotYetExecutable;
+
+      // Time-gated work with no genuine reason for founder attention now is excluded from release ranking entirely
+      // (it still surfaces in Watch, general monitoring, and delegation analysis via other, unaffected code paths).
+      if (isNotYetExecutable && !isBlocked && !dependencyBlockerReason && !requiresAuthority && !isOverdue && priorityOrSeverity !== "Critical") {
+        return;
+      }
+
       if (isOverdue) {
         urgencyText = `Overdue by ${Math.abs(daysUntilDue!)} day${Math.abs(daysUntilDue!) === 1 ? "" : "s"}`;
       } else if (isDueSoon) {
         urgencyText = daysUntilDue === 0 ? "Due today" : `Due in ${daysUntilDue} day${daysUntilDue === 1 ? "" : "s"}`;
+        if (isNotYetExecutable) {
+          urgencyText += ` (not executable until ${earliestExecutableDateValue!.slice(0, 10)})`;
+        }
       } else if (isValidDate && daysUntilDue !== null && daysUntilDue <= 30) {
         urgencyText = `Due in ${daysUntilDue} days`;
       }
@@ -12256,7 +12540,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         releasePath = "Retain under founder ownership and execute or issue formal decision.";
       }
       // 3. Check COMPLETE PERSONALLY
-      else if (isOverdue || (isDueSoon && (priorityOrSeverity === "Critical" || priorityOrSeverity === "High"))) {
+      else if (isOverdue || (isDueSoonForRanking && (priorityOrSeverity === "Critical" || priorityOrSeverity === "High"))) {
         releaseAction = "Complete Personally";
         severity = isOverdue ? "Critical" : "Material";
         why = isOverdue
@@ -12320,7 +12604,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       else priorityScore += 100;
 
       if (isOverdue) priorityScore += 150;
-      if (isDueSoon) priorityScore += 80;
+      if (isDueSoonForRanking) priorityScore += 80;
       if (priorityOrSeverity === "Critical") priorityScore += 100;
       if (priorityOrSeverity === "High") priorityScore += 50;
 
@@ -12401,6 +12685,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           action.priority,
           action.status === "Blocked",
           dependencyBlocker ? dependencyBlocker.reason.replace("BLOCKED BY PROBLEM: ", "").replace("WAITING ON DECISION: ", "") : null,
+          action.earliestExecutableDate,
         );
       }
     });
@@ -14864,6 +15149,111 @@ const isOwnershipGap =
     });
   };
 
+  const handleOutreachEditOpen = (contact: OutreachRecord) => {
+    setSelectedOutreachId(contact.id);
+    setOutreachEditor(contact);
+  };
+
+  const handleOutreachEditorChange = (field: keyof OutreachRecord, value: string) => {
+    if (!outreachEditor) {
+      return;
+    }
+
+    setOutreachEditor({ ...outreachEditor, [field]: value } as OutreachRecord);
+  };
+
+  const handleOutreachSave = () => {
+    if (!outreachEditor || !outreachEditor.businessName.trim()) {
+      return false;
+    }
+
+    const selectedContactType = outreachEditor.contactType.trim();
+    const selectedStatus = outreachEditor.status.trim();
+
+    const nextContact: OutreachRecord = {
+      ...outreachEditor,
+      id: outreachEditor.id || generateFinanceRecordId("outreach"),
+      businessName: outreachEditor.businessName.trim(),
+      contactName: outreachEditor.contactName.trim(),
+      email: outreachEditor.email.trim(),
+      phone: outreachEditor.phone.trim(),
+      contactType: outreachContactTypeOptions.includes(selectedContactType as OutreachContactType) ? (selectedContactType as OutreachContactType) : "Other",
+      status: outreachStatusOptions.includes(selectedStatus as OutreachStatus) ? (selectedStatus as OutreachStatus) : "Not Contacted",
+      relationshipStatus: outreachEditor.relationshipStatus.trim(),
+      notes: outreachEditor.notes.trim(),
+      owner: outreachEditor.owner.trim(),
+      dateCreated: outreachEditor.dateCreated || new Date().toISOString(),
+    };
+    const isNew = !outreachContacts.some((contact) => contact.id === nextContact.id);
+
+    setOutreachContacts((current) =>
+      isNew ? [nextContact, ...current] : current.map((contact) => contact.id === nextContact.id ? nextContact : contact),
+    );
+    setSelectedOutreachId(nextContact.id);
+    setOutreachEditor(nextContact);
+    setFeedback({ type: "success", message: isNew ? "Outreach contact created." : "Outreach contact saved." });
+    return true;
+  };
+
+  const handleOutreachDelete = () => {
+    if (!outreachEditor) {
+      return;
+    }
+
+    const targetId = outreachEditor.id;
+    setOutreachContacts((current) => current.filter((contact) => contact.id !== targetId));
+    setSelectedOutreachId(null);
+    setOutreachEditor(null);
+    setFeedback({ type: "success", message: "Outreach contact deleted." });
+  };
+
+  const handleCreateOutreach = () => {
+    const newContact: OutreachRecord = {
+      ...defaultOutreachForm,
+      id: generateFinanceRecordId("outreach"),
+      dateCreated: new Date().toISOString(),
+    };
+
+    setSelectedOutreachId(newContact.id);
+    setOutreachEditor(newContact);
+  };
+
+  // Converts an outreach contact into a genuine Lead without duplicating or removing the outreach record.
+  const handleConvertOutreachToLead = (contact: OutreachRecord) => {
+    const newLead: LeadRecord = {
+      ...defaultLeadForm,
+      id: generateLeadId(),
+      leadName: contact.businessName,
+      contactName: contact.contactName,
+      phone: contact.phone,
+      email: contact.email,
+      sourceChannel: "Estate Agent / Property Manager",
+      sourceDetail: contact.businessName,
+      dateReceived: new Date().toISOString().slice(0, 10),
+      owner: contact.owner,
+      relatedPillar: "Marketing / Growth",
+      notes: `Converted from outreach contact "${contact.businessName}".${contact.notes ? ` Outreach notes: ${contact.notes}` : ""}`,
+      dateCreated: new Date().toISOString(),
+    };
+
+    setLeads((current) => [newLead, ...current]);
+
+    const updatedContact: OutreachRecord = { ...contact, status: "Converted to Lead", linkedLeadId: newLead.id };
+    setOutreachContacts((current) => current.map((entry) => entry.id === contact.id ? updatedContact : entry));
+    setSelectedOutreachId(updatedContact.id);
+    setOutreachEditor(updatedContact);
+    setFeedback({ type: "success", message: "Outreach contact converted to a new Lead." });
+  };
+
+  // Links an outreach contact to an existing Lead (e.g. one already created separately) without creating a duplicate.
+  const handleLinkOutreachToExistingLead = (contact: OutreachRecord, leadId: string) => {
+    const updatedContact: OutreachRecord = { ...contact, status: "Converted to Lead", linkedLeadId: leadId };
+    setOutreachContacts((current) => current.map((entry) => entry.id === contact.id ? updatedContact : entry));
+    setSelectedOutreachId(updatedContact.id);
+    setOutreachEditor(updatedContact);
+    setFeedback({ type: "success", message: "Outreach contact linked to existing Lead." });
+  };
+
   const handleCashPositionOpen = () => {
     setCashPositionValidationError(null);
     setCashPositionEditor({ ...cashPosition, lastUpdated: normaliseCashSnapshotDate(cashPosition.lastUpdated) });
@@ -17005,11 +17395,18 @@ const isOwnershipGap =
                   <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#4d4944]">Lead tracking</p>
                   <h1 className="mt-2.5 text-[36px] font-semibold tracking-[-0.07em] text-[#171717] sm:text-[42px]">Leads</h1>
                 </div>
-                <button type="button" onClick={handleCreateLead} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Create Lead</button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={() => setActiveView("Outreach")} className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#171717] transition hover:border-[#171717]">Open Outreach</button>
+                  <button type="button" onClick={handleCreateLead} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Create Lead</button>
+                </div>
               </header>
 
               <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
                 Lead records track incoming work from first contact through quote, follow-up and outcome so no potential job disappears into messages.
+              </p>
+
+              <p className="mt-2 max-w-3xl text-[13px] leading-6 text-[#5d584f]">
+                Cold outbound prospecting (estate agents, letting agents, property managers) is tracked separately in Outreach and only becomes a Lead once there is a genuine enquiry.
               </p>
 
               <section className="mt-7">
@@ -17178,6 +17575,64 @@ const isOwnershipGap =
                     </div>
                   )}
                 </>
+              )}
+            </div>
+          ) : activeView === "Outreach" ? (
+            <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+              <header className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-4">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#4d4944]">Marketing / Growth</p>
+                  <h1 className="mt-2.5 text-[36px] font-semibold tracking-[-0.07em] text-[#171717] sm:text-[42px]">Outreach</h1>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={() => setActiveView("Leads")} className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#171717] transition hover:border-[#171717]">Back to Leads</button>
+                  <button type="button" onClick={handleCreateOutreach} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Add outreach contact</button>
+                </div>
+              </header>
+
+              <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
+                Tracks estate agents, letting agents and property managers contacted for the FG Exterior Care partnership channel, before they become a genuine Lead. This pipeline is kept separate from Leads and never counts toward Lead acquisition metrics.
+              </p>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {outreachBucketCounts.map((entry) => (
+                  <div key={entry.bucket} className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">{entry.bucket}</div>
+                    <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{entry.count}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-6 flex flex-wrap items-center gap-2">
+                <select value={outreachStatusFilter} onChange={(event) => setOutreachStatusFilter(event.target.value)} className="rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28] outline-none transition focus:border-[#171717]">
+                  <option value="All statuses">All statuses</option>
+                  {outreachStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+                </select>
+                <span className="text-[11px] text-[#5d584f]">{filteredOutreachContacts.length} of {orderedOutreachContacts.length} contact{orderedOutreachContacts.length === 1 ? "" : "s"}</span>
+              </div>
+
+              {filteredOutreachContacts.length === 0 ? (
+                <div className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">No outreach contacts match. Add the first contact to start tracking outbound prospecting.</div>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {filteredOutreachContacts.map((contact) => (
+                    <button key={contact.id} type="button" onClick={() => handleOutreachEditOpen(contact)} className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec]">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <h2 className="text-[18px] font-medium tracking-[-0.04em] text-[#171717]">{contact.businessName}</h2>
+                          <p className="mt-1 text-[13px] text-[#424039]">{contact.contactName || "No named contact"}</p>
+                        </div>
+                        <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">{contact.status}</span>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{contact.contactType}</span>
+                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{contact.nextFollowUpDate ? `Next follow-up ${formatCapturedAt(contact.nextFollowUpDate)}` : "No follow-up set"}</span>
+                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{contact.owner || "Unassigned"}</span>
+                        {contact.linkedLeadId ? <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1.5">Linked to Lead</span> : null}
+                      </div>
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
           ) : activeView === "Finance" ? (
@@ -18993,6 +19448,22 @@ const isOwnershipGap =
           onChange={handleLeadEditorChange}
           onSave={handleLeadSave}
           onArchiveToggle={handleLeadArchiveToggle}
+        />
+      ) : null}
+
+      {selectedOutreachId && outreachEditor ? (
+        <OutreachDetailPanel
+          contact={outreachEditor}
+          leads={activeLeads}
+          onClose={() => {
+            setSelectedOutreachId(null);
+            setOutreachEditor(null);
+          }}
+          onChange={handleOutreachEditorChange}
+          onSave={handleOutreachSave}
+          onDelete={handleOutreachDelete}
+          onConvertToLead={handleConvertOutreachToLead}
+          onLinkToExistingLead={handleLinkOutreachToExistingLead}
         />
       ) : null}
 
