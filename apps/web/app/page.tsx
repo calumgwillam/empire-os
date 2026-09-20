@@ -637,6 +637,15 @@ const expenseCategoryOptions = ["Materials", "Equipment", "Fuel", "Labour", "Sub
 
 const commitmentTypeOptions = ["Loan", "Lease", "Subscription", "Tax", "Supplier", "Insurance", "Other"] as const;
 const commitmentStatusOptions = ["Upcoming", "Due", "Paid", "Overdue", "Cancelled"] as const;
+const commitmentCertaintyOptions = ["Committed", "Quoted", "Planned"] as const;
+type CommitmentCertainty = (typeof commitmentCertaintyOptions)[number];
+
+// Legacy records with no stored certainty behave exactly as before (i.e. as a genuine commitment).
+function getEffectiveCommitmentCertainty(commitment: { certainty?: string }): CommitmentCertainty {
+  return commitmentCertaintyOptions.includes(commitment.certainty as CommitmentCertainty)
+    ? (commitment.certainty as CommitmentCertainty)
+    : "Committed";
+}
 
 type CashPositionRecord = {
   currentCash: string;
@@ -695,6 +704,7 @@ type CommitmentRecord = {
   dueDate: string;
   type: string;
   status: string;
+  certainty?: CommitmentCertainty;
   relatedPillar: string;
   notes: string;
   dateCreated: string;
@@ -756,6 +766,7 @@ const defaultCommitmentForm: Omit<CommitmentRecord, "id" | "dateCreated"> = {
   dueDate: "",
   type: "Other",
   status: "Upcoming",
+  certainty: "Planned",
   relatedPillar: "Garden Maintenance",
   notes: "",
 };
@@ -3129,6 +3140,13 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
               {!commitmentStatusOptions.includes(commitment.status as (typeof commitmentStatusOptions)[number]) && commitment.status ? <option value={commitment.status}>{commitment.status}</option> : null}
               {commitmentStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
             </select>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Certainty</label>
+            <select value={getEffectiveCommitmentCertainty(commitment)} onChange={(event) => onChange("certainty", event.target.value)} className={financeFieldClass}>
+              {commitmentCertaintyOptions.map((certainty) => <option key={certainty} value={certainty}>{certainty}</option>)}
+            </select>
+            <p className="mt-1.5 text-[11px] text-[#5d584f]">Only Committed counts toward committed cash and the Command funding-gap alert. Quoted/Planned are visible as planning exposure only.</p>
           </div>
           <div className="md:col-span-2">
             <label className={financeLabelClass}>Related pillar / area</label>
@@ -9450,6 +9468,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       const isFinal = finalCommitmentStatuses.has(status);
       const hasValidPositiveAmount = amount !== null && amount > 0;
       const needsAttention = !isFinal && (!hasSupportedActiveStatus || !hasValidPositiveAmount);
+      const effectiveCertainty = getEffectiveCommitmentCertainty(commitment);
       return {
         commitment,
         amount,
@@ -9457,12 +9476,17 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         isValidActive: hasSupportedActiveStatus && hasValidPositiveAmount,
         needsAttention,
         missingOrInvalidDueDate: hasSupportedActiveStatus && !parseCashSnapshotDate(commitment.dueDate),
+        effectiveCertainty,
       };
     });
     const validActiveCommitments = commitmentReadModel.filter((item) => item.isValidActive);
     const commitmentsNeedingAttention = commitmentReadModel.filter((item) => item.needsAttention);
     const commitmentsMissingDueDate = commitmentReadModel.filter((item) => item.isValidActive && item.missingOrInvalidDueDate);
-    const committedCash = validActiveCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
+    // Only genuinely Committed active commitments reduce deployable cash; Quoted/Planned are exposure, not obligations.
+    const validActiveCommittedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty === "Committed");
+    const validActivePlannedOrQuotedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty !== "Committed");
+    const committedCash = validActiveCommittedCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
+    const plannedOrQuotedExposure = validActivePlannedOrQuotedCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
     const grossDeployableCash = cashConfigured && currentCash !== null && protectedCash !== null ? currentCash - protectedCash : null;
     const uncommittedDeployableCash = grossDeployableCash === null ? null : grossDeployableCash - committedCash;
     const highFitWithCapital = liveOpportunities.filter((opp) => opp.fitRank >= 3 && opp.capital !== null);
@@ -9536,6 +9560,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       commitmentsNeedingAttention,
       commitmentsMissingDueDate,
       committedCash,
+      plannedOrQuotedExposure,
+      validActivePlannedOrQuotedCommitments,
       grossDeployableCash,
       uncommittedDeployableCash,
       cashConfigured,
@@ -9850,6 +9876,9 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       : null;
 
     const overdueCommitments = commitmentRecords
+      // Only a genuine (effectively Committed) obligation being overdue is a real cash-attention issue;
+      // an overdue Planned/Quoted figure is a planning miss, not unpaid unavoidable spend.
+      .filter((commitment) => getEffectiveCommitmentCertainty(commitment) === "Committed")
       .filter((commitment) => commitment.status !== "Paid" && commitment.status !== "Cancelled" && (commitment.status === "Overdue" || isPast(commitment.dueDate)))
       .map((commitment) => ({
         key: `Finance:commitment:${commitment.id}`,
@@ -9871,14 +9900,14 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         detail: `Expected income of ${formatFinanceAmount(parseFinanceAmount(income.amount))} was due ${income.date || "—"} and has not been received.`,
       }));
 
-    // Reuses the canonical deployable-cash-minus-commitments figure from capitalAllocation (already
-    // net of reserved tax and safety buffer) rather than recomputing a separate cash base.
+    // Reuses the canonical deployable-cash-minus-commitments figure from capitalAllocation (already net of
+    // reserved tax, safety buffer, and Quoted/Planned exposure) — this is now a genuine committed-cash shortfall.
     const shortfall = capitalAllocation.uncommittedDeployableCash;
     const fundingGap = shortfall !== null && shortfall < 0
       ? {
           key: "Finance:funding-gap",
-          title: "Committed spending exceeds available cash",
-          detail: `Committed spending exceeds available operating cash by ${formatFinanceAmount(Math.abs(shortfall))}.`,
+          title: "Committed obligations exceed available cash",
+          detail: `Committed obligations exceed available operating cash by ${formatFinanceAmount(Math.abs(shortfall))}. Quoted/Planned figures are not included in this shortfall.`,
           amount: Math.abs(shortfall),
         }
       : null;
@@ -10836,7 +10865,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     if (capitalAllocation.uncommittedDeployableCash !== null && capitalAllocation.uncommittedDeployableCash < 0) {
       empireWide.push({
         label: "Committed cash pressure",
-        detail: `Active commitments exceed gross deployable cash by ${formatFinanceAmount(Math.abs(capitalAllocation.uncommittedDeployableCash))}.`,
+        detail: `Committed obligations exceed gross deployable cash by ${formatFinanceAmount(Math.abs(capitalAllocation.uncommittedDeployableCash))}.`,
       });
     }
 
@@ -10901,7 +10930,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       addSignal("Finance:cash-buffer", "Finance", "cash-buffer", cashAttention.buffer.title, "Finance", "cash buffer pressure", cashAttention.buffer.severity === "critical" ? 380 : 300);
     }
     if (cashAttention.fundingGap) {
-      addSignal("Finance:funding-gap", "Finance", "funding-gap", cashAttention.fundingGap.title, "Finance", "committed spending exceeds available cash", 360);
+      addSignal("Finance:funding-gap", "Finance", "funding-gap", cashAttention.fundingGap.title, "Finance", "committed obligations exceed available cash", 360);
     }
     cashAttention.overdueCommitments.forEach((item) =>
       addSignal(`Finance:commitment:${item.id}`, "Finance", `commitment:${item.id}`, item.title, "Finance", "overdue commitment", 310));
@@ -11427,7 +11456,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     }
 
     if (cashAttention.buffer) postureParts.push("cash buffer pressure");
-    if (cashAttention.fundingGap) postureParts.push("commitments exceed available cash");
+    if (cashAttention.fundingGap) postureParts.push("committed obligations exceed available cash");
     if (cashAttention.overdueCommitments.length > 0) postureParts.push(`${cashAttention.overdueCommitments.length} overdue commitment${cashAttention.overdueCommitments.length === 1 ? "" : "s"}`);
     if (cashAttention.overdueExpectedIncome.length > 0) postureParts.push(`${cashAttention.overdueExpectedIncome.length} expected income overdue`);
 
@@ -17108,7 +17137,15 @@ const isOwnershipGap =
                       <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Committed cash</div>
                       <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">{formatFinanceAmount(capitalAllocation.committedCash)}</div>
                       <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
-                        {capitalAllocation.validActiveCommitments.length} valid active commitment{capitalAllocation.validActiveCommitments.length === 1 ? "" : "s"} • {capitalAllocation.commitmentsNeedingAttention.length} need attention. Planned Expenses are not included.
+                        {capitalAllocation.validActiveCommitments.length} valid active commitment{capitalAllocation.validActiveCommitments.length === 1 ? "" : "s"} • {capitalAllocation.commitmentsNeedingAttention.length} need attention. Only Committed certainty counts here; Planned/Quoted are shown separately.
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Planned / Quoted exposure</div>
+                      <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">{formatFinanceAmount(capitalAllocation.plannedOrQuotedExposure)}</div>
+                      <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
+                        {capitalAllocation.validActivePlannedOrQuotedCommitments.length} valid active commitment{capitalAllocation.validActivePlannedOrQuotedCommitments.length === 1 ? "" : "s"} marked Planned or Quoted. Planning information only — excluded from committed cash and the Command funding-gap alert.
                       </div>
                     </div>
 
@@ -17121,8 +17158,8 @@ const isOwnershipGap =
                         {capitalAllocation.uncommittedDeployableCash === null
                           ? "Cannot calculate until current cash is configured."
                           : capitalAllocation.uncommittedDeployableCash < 0
-                            ? `Commitments exceed gross deployable cash by ${formatFinanceAmount(Math.abs(capitalAllocation.uncommittedDeployableCash))}.`
-                            : `${formatFinanceAmount(capitalAllocation.grossDeployableCash ?? 0)} gross deployable less active commitments.`}
+                            ? `Committed obligations exceed gross deployable cash by ${formatFinanceAmount(Math.abs(capitalAllocation.uncommittedDeployableCash))}.`
+                            : `${formatFinanceAmount(capitalAllocation.grossDeployableCash ?? 0)} gross deployable less committed obligations.`}
                       </div>
                     </div>
                   </div>
