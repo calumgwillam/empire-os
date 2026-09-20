@@ -9871,11 +9871,24 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         detail: `Expected income of ${formatFinanceAmount(parseFinanceAmount(income.amount))} was due ${income.date || "—"} and has not been received.`,
       }));
 
+    // Reuses the canonical deployable-cash-minus-commitments figure from capitalAllocation (already
+    // net of reserved tax and safety buffer) rather than recomputing a separate cash base.
+    const shortfall = capitalAllocation.uncommittedDeployableCash;
+    const fundingGap = shortfall !== null && shortfall < 0
+      ? {
+          key: "Finance:funding-gap",
+          title: "Committed spending exceeds available cash",
+          detail: `Committed spending exceeds available operating cash by ${formatFinanceAmount(Math.abs(shortfall))}.`,
+          amount: Math.abs(shortfall),
+        }
+      : null;
+
     return {
       buffer,
+      fundingGap,
       overdueCommitments,
       overdueExpectedIncome,
-      count: (buffer ? 1 : 0) + overdueCommitments.length + overdueExpectedIncome.length,
+      count: (buffer ? 1 : 0) + (fundingGap ? 1 : 0) + overdueCommitments.length + overdueExpectedIncome.length,
       totalOverdueAmount: overdueCommitments.reduce((sum, item) => sum + item.amount, 0) + overdueExpectedIncome.reduce((sum, item) => sum + item.amount, 0),
     };
   })();
@@ -10887,6 +10900,9 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     if (cashAttention.buffer) {
       addSignal("Finance:cash-buffer", "Finance", "cash-buffer", cashAttention.buffer.title, "Finance", "cash buffer pressure", cashAttention.buffer.severity === "critical" ? 380 : 300);
     }
+    if (cashAttention.fundingGap) {
+      addSignal("Finance:funding-gap", "Finance", "funding-gap", cashAttention.fundingGap.title, "Finance", "committed spending exceeds available cash", 360);
+    }
     cashAttention.overdueCommitments.forEach((item) =>
       addSignal(`Finance:commitment:${item.id}`, "Finance", `commitment:${item.id}`, item.title, "Finance", "overdue commitment", 310));
     cashAttention.overdueExpectedIncome.forEach((item) =>
@@ -11411,6 +11427,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     }
 
     if (cashAttention.buffer) postureParts.push("cash buffer pressure");
+    if (cashAttention.fundingGap) postureParts.push("commitments exceed available cash");
     if (cashAttention.overdueCommitments.length > 0) postureParts.push(`${cashAttention.overdueCommitments.length} overdue commitment${cashAttention.overdueCommitments.length === 1 ? "" : "s"}`);
     if (cashAttention.overdueExpectedIncome.length > 0) postureParts.push(`${cashAttention.overdueExpectedIncome.length} expected income overdue`);
 
@@ -11489,6 +11506,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     recurringProblemLearning.gaps.forEach((problem) => outstandingRecordKeys.add(`Problem:${problem.id}`));
     staleRecords.forEach((item) => outstandingRecordKeys.add(`${item.objectType}:${item.id}`));
     if (cashAttention.buffer) outstandingRecordKeys.add("Finance:cash-buffer");
+    if (cashAttention.fundingGap) outstandingRecordKeys.add("Finance:funding-gap");
     cashAttention.overdueCommitments.forEach((item) => outstandingRecordKeys.add(`Finance:commitment:${item.id}`));
     cashAttention.overdueExpectedIncome.forEach((item) => outstandingRecordKeys.add(`Finance:income:${item.id}`));
     growthAttention.stalledOpportunities.forEach((item) => outstandingRecordKeys.add(`Opportunity:${item.id}`));
@@ -11608,6 +11626,9 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
   });
   if (cashAttention.buffer) {
     attentionSnapshot["finance:cash-buffer"] = "Finance attention";
+  }
+  if (cashAttention.fundingGap) {
+    attentionSnapshot["finance:funding-gap"] = "Finance attention";
   }
   cashAttention.overdueCommitments.forEach((item) => {
     attentionSnapshot[`finance:commitment:${item.id}`] = "Finance attention";
@@ -14386,7 +14407,7 @@ const isOwnershipGap =
       }
     } else if (objectType === "Finance") {
       setActiveView("Finance");
-      if (id === "cash-buffer") {
+      if (id === "cash-buffer" || id === "funding-gap") {
         handleCashPositionOpen();
       } else if (id.startsWith("commitment:")) {
         const record = commitmentRecords.find((item) => item.id === id.slice("commitment:".length));
@@ -14559,6 +14580,8 @@ const isOwnershipGap =
     if (stepLabel === "Clear cash attention") {
       if (cashAttention.buffer) {
         handleOpenAttentionRecord("Finance", "cash-buffer");
+      } else if (cashAttention.fundingGap) {
+        handleOpenAttentionRecord("Finance", "funding-gap");
       } else if (cashAttention.overdueCommitments.length > 0) {
         handleOpenAttentionRecord("Finance", `commitment:${cashAttention.overdueCommitments[0].id}`);
       } else if (cashAttention.overdueExpectedIncome.length > 0) {
@@ -16574,6 +16597,17 @@ const isOwnershipGap =
                       >
                         <div className="text-[13px] font-medium text-[#171717]">{cashAttention.buffer.title}</div>
                         <div className="mt-0.5 text-[11px] text-[#4d4944]">{cashAttention.buffer.detail}</div>
+                      </button>
+                    ) : null}
+
+                    {cashAttention.fundingGap ? (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenAttentionRecord("Finance", "funding-gap")}
+                        className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                      >
+                        <div className="text-[13px] font-medium text-[#171717]">{cashAttention.fundingGap.title}</div>
+                        <div className="mt-0.5 text-[11px] text-[#4d4944]">{cashAttention.fundingGap.detail}</div>
                       </button>
                     ) : null}
 
