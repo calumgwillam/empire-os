@@ -32,6 +32,7 @@ const CASH_POSITION_STORAGE_KEY = "empire-os-cash-position";
 const INCOME_STORAGE_KEY = "empire-os-income-records";
 const EXPENSE_STORAGE_KEY = "empire-os-expense-records";
 const COMMITMENT_STORAGE_KEY = "empire-os-financial-commitments";
+const TAX_PAYMENT_STORAGE_KEY = "empire-os-tax-payment-records";
 const SAVED_VIEWS_STORAGE_KEY = "empire-os-records-in-motion-views";
 const DEFAULT_SAVED_VIEW_STORAGE_KEY = "empire-os-records-in-motion-default-view";
 const DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY = "empire-os-daily-posture-snapshots";
@@ -557,6 +558,27 @@ type CommitmentRecord = {
   dateCreated: string;
 };
 
+const taxPaymentStatusOptions = ["Expected", "Received"] as const;
+type TaxPaymentStatus = (typeof taxPaymentStatusOptions)[number];
+
+// Personal tax planning context for Calum's current self-employed corporate job.
+const TAX_JOB_LABEL = "Self-employed corporate job (Calum)";
+const TAX_JOB_START_DATE = "2026-08-06";
+const TAX_JOB_GROSS_ANNUAL_REFERENCE_INCOME = 26000;
+const TAX_RESERVE_RATE = 0.3;
+
+type TaxPaymentRecord = {
+  id: string;
+  date: string;
+  description: string;
+  grossAmount: string;
+  status: TaxPaymentStatus;
+  reserveSetAside: boolean;
+  setAsideDate: string;
+  notes: string;
+  dateCreated: string;
+};
+
 const defaultCashPosition: CashPositionRecord = {
   currentCash: "",
   reservedTax: "",
@@ -592,6 +614,16 @@ const defaultCommitmentForm: Omit<CommitmentRecord, "id" | "dateCreated"> = {
   type: "Other",
   status: "Upcoming",
   relatedPillar: "Garden Maintenance",
+  notes: "",
+};
+
+const defaultTaxPaymentForm: Omit<TaxPaymentRecord, "id" | "dateCreated"> = {
+  date: "",
+  description: "",
+  grossAmount: "",
+  status: "Expected",
+  reserveSetAside: false,
+  setAsideDate: "",
   notes: "",
 };
 
@@ -701,6 +733,21 @@ function formatCapturedAt(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+// UK tax years run 6 April to 5 April; used to give tax records a relevant period label.
+function ukTaxYearLabel(value: string) {
+  const date = new Date(`${value}T00:00:00`);
+
+  if (Number.isNaN(date.getTime())) {
+    return "—";
+  }
+
+  const year = date.getFullYear();
+  const isBeforeApril6 = date.getMonth() < 3 || (date.getMonth() === 3 && date.getDate() < 6);
+  const startYear = isBeforeApril6 ? year - 1 : year;
+
+  return `${startYear}/${String((startYear + 1) % 100).padStart(2, "0")} tax year`;
 }
 
 // Cash snapshot dates are calendar days; accepts legacy ISO datetime values and returns "" when unusable.
@@ -1091,7 +1138,7 @@ const destinationDefinitions = [
   },
 ] as const;
 
-type DestinationKey = "Command" | "Empire" | "Capture" | "People" | "Projects" | "Leads" | "Finance" | "Metrics" | "Pillars" | (typeof destinationDefinitions)[number]["key"];
+type DestinationKey = "Command" | "Empire" | "Capture" | "People" | "Projects" | "Leads" | "Finance" | "Tax" | "Metrics" | "Pillars" | (typeof destinationDefinitions)[number]["key"];
 
 type RelatedRecordItem = {
   label: string;
@@ -2774,6 +2821,111 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
           <div className="flex justify-end gap-2">
             <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
             <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidName || hasInvalidAmount || hasInvalidDueDate) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save commitment"}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TaxPaymentDetailPanel({ payment, canDelete, onClose, onChange, onSave, onDelete }: {
+  payment: TaxPaymentRecord;
+  canDelete: boolean;
+  onClose: () => void;
+  onChange: (field: keyof TaxPaymentRecord, value: string | boolean) => void;
+  onSave: () => void;
+  onDelete: () => void;
+}) {
+  const hasInvalidDescription = !payment.description.trim();
+  const hasInvalidDate = !isValidCalendarDateInput(payment.date);
+  const hasInvalidAmount = parseFinanceAmountInput(payment.grossAmount) === null;
+  const [hasAttemptedSave, setHasAttemptedSave] = useState(false);
+  const [hasSaved, markSaved] = useFinanceSavedFeedback();
+  const parsedGross = parseFinanceAmountInput(payment.grossAmount);
+  const reserveAmount = parsedGross !== null ? parsedGross * TAX_RESERVE_RATE : null;
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+        <div className="flex items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Tax payment</p>
+            <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{payment.description || "New payment record"}</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
+        </div>
+
+        {hasSaved ? (
+          <div aria-live="polite" className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">Payment record saved.</div>
+        ) : null}
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Description</label>
+            <input value={payment.description} onChange={(event) => onChange("description", event.target.value)} placeholder="e.g. August payment" className={financeFieldClass} />
+          </div>
+          {hasAttemptedSave && hasInvalidDescription ? (
+            <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Description is required.</p>
+          ) : null}
+          <div>
+            <label className={financeLabelClass}>Date</label>
+            <input type="date" value={payment.date} onChange={(event) => onChange("date", event.target.value)} className={financeFieldClass} />
+            {hasAttemptedSave && hasInvalidDate ? (
+              <p role="alert" className="mt-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">A valid date is required.</p>
+            ) : null}
+          </div>
+          <div>
+            <label className={financeLabelClass}>Gross amount</label>
+            <input value={payment.grossAmount} onChange={(event) => onChange("grossAmount", event.target.value)} placeholder="e.g. 2166.67" className={financeFieldClass} />
+            {hasAttemptedSave && hasInvalidAmount ? (
+              <p role="alert" className="mt-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Gross amount must be a valid non-negative number.</p>
+            ) : null}
+          </div>
+          <div>
+            <label className={financeLabelClass}>Status</label>
+            <select value={payment.status} onChange={(event) => onChange("status", event.target.value)} className={financeFieldClass}>
+              {taxPaymentStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </div>
+          <div className="rounded-xl border border-[#d3cbc3] bg-white px-3.5 py-3">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Working tax reserve (30%)</div>
+            <div className="mt-1 text-[18px] font-semibold tracking-[-0.04em] text-[#171717]">{reserveAmount !== null ? `£${reserveAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</div>
+          </div>
+          <div className="md:col-span-2 flex items-center justify-between gap-3 rounded-xl border border-[#d3cbc3] bg-white px-3.5 py-3">
+            <div>
+              <div className="text-[12px] font-medium text-[#171717]">Reserve set aside</div>
+              <div className="mt-0.5 text-[11px] text-[#5d584f]">Mark once this payment&apos;s 30% has actually been moved into tax savings.</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onChange("reserveSetAside", !payment.reserveSetAside)}
+              className={[
+                "shrink-0 rounded-lg border px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] transition",
+                payment.reserveSetAside
+                  ? "border-[#171717] bg-[#171717] text-[#f7f4f1]"
+                  : "border-[#cfc8c1] bg-white text-[#171717] hover:border-[#171717]",
+              ].join(" ")}
+            >
+              {payment.reserveSetAside ? "Set aside ✓" : "Not yet set aside"}
+            </button>
+          </div>
+          {payment.reserveSetAside ? (
+            <div>
+              <label className={financeLabelClass}>Set aside date</label>
+              <input type="date" value={payment.setAsideDate} onChange={(event) => onChange("setAsideDate", event.target.value)} className={financeFieldClass} />
+            </div>
+          ) : null}
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Notes</label>
+            <textarea rows={3} value={payment.notes} onChange={(event) => onChange("notes", event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+        </div>
+
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+          <FinanceDeleteControl canDelete={canDelete} label="Delete payment record" onDelete={onDelete} />
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save payment"}</button>
           </div>
         </div>
       </div>
@@ -6922,6 +7074,7 @@ export default function Home() {
   const [incomeRecords, setIncomeRecords] = useState<IncomeRecord[]>([]);
   const [expenseRecords, setExpenseRecords] = useState<ExpenseRecord[]>([]);
   const [commitmentRecords, setCommitmentRecords] = useState<CommitmentRecord[]>([]);
+  const [taxPaymentRecords, setTaxPaymentRecords] = useState<TaxPaymentRecord[]>([]);
   const [dailyPostureSnapshots, setDailyPostureSnapshots] = useState<DailyPostureSnapshot[]>([]);
   const [operatingDataLoaded, setOperatingDataLoaded] = useState(false);
   const [lastBackupAt, setLastBackupAt] = useState("");
@@ -6934,6 +7087,8 @@ export default function Home() {
   const [expenseEditor, setExpenseEditor] = useState<ExpenseRecord | null>(null);
   const [selectedCommitmentId, setSelectedCommitmentId] = useState<string | null>(null);
   const [commitmentEditor, setCommitmentEditor] = useState<CommitmentRecord | null>(null);
+  const [selectedTaxPaymentId, setSelectedTaxPaymentId] = useState<string | null>(null);
+  const [taxPaymentEditor, setTaxPaymentEditor] = useState<TaxPaymentRecord | null>(null);
   const [creatingLinkedActionForProblemId, setCreatingLinkedActionForProblemId] = useState<string | null>(null);
   const [creatingLinkedActionForDecisionId, setCreatingLinkedActionForDecisionId] = useState<string | null>(null);
   const [creatingLinkedDecisionForOpportunityId, setCreatingLinkedDecisionForOpportunityId] = useState<string | null>(null);
@@ -6968,6 +7123,7 @@ export default function Home() {
       const storedIncome = window.localStorage.getItem(INCOME_STORAGE_KEY);
       const storedExpenses = window.localStorage.getItem(EXPENSE_STORAGE_KEY);
       const storedCommitments = window.localStorage.getItem(COMMITMENT_STORAGE_KEY);
+      const storedTaxPayments = window.localStorage.getItem(TAX_PAYMENT_STORAGE_KEY);
 
       // Preserve the untouched browser data before any startup parsing or persistence runs.
       // Recovery snapshot failures must never interrupt normal Empire OS loading.
@@ -7152,6 +7308,14 @@ export default function Home() {
         }
       }
 
+      if (storedTaxPayments) {
+        const parsedTaxPayments = JSON.parse(storedTaxPayments);
+
+        if (Array.isArray(parsedTaxPayments)) {
+          setTaxPaymentRecords(parsedTaxPayments);
+        }
+      }
+
       const storedSnapshots = window.localStorage.getItem(DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY);
       if (storedSnapshots) {
         const parsedSnapshots = JSON.parse(storedSnapshots);
@@ -7317,6 +7481,18 @@ export default function Home() {
     }
   }, [commitmentRecords, operatingDataLoaded]);
 
+  useEffect(() => {
+    if (!operatingDataLoaded) {
+      return;
+    }
+
+    if (taxPaymentRecords.length === 0) {
+      window.localStorage.removeItem(TAX_PAYMENT_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(TAX_PAYMENT_STORAGE_KEY, JSON.stringify(taxPaymentRecords));
+    }
+  }, [taxPaymentRecords, operatingDataLoaded]);
+
   const orderedCaptures = [...captures].sort(
     (first, second) =>
       new Date(second.capturedAt).getTime() - new Date(first.capturedAt).getTime(),
@@ -7373,6 +7549,21 @@ export default function Home() {
   const orderedIncome = [...incomeRecords].sort((a, b) => (b.date || b.dateCreated).localeCompare(a.date || a.dateCreated));
   const orderedExpenses = [...expenseRecords].sort((a, b) => (b.date || b.dateCreated).localeCompare(a.date || a.dateCreated));
   const orderedCommitments = [...commitmentRecords].sort((a, b) => (a.dueDate || a.dateCreated).localeCompare(b.dueDate || b.dateCreated));
+
+  const orderedTaxPayments = [...taxPaymentRecords].sort((a, b) => (b.date || b.dateCreated).localeCompare(a.date || a.dateCreated));
+  const taxIncomeReceived = taxPaymentRecords
+    .filter((record) => record.status === "Received")
+    .reduce((total, record) => total + parseFinanceAmount(record.grossAmount), 0);
+  const taxIncomeOutstanding = taxPaymentRecords
+    .filter((record) => record.status === "Expected")
+    .reduce((total, record) => total + parseFinanceAmount(record.grossAmount), 0);
+  const taxReserveRequiredOnReceived = taxIncomeReceived * TAX_RESERVE_RATE;
+  const taxReserveProjectedTotal = (taxIncomeReceived + taxIncomeOutstanding) * TAX_RESERVE_RATE;
+  const taxReserveAlreadySetAside = taxPaymentRecords
+    .filter((record) => record.reserveSetAside)
+    .reduce((total, record) => total + parseFinanceAmount(record.grossAmount) * TAX_RESERVE_RATE, 0);
+  const taxReserveStillOutstanding = Math.max(0, taxReserveRequiredOnReceived - taxReserveAlreadySetAside);
+  const taxPaymentsAwaitingReserve = taxPaymentRecords.filter((record) => record.status === "Received" && !record.reserveSetAside);
 
   const totalReceivedIncome = incomeRecords
     .filter((record) => record.status === "Received")
@@ -14837,6 +15028,77 @@ const isOwnershipGap =
     setCommitmentEditor(newCommitment);
   };
 
+  const handleTaxPaymentEditOpen = (payment: TaxPaymentRecord) => {
+    setSelectedTaxPaymentId(payment.id);
+    setTaxPaymentEditor(payment);
+  };
+
+  const handleTaxPaymentEditorChange = (field: keyof TaxPaymentRecord, value: string | boolean) => {
+    if (!taxPaymentEditor) {
+      return;
+    }
+
+    setTaxPaymentEditor({ ...taxPaymentEditor, [field]: value } as TaxPaymentRecord);
+  };
+
+  const handleTaxPaymentSave = () => {
+    if (!taxPaymentEditor || !taxPaymentEditor.description.trim()) {
+      return;
+    }
+
+    const nextPayment: TaxPaymentRecord = {
+      ...taxPaymentEditor,
+      id: taxPaymentEditor.id || generateFinanceRecordId("tax-payment"),
+      description: taxPaymentEditor.description.trim(),
+      grossAmount: taxPaymentEditor.grossAmount.trim(),
+      status: taxPaymentStatusOptions.includes(taxPaymentEditor.status as TaxPaymentStatus) ? taxPaymentEditor.status : "Expected",
+      notes: taxPaymentEditor.notes.trim(),
+      dateCreated: taxPaymentEditor.dateCreated || new Date().toISOString(),
+    };
+    const isNew = !taxPaymentRecords.some((record) => record.id === nextPayment.id);
+
+    setTaxPaymentRecords((current) =>
+      isNew ? [nextPayment, ...current] : current.map((record) => record.id === nextPayment.id ? nextPayment : record),
+    );
+    setSelectedTaxPaymentId(nextPayment.id);
+    setTaxPaymentEditor(nextPayment);
+    setFeedback({ type: "success", message: isNew ? "Tax payment record created." : "Tax payment record saved." });
+  };
+
+  const handleTaxPaymentDelete = () => {
+    if (!taxPaymentEditor) {
+      return;
+    }
+
+    const targetId = taxPaymentEditor.id;
+    setTaxPaymentRecords((current) => current.filter((record) => record.id !== targetId));
+    setSelectedTaxPaymentId(null);
+    setTaxPaymentEditor(null);
+    setFeedback({ type: "success", message: "Tax payment record deleted." });
+  };
+
+  const handleCreateTaxPayment = () => {
+    const newPayment: TaxPaymentRecord = {
+      ...defaultTaxPaymentForm,
+      id: generateFinanceRecordId("tax-payment"),
+      dateCreated: new Date().toISOString(),
+    };
+
+    setSelectedTaxPaymentId(newPayment.id);
+    setTaxPaymentEditor(newPayment);
+  };
+
+  const handleMarkTaxReserveSetAside = (paymentId: string) => {
+    setTaxPaymentRecords((current) =>
+      current.map((record) =>
+        record.id === paymentId
+          ? { ...record, reserveSetAside: true, setAsideDate: record.setAsideDate || new Date().toISOString().slice(0, 10) }
+          : record,
+      ),
+    );
+    setFeedback({ type: "success", message: "Tax reserve marked as set aside." });
+  };
+
   useEffect(() => {
     setLastBackupAt(window.localStorage.getItem(LAST_BACKUP_AT_STORAGE_KEY) || "");
   }, []);
@@ -16830,12 +17092,27 @@ const isOwnershipGap =
                   <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#4d4944]">Financial operations</p>
                   <h1 className="mt-2.5 text-[36px] font-semibold tracking-[-0.07em] text-[#171717] sm:text-[42px]">Finance</h1>
                 </div>
-                <button type="button" onClick={handleCashPositionOpen} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Update cash position</button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={() => setActiveView("Tax")} className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#171717] transition hover:border-[#171717]">Open Tax</button>
+                  <button type="button" onClick={handleCashPositionOpen} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Update cash position</button>
+                </div>
               </header>
 
               <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
                 Track cash position, income, expenses and financial commitments so the business always knows its real operating position.
               </p>
+
+              <button
+                type="button"
+                onClick={() => setActiveView("Tax")}
+                className="mt-4 flex w-full flex-col gap-1 rounded-xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-3.5 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec] sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div>
+                  <div className="text-[13px] font-medium tracking-[-0.02em] text-[#171717]">Tax planning — {TAX_JOB_LABEL}</div>
+                  <div className="mt-0.5 text-[12px] text-[#5d584f]">Working tax reserve still to set aside: £{taxReserveStillOutstanding.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                </div>
+                <span className="mt-2 shrink-0 rounded-full border border-[#cfc8c1] bg-white px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f] sm:mt-0">Open Tax section</span>
+              </button>
 
               <div className={`mt-4 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2.5 text-[11px] ${cashSnapshotFreshness.tone === "warn" ? "border-[#c9b8a3] bg-[#f5efe6] text-[#524d49]" : "border-[#d3cbc3] bg-[#f9f7f4] text-[#4d4944]"}`}>
                 <span className="font-medium text-[#171717]">Cash snapshot:</span>
@@ -16963,6 +17240,134 @@ const isOwnershipGap =
                         </div>
                       </button>
                     ))}
+                  </div>
+                )}
+              </section>
+            </div>
+          ) : activeView === "Tax" ? (
+            <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+              <header className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-4">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-[#4d4944]">Personal tax planning</p>
+                  <h1 className="mt-2.5 text-[36px] font-semibold tracking-[-0.07em] text-[#171717] sm:text-[42px]">Tax</h1>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={() => setActiveView("Finance")} className="rounded-lg border border-[#cfc8c1] bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#171717] transition hover:border-[#171717]">Back to Finance</button>
+                  <button type="button" onClick={handleCreateTaxPayment} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Add payment</button>
+                </div>
+              </header>
+
+              <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
+                Tracks income and the working tax reserve for {TAX_JOB_LABEL}. This position is kept separate from FG Exterior Care operating cash and commitments.
+              </p>
+
+              <div className="mt-4 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] px-4 py-3 text-[12px] leading-5 text-[#524d49]">
+                <span className="font-medium text-[#171717]">Planning reserve only:</span> the figures below are a working estimate to help set money aside as it is earned. They are not the final HMRC tax liability.
+              </div>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Job start date</div>
+                  <div className="mt-2 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">{formatCapturedAt(TAX_JOB_START_DATE)}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Tax period context</div>
+                  <div className="mt-2 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">{ukTaxYearLabel(TAX_JOB_START_DATE)}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Gross annual reference income</div>
+                  <div className="mt-2 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">£{TAX_JOB_GROSS_ANNUAL_REFERENCE_INCOME.toLocaleString()}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Working tax reserve rate</div>
+                  <div className="mt-2 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">{Math.round(TAX_RESERVE_RATE * 100)}%</div>
+                </div>
+              </div>
+
+              {taxPaymentsAwaitingReserve.length > 0 ? (
+                <div className="mt-6 space-y-2">
+                  {taxPaymentsAwaitingReserve.map((payment) => {
+                    const gross = parseFinanceAmount(payment.grossAmount);
+                    const reserve = gross * TAX_RESERVE_RATE;
+                    return (
+                      <div key={payment.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#d4b4a7] bg-[#f8efeb] px-4 py-3">
+                        <div className="text-[13px] leading-5 text-[#6a3328]">
+                          <span className="font-semibold">Move £{reserve.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} into tax savings</span>
+                          {" "}— reserve from &quot;{payment.description}&quot; ({formatFinanceAmount(gross)} received{payment.date ? `, ${formatCapturedAt(payment.date)}` : ""}).
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleMarkTaxReserveSetAside(payment.id)}
+                          className="shrink-0 rounded-lg bg-[#6a3328] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]"
+                        >
+                          Mark set aside
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Income actually received</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(taxIncomeReceived)}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Outstanding / expected income</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(taxIncomeOutstanding)}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Working tax reserve required</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(taxReserveRequiredOnReceived)}</div>
+                  <div className="mt-1 text-[10px] text-[#5d584f]">30% of income received so far</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Amount already set aside</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(taxReserveAlreadySetAside)}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Amount still to reserve</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(taxReserveStillOutstanding)}</div>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Projected reserve incl. expected income</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(taxReserveProjectedTotal)}</div>
+                  <div className="mt-1 text-[10px] text-[#5d584f]">30% of received + expected, for forward planning</div>
+                </div>
+              </div>
+
+              <section className="mt-8">
+                <div className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-2.5">
+                  <h2 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Payment records</h2>
+                  <button type="button" onClick={handleCreateTaxPayment} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Add payment</button>
+                </div>
+                {orderedTaxPayments.length === 0 ? (
+                  <div className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-6 text-[14px] text-[#4d4944]">No tax payment records yet.</div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {orderedTaxPayments.map((payment) => {
+                      const gross = parseFinanceAmount(payment.grossAmount);
+                      const reserve = gross * TAX_RESERVE_RATE;
+                      return (
+                        <button key={payment.id} type="button" onClick={() => handleTaxPaymentEditOpen(payment)} className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec]">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0 flex-1">
+                              <h3 className="text-[16px] font-medium tracking-[-0.03em] text-[#171717]">{payment.description}</h3>
+                              <p className="mt-1 text-[13px] text-[#424039]">{payment.date ? formatCapturedAt(payment.date) : "No date"}</p>
+                            </div>
+                            <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">{payment.status}</span>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Gross {formatFinanceAmount(gross)}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">30% reserve {formatFinanceAmount(reserve)}</span>
+                            <span className={`rounded-full border px-2 py-1.5 ${payment.reserveSetAside ? "border-[#cfc8c1] bg-[#f1eee9]" : "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]"}`}>
+                              {payment.reserveSetAside ? "Reserve set aside" : "Reserve not yet set aside"}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </section>
@@ -18529,6 +18934,20 @@ const isOwnershipGap =
           onChange={handleCommitmentEditorChange}
           onSave={handleCommitmentSave}
           onDelete={handleCommitmentDelete}
+        />
+      ) : null}
+
+      {selectedTaxPaymentId && taxPaymentEditor ? (
+        <TaxPaymentDetailPanel
+          payment={taxPaymentEditor}
+          canDelete={taxPaymentRecords.some((record) => record.id === taxPaymentEditor.id)}
+          onClose={() => {
+            setSelectedTaxPaymentId(null);
+            setTaxPaymentEditor(null);
+          }}
+          onChange={handleTaxPaymentEditorChange}
+          onSave={handleTaxPaymentSave}
+          onDelete={handleTaxPaymentDelete}
         />
       ) : null}
 
