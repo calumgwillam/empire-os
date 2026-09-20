@@ -568,6 +568,34 @@ function getOutreachBucket(status: OutreachStatus) {
   }
 }
 
+// Statuses that no longer create normal outreach follow-up pressure (already closed out one way or another).
+const outreachFollowUpExcludedStatuses = new Set<OutreachStatus>(["Converted to Lead", "Closed / Not Pursuing", "Closed Supplier Network"]);
+
+// Classifies an outreach contact's follow-up urgency by date only; returns null when the record is out of the follow-up funnel entirely
+// (closed/converted, or a deliberately-deferred Future Phone Follow-Up with no date set).
+function classifyOutreachFollowUp(contact: OutreachRecord, startOfTodayMs: number): "Overdue" | "Due today" | "Upcoming" | "No follow-up scheduled" | null {
+  if (outreachFollowUpExcludedStatuses.has(contact.status)) {
+    return null;
+  }
+
+  if (contact.status === "Future Phone Follow-Up" && !contact.nextFollowUpDate) {
+    return null;
+  }
+
+  if (!contact.nextFollowUpDate) {
+    return "No follow-up scheduled";
+  }
+
+  const dueMs = new Date(`${contact.nextFollowUpDate.slice(0, 10)}T00:00:00`).getTime();
+  if (Number.isNaN(dueMs)) {
+    return "No follow-up scheduled";
+  }
+
+  if (dueMs < startOfTodayMs) return "Overdue";
+  if (dueMs === startOfTodayMs) return "Due today";
+  return "Upcoming";
+}
+
 const incomeStatusOptions = ["Expected", "Received"] as const;
 type IncomeStatus = (typeof incomeStatusOptions)[number];
 
@@ -7856,6 +7884,13 @@ export default function Home() {
     count: outreachContacts.filter((contact) => getOutreachBucket(contact.status) === bucket).length,
   }));
 
+  const outreachStartOfTodayMs = new Date().setHours(0, 0, 0, 0);
+  const outreachFollowUpOrder = ["Due today", "Overdue", "Upcoming", "No follow-up scheduled"] as const;
+  const outreachFollowUpCounts = outreachFollowUpOrder.map((bucket) => ({
+    bucket,
+    count: outreachContacts.filter((contact) => classifyOutreachFollowUp(contact, outreachStartOfTodayMs) === bucket).length,
+  }));
+
   const filteredLeads = orderedLeads.filter((lead) => {
     const matchesStatus = leadStatusFilter === "All statuses" || lead.status === leadStatusFilter;
     const matchesSource = leadSourceFilter === "All sources" || lead.sourceChannel === leadSourceFilter;
@@ -7962,7 +7997,7 @@ export default function Home() {
 
   type AttentionItem = {
     id: string;
-    objectType: "Problem" | "Action" | "Decision" | "Opportunity" | "Project" | "Lesson" | "System" | "SOP";
+    objectType: "Problem" | "Action" | "Decision" | "Opportunity" | "Project" | "Lesson" | "System" | "SOP" | "Outreach";
     title: string;
     reason: string;
     reasons: string[];
@@ -10353,6 +10388,38 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     startOfToday.setHours(0, 0, 0, 0);
     const startOfEightDaysFromNow = new Date(startOfToday);
     startOfEightDaysFromNow.setDate(startOfEightDaysFromNow.getDate() + 8);
+
+    // Outreach only reaches Command attention when a follow-up is due today or overdue; upcoming/no-date contacts stay in Outreach only.
+    outreachContacts.forEach((contact) => {
+      const classification = classifyOutreachFollowUp(contact, startOfToday.getTime());
+      if (classification !== "Overdue" && classification !== "Due today") {
+        return;
+      }
+
+      const reasons: string[] = [];
+      if (classification === "Overdue") {
+        const days = getDaysOverdue(contact.nextFollowUpDate);
+        reasons.push(`OVERDUE BY ${days} DAY${days === 1 ? "" : "S"}`);
+      } else {
+        reasons.push("OUTREACH FOLLOW-UP DUE TODAY");
+      }
+
+      addAttentionItem(reasons[0], {
+        id: contact.id,
+        objectType: "Outreach",
+        title: contact.businessName,
+        reason: reasons.join(" • "),
+        reasons,
+        statusText: `${contact.status} / Follow-up ${contact.nextFollowUpDate ? formatCapturedAt(contact.nextFollowUpDate) : "not set"}`,
+        area: "Marketing / Growth",
+        attentionRank: classification === "Overdue" ? 2 : 6,
+        tieWeight: classification === "Overdue" ? 1 : 0,
+        priorityScore: classification === "Overdue" ? 150 : 90,
+        sortDate: getDateValue(contact.nextFollowUpDate),
+        sortDateAscending: true,
+        onOpen: () => handleOpenAttentionRecord("Outreach", contact.id),
+      });
+    });
 
     projects.forEach((project) => {
       if (!isProjectActive(project)) {
@@ -13079,7 +13146,7 @@ const isOwnershipGap =
       return "Blocked / Waiting";
     }
 
-    if ((item.objectType === "Action" && item.reasons.some((reason) => reason.startsWith("OVERDUE BY "))) || (item.objectType === "Project" && item.reasons.includes("OVERDUE PROJECT"))) {
+    if ((item.objectType === "Action" && item.reasons.some((reason) => reason.startsWith("OVERDUE BY "))) || (item.objectType === "Project" && item.reasons.includes("OVERDUE PROJECT")) || (item.objectType === "Outreach" && item.reasons.some((reason) => reason.startsWith("OVERDUE BY ")))) {
       return "Urgent / Overdue";
     }
 
@@ -13107,9 +13174,13 @@ const isOwnershipGap =
       return "Opportunities";
     }
 
+    if (item.objectType === "Outreach") {
+      return "Outreach";
+    }
+
     return "Other Attention";
   };
-  const commandAttentionGroups = ["Blocked / Waiting", "Urgent / Overdue", "Problems", "Actions", "Projects", "Opportunities", "Other Attention"]
+  const commandAttentionGroups = ["Blocked / Waiting", "Urgent / Overdue", "Problems", "Actions", "Projects", "Opportunities", "Outreach", "Other Attention"]
     .map((label) => ({
       label,
       items: commandAttentionItemList.filter((item) => getAttentionGroup(item) === label),
@@ -14040,6 +14111,12 @@ const isOwnershipGap =
     } else if (objectType === "Lead") {
       const record = leads.find((item) => item.id === id);
       if (record) handleLeadEditOpen(record);
+    } else if (objectType === "Outreach") {
+      const record = outreachContacts.find((item) => item.id === id);
+      if (record) {
+        setActiveView("Outreach");
+        handleOutreachEditOpen(record);
+      }
     } else if (objectType === "Lesson") {
       const record = lessonRecords.find((item) => item.id === id);
       if (record) handleLessonEditOpen(record);
@@ -17603,6 +17680,17 @@ const isOwnershipGap =
                 ))}
               </div>
 
+              <h2 className="mt-7 border-b border-[#d7d1ca] pb-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Follow-up status</h2>
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {outreachFollowUpCounts.map((entry) => (
+                  <div key={entry.bucket} className={`rounded-2xl border p-3 ${entry.bucket === "Overdue" && entry.count > 0 ? "border-[#d4b4a7] bg-[#f8efeb]" : entry.bucket === "Due today" && entry.count > 0 ? "border-[#c9b8a3] bg-[#f5efe6]" : "border-[#d3cbc3] bg-[#f9f7f4]"}`}>
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">{entry.bucket}</div>
+                    <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{entry.count}</div>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] text-[#5d584f]">Only Due today and Overdue follow-ups surface in Command. Upcoming and unscheduled contacts stay here until they become due.</p>
+
               <div className="mt-6 flex flex-wrap items-center gap-2">
                 <select value={outreachStatusFilter} onChange={(event) => setOutreachStatusFilter(event.target.value)} className="rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28] outline-none transition focus:border-[#171717]">
                   <option value="All statuses">All statuses</option>
@@ -17615,23 +17703,29 @@ const isOwnershipGap =
                 <div className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[14px] text-[#4d4944]">No outreach contacts match. Add the first contact to start tracking outbound prospecting.</div>
               ) : (
                 <div className="mt-4 space-y-3">
-                  {filteredOutreachContacts.map((contact) => (
-                    <button key={contact.id} type="button" onClick={() => handleOutreachEditOpen(contact)} className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec]">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="min-w-0 flex-1">
-                          <h2 className="text-[18px] font-medium tracking-[-0.04em] text-[#171717]">{contact.businessName}</h2>
-                          <p className="mt-1 text-[13px] text-[#424039]">{contact.contactName || "No named contact"}</p>
+                  {filteredOutreachContacts.map((contact) => {
+                    const followUpState = classifyOutreachFollowUp(contact, outreachStartOfTodayMs);
+                    return (
+                      <button key={contact.id} type="button" onClick={() => handleOutreachEditOpen(contact)} className="block w-full rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-4 text-left transition hover:border-[#171717] hover:bg-[#f4f0ec]">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0 flex-1">
+                            <h2 className="text-[18px] font-medium tracking-[-0.04em] text-[#171717]">{contact.businessName}</h2>
+                            <p className="mt-1 text-[13px] text-[#424039]">{contact.contactName || "No named contact"}</p>
+                          </div>
+                          <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">{contact.status}</span>
                         </div>
-                        <span className="inline-flex w-fit rounded-full border border-[#cfc8c1] bg-[#f3efe9] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.16em] text-[#38342f]">{contact.status}</span>
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
-                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{contact.contactType}</span>
-                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{contact.nextFollowUpDate ? `Next follow-up ${formatCapturedAt(contact.nextFollowUpDate)}` : "No follow-up set"}</span>
-                        <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{contact.owner || "Unassigned"}</span>
-                        {contact.linkedLeadId ? <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1.5">Linked to Lead</span> : null}
-                      </div>
-                    </button>
-                  ))}
+                        <div className="mt-3 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{contact.contactType}</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{contact.nextFollowUpDate ? `Next follow-up ${formatCapturedAt(contact.nextFollowUpDate)}` : "No follow-up set"}</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{contact.owner || "Unassigned"}</span>
+                          {contact.linkedLeadId ? <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1.5">Linked to Lead</span> : null}
+                          {followUpState === "Overdue" || followUpState === "Due today" ? (
+                            <span className="rounded-full border border-[#d4b4a7] bg-[#f8efeb] px-2 py-1.5 text-[#6a3328]">{followUpState} • in Command</span>
+                          ) : null}
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
