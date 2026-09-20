@@ -3547,6 +3547,50 @@ type CapacityRankedDelegationPerson = PersonRecord & {
   attentionCount: number;
 };
 
+type StrategicNextMoveCandidate = {
+  objectType: "Action" | "Project" | "Opportunity";
+  id: string;
+  title: string;
+  area: string;
+  reasons: string[];
+  onOpen: () => void;
+};
+
+// Deliberately calm/neutral styling (not attention red/amber) — nothing is wrong here, this is a recommendation.
+function StrategicNextMoveSection({ candidate }: { candidate: StrategicNextMoveCandidate | null }) {
+  return (
+    <div className="rounded-2xl border border-[#b8c9ba] bg-[#f4f8f4] p-4">
+      <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#3f6a49]">
+        Strategic Next Move
+      </div>
+
+      {candidate ? (
+        <button
+          type="button"
+          onClick={candidate.onOpen}
+          className="block w-full rounded-xl border border-[#cfe0d1] bg-white px-3 py-3 text-left transition hover:border-[#3f6a49] hover:bg-[#eef4ee]"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-[#cfe0d1] bg-[#eef4ee] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f5d3a]">{candidate.objectType}</span>
+            {candidate.area ? (
+              <span className="rounded-full border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">{candidate.area}</span>
+            ) : null}
+            <span className="rounded-full border border-[#cfe0d1] bg-[#eef4ee] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#2f5d3a]">Open record</span>
+          </div>
+          <div className="mt-2 text-[16px] font-medium tracking-[-0.04em] text-[#171717]">{candidate.title}</div>
+          <div className="mt-2 text-[12px] leading-5 text-[#3f4a41]">
+            <span className="font-medium text-[#2f5d3a]">Why this is the strongest executable move now:</span> {candidate.reasons.join("; ")}.
+          </div>
+        </button>
+      ) : (
+        <div className="rounded-xl border border-dashed border-[#cfe0d1] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
+          No strategic executable move is currently ranked from existing records.
+        </div>
+      )}
+    </div>
+  );
+}
+
 type OperatingBriefItem = {
   id: string;
   objectType: string;
@@ -12859,6 +12903,161 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     };
   })();
 
+  // Strategic Next Move: when nothing requires intervention, what is the strongest currently
+  // executable piece of work? Reuses founderExecutionReleaseSystem's release classification and
+  // Command's own attention/founder-focus keys purely to exclude anything already surfaced there.
+  const strategicNextMove = (() => {
+    const attentionKeys = new Set(commandAttentionItemList.map((item) => `${item.objectType}:${item.id}`));
+    founderFocusCandidates.forEach((item) => attentionKeys.add(`${item.objectType}:${item.id}`));
+
+    const candidates: Array<StrategicNextMoveCandidate & { tier: number; score: number; sortDate: number }> = [];
+
+    // An Opportunity's execution is treated as "already existing" once any Decision converted from it
+    // (directly, or via a linked Action) has spun up real Actions/Projects — at that point the concrete
+    // execution record is the real candidate, not the umbrella Opportunity.
+    const opportunityHasLinkedExecution = (opportunityId: string) => {
+      const linkedDecisionIds = decisionRecords.filter((decision) => decision.relatedOpportunity === opportunityId).map((decision) => decision.id);
+      const hasDirectAction = actionRecords.some((action) => action.relatedOpportunity === opportunityId);
+      const hasDecisionLinkedAction = actionRecords.some((action) => linkedDecisionIds.includes(action.relatedDecision));
+      const hasDecisionLinkedProject = projects.some((project) => (project.relatedDecisionIds || []).some((id) => linkedDecisionIds.includes(id)));
+      return hasDirectAction || hasDecisionLinkedAction || hasDecisionLinkedProject;
+    };
+
+    founderExecutionReleaseSystem.items
+      .filter((item) => item.objectType === "Action" || item.objectType === "Project")
+      .filter((item) => item.releaseAction === "Complete Personally" || item.releaseAction === "Monitor / Retain Temporarily")
+      .forEach((item) => {
+        const key = `${item.objectType}:${item.id}`;
+        if (attentionKeys.has(key)) return;
+
+        const action = item.objectType === "Action" ? actionRecords.find((record) => record.id === item.id) : undefined;
+        const project = item.objectType === "Project" ? projects.find((record) => record.id === item.id) : undefined;
+        if (!action && !project) return;
+
+        // A Project only counts as a concrete, founder-executable body of work (not an umbrella) once it is
+        // actually underway or already carries a tangible linked Action — otherwise there is no real next step in it.
+        if (project) {
+          const hasLinkedActiveAction = actionRecords.some((record) => isActionActive(record) && (project.relatedActionIds || []).includes(record.id));
+          const isUnderway = project.status.trim().toLowerCase() === "in progress";
+          if (!hasLinkedActiveAction && !isUnderway) return;
+        }
+
+        const reasons: string[] = [];
+        let score = 0;
+
+        if (action) {
+          const priorityWeight = action.priority === "Critical" ? 6 : action.priority === "High" ? 4 : action.priority === "Medium" ? 2 : 0;
+          if (priorityWeight > 0) {
+            score += priorityWeight;
+            reasons.push(`${action.priority} priority`);
+          }
+
+          if (projects.some((proj) => isProjectActive(proj) && (proj.relatedActionIds || []).includes(action.id))) {
+            score += 2;
+            reasons.push("Advances an active project");
+          }
+
+          if (getAreaText(action).trim().toLowerCase() === "marketing / growth") {
+            score += 2;
+            reasons.push("Growth / marketing relevant");
+          }
+        }
+
+        if (project) {
+          const linkedActionCount = (project.relatedActionIds || []).length;
+          if (linkedActionCount > 0) {
+            score += 2;
+            reasons.push(`Carries ${linkedActionCount} linked active work item${linkedActionCount === 1 ? "" : "s"}`);
+          }
+
+          if ((project.area || "").trim().toLowerCase() === "marketing / growth") {
+            score += 2;
+            reasons.push("Growth / marketing relevant");
+          }
+        }
+
+        if (item.releaseAction === "Complete Personally") {
+          score += 3;
+          reasons.push("Already identified as the founder's to complete personally");
+        }
+
+        const dueDateValue = action?.dueDate || project?.targetCompletionDate || "";
+        const dueTimestamp = dueDateValue ? getDateValue(dueDateValue) : 0;
+        if (dueTimestamp > 0) {
+          score += 1;
+          reasons.push(`Has a concrete target date (${formatCapturedAt(dueDateValue)})`);
+        }
+
+        reasons.push("Executable now — no blocker, no authority gate, no future start date");
+
+        candidates.push({
+          objectType: item.objectType as "Action" | "Project",
+          id: item.id,
+          title: item.title,
+          area: item.area || "Unassigned",
+          reasons,
+          tier: item.objectType === "Action" ? 0 : 1,
+          score,
+          sortDate: dueTimestamp > 0 ? dueTimestamp : Number.POSITIVE_INFINITY,
+          onOpen: item.onOpen,
+        });
+      });
+
+    opportunityRecords
+      .filter((opportunity) => opportunity.status === "Approved" && isFounderOwned(opportunity.owner))
+      // Only a genuinely standalone, not-yet-broken-down Opportunity is itself "directly actionable";
+      // once it has spawned real Decision/Action/Project execution, that concrete record is preferred instead.
+      .filter((opportunity) => !opportunityHasLinkedExecution(opportunity.id))
+      .forEach((opportunity) => {
+        const key = `Opportunity:${opportunity.id}`;
+        if (attentionKeys.has(key)) return;
+
+        const reasons: string[] = [];
+        let score = 3;
+        reasons.push("Approved growth opportunity, ready to pursue");
+
+        const fitWeight = opportunity.strategicFit === "Exceptional" ? 6 : opportunity.strategicFit === "High" ? 4 : opportunity.strategicFit === "Medium" ? 2 : 0;
+        if (fitWeight > 0) {
+          score += fitWeight;
+          reasons.push(`${opportunity.strategicFit} strategic fit`);
+        }
+
+        const upside = parseOptionalFinanceAmount(opportunity.estimatedUpside);
+        if (upside !== null && upside > 0) {
+          score += upside >= 5000 ? 3 : upside >= 1000 ? 2 : 1;
+          reasons.push(`Estimated upside ${formatFinanceAmount(upside)}`);
+        }
+
+        reasons.push("Executable now — approved, not blocked, no authority gate");
+
+        candidates.push({
+          objectType: "Opportunity",
+          id: opportunity.id,
+          title: opportunity.opportunityTitle || opportunity.title,
+          area: getAreaText(opportunity) || "Unassigned",
+          reasons,
+          tier: 2,
+          score,
+          sortDate: Number.POSITIVE_INFINITY,
+          onOpen: () => {
+            setSelectedOpportunityId(opportunity.id);
+            setOpportunityEditor(opportunity);
+          },
+        });
+      });
+
+    // Tier first: concrete Actions, then concrete Projects, then standalone Opportunities — a broad
+    // Opportunity can never outrank a concrete Action or Project purely on strategic-fit score.
+    const [best] = [...candidates].sort((left, right) =>
+      left.tier - right.tier ||
+      right.score - left.score ||
+      left.sortDate - right.sortDate ||
+      left.title.localeCompare(right.title),
+    );
+
+    return { candidate: best ? { objectType: best.objectType, id: best.id, title: best.title, area: best.area, reasons: best.reasons, onOpen: best.onOpen } : null };
+  })();
+
   const decisionControlLayer = (() => {
     const items: DecisionControlItem[] = [];
     const onTrackItems: DecisionControlItem[] = [];
@@ -16190,6 +16389,10 @@ const isOwnershipGap =
 
               <div className="mt-5">
                 <FounderFocusList items={founderFocusList} totalCount={founderFocusCandidates.length} onOpen={handleOpenAttentionRecord} />
+              </div>
+
+              <div className="mt-5">
+                <StrategicNextMoveSection candidate={strategicNextMove.candidate} />
               </div>
 
               <div className="mt-5">
