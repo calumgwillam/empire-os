@@ -569,6 +569,7 @@ const TAX_RESERVE_RATE = 0.3;
 
 type TaxPaymentRecord = {
   id: string;
+  payPeriod: string;
   date: string;
   description: string;
   grossAmount: string;
@@ -618,6 +619,7 @@ const defaultCommitmentForm: Omit<CommitmentRecord, "id" | "dateCreated"> = {
 };
 
 const defaultTaxPaymentForm: Omit<TaxPaymentRecord, "id" | "dateCreated"> = {
+  payPeriod: "",
   date: "",
   description: "",
   grossAmount: "",
@@ -748,6 +750,49 @@ function ukTaxYearLabel(value: string) {
   const startYear = isBeforeApril6 ? year - 1 : year;
 
   return `${startYear}/${String((startYear + 1) % 100).padStart(2, "0")} tax year`;
+}
+
+// Months are only "elapsed" (eligible for an end-of-month pay reminder) once they are strictly before the current calendar month.
+function getElapsedTaxMonths(jobStartDate: string, referenceDate: Date) {
+  const start = new Date(`${jobStartDate}T00:00:00`);
+  const months: Array<{ year: number; month: number }> = [];
+
+  if (Number.isNaN(start.getTime())) {
+    return months;
+  }
+
+  let year = start.getFullYear();
+  let month = start.getMonth();
+  const currentYear = referenceDate.getFullYear();
+  const currentMonth = referenceDate.getMonth();
+
+  while (year < currentYear || (year === currentYear && month < currentMonth)) {
+    months.push({ year, month });
+    month += 1;
+    if (month > 11) {
+      month = 0;
+      year += 1;
+    }
+  }
+
+  return months;
+}
+
+function isSameTaxMonth(payPeriod: string, year: number, month: number) {
+  return payPeriod === `${year}-${String(month + 1).padStart(2, "0")}`;
+}
+
+// Backfills payPeriod on tax payment records saved before that field existed, using the "<Month> <Year>" text in the description.
+function inferPayPeriodFromDescription(description: string) {
+  const monthNames = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+  const match = description.toLowerCase().match(/(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})/);
+
+  if (!match) {
+    return "";
+  }
+
+  const monthIndex = monthNames.indexOf(match[1]);
+  return `${match[2]}-${String(monthIndex + 1).padStart(2, "0")}`;
 }
 
 // Cash snapshot dates are calendar days; accepts legacy ISO datetime values and returns "" when unusable.
@@ -2449,6 +2494,17 @@ function isValidCalendarDateInput(value: string) {
     && parsed.getDate() === Number(day);
 }
 
+function isValidPayPeriodInput(value: string) {
+  const match = value.trim().match(/^(\d{4})-(\d{2})$/);
+
+  if (!match) {
+    return false;
+  }
+
+  const month = Number(match[2]);
+  return month >= 1 && month <= 12;
+}
+
 // Zero is a valid entry, so emptiness is tested explicitly rather than by truthiness.
 function parseFinanceAmountInput(value: string) {
   const normalised = value.replace(/[£$,\s]/g, "");
@@ -2837,6 +2893,7 @@ function TaxPaymentDetailPanel({ payment, canDelete, onClose, onChange, onSave, 
   onDelete: () => void;
 }) {
   const hasInvalidDescription = !payment.description.trim();
+  const hasInvalidPayPeriod = !isValidPayPeriodInput(payment.payPeriod);
   const hasInvalidDate = !isValidCalendarDateInput(payment.date);
   const hasInvalidAmount = parseFinanceAmountInput(payment.grossAmount) === null;
   const [hasAttemptedSave, setHasAttemptedSave] = useState(false);
@@ -2867,6 +2924,14 @@ function TaxPaymentDetailPanel({ payment, canDelete, onClose, onChange, onSave, 
           {hasAttemptedSave && hasInvalidDescription ? (
             <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Description is required.</p>
           ) : null}
+          <div>
+            <label className={financeLabelClass}>Pay period (month)</label>
+            <input type="month" value={payment.payPeriod} onChange={(event) => onChange("payPeriod", event.target.value)} className={financeFieldClass} />
+            <p className="mt-1.5 text-[11px] text-[#5d584f]">The month this pay covers, not the date it is expected or received.</p>
+            {hasAttemptedSave && hasInvalidPayPeriod ? (
+              <p role="alert" className="mt-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">A valid pay period month is required.</p>
+            ) : null}
+          </div>
           <div>
             <label className={financeLabelClass}>Date</label>
             <input type="date" value={payment.date} onChange={(event) => onChange("date", event.target.value)} className={financeFieldClass} />
@@ -2925,7 +2990,7 @@ function TaxPaymentDetailPanel({ payment, canDelete, onClose, onChange, onSave, 
           <FinanceDeleteControl canDelete={canDelete} label="Delete payment record" onDelete={onDelete} />
           <div className="flex justify-end gap-2">
             <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save payment"}</button>
+            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidPayPeriod || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save payment"}</button>
           </div>
         </div>
       </div>
@@ -7312,7 +7377,14 @@ export default function Home() {
         const parsedTaxPayments = JSON.parse(storedTaxPayments);
 
         if (Array.isArray(parsedTaxPayments)) {
-          setTaxPaymentRecords(parsedTaxPayments);
+          setTaxPaymentRecords(
+            parsedTaxPayments.map((record) => ({
+              ...record,
+              payPeriod: typeof record.payPeriod === "string" && record.payPeriod
+                ? record.payPeriod
+                : inferPayPeriodFromDescription(typeof record.description === "string" ? record.description : ""),
+            })),
+          );
         }
       }
 
@@ -7564,6 +7636,14 @@ export default function Home() {
     .reduce((total, record) => total + parseFinanceAmount(record.grossAmount) * TAX_RESERVE_RATE, 0);
   const taxReserveStillOutstanding = Math.max(0, taxReserveRequiredOnReceived - taxReserveAlreadySetAside);
   const taxPaymentsAwaitingReserve = taxPaymentRecords.filter((record) => record.status === "Received" && !record.reserveSetAside);
+
+  const endOfMonthPayReminders = getElapsedTaxMonths(TAX_JOB_START_DATE, new Date())
+    .filter(({ year, month }) => !taxPaymentRecords.some((record) => isValidPayPeriodInput(record.payPeriod) && isSameTaxMonth(record.payPeriod, year, month)))
+    .map(({ year, month }) => ({
+      year,
+      month,
+      label: new Intl.DateTimeFormat("en-GB", { month: "long", year: "numeric" }).format(new Date(year, month, 1)),
+    }));
 
   const totalReceivedIncome = incomeRecords
     .filter((record) => record.status === "Received")
@@ -15050,6 +15130,7 @@ const isOwnershipGap =
       ...taxPaymentEditor,
       id: taxPaymentEditor.id || generateFinanceRecordId("tax-payment"),
       description: taxPaymentEditor.description.trim(),
+      payPeriod: taxPaymentEditor.payPeriod.trim(),
       grossAmount: taxPaymentEditor.grossAmount.trim(),
       status: taxPaymentStatusOptions.includes(taxPaymentEditor.status as TaxPaymentStatus) ? taxPaymentEditor.status : "Expected",
       notes: taxPaymentEditor.notes.trim(),
@@ -15081,6 +15162,22 @@ const isOwnershipGap =
     const newPayment: TaxPaymentRecord = {
       ...defaultTaxPaymentForm,
       id: generateFinanceRecordId("tax-payment"),
+      dateCreated: new Date().toISOString(),
+    };
+
+    setSelectedTaxPaymentId(newPayment.id);
+    setTaxPaymentEditor(newPayment);
+  };
+
+  const handleCreateTaxPaymentForMonth = (year: number, month: number, label: string) => {
+    const monthEndDate = new Date(year, month + 1, 0);
+    const payPeriod = `${year}-${String(month + 1).padStart(2, "0")}`;
+    const newPayment: TaxPaymentRecord = {
+      ...defaultTaxPaymentForm,
+      id: generateFinanceRecordId("tax-payment"),
+      description: `${label} self-employed pay`,
+      payPeriod,
+      date: monthEndDate.toISOString().slice(0, 10),
       dateCreated: new Date().toISOString(),
     };
 
@@ -17283,6 +17380,25 @@ const isOwnershipGap =
                   <div className="mt-2 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">{Math.round(TAX_RESERVE_RATE * 100)}%</div>
                 </div>
               </div>
+
+              {endOfMonthPayReminders.length > 0 ? (
+                <div className="mt-6 space-y-2">
+                  {endOfMonthPayReminders.map((reminder) => (
+                    <div key={`${reminder.year}-${reminder.month}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] px-4 py-3">
+                      <div className="text-[13px] leading-5 text-[#524d49]">
+                        <span className="font-semibold text-[#171717]">Record {reminder.label} self-employed pay</span> — no payment record has been entered for this month yet.
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleCreateTaxPaymentForMonth(reminder.year, reminder.month, reminder.label)}
+                        className="shrink-0 rounded-lg border border-[#171717] bg-[#171717] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]"
+                      >
+                        Record payment
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
 
               {taxPaymentsAwaitingReserve.length > 0 ? (
                 <div className="mt-6 space-y-2">
