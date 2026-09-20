@@ -7145,7 +7145,6 @@ export default function Home() {
   const [lastBackupAt, setLastBackupAt] = useState("");
   const [cashPositionEditor, setCashPositionEditor] = useState<CashPositionRecord | null>(null);
   const [cashPositionValidationError, setCashPositionValidationError] = useState<string | null>(null);
-  const cashPositionHydratedRef = useRef(false);
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
   const [incomeEditor, setIncomeEditor] = useState<IncomeRecord | null>(null);
   const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
@@ -7508,14 +7507,13 @@ export default function Home() {
   }, [delegationHandoffs, operatingDataLoaded]);
 
   useEffect(() => {
-    // The first run happens before the stored cash position has been read back into state.
-    if (!cashPositionHydratedRef.current) {
-      cashPositionHydratedRef.current = true;
+    // Gated on operatingDataLoaded (like every other Finance record) so this never fires before the stored cash position has been read back into state.
+    if (!operatingDataLoaded) {
       return;
     }
 
     window.localStorage.setItem(CASH_POSITION_STORAGE_KEY, JSON.stringify(cashPosition));
-  }, [cashPosition]);
+  }, [cashPosition, operatingDataLoaded]);
 
   useEffect(() => {
     if (!operatingDataLoaded) {
