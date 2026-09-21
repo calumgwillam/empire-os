@@ -18141,6 +18141,31 @@ const isOwnershipGap =
                 </div>
               </div>
 
+              <div className="mt-5 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Capital allocation</div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                    <div className="text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">Deployable cash</div>
+                    <div className="mt-1.5 text-[18px] font-semibold tracking-[-0.05em] text-[#171717]">{capitalAllocation.grossDeployableCash !== null ? formatFinanceAmount(capitalAllocation.grossDeployableCash) : "—"}</div>
+                  </div>
+                  <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                    <div className="text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">Committed cash</div>
+                    <div className="mt-1.5 text-[18px] font-semibold tracking-[-0.05em] text-[#171717]">{formatFinanceAmount(capitalAllocation.committedCash)}</div>
+                  </div>
+                  <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                    <div className="text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">Planned / Quoted exposure</div>
+                    <div className="mt-1.5 text-[18px] font-semibold tracking-[-0.05em] text-[#171717]">{formatFinanceAmount(capitalAllocation.plannedOrQuotedExposure)}</div>
+                    <div className="mt-1 text-[10px] text-[#5d584f]">Planning information only — excluded from committed cash.</div>
+                  </div>
+                  <div className={`rounded-xl border bg-white px-3 py-3 ${capitalAllocation.uncommittedDeployableCash !== null && capitalAllocation.uncommittedDeployableCash < 0 ? "border-[#6a3328]" : "border-[#d3cbc3]"}`}>
+                    <div className="text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">Uncommitted deployable cash</div>
+                    <div className={`mt-1.5 text-[18px] font-semibold tracking-[-0.05em] ${capitalAllocation.uncommittedDeployableCash !== null && capitalAllocation.uncommittedDeployableCash < 0 ? "text-[#6a3328]" : "text-[#171717]"}`}>
+                      {capitalAllocation.uncommittedDeployableCash !== null ? formatFinanceAmount(capitalAllocation.uncommittedDeployableCash) : "—"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <section className="mt-8">
                 <div className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-2.5">
                   <h2 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Income records</h2>
