@@ -13156,8 +13156,56 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       });
     }
 
-    // Tier first: concrete Actions, then concrete Projects/Outreach, then standalone Opportunities — a broad
-    // Opportunity can never outrank a concrete Action or Project purely on strategic-fit score.
+    const openOutreachContacts = outreachContacts.filter(
+      (contact) => !outreachFollowUpExcludedStatuses.has(contact.status),
+    );
+    const openOutreachClassifications = openOutreachContacts.map((contact) => ({
+      contact,
+      classification: classifyOutreachFollowUp(contact, readyOutreachCheckMs),
+    }));
+    const hasDueOrOverdueOutreach = openOutreachClassifications.some(
+      ({ classification }) => classification === "Due today" || classification === "Overdue",
+    );
+    const allOpenOutreachIsWaiting = openOutreachClassifications.every(({ contact, classification }) =>
+      classification === "Upcoming" ||
+      (contact.status === "Future Phone Follow-Up" && !contact.nextFollowUpDate),
+    );
+    const readyOutreachCheckDate = new Date(readyOutreachCheckMs);
+    const startOfTomorrowMs = new Date(
+      readyOutreachCheckDate.getFullYear(),
+      readyOutreachCheckDate.getMonth(),
+      readyOutreachCheckDate.getDate() + 1,
+    ).getTime();
+    const hasOutreachCreatedToday = outreachContacts.some((contact) => {
+      const createdAtMs = new Date(contact.dateCreated).getTime();
+      return !Number.isNaN(createdAtMs) && createdAtMs >= readyOutreachCheckMs && createdAtMs < startOfTomorrowMs;
+    });
+
+    if (
+      readyOutreachContacts.length === 0 &&
+      !hasDueOrOverdueOutreach &&
+      openOutreachContacts.length > 0 &&
+      allOpenOutreachIsWaiting &&
+      !hasOutreachCreatedToday
+    ) {
+      candidates.push({
+        objectType: "Outreach",
+        id: "replenish-outreach-pipeline",
+        title: "Replenish outreach pipeline",
+        area: "Marketing / Growth",
+        reasons: ["All open Outreach contacts are waiting on future follow-up or deliberately deferred, with no fresh prospects sourced today"],
+        tier: 3,
+        score: 0,
+        sortDate: Number.POSITIVE_INFINITY,
+        onOpen: () => {
+          setActiveView("Outreach");
+          setOutreachStatusFilter("All statuses");
+        },
+      });
+    }
+
+    // Tier first: concrete Actions, then concrete Projects/ready Outreach, then standalone Opportunities,
+    // with pipeline replenishment retained as the final fallback.
     const [best] = [...candidates].sort((left, right) =>
       left.tier - right.tier ||
       right.score - left.score ||
