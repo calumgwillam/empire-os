@@ -203,7 +203,7 @@ type ProblemRecord = CaptureConversionRecord & {
 };
 
 const actionPriorityOptions = ["Low", "Medium", "High", "Critical"] as const;
-const actionStatusOptions = ["Open", "In Progress", "Blocked", "Completed", "Cancelled"] as const;
+const actionStatusOptions = ["Open", "In Progress", "Blocked", "Waiting", "Completed", "Cancelled"] as const;
 
 type ActionPriority = (typeof actionPriorityOptions)[number];
 type ActionStatus = (typeof actionStatusOptions)[number];
@@ -229,6 +229,10 @@ type ActionRecord = CaptureConversionRecord & {
   releaseSourceId?: string;
   releaseIntent?: "Prepare to Delegate" | "Unblock First";
 };
+
+function isActionWaiting(action: Pick<ActionRecord, "status">): boolean {
+  return action.status === "Waiting";
+}
 
 const decisionRiskOptions = ["Low", "Medium", "High", "Critical"] as const;
 const decisionStatusOptions = ["Draft", "Active", "Under Review", "Completed", "Reversed"] as const;
@@ -407,7 +411,7 @@ function deriveDecisionExecutionState(decision: DecisionRecord, actions: ActionR
       .map((action) => [action.id, action]),
   ).values());
   const projectStatuses = linkedProjects.map((project) => project.status.trim().toLowerCase());
-  const hasActiveRoute = implementationActions.some((action) => ["Open", "In Progress"].includes(action.status))
+  const hasActiveRoute = implementationActions.some((action) => ["Open", "In Progress"].includes(action.status) || isActionWaiting(action))
     || projectStatuses.some((status) => status === "open" || status === "in progress");
   const hasBlockedRoute = implementationActions.some((action) => action.status === "Blocked")
     || projectStatuses.some((status) => status === "blocked");
@@ -1123,7 +1127,7 @@ function normalizeActionRecord(record: CaptureConversionRecord): ActionRecord {
   // record.status holds the generic conversion status (e.g. "Converted") until
   // set to a real ActionStatus, so it must be validated rather than passed through via `??`.
   const actionStatus: ActionStatus =
-    record.status === "Open" || record.status === "In Progress" || record.status === "Blocked" || record.status === "Completed" || record.status === "Cancelled"
+    record.status === "Open" || record.status === "In Progress" || record.status === "Blocked" || record.status === "Waiting" || record.status === "Completed" || record.status === "Cancelled"
       ? record.status
       : "Open";
 
@@ -1686,7 +1690,7 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
   const isRecordInMotion = (record: CommandRecordItem) => {
     const activeStatuses: Record<CommandRecordType, string[]> = {
       Problem: ["Open", "Investigating", "Action required"],
-      Action: ["Open", "In Progress", "Blocked"],
+      Action: ["Open", "In Progress", "Blocked", "Waiting"],
       Decision: ["Draft", "Active", "Under Review"],
       Opportunity: ["New", "Evaluating", "On Hold"],
       Project: ["Open", "In Progress", "Blocked"],
@@ -8177,7 +8181,7 @@ export default function Home() {
   };
 
   const isActionActive = (action: ActionRecord) =>
-    ["Open", "In Progress", "Blocked"].includes(action.status);
+    ["Open", "In Progress", "Blocked"].includes(action.status) || isActionWaiting(action);
 
   const isReleaseInterventionAction = (action: ActionRecord) =>
     Boolean(action.releaseSourceType && action.releaseSourceId && action.releaseIntent);
@@ -8366,7 +8370,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     const priorityScore = (
       pillarProblems.length * 6 +
       pillarActions.filter((action) => action.status === "Blocked").length * 8 +
-      pillarActions.filter((action) => action.dueDate && new Date(action.dueDate).getTime() <= Date.now()).length * 3 +
+      pillarActions.filter((action) => !isActionWaiting(action) && action.dueDate && new Date(action.dueDate).getTime() <= Date.now()).length * 3 +
       pillarProjects.filter((project) => project.status.trim().toLowerCase() === "blocked").length * 5 +
       pillarFollowUpLeads.length * 2 +
       pillarOpportunities.length * 2
@@ -8436,7 +8440,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           delegationAction: "Escalate to founder and accountable owner",
         })),
       ...actionRecords
-        .filter((action) => isActionActive(action) && !isReleaseInterventionAction(action) && action.priority === "Critical")
+        .filter((action) => isActionActive(action) && !isActionWaiting(action) && !isReleaseInterventionAction(action) && action.priority === "Critical")
         .map((action) => ({
           id: action.id,
           objectType: "Action" as const,
@@ -8517,7 +8521,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     };
     const delegateItems = [
       ...activeOwnershipActions
-        .filter((action) => isFounderOwned(action.owner, action.ownerPersonId) && action.status !== "Blocked" && action.priority !== "Critical")
+        .filter((action) => isFounderOwned(action.owner, action.ownerPersonId) && !isActionWaiting(action) && action.status !== "Blocked" && action.priority !== "Critical")
         .map((action) => {
           const dueInDays = daysUntil(action.dueDate);
           const suitability = (action.priority === "Low" ? 0 : action.priority === "Medium" ? 15 : 35)
@@ -8964,6 +8968,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
   const selectedPillarDetail = selectedPillar ? (() => {
     const blockedProjects = projects.filter((project) => project.area === selectedPillar && project.status.trim().toLowerCase() === "blocked");
     const overdueActions = actionRecords.filter((action) => action.relatedPillar === selectedPillar &&
+      !isActionWaiting(action) &&
       action.status !== "Completed" &&
       action.status !== "Cancelled" &&
       action.dueDate &&
@@ -9083,7 +9088,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     const isOwnedDecision = (decision: DecisionRecord) => (person === null ? isBlankOwner(decision.decisionMaker) : ownsByName(decision.decisionMaker));
 
     const ownedActions = actionRecords.filter((action) => isActionActive(action) && isOwnedAction(action));
-    const overdueActions = ownedActions.filter((action) => Boolean(action.dueDate) && new Date(action.dueDate).getTime() <= Date.now());
+    const overdueActions = ownedActions.filter((action) => !isActionWaiting(action) && Boolean(action.dueDate) && new Date(action.dueDate).getTime() <= Date.now());
     const blockedActions = ownedActions.filter((action) => action.status === "Blocked");
     const otherOpenActions = ownedActions.filter((action) => !overdueActions.includes(action) && !blockedActions.includes(action));
     const ownedActiveProjects = projects.filter((project) => isProjectActive(project) && isOwnedProject(project));
@@ -9178,7 +9183,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
             currentOwner = getActionOwnerDisplay(action, people);
             currentStatus = action.status;
             isCompleted = action.status === "Completed";
-            isAtRisk = action.status !== "Cancelled"
+            isAtRisk = !isActionWaiting(action) && action.status !== "Cancelled"
               && (action.status === "Blocked" || (Boolean(action.dueDate) && new Date(action.dueDate).getTime() < nowMs));
             isCurrentFounderOwned = isFounderOwned(action.owner, action.ownerPersonId);
           }
@@ -10434,7 +10439,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       const reasons: string[] = [];
       const dependencyBlocker = getActionDependencyBlocker(action);
 
-      if (!isActionActive(action)) {
+      if (!isActionActive(action) || isActionWaiting(action)) {
         return;
       }
 
@@ -11104,6 +11109,11 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     };
     const candidatesByRecord = new Map<string, FocusCandidate>();
     const addOrUpgradeCandidate = (candidate: FocusCandidate) => {
+      if (candidate.objectType === "Action") {
+        const action = actionRecords.find((record) => record.id === candidate.id);
+        if (action && isActionWaiting(action)) return;
+      }
+
       const existing = candidatesByRecord.get(candidate.key);
       if (!existing || candidate.band < existing.band || (candidate.band === existing.band && candidate.score >= existing.score)) {
         candidatesByRecord.set(candidate.key, candidate);
@@ -11291,7 +11301,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
 
     // Actions with due date coming up. Not gated by usedRecordKeys: due-soon items must
     // still surface here even if already claimed by Do Now/Delegate/Decide.
-    actionRecords.filter(isActionActive).forEach((action) => {
+    actionRecords.filter((action) => isActionActive(action) && !isActionWaiting(action)).forEach((action) => {
       if (action.dueDate) {
         // Compare calendar dates (local midnight) so time-of-day never shifts the day count.
         const dueMs = new Date(`${action.dueDate.slice(0, 10)}T00:00:00`).getTime();
@@ -12399,7 +12409,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     });
 
     // Blocked actions with upstream blockers
-    actionRecords.filter((action) => isActionActive(action) && !isReleaseInterventionAction(action)).forEach((action) => {
+    actionRecords.filter((action) => isActionActive(action) && !isActionWaiting(action) && !isReleaseInterventionAction(action)).forEach((action) => {
       const key = `Action:${action.id}`;
       if (usedKeys.has(key)) return;
 
@@ -12428,7 +12438,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     });
 
     // Founder-owned overdue execution work
-    actionRecords.filter((action) => isActionActive(action) && !isReleaseInterventionAction(action)).forEach((action) => {
+    actionRecords.filter((action) => isActionActive(action) && !isActionWaiting(action) && !isReleaseInterventionAction(action)).forEach((action) => {
       const key = `Action:${action.id}`;
       if (usedKeys.has(key)) return;
 
@@ -12866,7 +12876,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     };
 
     // Scan Founder-owned Actions
-    actionRecords.filter((action) => isActionActive(action) && !isReleaseInterventionAction(action)).forEach((action) => {
+    actionRecords.filter((action) => isActionActive(action) && !isActionWaiting(action) && !isReleaseInterventionAction(action)).forEach((action) => {
       if (isFounderOwned(action.owner, action.ownerPersonId)) {
         const dependencyBlocker = getActionDependencyBlocker(action);
         processFounderItem(
@@ -13021,7 +13031,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         // A Project only counts as a concrete, founder-executable body of work (not an umbrella) once it is
         // actually underway or already carries a tangible linked Action — otherwise there is no real next step in it.
         if (project) {
-          const hasLinkedActiveAction = actionRecords.some((record) => isActionActive(record) && (project.relatedActionIds || []).includes(record.id));
+          const hasLinkedActiveAction = actionRecords.some((record) => isActionActive(record) && !isActionWaiting(record) && (project.relatedActionIds || []).includes(record.id));
           const isUnderway = project.status.trim().toLowerCase() === "in progress";
           if (!hasLinkedActiveAction && !isUnderway) return;
         }
@@ -13272,7 +13282,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       // Evaluate delivery slipping on linked execution
       const blockedActions = implementationActiveActions.filter((a) => a.status === "Blocked");
       const overdueActions = implementationActiveActions.filter(
-        (a) => a.dueDate && new Date(a.dueDate).getTime() < nowMs
+        (a) => !isActionWaiting(a) && a.dueDate && new Date(a.dueDate).getTime() < nowMs
       );
       const blockedProjects = linkedActiveProjects.filter(
         (p) => p.status.trim().toLowerCase() === "blocked"
@@ -13572,7 +13582,7 @@ const isOwnershipGap =
       .replace("Other Attention", "Other attention item");
   };
   const overdueActionCount = actionRecords.filter((action) => {
-    if (!isActionActive(action) || !action.dueDate) {
+    if (!isActionActive(action) || isActionWaiting(action) || !action.dueDate) {
       return false;
     }
 
