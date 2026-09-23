@@ -732,6 +732,13 @@ type CommitmentRecord = {
   status: string;
   certainty?: CommitmentCertainty;
   relatedPillar: string;
+  procurementNeed?: string;
+  originalBudget?: string;
+  targetPrice?: string;
+  actualPurchasePrice?: string;
+  supplier?: string;
+  expectedPurchaseDate?: string;
+  actualPurchaseDate?: string;
   notes: string;
   dateCreated: string;
 };
@@ -794,6 +801,13 @@ const defaultCommitmentForm: Omit<CommitmentRecord, "id" | "dateCreated"> = {
   status: "Upcoming",
   certainty: "Planned",
   relatedPillar: "Garden Maintenance",
+  procurementNeed: "",
+  originalBudget: "",
+  targetPrice: "",
+  actualPurchasePrice: "",
+  supplier: "",
+  expectedPurchaseDate: "",
+  actualPurchaseDate: "",
   notes: "",
 };
 
@@ -3411,6 +3425,37 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
             <select value={commitment.relatedPillar} onChange={(event) => onChange("relatedPillar", event.target.value)} className={financeFieldClass}>
               {sharedAreaOptions.map((area) => <option key={area} value={area}>{area}</option>)}
             </select>
+          </div>
+          <div className="md:col-span-2 border-t border-[#d3cbc3] pt-4">
+            <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Procurement control</div>
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Why this purchase is needed</label>
+            <textarea rows={2} value={commitment.procurementNeed || ""} onChange={(event) => onChange("procurementNeed", event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Original budget</label>
+            <input value={commitment.originalBudget || ""} onChange={(event) => onChange("originalBudget", event.target.value)} placeholder="e.g. 1200" className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Target / best price</label>
+            <input value={commitment.targetPrice || ""} onChange={(event) => onChange("targetPrice", event.target.value)} placeholder="e.g. 950" className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Actual purchase price</label>
+            <input value={commitment.actualPurchasePrice || ""} onChange={(event) => onChange("actualPurchasePrice", event.target.value)} placeholder="e.g. 925" className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Supplier</label>
+            <input value={commitment.supplier || ""} onChange={(event) => onChange("supplier", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Expected purchase date</label>
+            <input type="date" value={commitment.expectedPurchaseDate || ""} onChange={(event) => onChange("expectedPurchaseDate", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Actual purchase date</label>
+            <input type="date" value={commitment.actualPurchaseDate || ""} onChange={(event) => onChange("actualPurchaseDate", event.target.value)} className={financeFieldClass} />
           </div>
           <div className="md:col-span-2">
             <label className={financeLabelClass}>Notes</label>
@@ -8008,7 +8053,16 @@ export default function Home() {
         const parsedCommitments = JSON.parse(storedCommitments);
 
         if (Array.isArray(parsedCommitments)) {
-          setCommitmentRecords(parsedCommitments);
+          setCommitmentRecords(parsedCommitments.map((record) => ({
+            ...record,
+            procurementNeed: typeof record.procurementNeed === "string" ? record.procurementNeed : "",
+            originalBudget: typeof record.originalBudget === "string" ? record.originalBudget : "",
+            targetPrice: typeof record.targetPrice === "string" ? record.targetPrice : "",
+            actualPurchasePrice: typeof record.actualPurchasePrice === "string" ? record.actualPurchasePrice : "",
+            supplier: typeof record.supplier === "string" ? record.supplier : "",
+            expectedPurchaseDate: typeof record.expectedPurchaseDate === "string" ? record.expectedPurchaseDate : "",
+            actualPurchaseDate: typeof record.actualPurchaseDate === "string" ? record.actualPurchaseDate : "",
+          })));
         }
       }
 
@@ -9840,6 +9894,34 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     const validActivePlannedOrQuotedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty !== "Committed");
     const committedCash = validActiveCommittedCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
     const plannedOrQuotedExposure = validActivePlannedOrQuotedCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
+    const procurementItems = commitmentReadModel
+      .filter((item) => item.commitment.type === "Supplier" || Boolean(item.commitment.procurementNeed?.trim()) || Boolean(item.commitment.originalBudget?.trim()) || Boolean(item.commitment.targetPrice?.trim()) || Boolean(item.commitment.actualPurchasePrice?.trim()) || Boolean(item.commitment.supplier?.trim()))
+      .map((item) => {
+        const originalBudget = parseOptionalFinanceAmount(item.commitment.originalBudget || "");
+        const targetPrice = parseOptionalFinanceAmount(item.commitment.targetPrice || "");
+        const actualPurchasePrice = parseOptionalFinanceAmount(item.commitment.actualPurchasePrice || "");
+        const effectivePrice = actualPurchasePrice ?? item.amount ?? targetPrice ?? originalBudget ?? 0;
+        const savedAgainstBudget = originalBudget !== null && effectivePrice > 0 ? Math.max(0, originalBudget - effectivePrice) : 0;
+        const potentialSaving = originalBudget !== null && targetPrice !== null ? Math.max(0, originalBudget - targetPrice) : 0;
+        return {
+          commitment: item.commitment,
+          amount: item.amount,
+          originalBudget,
+          targetPrice,
+          actualPurchasePrice,
+          effectivePrice,
+          savedAgainstBudget,
+          potentialSaving,
+          isPurchased: item.commitment.status === "Paid" || Boolean(item.commitment.actualPurchaseDate) || actualPurchasePrice !== null,
+          isCommitted: item.isValidActive && item.effectiveCertainty === "Committed",
+          effectiveCertainty: item.effectiveCertainty,
+        };
+      });
+    const procurementCommittedCash = procurementItems.filter((item) => item.isCommitted).reduce((sum, item) => sum + (item.amount ?? item.effectivePrice), 0);
+    const procurementPlannedExposure = procurementItems.filter((item) => !item.isCommitted && !item.isPurchased).reduce((sum, item) => sum + item.effectivePrice, 0);
+    const procurementActualSpend = procurementItems.filter((item) => item.isPurchased).reduce((sum, item) => sum + item.effectivePrice, 0);
+    const procurementSavedAgainstBudget = procurementItems.reduce((sum, item) => sum + item.savedAgainstBudget, 0);
+    const procurementPotentialSaving = procurementItems.reduce((sum, item) => sum + item.potentialSaving, 0);
     const grossDeployableCash = cashConfigured && currentCash !== null && protectedCash !== null ? currentCash - protectedCash : null;
     const uncommittedDeployableCash = grossDeployableCash === null ? null : grossDeployableCash - committedCash;
     const highFitWithCapital = liveOpportunities.filter((opp) => opp.fitRank >= 3 && opp.capital !== null);
@@ -9915,6 +9997,12 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       committedCash,
       plannedOrQuotedExposure,
       validActivePlannedOrQuotedCommitments,
+      procurementItems,
+      procurementCommittedCash,
+      procurementPlannedExposure,
+      procurementActualSpend,
+      procurementSavedAgainstBudget,
+      procurementPotentialSaving,
       grossDeployableCash,
       uncommittedDeployableCash,
       cashConfigured,
@@ -16364,7 +16452,15 @@ const isOwnershipGap =
       ...commitmentEditor,
       id: commitmentEditor.id || generateFinanceRecordId("commitment"),
       commitmentName: commitmentEditor.commitmentName.trim(),
-      amount: commitmentEditor.amount.trim(),
+      amount: (commitmentEditor.actualPurchasePrice || commitmentEditor.amount).trim(),
+      dueDate: (commitmentEditor.actualPurchaseDate || commitmentEditor.expectedPurchaseDate || commitmentEditor.dueDate).trim(),
+      procurementNeed: (commitmentEditor.procurementNeed || "").trim(),
+      originalBudget: (commitmentEditor.originalBudget || "").trim(),
+      targetPrice: (commitmentEditor.targetPrice || "").trim(),
+      actualPurchasePrice: (commitmentEditor.actualPurchasePrice || "").trim(),
+      supplier: (commitmentEditor.supplier || "").trim(),
+      expectedPurchaseDate: (commitmentEditor.expectedPurchaseDate || "").trim(),
+      actualPurchaseDate: (commitmentEditor.actualPurchaseDate || "").trim(),
       notes: commitmentEditor.notes.trim(),
       dateCreated: commitmentEditor.dateCreated || new Date().toISOString(),
     };
@@ -18683,6 +18779,46 @@ const isOwnershipGap =
                 </div>
               </div>
 
+              <div className="mt-5 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Capital deployment / procurement control</div>
+                  <button type="button" onClick={handleCreateCommitment} className="rounded-lg border border-[#171717] bg-white px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[#171717] transition hover:bg-[#f4f1ee]">Plan purchase</button>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                  <MetricCard label="Tracked purchases" value={String(capitalAllocation.procurementItems.length)} />
+                  <MetricCard label="Procurement committed" value={formatFinanceAmount(capitalAllocation.procurementCommittedCash)} />
+                  <MetricCard label="Planned / quoted exposure" value={formatFinanceAmount(capitalAllocation.procurementPlannedExposure)} />
+                  <MetricCard label="Actual purchase spend" value={formatFinanceAmount(capitalAllocation.procurementActualSpend)} />
+                  <MetricCard label="Saved vs budget" value={formatFinanceAmount(capitalAllocation.procurementSavedAgainstBudget)} />
+                </div>
+                {capitalAllocation.procurementItems.length === 0 ? (
+                  <div className="mt-3 rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[12px] text-[#4d4944]">
+                    No planned business purchases are being tracked yet. Add a Supplier commitment to control budget, supplier, target price and purchase date.
+                  </div>
+                ) : (
+                  <div className="mt-3 space-y-2">
+                    {capitalAllocation.procurementItems.slice(0, 6).map((item) => (
+                      <button key={`procurement-${item.commitment.id}`} type="button" onClick={() => handleCommitmentEditOpen(item.commitment)} className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <div className="text-[14px] font-medium text-[#171717]">{item.commitment.commitmentName}</div>
+                            <div className="mt-1 text-[11px] text-[#4d4944]">{item.commitment.supplier || "Supplier not set"} • {item.commitment.relatedPillar}</div>
+                          </div>
+                          <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#2f2b28]">{item.effectiveCertainty}</span>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-[#4d4944]">
+                          <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">Budget {item.originalBudget !== null ? formatFinanceAmount(item.originalBudget) : "—"}</span>
+                          <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">Best {item.targetPrice !== null ? formatFinanceAmount(item.targetPrice) : "—"}</span>
+                          <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">Actual {item.actualPurchasePrice !== null ? formatFinanceAmount(item.actualPurchasePrice) : "—"}</span>
+                          <span className="rounded border border-[#b8c9ba] bg-[#eef4ee] px-2 py-1 text-[#2f5d3a]">Saved {formatFinanceAmount(item.savedAgainstBudget)}</span>
+                          <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">{item.commitment.expectedPurchaseDate || item.commitment.dueDate ? `Expected ${item.commitment.expectedPurchaseDate || item.commitment.dueDate}` : "No expected date"}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <section className="mt-8">
                 <div className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-2.5">
                   <h2 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Income records</h2>
@@ -18762,7 +18898,10 @@ const isOwnershipGap =
                         </div>
                         <div className="mt-3 flex flex-wrap gap-2 text-[9px] uppercase tracking-[0.14em] text-[#4e4a45]">
                           <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{formatFinanceAmount(parseFinanceAmount(commitment.amount))}</span>
+                          <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{getEffectiveCommitmentCertainty(commitment)}</span>
                           <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{commitment.dueDate ? `Due ${formatCapturedAt(commitment.dueDate)}` : "No due date"}</span>
+                          {commitment.supplier ? <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">{commitment.supplier}</span> : null}
+                          {commitment.originalBudget ? <span className="rounded-full border border-[#b8c9ba] bg-[#eef4ee] px-2 py-1.5 text-[#2f5d3a]">Saved {formatFinanceAmount(Math.max(0, (parseOptionalFinanceAmount(commitment.originalBudget) ?? 0) - (parseOptionalFinanceAmount(commitment.actualPurchasePrice || commitment.amount || commitment.targetPrice || "") ?? 0)))}</span> : null}
                           <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-1.5">{commitment.relatedPillar}</span>
                         </div>
                       </button>
