@@ -2261,19 +2261,104 @@ type ProjectLinkOption = { id: string; title: string };
 
 type ProjectLinkSectionKey = "relatedActionIds" | "relatedDecisionIds" | "relatedSystemIds" | "relatedSopIds";
 
-function ProjectDetailPanel({ project, people, actions, decisions, systems, sops, onClose, onChange, onSave, onAddLink, onRemoveLink, onOpenRecord }: {
+type ProjectExecutionReleaseStatus = "Not assessed" | "Blocked" | "In progress" | "Ready to delegate" | "Released";
+
+function getProjectExecutionReleaseStatus(releaseItem: ExecutionReleaseItem | null): ProjectExecutionReleaseStatus {
+  if (!releaseItem) return "Not assessed";
+  if (releaseItem.releaseAction === "Delegate Now") return "Ready to delegate";
+  if (releaseItem.releaseClosureState === "In progress") return "In progress";
+  if (releaseItem.releaseAction === "Prepare to Delegate" || releaseItem.releaseAction === "Unblock First" || releaseItem.releaseAction === "Retain — Founder Authority Required" || releaseItem.releaseClosureState === "Closure incomplete") return "Blocked";
+  return "Not assessed";
+}
+
+function ProjectExecutionReleaseSection({ releaseItem, onCreateReleaseAction, onOpenReleaseAction }: {
+  releaseItem: ExecutionReleaseItem | null;
+  onCreateReleaseAction: (item: ExecutionReleaseItem) => void;
+  onOpenReleaseAction: (actionId: string) => void;
+}) {
+  const releaseStatus = getProjectExecutionReleaseStatus(releaseItem);
+  const linkedReleaseActionId = releaseItem?.releaseActionId || releaseItem?.releaseClosureActionId;
+  const showPrepareControl = Boolean(releaseItem && releaseItem.releaseAction === "Prepare to Delegate" && !linkedReleaseActionId);
+  const readinessGapText = releaseItem && !releaseItem.hasCapacity && releaseItem.releaseAction === "Prepare to Delegate"
+    ? releaseItem.releasePath
+    : "";
+  const reason = releaseItem
+    ? [releaseItem.releaseClosureState !== "Not started" ? releaseItem.releaseClosureReason : releaseItem.why, readinessGapText]
+        .filter((part, index, parts) => part.trim() && parts.indexOf(part) === index)
+        .join(" ")
+    : "No founder execution release assessment is currently available for this project.";
+
+  return (
+    <div className="mt-6 rounded-xl border border-[#d3cbc3] bg-white p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Founder Execution Release</div>
+          <div className="mt-1 text-[13px] font-medium text-[#171717]">{releaseStatus}</div>
+        </div>
+        {releaseItem ? (
+          <span className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${
+            releaseStatus === "Ready to delegate"
+              ? "border-[#2f5d3a] bg-[#eef4ee] text-[#2f5d3a]"
+              : releaseStatus === "Blocked"
+                ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"
+                : releaseStatus === "In progress"
+                  ? "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"
+                  : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
+          }`}>
+            {releaseItem.releaseAction}
+          </span>
+        ) : null}
+      </div>
+
+      <p className="mt-2 text-[12px] leading-5 text-[#524d49]">{reason}</p>
+
+      {releaseItem ? (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-[#e0dad4] pt-2">
+          <div className="text-[10px] leading-4 text-[#6a625d]">
+            <div>Release loop: {releaseItem.releaseClosureState}</div>
+            {releaseItem.hasCapacity ? (
+              <div>Capacity: {releaseItem.eligibleDelegationPeople.map((person) => person.name).join(", ")}</div>
+            ) : null}
+          </div>
+          {linkedReleaseActionId ? (
+            <button
+              type="button"
+              onClick={() => onOpenReleaseAction(linkedReleaseActionId)}
+              className="shrink-0 rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]"
+            >
+              Open Release Action
+            </button>
+          ) : showPrepareControl ? (
+            <button
+              type="button"
+              onClick={() => onCreateReleaseAction(releaseItem)}
+              className="shrink-0 rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]"
+            >
+              Prepare to Delegate
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProjectDetailPanel({ project, people, actions, decisions, systems, sops, releaseItem, onClose, onChange, onSave, onAddLink, onRemoveLink, onOpenRecord, onCreateReleaseAction, onOpenReleaseAction }: {
   project: ProjectRecord;
   people: PersonRecord[];
   actions: ActionRecord[];
   decisions: DecisionRecord[];
   systems: SystemRecord[];
   sops: SopRecord[];
+  releaseItem: ExecutionReleaseItem | null;
   onClose: () => void;
   onChange: (field: keyof ProjectRecord, value: string) => void;
   onSave: () => boolean;
   onAddLink: (field: ProjectLinkSectionKey, id: string) => void;
   onRemoveLink: (field: ProjectLinkSectionKey, id: string) => void;
   onOpenRecord: (objectType: "Action" | "Decision" | "System" | "SOP", id: string) => void;
+  onCreateReleaseAction: (item: ExecutionReleaseItem) => void;
+  onOpenReleaseAction: (actionId: string) => void;
 }) {
   const hasInvalidProjectName = !project.projectName.trim();
   const hasInvalidDateOrder = Boolean(
@@ -2341,6 +2426,14 @@ function ProjectDetailPanel({ project, people, actions, decisions, systems, sops
             </select>
           </div>
         </div>
+
+        {releaseItem ? (
+          <ProjectExecutionReleaseSection
+            releaseItem={releaseItem}
+            onCreateReleaseAction={onCreateReleaseAction}
+            onOpenReleaseAction={onOpenReleaseAction}
+          />
+        ) : null}
 
         <ProjectLinkSection
           title="Related Actions"
@@ -19943,6 +20036,7 @@ const isOwnershipGap =
           decisions={decisionRecords}
           systems={systemRecords}
           sops={sopRecords}
+          releaseItem={founderExecutionReleaseSystem.items.find((item) => item.objectType === "Project" && item.id === projectEditor.id) || null}
           onClose={() => {
             setSelectedProjectId(null);
             setProjectEditor(null);
@@ -19952,6 +20046,11 @@ const isOwnershipGap =
           onAddLink={handleProjectAddLink}
           onRemoveLink={handleProjectRemoveLink}
           onOpenRecord={handleProjectOpenRecord}
+          onCreateReleaseAction={handleCreateReleaseAction}
+          onOpenReleaseAction={(actionId) => {
+            const action = actionRecords.find((item) => item.id === actionId);
+            if (action) handleActionEditOpen(action);
+          }}
         />
       ) : null}
 
