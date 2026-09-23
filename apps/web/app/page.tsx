@@ -389,15 +389,24 @@ type DelegationHandoffRecord = {
   reviewDate?: string;
   status?: DelegationHandoffTrackedStatus;
   outcomeLesson?: string;
+  reviewNote?: string;
+  lastReviewDecision?: DelegationHandoffReviewDecision;
+  lastReviewedAt?: string;
 };
 
 type DelegationHandoffTrackedStatus = "Healthy" | "At risk" | "Completed" | "Cancelled";
 type DelegationHandoffState = "Healthy" | "At risk" | "Completed" | "Cancelled" | "Returned to Founder" | "Ownership changed" | "Source missing";
+type DelegationHandoffReviewDecision = "Continue" | "Support / adjust" | "Escalate" | "Complete" | "Cancel";
+type DelegationHandoffReviewState = "Healthy" | "Review due" | "At risk" | "Intervention required" | "Completed" | "Cancelled";
 type DelegationHandoffViewItem = DelegationHandoffRecord & {
   state: DelegationHandoffState;
+  reviewState: DelegationHandoffReviewState;
+  reviewReasons: string[];
+  needsFounderIntervention: boolean;
   currentOwner: string;
   currentStatus: string;
 };
+type DelegationHandoffUpdate = Partial<Pick<DelegationHandoffRecord, "status" | "reviewDate" | "handoffReason" | "outcomeLesson" | "reviewNote" | "lastReviewDecision" | "lastReviewedAt">>;
 
 type ProjectRecord = {
   id: string;
@@ -2287,30 +2296,70 @@ function getProjectExecutionReleaseStatus(releaseItem: ExecutionReleaseItem | nu
 
 function DelegationHandoffCard({ handoff, onUpdateHandoff, compact = false }: {
   handoff: DelegationHandoffViewItem;
-  onUpdateHandoff: (handoffId: string, updates: Partial<Pick<DelegationHandoffRecord, "status" | "reviewDate" | "handoffReason" | "outcomeLesson">>) => void;
+  onUpdateHandoff: (handoffId: string, updates: DelegationHandoffUpdate) => void;
   compact?: boolean;
 }) {
+  const applyReviewDecision = (decision: DelegationHandoffReviewDecision) => {
+    const reviewedAt = new Date().toISOString();
+    if (decision === "Complete") {
+      onUpdateHandoff(handoff.id, { lastReviewDecision: decision, lastReviewedAt: reviewedAt, status: "Completed" });
+      return;
+    }
+    if (decision === "Cancel") {
+      onUpdateHandoff(handoff.id, { lastReviewDecision: decision, lastReviewedAt: reviewedAt, status: "Cancelled" });
+      return;
+    }
+    if (decision === "Escalate") {
+      onUpdateHandoff(handoff.id, { lastReviewDecision: decision, lastReviewedAt: reviewedAt, status: "At risk" });
+      return;
+    }
+    onUpdateHandoff(handoff.id, { lastReviewDecision: decision, lastReviewedAt: reviewedAt, status: "Healthy" });
+  };
+
   return (
     <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="text-[14px] font-medium text-[#171717]">{handoff.objectType} • {handoff.title}</div>
         <span className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] ${
-          handoff.state === "Completed"
+          handoff.reviewState === "Completed"
             ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
-            : handoff.state === "At risk" || handoff.state === "Source missing" || handoff.state === "Returned to Founder"
+            : handoff.reviewState === "At risk" || handoff.reviewState === "Intervention required"
               ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]"
+              : handoff.reviewState === "Review due"
+                ? "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"
               : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
-        }`}>{handoff.state}</span>
+        }`}>{handoff.reviewState}</span>
       </div>
       <div className="mt-1 text-[11px] text-[#4d4944]">{handoff.previousOwner} → {handoff.newOwner} • {handoff.area}</div>
       <div className="mt-1 text-[10px] text-[#6a625d]">
         {handoff.currentStatus} • handed off {formatCapturedAt(handoff.transferredAt)}{handoff.reviewDate ? ` • review ${handoff.reviewDate}` : ""}
       </div>
       <div className="mt-2 text-[12px] leading-5 text-[#524d49]">{handoff.handoffReason || handoff.handoffContext}</div>
+      {handoff.reviewReasons.length > 0 ? (
+        <div className="mt-1 text-[11px] leading-4 text-[#6a625d]">{handoff.reviewReasons.join(" • ")}</div>
+      ) : null}
+      {handoff.reviewNote ? (
+        <div className="mt-1 text-[11px] leading-4 text-[#4d4944]"><span className="font-medium text-[#171717]">Review note:</span> {handoff.reviewNote}</div>
+      ) : null}
       {handoff.outcomeLesson ? (
         <div className="mt-1 text-[11px] leading-4 text-[#4d4944]"><span className="font-medium text-[#171717]">Outcome / lesson:</span> {handoff.outcomeLesson}</div>
       ) : null}
       <div className={`mt-3 grid gap-2 ${compact ? "" : "md:grid-cols-3"}`}>
+        <select
+          value={handoff.lastReviewDecision || ""}
+          onChange={(event) => {
+            if (event.target.value) applyReviewDecision(event.target.value as DelegationHandoffReviewDecision);
+          }}
+          disabled={handoff.reviewState === "Completed" || handoff.reviewState === "Cancelled"}
+          className="rounded-lg border border-[#beb3aa] bg-white px-2 py-1.5 text-[11px] text-[#171717] outline-none transition focus:border-[#171717] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <option value="">Review handoff</option>
+          <option value="Continue">Continue</option>
+          <option value="Support / adjust">Support / adjust</option>
+          <option value="Escalate">Escalate</option>
+          <option value="Complete">Complete</option>
+          <option value="Cancel">Cancel</option>
+        </select>
         <select
           value={handoff.status || ""}
           onChange={(event) => onUpdateHandoff(handoff.id, { status: event.target.value ? event.target.value as DelegationHandoffTrackedStatus : undefined })}
@@ -2326,6 +2375,12 @@ function DelegationHandoffCard({ handoff, onUpdateHandoff, compact = false }: {
           type="date"
           value={handoff.reviewDate || ""}
           onChange={(event) => onUpdateHandoff(handoff.id, { reviewDate: event.target.value })}
+          className="rounded-lg border border-[#beb3aa] bg-white px-2 py-1.5 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
+        />
+        <input
+          value={handoff.reviewNote || ""}
+          onChange={(event) => onUpdateHandoff(handoff.id, { reviewNote: event.target.value })}
+          placeholder="Review note"
           className="rounded-lg border border-[#beb3aa] bg-white px-2 py-1.5 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
         />
         <input
@@ -2345,7 +2400,7 @@ function ProjectExecutionReleaseSection({ releaseItem, latestHandoff, onCreateRe
   onCreateReleaseAction: (item: ExecutionReleaseItem) => void;
   onOpenReleaseAction: (actionId: string) => void;
   onDelegateProject: (personId: string) => void;
-  onUpdateHandoff: (handoffId: string, updates: Partial<Pick<DelegationHandoffRecord, "status" | "reviewDate" | "handoffReason" | "outcomeLesson">>) => void;
+  onUpdateHandoff: (handoffId: string, updates: DelegationHandoffUpdate) => void;
 }) {
   const releaseStatus = getProjectExecutionReleaseStatus(releaseItem, latestHandoff);
   const linkedReleaseActionId = releaseItem?.releaseActionId || releaseItem?.releaseClosureActionId;
@@ -2461,7 +2516,7 @@ function ProjectDetailPanel({ project, people, actions, decisions, systems, sops
   onCreateReleaseAction: (item: ExecutionReleaseItem) => void;
   onOpenReleaseAction: (actionId: string) => void;
   onDelegateProject: (personId: string) => void;
-  onUpdateHandoff: (handoffId: string, updates: Partial<Pick<DelegationHandoffRecord, "status" | "reviewDate" | "handoffReason" | "outcomeLesson">>) => void;
+  onUpdateHandoff: (handoffId: string, updates: DelegationHandoffUpdate) => void;
 }) {
   const hasInvalidProjectName = !project.projectName.trim();
   const hasInvalidDateOrder = Boolean(
@@ -7887,6 +7942,9 @@ export default function Home() {
                 const trackedStatus = ["Healthy", "At risk", "Completed", "Cancelled"].includes(String(record.status))
                   ? record.status as DelegationHandoffTrackedStatus
                   : undefined;
+                const reviewDecision = ["Continue", "Support / adjust", "Escalate", "Complete", "Cancel"].includes(String(record.lastReviewDecision))
+                  ? record.lastReviewDecision as DelegationHandoffReviewDecision
+                  : undefined;
 
                 return {
                   id: record.id,
@@ -7906,6 +7964,9 @@ export default function Home() {
                   reviewDate: typeof record.reviewDate === "string" ? record.reviewDate : undefined,
                   status: trackedStatus,
                   outcomeLesson: typeof record.outcomeLesson === "string" ? record.outcomeLesson : undefined,
+                  reviewNote: typeof record.reviewNote === "string" ? record.reviewNote : undefined,
+                  lastReviewDecision: reviewDecision,
+                  lastReviewedAt: typeof record.lastReviewedAt === "string" ? record.lastReviewedAt : undefined,
                 };
               })
               .filter((entry): entry is DelegationHandoffRecord => Boolean(entry)));
@@ -8322,7 +8383,7 @@ export default function Home() {
 
   type AttentionItem = {
     id: string;
-    objectType: "Problem" | "Action" | "Decision" | "Opportunity" | "Project" | "Lesson" | "System" | "SOP" | "Outreach";
+    objectType: "Problem" | "Action" | "Decision" | "Opportunity" | "Project" | "Lead" | "Lesson" | "System" | "SOP" | "Outreach";
     title: string;
     reason: string;
     reasons: string[];
@@ -9381,6 +9442,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
   const unassignedAccountability = buildAccountabilitySnapshot(null);
   const delegationHandoffFollowThrough = (() => {
     const nowMs = Date.now();
+    const todayStartMs = new Date(nowMs).setHours(0, 0, 0, 0);
 
     const latestHandoffIdByObject = new Map<string, string>();
     delegationHandoffs
@@ -9400,6 +9462,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         let isCompleted = false;
         let isAtRisk = false;
         let isCurrentFounderOwned = false;
+        let sourceIsBlocked = false;
+        let sourceIsOverdue = false;
 
         if (handoff.objectType === "Action") {
           const action = actionRecords.find((record) => record.id === handoff.objectId);
@@ -9408,6 +9472,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
             currentOwner = getActionOwnerDisplay(action, people);
             currentStatus = action.status;
             isCompleted = action.status === "Completed";
+            sourceIsBlocked = action.status === "Blocked";
+            sourceIsOverdue = !isActionWaiting(action) && action.status !== "Cancelled" && Boolean(action.dueDate) && new Date(action.dueDate).getTime() < todayStartMs;
             isAtRisk = !isActionWaiting(action) && action.status !== "Cancelled"
               && (action.status === "Blocked" || (Boolean(action.dueDate) && new Date(action.dueDate).getTime() < nowMs));
             isCurrentFounderOwned = isFounderOwned(action.owner, action.ownerPersonId);
@@ -9420,6 +9486,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
             currentOwner = project.owner || "Unassigned";
             currentStatus = project.status || "No status";
             isCompleted = ["completed", "closed", "final"].includes(normalisedStatus);
+            sourceIsBlocked = normalisedStatus === "blocked";
+            sourceIsOverdue = !["cancelled", "canceled"].includes(normalisedStatus) && Boolean(project.targetCompletionDate) && new Date(`${project.targetCompletionDate}T00:00:00`).getTime() < todayStartMs;
             isAtRisk = !["cancelled", "canceled"].includes(normalisedStatus)
               && (normalisedStatus === "blocked" || (Boolean(project.targetCompletionDate) && new Date(project.targetCompletionDate).getTime() < nowMs));
             isCurrentFounderOwned = isFounderOwned(project.owner);
@@ -9431,6 +9499,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
             currentOwner = lead.owner || "Unassigned";
             currentStatus = lead.status;
             isCompleted = lead.status === "Won" || lead.status === "Lost";
+            sourceIsOverdue = Boolean(lead.followUpDate) && new Date(lead.followUpDate).getTime() < todayStartMs;
             isAtRisk = (lead.status === "Quote Sent" && !lead.followUpDate)
               || (Boolean(lead.followUpDate) && new Date(lead.followUpDate).getTime() < nowMs);
             isCurrentFounderOwned = isFounderOwned(lead.owner);
@@ -9442,6 +9511,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
             currentOwner = problem.owner || "Unassigned";
             currentStatus = problem.problemStatus;
             isCompleted = problem.problemStatus === "Resolved" || problem.problemStatus === "Closed";
+            sourceIsBlocked = problem.problemStatus === "Action required";
             isAtRisk = problem.severity === "High" || problem.severity === "Critical";
             isCurrentFounderOwned = isFounderOwned(problem.owner);
           }
@@ -9475,7 +9545,44 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           state = "Healthy";
         }
 
-        return { ...handoff, state, currentOwner, currentStatus };
+        const recipient = orderedPeople.find((person) => person.id === handoff.newOwnerPersonId);
+        const recipientInactive = Boolean(recipient && recipient.status !== "Active");
+        const reviewDateMs = handoff.reviewDate ? new Date(`${handoff.reviewDate.slice(0, 10)}T00:00:00`).getTime() : 0;
+        const reviewDue = Boolean(reviewDateMs && !Number.isNaN(reviewDateMs) && reviewDateMs <= todayStartMs);
+        const ownerMismatch = sourceExists && currentOwner.trim().toLowerCase() !== handoff.newOwner.trim().toLowerCase();
+        const reviewReasons = [
+          !sourceExists ? "Linked work record is missing" : null,
+          ownerMismatch ? `Current owner is ${currentOwner}` : null,
+          recipientInactive ? `${handoff.newOwner} is inactive` : null,
+          handoff.lastReviewDecision === "Escalate" ? "Review decision escalated this handoff" : null,
+          sourceIsBlocked ? "Linked work is blocked" : null,
+          sourceIsOverdue ? "Linked work is overdue" : null,
+          handoff.status === "At risk" ? "Handoff is explicitly marked at risk" : null,
+          reviewDue && state !== "Completed" && state !== "Cancelled" ? `Review date reached (${handoff.reviewDate})` : null,
+        ].filter((reason): reason is string => Boolean(reason));
+
+        let reviewState: DelegationHandoffReviewState = "Healthy";
+        if (state === "Completed") {
+          reviewState = "Completed";
+        } else if (state === "Cancelled") {
+          reviewState = "Cancelled";
+        } else if (!sourceExists || ownerMismatch || recipientInactive || handoff.lastReviewDecision === "Escalate" || sourceIsBlocked) {
+          reviewState = "Intervention required";
+        } else if (sourceIsOverdue || handoff.status === "At risk") {
+          reviewState = "At risk";
+        } else if (reviewDue) {
+          reviewState = "Review due";
+        }
+
+        return {
+          ...handoff,
+          state,
+          reviewState,
+          reviewReasons,
+          needsFounderIntervention: reviewState === "Intervention required",
+          currentOwner,
+          currentStatus,
+        };
       })
       .sort((left, right) => new Date(right.transferredAt).getTime() - new Date(left.transferredAt).getTime());
 
@@ -9485,6 +9592,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       atRisk: items.filter((item) => item.state === "At risk").length,
       completed: items.filter((item) => item.state === "Completed").length,
       cancelled: items.filter((item) => item.state === "Cancelled").length,
+      reviewDue: items.filter((item) => item.reviewState === "Review due").length,
+      interventionRequired: items.filter((item) => item.reviewState === "Intervention required").length,
       returnedToFounder: items.filter((item) => item.state === "Returned to Founder").length,
       ownershipChanged: items.filter((item) => item.state === "Ownership changed").length,
       sourceMissing: items.filter((item) => item.state === "Source missing").length,
@@ -9500,6 +9609,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       returnedToFounder: 0,
       ownershipChanged: 0,
       sourceMissing: 0,
+      reviewDue: 0,
+      interventionRequired: 0,
     };
     facts.received += 1;
     if (handoff.state === "Healthy") facts.healthy += 1;
@@ -9509,6 +9620,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     if (handoff.state === "Returned to Founder") facts.returnedToFounder += 1;
     if (handoff.state === "Ownership changed") facts.ownershipChanged += 1;
     if (handoff.state === "Source missing") facts.sourceMissing += 1;
+    if (handoff.reviewState === "Review due") facts.reviewDue += 1;
+    if (handoff.reviewState === "Intervention required") facts.interventionRequired += 1;
     factsByPerson.set(handoff.newOwnerPersonId, facts);
     return factsByPerson;
   }, new Map<string, {
@@ -9520,6 +9633,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     returnedToFounder: number;
     ownershipChanged: number;
     sourceMissing: number;
+    reviewDue: number;
+    interventionRequired: number;
   }>());
   const getCapacityRankedDelegationPeopleForArea = (area: string): CapacityRankedDelegationPerson[] =>
     getDelegationReadyPeopleForArea(area)
@@ -10465,6 +10580,27 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
   };
 
   const getAttentionSummary = (item: AttentionItem) => {
+    const delegationInterventionReason = item.reasons.find((reason) => reason.startsWith("DELEGATION INTERVENTION REQUIRED"));
+    if (delegationInterventionReason) {
+      return delegationInterventionReason.includes(": ")
+        ? delegationInterventionReason.slice("DELEGATION INTERVENTION REQUIRED: ".length)
+        : "Delegated work now needs founder intervention because normal delegated control is no longer sufficient.";
+    }
+
+    const delegationReviewReason = item.reasons.find((reason) => reason.startsWith("DELEGATION REVIEW DUE"));
+    if (delegationReviewReason) {
+      return delegationReviewReason.includes(": ")
+        ? delegationReviewReason.slice("DELEGATION REVIEW DUE: ".length)
+        : "Delegated work is due for operational review.";
+    }
+
+    const delegationRiskReason = item.reasons.find((reason) => reason.startsWith("DELEGATION AT RISK"));
+    if (delegationRiskReason) {
+      return delegationRiskReason.includes(": ")
+        ? delegationRiskReason.slice("DELEGATION AT RISK: ".length)
+        : "Delegated work has a recoverable risk signal that needs review.";
+    }
+
     const blockerReason = item.reasons.find((reason) => reason.startsWith("BLOCKED BY PROBLEM: "));
     if (blockerReason) {
       return `Blocked by unresolved problem: ${blockerReason.slice("BLOCKED BY PROBLEM: ".length)}.`;
@@ -10994,6 +11130,45 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           });
         }
       }
+    });
+
+    delegationHandoffFollowThrough.items.forEach((handoff) => {
+      if (handoff.reviewState === "Healthy" || handoff.reviewState === "Completed" || handoff.reviewState === "Cancelled") {
+        return;
+      }
+
+      const primaryReason = handoff.reviewState === "Intervention required"
+        ? `DELEGATION INTERVENTION REQUIRED: ${handoff.reviewReasons[0] || "Delegated delivery needs founder escalation."}`
+        : handoff.reviewState === "At risk"
+          ? `DELEGATION AT RISK: ${handoff.reviewReasons[0] || "Delegated delivery needs review."}`
+          : `DELEGATION REVIEW DUE: ${handoff.reviewReasons[0] || "Scheduled handoff review is due."}`;
+      const reasons = [primaryReason, ...handoff.reviewReasons.filter((reason) => reason !== handoff.reviewReasons[0])];
+      const attentionObjectType = handoff.objectType;
+      const reviewDateValue = getDateValue(handoff.reviewDate || handoff.transferredAt);
+
+      addAttentionItem(primaryReason, {
+        id: handoff.objectId,
+        objectType: attentionObjectType,
+        title: handoff.title,
+        reason: reasons.join(" • "),
+        reasons,
+        statusText: `${handoff.reviewState} / ${handoff.newOwner}${handoff.reviewDate ? ` / Review ${handoff.reviewDate}` : ""}`,
+        area: handoff.area,
+        attentionRank: handoff.reviewState === "Intervention required" ? 1 : handoff.reviewState === "At risk" ? 4 : 5,
+        tieWeight: handoff.reviewState === "Intervention required" ? 3 : handoff.reviewState === "At risk" ? 1 : 0,
+        priorityScore: handoff.reviewState === "Intervention required" ? 190 : handoff.reviewState === "At risk" ? 120 : 90,
+        sortDate: reviewDateValue || getDateValue(handoff.transferredAt),
+        sortDateAscending: true,
+        targetCompletionDate: handoff.objectType === "Project" ? projects.find((project) => project.id === handoff.objectId)?.targetCompletionDate : undefined,
+        onOpen: () => handleOpenAttentionRecord(handoff.objectType, handoff.objectId),
+        dependencyAction: {
+          label: "Review handoff",
+          onOpen: () => {
+            setActiveView("People");
+            setSelectedAccountabilityKey(handoff.newOwnerPersonId);
+          },
+        },
+      });
     });
 
     return groups;
@@ -13774,6 +13949,10 @@ const isOwnershipGap =
       return "Opportunities";
     }
 
+    if (item.objectType === "Lead") {
+      return "Other Attention";
+    }
+
     if (item.objectType === "Outreach") {
       return "Outreach";
     }
@@ -14363,7 +14542,7 @@ const isOwnershipGap =
 
   const handleUpdateDelegationHandoff = (
     handoffId: string,
-    updates: Partial<Pick<DelegationHandoffRecord, "status" | "reviewDate" | "handoffReason" | "outcomeLesson">>,
+    updates: DelegationHandoffUpdate,
   ) => {
     const statusWasUpdated = Object.prototype.hasOwnProperty.call(updates, "status");
     setDelegationHandoffs((currentHandoffs) =>
@@ -19081,6 +19260,8 @@ const isOwnershipGap =
                           {handoffFacts && handoffFacts.received > 0 ? (
                             <div className="mt-3 text-[11px] leading-4 text-[#4d4944]">
                               Delegation: {handoffFacts.received} received • {handoffFacts.completed} completed • {handoffFacts.healthy} healthy • {handoffFacts.atRisk} at risk
+                              {handoffFacts.reviewDue > 0 ? ` • ${handoffFacts.reviewDue} review due` : ""}
+                              {handoffFacts.interventionRequired > 0 ? ` • ${handoffFacts.interventionRequired} intervention` : ""}
                               {handoffFacts.cancelled > 0 ? ` • ${handoffFacts.cancelled} cancelled` : ""}
                               {handoffFacts.returnedToFounder > 0 ? ` • ${handoffFacts.returnedToFounder} returned to Founder` : ""}
                               {handoffFacts.ownershipChanged > 0 ? ` • ${handoffFacts.ownershipChanged} ownership changed` : ""}
@@ -19143,6 +19324,8 @@ const isOwnershipGap =
                       <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Delegation handoffs</div>
                       <span className="text-[10px] text-[#6a625d]">
                        {delegationHandoffFollowThrough.healthy} healthy • {delegationHandoffFollowThrough.atRisk} at risk • {delegationHandoffFollowThrough.completed} completed • {delegationHandoffFollowThrough.cancelled} cancelled
+                        {delegationHandoffFollowThrough.reviewDue > 0 ? ` • ${delegationHandoffFollowThrough.reviewDue} review due` : ""}
+                        {delegationHandoffFollowThrough.interventionRequired > 0 ? ` • ${delegationHandoffFollowThrough.interventionRequired} intervention` : ""}
                         {delegationHandoffFollowThrough.returnedToFounder > 0 ? ` • ${delegationHandoffFollowThrough.returnedToFounder} returned to Founder` : ""}
                         {delegationHandoffFollowThrough.ownershipChanged > 0 ? ` • ${delegationHandoffFollowThrough.ownershipChanged} ownership changed` : ""}
                         {delegationHandoffFollowThrough.sourceMissing > 0 ? ` • ${delegationHandoffFollowThrough.sourceMissing} source missing` : ""}
