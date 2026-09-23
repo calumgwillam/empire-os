@@ -378,13 +378,26 @@ type DelegationHandoffRecord = {
   title: string;
   area: string;
   previousOwner: string;
+  previousOwnerPersonId?: string;
   newOwner: string;
   newOwnerPersonId: string;
+  delegatedBy?: string;
+  delegatedByPersonId?: string;
   transferredAt: string;
   handoffContext: string;
+  handoffReason?: string;
+  reviewDate?: string;
+  status?: DelegationHandoffTrackedStatus;
+  outcomeLesson?: string;
 };
 
+type DelegationHandoffTrackedStatus = "Healthy" | "At risk" | "Completed" | "Cancelled";
 type DelegationHandoffState = "Healthy" | "At risk" | "Completed" | "Cancelled" | "Returned to Founder" | "Ownership changed" | "Source missing";
+type DelegationHandoffViewItem = DelegationHandoffRecord & {
+  state: DelegationHandoffState;
+  currentOwner: string;
+  currentStatus: string;
+};
 
 type ProjectRecord = {
   id: string;
@@ -2263,7 +2276,8 @@ type ProjectLinkSectionKey = "relatedActionIds" | "relatedDecisionIds" | "relate
 
 type ProjectExecutionReleaseStatus = "Not assessed" | "Blocked" | "In progress" | "Ready to delegate" | "Released";
 
-function getProjectExecutionReleaseStatus(releaseItem: ExecutionReleaseItem | null): ProjectExecutionReleaseStatus {
+function getProjectExecutionReleaseStatus(releaseItem: ExecutionReleaseItem | null, latestHandoff: DelegationHandoffViewItem | null): ProjectExecutionReleaseStatus {
+  if (!releaseItem && latestHandoff && !["Returned to Founder", "Ownership changed", "Source missing"].includes(latestHandoff.state)) return "Released";
   if (!releaseItem) return "Not assessed";
   if (releaseItem.releaseAction === "Delegate Now") return "Ready to delegate";
   if (releaseItem.releaseClosureState === "In progress") return "In progress";
@@ -2271,14 +2285,72 @@ function getProjectExecutionReleaseStatus(releaseItem: ExecutionReleaseItem | nu
   return "Not assessed";
 }
 
-function ProjectExecutionReleaseSection({ releaseItem, onCreateReleaseAction, onOpenReleaseAction }: {
+function DelegationHandoffCard({ handoff, onUpdateHandoff, compact = false }: {
+  handoff: DelegationHandoffViewItem;
+  onUpdateHandoff: (handoffId: string, updates: Partial<Pick<DelegationHandoffRecord, "status" | "reviewDate" | "handoffReason" | "outcomeLesson">>) => void;
+  compact?: boolean;
+}) {
+  return (
+    <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="text-[14px] font-medium text-[#171717]">{handoff.objectType} • {handoff.title}</div>
+        <span className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] ${
+          handoff.state === "Completed"
+            ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
+            : handoff.state === "At risk" || handoff.state === "Source missing" || handoff.state === "Returned to Founder"
+              ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]"
+              : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
+        }`}>{handoff.state}</span>
+      </div>
+      <div className="mt-1 text-[11px] text-[#4d4944]">{handoff.previousOwner} → {handoff.newOwner} • {handoff.area}</div>
+      <div className="mt-1 text-[10px] text-[#6a625d]">
+        {handoff.currentStatus} • handed off {formatCapturedAt(handoff.transferredAt)}{handoff.reviewDate ? ` • review ${handoff.reviewDate}` : ""}
+      </div>
+      <div className="mt-2 text-[12px] leading-5 text-[#524d49]">{handoff.handoffReason || handoff.handoffContext}</div>
+      {handoff.outcomeLesson ? (
+        <div className="mt-1 text-[11px] leading-4 text-[#4d4944]"><span className="font-medium text-[#171717]">Outcome / lesson:</span> {handoff.outcomeLesson}</div>
+      ) : null}
+      <div className={`mt-3 grid gap-2 ${compact ? "" : "md:grid-cols-3"}`}>
+        <select
+          value={handoff.status || ""}
+          onChange={(event) => onUpdateHandoff(handoff.id, { status: event.target.value ? event.target.value as DelegationHandoffTrackedStatus : undefined })}
+          className="rounded-lg border border-[#beb3aa] bg-white px-2 py-1.5 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
+        >
+          <option value="">Derived status</option>
+          <option value="Healthy">Healthy</option>
+          <option value="At risk">At risk</option>
+          <option value="Completed">Completed</option>
+          <option value="Cancelled">Cancelled</option>
+        </select>
+        <input
+          type="date"
+          value={handoff.reviewDate || ""}
+          onChange={(event) => onUpdateHandoff(handoff.id, { reviewDate: event.target.value })}
+          className="rounded-lg border border-[#beb3aa] bg-white px-2 py-1.5 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
+        />
+        <input
+          value={handoff.outcomeLesson || ""}
+          onChange={(event) => onUpdateHandoff(handoff.id, { outcomeLesson: event.target.value })}
+          placeholder="Outcome / lesson"
+          className="rounded-lg border border-[#beb3aa] bg-white px-2 py-1.5 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
+        />
+      </div>
+    </div>
+  );
+}
+
+function ProjectExecutionReleaseSection({ releaseItem, latestHandoff, onCreateReleaseAction, onOpenReleaseAction, onDelegateProject, onUpdateHandoff }: {
   releaseItem: ExecutionReleaseItem | null;
+  latestHandoff: DelegationHandoffViewItem | null;
   onCreateReleaseAction: (item: ExecutionReleaseItem) => void;
   onOpenReleaseAction: (actionId: string) => void;
+  onDelegateProject: (personId: string) => void;
+  onUpdateHandoff: (handoffId: string, updates: Partial<Pick<DelegationHandoffRecord, "status" | "reviewDate" | "handoffReason" | "outcomeLesson">>) => void;
 }) {
-  const releaseStatus = getProjectExecutionReleaseStatus(releaseItem);
+  const releaseStatus = getProjectExecutionReleaseStatus(releaseItem, latestHandoff);
   const linkedReleaseActionId = releaseItem?.releaseActionId || releaseItem?.releaseClosureActionId;
   const showPrepareControl = Boolean(releaseItem && releaseItem.releaseAction === "Prepare to Delegate" && !linkedReleaseActionId);
+  const showCompleteHandoffControl = Boolean(releaseItem && releaseStatus === "Ready to delegate" && releaseItem.eligibleDelegationPeople.length > 0 && !latestHandoff);
   const readinessGapText = releaseItem && !releaseItem.hasCapacity && releaseItem.releaseAction === "Prepare to Delegate"
     ? releaseItem.releasePath
     : "";
@@ -2339,11 +2411,39 @@ function ProjectExecutionReleaseSection({ releaseItem, onCreateReleaseAction, on
           ) : null}
         </div>
       ) : null}
+
+      {showCompleteHandoffControl && releaseItem ? (
+        <div className="mt-2 border-t border-[#e0dad4] pt-2">
+          <label className="mb-1 block text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Complete handoff</label>
+          <select
+            defaultValue=""
+            onChange={(event) => {
+              if (event.target.value) {
+                onDelegateProject(event.target.value);
+                event.target.value = "";
+              }
+            }}
+            className="w-full rounded-lg border border-[#beb3aa] bg-white px-2 py-1.5 text-[11px] text-[#171717] outline-none transition focus:border-[#171717]"
+          >
+            <option value="">Select delegation-ready recipient</option>
+            {releaseItem.eligibleDelegationPeople.map((person) => (
+              <option key={person.id} value={person.id}>{person.name}</option>
+            ))}
+          </select>
+        </div>
+      ) : null}
+
+      {latestHandoff ? (
+        <div className="mt-3 border-t border-[#e0dad4] pt-3">
+          <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Latest handoff</div>
+          <DelegationHandoffCard handoff={latestHandoff} onUpdateHandoff={onUpdateHandoff} compact />
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function ProjectDetailPanel({ project, people, actions, decisions, systems, sops, releaseItem, onClose, onChange, onSave, onAddLink, onRemoveLink, onOpenRecord, onCreateReleaseAction, onOpenReleaseAction }: {
+function ProjectDetailPanel({ project, people, actions, decisions, systems, sops, releaseItem, latestHandoff, onClose, onChange, onSave, onAddLink, onRemoveLink, onOpenRecord, onCreateReleaseAction, onOpenReleaseAction, onDelegateProject, onUpdateHandoff }: {
   project: ProjectRecord;
   people: PersonRecord[];
   actions: ActionRecord[];
@@ -2351,6 +2451,7 @@ function ProjectDetailPanel({ project, people, actions, decisions, systems, sops
   systems: SystemRecord[];
   sops: SopRecord[];
   releaseItem: ExecutionReleaseItem | null;
+  latestHandoff: DelegationHandoffViewItem | null;
   onClose: () => void;
   onChange: (field: keyof ProjectRecord, value: string) => void;
   onSave: () => boolean;
@@ -2359,6 +2460,8 @@ function ProjectDetailPanel({ project, people, actions, decisions, systems, sops
   onOpenRecord: (objectType: "Action" | "Decision" | "System" | "SOP", id: string) => void;
   onCreateReleaseAction: (item: ExecutionReleaseItem) => void;
   onOpenReleaseAction: (actionId: string) => void;
+  onDelegateProject: (personId: string) => void;
+  onUpdateHandoff: (handoffId: string, updates: Partial<Pick<DelegationHandoffRecord, "status" | "reviewDate" | "handoffReason" | "outcomeLesson">>) => void;
 }) {
   const hasInvalidProjectName = !project.projectName.trim();
   const hasInvalidDateOrder = Boolean(
@@ -2427,11 +2530,14 @@ function ProjectDetailPanel({ project, people, actions, decisions, systems, sops
           </div>
         </div>
 
-        {releaseItem ? (
+        {releaseItem || latestHandoff ? (
           <ProjectExecutionReleaseSection
             releaseItem={releaseItem}
+            latestHandoff={latestHandoff}
             onCreateReleaseAction={onCreateReleaseAction}
             onOpenReleaseAction={onOpenReleaseAction}
+            onDelegateProject={onDelegateProject}
+            onUpdateHandoff={onUpdateHandoff}
           />
         ) : null}
 
@@ -7763,20 +7869,46 @@ export default function Home() {
         try {
           const parsedDelegationHandoffs = JSON.parse(storedDelegationHandoffs);
           if (Array.isArray(parsedDelegationHandoffs)) {
-            setDelegationHandoffs(parsedDelegationHandoffs.filter((entry: unknown): entry is DelegationHandoffRecord => {
-              if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
-              const record = entry as Record<string, unknown>;
-              return typeof record.id === "string"
-                && ["Action", "Project", "Lead", "Problem"].includes(String(record.objectType))
-                && typeof record.objectId === "string"
-                && typeof record.title === "string"
-                && typeof record.area === "string"
-                && typeof record.previousOwner === "string"
-                && typeof record.newOwner === "string"
-                && typeof record.newOwnerPersonId === "string"
-                && typeof record.transferredAt === "string"
-                && typeof record.handoffContext === "string";
-            }));
+            setDelegationHandoffs(parsedDelegationHandoffs
+              .map((entry: unknown): DelegationHandoffRecord | null => {
+                if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+                const record = entry as Record<string, unknown>;
+                if (!(typeof record.id === "string"
+                  && ["Action", "Project", "Lead", "Problem"].includes(String(record.objectType))
+                  && typeof record.objectId === "string"
+                  && typeof record.title === "string"
+                  && typeof record.area === "string"
+                  && typeof record.previousOwner === "string"
+                  && typeof record.newOwner === "string"
+                  && typeof record.newOwnerPersonId === "string"
+                  && typeof record.transferredAt === "string"
+                  && typeof record.handoffContext === "string")) return null;
+
+                const trackedStatus = ["Healthy", "At risk", "Completed", "Cancelled"].includes(String(record.status))
+                  ? record.status as DelegationHandoffTrackedStatus
+                  : undefined;
+
+                return {
+                  id: record.id,
+                  objectType: record.objectType as DelegationHandoffRecord["objectType"],
+                  objectId: record.objectId,
+                  title: record.title,
+                  area: record.area,
+                  previousOwner: record.previousOwner,
+                  previousOwnerPersonId: typeof record.previousOwnerPersonId === "string" ? record.previousOwnerPersonId : undefined,
+                  newOwner: record.newOwner,
+                  newOwnerPersonId: record.newOwnerPersonId,
+                  delegatedBy: typeof record.delegatedBy === "string" ? record.delegatedBy : record.previousOwner,
+                  delegatedByPersonId: typeof record.delegatedByPersonId === "string" ? record.delegatedByPersonId : typeof record.previousOwnerPersonId === "string" ? record.previousOwnerPersonId : undefined,
+                  transferredAt: record.transferredAt,
+                  handoffContext: record.handoffContext,
+                  handoffReason: typeof record.handoffReason === "string" ? record.handoffReason : record.handoffContext,
+                  reviewDate: typeof record.reviewDate === "string" ? record.reviewDate : undefined,
+                  status: trackedStatus,
+                  outcomeLesson: typeof record.outcomeLesson === "string" ? record.outcomeLesson : undefined,
+                };
+              })
+              .filter((entry): entry is DelegationHandoffRecord => Boolean(entry)));
           }
         } catch {
           setDelegationHandoffs([]);
@@ -9322,6 +9454,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           state = "Source missing";
         } else if (currentOwner.trim().toLowerCase() !== handoff.newOwner.trim().toLowerCase()) {
           state = isCurrentFounderOwned ? "Returned to Founder" : "Ownership changed";
+        } else if (handoff.status === "Completed" || handoff.status === "Cancelled") {
+          state = handoff.status;
         } else if (isCompleted) {
           state = "Completed";
         } else if (
@@ -9329,6 +9463,12 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           || (handoff.objectType === "Project" && ["cancelled", "canceled"].includes(currentStatus.trim().toLowerCase()))
         ) {
           state = "Cancelled";
+        } else if (handoff.status === "At risk") {
+          state = "At risk";
+        } else if (handoff.status === "Healthy") {
+          state = "Healthy";
+        } else if (handoff.reviewDate && new Date(`${handoff.reviewDate.slice(0, 10)}T00:00:00`).getTime() < new Date().setHours(0, 0, 0, 0)) {
+          state = "At risk";
         } else if (isAtRisk) {
           state = "At risk";
         } else {
@@ -10091,7 +10231,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     : personAccountabilitySummaries.find((entry) => entry.person.id === selectedAccountabilityKey) ?? null;
   const selectedAccountabilityPerson = selectedAccountability?.person ?? null;
   const selectedPersonDelegationHandoffs = selectedAccountabilityPerson
-    ? delegationHandoffFollowThrough.items.filter((handoff) => handoff.newOwnerPersonId === selectedAccountabilityPerson.id)
+    ? delegationHandoffFollowThrough.items.filter((handoff) => handoff.newOwnerPersonId === selectedAccountabilityPerson.id || handoff.delegatedByPersonId === selectedAccountabilityPerson.id)
     : [];
 
   const selectedAccountabilityDetail = selectedAccountability ? (() => {
@@ -14027,6 +14167,9 @@ const isOwnershipGap =
   }) => {
     const previousOwnerName = previousOwner.trim() || "Unassigned";
     const newOwnerName = newOwner.trim() || "Unassigned";
+    const previousOwnerPerson = previousOwnerPersonId
+      ? orderedPeople.find((person) => person.id === previousOwnerPersonId)
+      : orderedPeople.find((person) => person.status === "Active" && person.name.trim().toLowerCase() === previousOwnerName.toLowerCase());
     const ownerChanged = previousOwnerPersonId && newOwnerPersonId
       ? previousOwnerPersonId !== newOwnerPersonId
       : previousOwnerName.toLowerCase() !== newOwnerName.toLowerCase();
@@ -14057,21 +14200,42 @@ const isOwnershipGap =
 
     applyOwnershipChange();
     const transferredAt = new Date().toISOString();
-    setDelegationHandoffs((currentHandoffs) => [
-      ...currentHandoffs,
-      {
+    const reviewDate = new Date(transferredAt);
+    reviewDate.setDate(reviewDate.getDate() + 14);
+    setDelegationHandoffs((currentHandoffs) => {
+      const activeExistingHandoff = currentHandoffs.find((handoff) =>
+        handoff.objectType === objectType
+        && handoff.objectId === objectId
+        && handoff.newOwnerPersonId === destinationPerson.id
+        && handoff.status !== "Completed"
+        && handoff.status !== "Cancelled",
+      );
+
+      if (activeExistingHandoff) return currentHandoffs;
+
+      return [
+        ...currentHandoffs,
+        {
         id: `handoff-${transferredAt}-${objectType}-${objectId}`,
         objectType,
         objectId,
         title: title || "Untitled work item",
         area: area || "Unassigned",
         previousOwner: previousOwnerName,
+        previousOwnerPersonId: previousOwnerPerson?.id || previousOwnerPersonId,
         newOwner: destinationPerson.name,
         newOwnerPersonId: destinationPerson.id,
+        delegatedBy: previousOwnerPerson?.name || previousOwnerName,
+        delegatedByPersonId: previousOwnerPerson?.id || previousOwnerPersonId,
         transferredAt,
         handoffContext,
+        handoffReason: handoffContext,
+        reviewDate: reviewDate.toISOString().slice(0, 10),
+        status: "Healthy",
+        outcomeLesson: "",
       },
-    ]);
+      ];
+    });
     return true;
   };
 
@@ -14195,6 +14359,28 @@ const isOwnershipGap =
     setConversions((currentConversions) => [createdAction, ...currentConversions]);
     handleActionEditOpen(createdAction);
     setFeedback({ type: "success", message: "Release action created." });
+  };
+
+  const handleUpdateDelegationHandoff = (
+    handoffId: string,
+    updates: Partial<Pick<DelegationHandoffRecord, "status" | "reviewDate" | "handoffReason" | "outcomeLesson">>,
+  ) => {
+    const statusWasUpdated = Object.prototype.hasOwnProperty.call(updates, "status");
+    setDelegationHandoffs((currentHandoffs) =>
+      currentHandoffs.map((handoff) =>
+        handoff.id === handoffId
+          ? {
+              ...handoff,
+              ...updates,
+              status: statusWasUpdated && updates.status && ["Healthy", "At risk", "Completed", "Cancelled"].includes(updates.status)
+                ? updates.status
+                : statusWasUpdated && updates.status === undefined
+                  ? undefined
+                  : handoff.status,
+            }
+          : handoff,
+      ),
+    );
   };
 
   const handleActionEditorChange = (
@@ -14695,6 +14881,7 @@ const isOwnershipGap =
               project.id === id ? { ...project, owner: person.name } : project,
             ),
           );
+          setProjectEditor((currentProject) => currentProject && currentProject.id === id ? { ...currentProject, owner: person.name } : currentProject);
         } else if (objectType === "Lead") {
           setLeads((currentLeads) =>
             currentLeads.map((lead) =>
@@ -18838,21 +19025,7 @@ const isOwnershipGap =
                       ) : (
                         <div className="space-y-2">
                           {selectedPersonDelegationHandoffs.map((handoff) => (
-                            <div key={handoff.id} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
-                              <div className="flex flex-wrap items-start justify-between gap-2">
-                                <div className="text-[14px] font-medium text-[#171717]">{handoff.objectType} • {handoff.title}</div>
-                                <span className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] ${
-                                  handoff.state === "Completed"
-                                    ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
-                                    : handoff.state === "At risk" || handoff.state === "Source missing" || handoff.state === "Returned to Founder"
-                                      ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]"
-                                      : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
-                                }`}>{handoff.state}</span>
-                              </div>
-                              <div className="mt-1 text-[11px] text-[#4d4944]">{handoff.previousOwner} → {handoff.newOwner} • {handoff.area}</div>
-                              <div className="mt-1 text-[10px] text-[#6a625d]">{handoff.currentStatus} • {formatCapturedAt(handoff.transferredAt)}</div>
-                              <div className="mt-2 text-[12px] leading-5 text-[#524d49]">{handoff.handoffContext}</div>
-                            </div>
+                            <DelegationHandoffCard key={handoff.id} handoff={handoff} onUpdateHandoff={handleUpdateDelegationHandoff} />
                           ))}
                         </div>
                       )}
@@ -18982,24 +19155,7 @@ const isOwnershipGap =
                     ) : (
                       <div className="space-y-2">
                         {delegationHandoffFollowThrough.items.map((handoff) => (
-                            <div key={handoff.id} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
-                              <div className="flex flex-wrap items-start justify-between gap-2">
-                                <div className="text-[14px] font-medium text-[#171717]">{handoff.objectType} • {handoff.title}</div>
-                                <div className="flex flex-wrap items-center justify-end gap-2">
-                                  <span className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] ${
-                                    handoff.state === "Completed"
-                                      ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
-                                      : handoff.state === "At risk" || handoff.state === "Source missing" || handoff.state === "Returned to Founder"
-                                        ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]"
-                                        : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
-                                  }`}>{handoff.state}</span>
-                                  <span className="text-[10px] text-[#6a625d]">{handoff.currentStatus}</span>
-                                  <span className="text-[10px] text-[#6a625d]">{formatCapturedAt(handoff.transferredAt)}</span>
-                                </div>
-                              </div>
-                              <div className="mt-1 text-[11px] text-[#4d4944]">{handoff.previousOwner} → {handoff.newOwner} • {handoff.area}</div>
-                              <div className="mt-2 text-[12px] leading-5 text-[#524d49]">{handoff.handoffContext}</div>
-                            </div>
+                          <DelegationHandoffCard key={handoff.id} handoff={handoff} onUpdateHandoff={handleUpdateDelegationHandoff} />
                             ))}
                       </div>
                     )}
@@ -20037,6 +20193,7 @@ const isOwnershipGap =
           systems={systemRecords}
           sops={sopRecords}
           releaseItem={founderExecutionReleaseSystem.items.find((item) => item.objectType === "Project" && item.id === projectEditor.id) || null}
+          latestHandoff={delegationHandoffFollowThrough.items.find((handoff) => handoff.objectType === "Project" && handoff.objectId === projectEditor.id) || null}
           onClose={() => {
             setSelectedProjectId(null);
             setProjectEditor(null);
@@ -20051,6 +20208,8 @@ const isOwnershipGap =
             const action = actionRecords.find((item) => item.id === actionId);
             if (action) handleActionEditOpen(action);
           }}
+          onDelegateProject={(personId) => handleDelegateItem("Project", projectEditor.id, personId)}
+          onUpdateHandoff={handleUpdateDelegationHandoff}
         />
       ) : null}
 
