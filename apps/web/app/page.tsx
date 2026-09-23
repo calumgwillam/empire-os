@@ -665,6 +665,7 @@ const commitmentTypeOptions = ["Loan", "Lease", "Subscription", "Tax", "Supplier
 const commitmentStatusOptions = ["Upcoming", "Due", "Paid", "Overdue", "Cancelled"] as const;
 const commitmentCertaintyOptions = ["Committed", "Quoted", "Planned"] as const;
 type CommitmentCertainty = (typeof commitmentCertaintyOptions)[number];
+type ProcurementReadinessState = "Researching" | "Price found" | "Ready to buy" | "Wait" | "Blocked" | "Purchased";
 
 // Legacy records with no stored certainty behave exactly as before (i.e. as a genuine commitment).
 function getEffectiveCommitmentCertainty(commitment: { certainty?: string }): CommitmentCertainty {
@@ -8437,7 +8438,7 @@ export default function Home() {
 
   type AttentionItem = {
     id: string;
-    objectType: "Problem" | "Action" | "Decision" | "Opportunity" | "Project" | "Lead" | "Lesson" | "System" | "SOP" | "Outreach";
+    objectType: "Problem" | "Action" | "Decision" | "Opportunity" | "Project" | "Lead" | "Lesson" | "System" | "SOP" | "Outreach" | "Finance";
     title: string;
     reason: string;
     reasons: string[];
@@ -9894,36 +9895,106 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     const validActivePlannedOrQuotedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty !== "Committed");
     const committedCash = validActiveCommittedCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
     const plannedOrQuotedExposure = validActivePlannedOrQuotedCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
+    const grossDeployableCash = cashConfigured && currentCash !== null && protectedCash !== null ? currentCash - protectedCash : null;
+    const uncommittedDeployableCash = grossDeployableCash === null ? null : grossDeployableCash - committedCash;
+    const startOfTodayMs = new Date().setHours(0, 0, 0, 0);
     const procurementItems = commitmentReadModel
       .filter((item) => item.commitment.type === "Supplier" || Boolean(item.commitment.procurementNeed?.trim()) || Boolean(item.commitment.originalBudget?.trim()) || Boolean(item.commitment.targetPrice?.trim()) || Boolean(item.commitment.actualPurchasePrice?.trim()) || Boolean(item.commitment.supplier?.trim()))
       .map((item) => {
         const originalBudget = parseOptionalFinanceAmount(item.commitment.originalBudget || "");
         const targetPrice = parseOptionalFinanceAmount(item.commitment.targetPrice || "");
         const actualPurchasePrice = parseOptionalFinanceAmount(item.commitment.actualPurchasePrice || "");
+        const amountRequired = targetPrice ?? item.amount ?? originalBudget ?? 0;
         const effectivePrice = actualPurchasePrice ?? item.amount ?? targetPrice ?? originalBudget ?? 0;
-        const savedAgainstBudget = originalBudget !== null && effectivePrice > 0 ? Math.max(0, originalBudget - effectivePrice) : 0;
+        const savedAgainstBudget = originalBudget !== null && actualPurchasePrice !== null ? Math.max(0, originalBudget - actualPurchasePrice) : 0;
         const potentialSaving = originalBudget !== null && targetPrice !== null ? Math.max(0, originalBudget - targetPrice) : 0;
+        const expectedPurchaseDate = item.commitment.expectedPurchaseDate || item.commitment.dueDate;
+        const expectedPurchaseTime = expectedPurchaseDate ? new Date(`${expectedPurchaseDate.slice(0, 10)}T00:00:00`).getTime() : 0;
+        const isFuturePurchase = expectedPurchaseTime > startOfTodayMs;
+        const isPurchased = item.commitment.status === "Paid" || Boolean(item.commitment.actualPurchaseDate) || actualPurchasePrice !== null;
+        const isCommitted = item.isValidActive && item.effectiveCertainty === "Committed";
+        const projectedDeployableCashAfterPurchase = uncommittedDeployableCash === null
+          ? null
+          : isPurchased || isCommitted
+            ? uncommittedDeployableCash
+            : uncommittedDeployableCash - amountRequired;
+        const hasSupplier = Boolean(item.commitment.supplier?.trim());
+        const hasNeed = Boolean(item.commitment.procurementNeed?.trim());
+        const hasTargetPrice = targetPrice !== null && targetPrice > 0;
+        const hasRequiredInfo = hasSupplier && hasNeed && hasTargetPrice;
+        const cashAvailable = projectedDeployableCashAfterPurchase !== null && projectedDeployableCashAfterPurchase >= 0;
+        let readinessState: ProcurementReadinessState = "Researching";
+        let readinessReason = "Supplier, need or target price is still incomplete.";
+
+        if (isPurchased) {
+          readinessState = "Purchased";
+          readinessReason = "Actual purchase details have been recorded.";
+        } else if (!hasRequiredInfo) {
+          readinessState = "Researching";
+          readinessReason = [
+            hasNeed ? null : "need",
+            hasSupplier ? null : "supplier",
+            hasTargetPrice ? null : "target price",
+          ].filter(Boolean).join(", ") + " missing.";
+        } else if (uncommittedDeployableCash === null) {
+          readinessState = "Blocked";
+          readinessReason = "Cash snapshot is incomplete, so deployable cash cannot be verified.";
+        } else if (!cashAvailable) {
+          readinessState = "Blocked";
+          readinessReason = "Buying now would consume protected cash or leave deployable cash negative.";
+        } else if (isFuturePurchase) {
+          readinessState = "Wait";
+          readinessReason = `Expected purchase date is ${expectedPurchaseDate}.`;
+        } else if (item.effectiveCertainty === "Quoted") {
+          readinessState = "Price found";
+          readinessReason = "Supplier and target price are known; founder commitment has not been made.";
+        } else {
+          readinessState = "Ready to buy";
+          readinessReason = isCommitted
+            ? "Committed funding is already reserved and deployable cash remains non-negative."
+            : "Supplier, target price and timing are ready, and deployable cash remains non-negative after purchase.";
+        }
+
         return {
           commitment: item.commitment,
           amount: item.amount,
           originalBudget,
           targetPrice,
           actualPurchasePrice,
+          amountRequired,
           effectivePrice,
           savedAgainstBudget,
           potentialSaving,
-          isPurchased: item.commitment.status === "Paid" || Boolean(item.commitment.actualPurchaseDate) || actualPurchasePrice !== null,
-          isCommitted: item.isValidActive && item.effectiveCertainty === "Committed",
+          projectedDeployableCashAfterPurchase,
+          readinessState,
+          readinessReason,
+          isPurchased,
+          isCommitted,
           effectiveCertainty: item.effectiveCertainty,
         };
       });
+    const procurementReadinessRank: Record<ProcurementReadinessState, number> = {
+      "Ready to buy": 1,
+      Blocked: 2,
+      "Price found": 3,
+      Wait: 4,
+      Researching: 5,
+      Purchased: 6,
+    };
+    const procurementQueue = [...procurementItems].sort((left, right) =>
+      procurementReadinessRank[left.readinessState] - procurementReadinessRank[right.readinessState]
+      || (left.commitment.expectedPurchaseDate || left.commitment.dueDate || left.commitment.dateCreated).localeCompare(right.commitment.expectedPurchaseDate || right.commitment.dueDate || right.commitment.dateCreated)
+      || left.commitment.commitmentName.localeCompare(right.commitment.commitmentName),
+    );
     const procurementCommittedCash = procurementItems.filter((item) => item.isCommitted).reduce((sum, item) => sum + (item.amount ?? item.effectivePrice), 0);
-    const procurementPlannedExposure = procurementItems.filter((item) => !item.isCommitted && !item.isPurchased).reduce((sum, item) => sum + item.effectivePrice, 0);
+    const procurementPlannedExposure = procurementItems.filter((item) => !item.isCommitted && !item.isPurchased).reduce((sum, item) => sum + item.amountRequired, 0);
     const procurementActualSpend = procurementItems.filter((item) => item.isPurchased).reduce((sum, item) => sum + item.effectivePrice, 0);
+    const procurementOriginalBudgetTotal = procurementItems.reduce((sum, item) => sum + (item.originalBudget ?? 0), 0);
+    const procurementTargetPriceTotal = procurementItems.reduce((sum, item) => sum + (item.targetPrice ?? 0), 0);
+    const procurementExpectedSavings = procurementItems.reduce((sum, item) => sum + item.potentialSaving, 0);
     const procurementSavedAgainstBudget = procurementItems.reduce((sum, item) => sum + item.savedAgainstBudget, 0);
-    const procurementPotentialSaving = procurementItems.reduce((sum, item) => sum + item.potentialSaving, 0);
-    const grossDeployableCash = cashConfigured && currentCash !== null && protectedCash !== null ? currentCash - protectedCash : null;
-    const uncommittedDeployableCash = grossDeployableCash === null ? null : grossDeployableCash - committedCash;
+    const procurementPotentialSaving = procurementExpectedSavings;
+    const procurementSavingsPct = procurementOriginalBudgetTotal > 0 ? Math.round((procurementExpectedSavings / procurementOriginalBudgetTotal) * 100) : null;
     const highFitWithCapital = liveOpportunities.filter((opp) => opp.fitRank >= 3 && opp.capital !== null);
     const highFitOpportunities = liveOpportunities.filter((opp) => opp.fitRank >= 3);
     const highFitOpportunityCount = highFitOpportunities.length;
@@ -9998,11 +10069,16 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       plannedOrQuotedExposure,
       validActivePlannedOrQuotedCommitments,
       procurementItems,
+      procurementQueue,
       procurementCommittedCash,
       procurementPlannedExposure,
       procurementActualSpend,
+      procurementOriginalBudgetTotal,
+      procurementTargetPriceTotal,
+      procurementExpectedSavings,
       procurementSavedAgainstBudget,
       procurementPotentialSaving,
+      procurementSavingsPct,
       grossDeployableCash,
       uncommittedDeployableCash,
       cashConfigured,
@@ -10653,9 +10729,11 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
   const orderAttentionReasons = (reasons: string[]) => {
     const getReasonRank = (reason: string) => {
       if (reason === "BLOCKED") return 1;
+      if (reason.startsWith("PROCUREMENT BLOCKED")) return 1;
       if (reason.startsWith("OVERDUE BY ")) return 2;
       if (reason.includes("SEVERITY")) return 3;
       if (reason.startsWith("REVIEW ")) return 4;
+      if (reason.startsWith("PROCUREMENT READY")) return 4;
       if (reason === "CRITICAL PRIORITY" || reason === "HIGH PRIORITY") return 5;
       if (reason.startsWith("STRATEGIC FIT:")) return 6;
       return 7;
@@ -10687,6 +10765,20 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       return delegationRiskReason.includes(": ")
         ? delegationRiskReason.slice("DELEGATION AT RISK: ".length)
         : "Delegated work has a recoverable risk signal that needs review.";
+    }
+
+    const procurementBlockedReason = item.reasons.find((reason) => reason.startsWith("PROCUREMENT BLOCKED"));
+    if (procurementBlockedReason) {
+      return procurementBlockedReason.includes(": ")
+        ? procurementBlockedReason.slice("PROCUREMENT BLOCKED: ".length)
+        : "Purchase is blocked by missing information or a funding gap.";
+    }
+
+    const procurementReadyReason = item.reasons.find((reason) => reason.startsWith("PROCUREMENT READY"));
+    if (procurementReadyReason) {
+      return procurementReadyReason.includes(": ")
+        ? procurementReadyReason.slice("PROCUREMENT READY: ".length)
+        : "Purchase is ready for founder commitment.";
     }
 
     const blockerReason = item.reasons.find((reason) => reason.startsWith("BLOCKED BY PROBLEM: "));
@@ -11256,6 +11348,36 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
             setSelectedAccountabilityKey(handoff.newOwnerPersonId);
           },
         },
+      });
+    });
+
+    capitalAllocation.procurementQueue.forEach((item) => {
+      if (item.readinessState !== "Ready to buy" && item.readinessState !== "Blocked") {
+        return;
+      }
+
+      if (item.readinessState === "Ready to buy" && item.isCommitted) {
+        return;
+      }
+
+      const reason = item.readinessState === "Blocked"
+        ? `PROCUREMENT BLOCKED: ${item.readinessReason}`
+        : `PROCUREMENT READY: ${item.commitment.commitmentName} can be committed without consuming protected cash.`;
+
+      addAttentionItem(reason, {
+        id: `commitment:${item.commitment.id}`,
+        objectType: "Finance",
+        title: item.commitment.commitmentName,
+        reason,
+        reasons: [reason],
+        statusText: `${item.readinessState} / ${item.effectiveCertainty} / ${item.commitment.expectedPurchaseDate || item.commitment.dueDate || "No date"}`,
+        area: item.commitment.relatedPillar,
+        attentionRank: item.readinessState === "Blocked" ? 1 : 5,
+        tieWeight: item.readinessState === "Blocked" ? 2 : 1,
+        priorityScore: item.readinessState === "Blocked" ? 170 : 110,
+        sortDate: getDateValue(item.commitment.expectedPurchaseDate || item.commitment.dueDate || item.commitment.dateCreated),
+        sortDateAscending: true,
+        onOpen: () => handleOpenAttentionRecord("Finance", `commitment:${item.commitment.id}`),
       });
     });
 
@@ -14041,6 +14163,10 @@ const isOwnershipGap =
       return "Other Attention";
     }
 
+    if (item.objectType === "Finance") {
+      return "Other Attention";
+    }
+
     if (item.objectType === "Outreach") {
       return "Outreach";
     }
@@ -16497,6 +16623,42 @@ const isOwnershipGap =
     setCommitmentEditor(newCommitment);
   };
 
+  const handleMarkCommitmentCommitted = (commitment: CommitmentRecord) => {
+    const nextCommitment: CommitmentRecord = {
+      ...commitment,
+      certainty: "Committed",
+      status: commitment.status === "Cancelled" || commitment.status === "Paid" ? commitment.status : "Upcoming",
+      amount: (commitment.actualPurchasePrice || commitment.targetPrice || commitment.amount || commitment.originalBudget || "").trim(),
+      dueDate: (commitment.expectedPurchaseDate || commitment.dueDate || new Date().toISOString().slice(0, 10)).trim(),
+    };
+
+    setCommitmentRecords((current) => current.map((record) => record.id === commitment.id ? nextCommitment : record));
+    setCommitmentEditor((current) => current?.id === commitment.id ? nextCommitment : current);
+    setFeedback({ type: "success", message: "Commitment marked committed." });
+  };
+
+  const handleMarkCommitmentPurchased = (commitment: CommitmentRecord) => {
+    const actualPurchasePrice = parseFinanceAmountInput(commitment.actualPurchasePrice || "");
+    if (actualPurchasePrice === null) {
+      setFeedback({ type: "error", message: "Record an actual purchase price before marking purchased." });
+      return;
+    }
+
+    const actualPurchaseDate = commitment.actualPurchaseDate || new Date().toISOString().slice(0, 10);
+    const nextCommitment: CommitmentRecord = {
+      ...commitment,
+      certainty: "Committed",
+      status: "Paid",
+      amount: String(actualPurchasePrice),
+      dueDate: actualPurchaseDate,
+      actualPurchaseDate,
+    };
+
+    setCommitmentRecords((current) => current.map((record) => record.id === commitment.id ? nextCommitment : record));
+    setCommitmentEditor((current) => current?.id === commitment.id ? nextCommitment : current);
+    setFeedback({ type: "success", message: "Purchase marked purchased." });
+  };
+
   const handleTaxPaymentEditOpen = (payment: TaxPaymentRecord) => {
     setSelectedTaxPaymentId(payment.id);
     setTaxPaymentEditor(payment);
@@ -18791,29 +18953,61 @@ const isOwnershipGap =
                   <MetricCard label="Actual purchase spend" value={formatFinanceAmount(capitalAllocation.procurementActualSpend)} />
                   <MetricCard label="Saved vs budget" value={formatFinanceAmount(capitalAllocation.procurementSavedAgainstBudget)} />
                 </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                  <MetricCard label="Original budget total" value={formatFinanceAmount(capitalAllocation.procurementOriginalBudgetTotal)} />
+                  <MetricCard label="Best-price total" value={formatFinanceAmount(capitalAllocation.procurementTargetPriceTotal)} />
+                  <MetricCard label="Expected savings" value={formatFinanceAmount(capitalAllocation.procurementExpectedSavings)} />
+                  <MetricCard label="Actual savings" value={formatFinanceAmount(capitalAllocation.procurementSavedAgainstBudget)} />
+                  <MetricCard label="Savings percentage" value={capitalAllocation.procurementSavingsPct === null ? "—" : `${capitalAllocation.procurementSavingsPct}%`} />
+                </div>
                 {capitalAllocation.procurementItems.length === 0 ? (
                   <div className="mt-3 rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[12px] text-[#4d4944]">
                     No planned business purchases are being tracked yet. Add a Supplier commitment to control budget, supplier, target price and purchase date.
                   </div>
                 ) : (
                   <div className="mt-3 space-y-2">
-                    {capitalAllocation.procurementItems.slice(0, 6).map((item) => (
-                      <button key={`procurement-${item.commitment.id}`} type="button" onClick={() => handleCommitmentEditOpen(item.commitment)} className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-3 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]">
+                    {capitalAllocation.procurementQueue.map((item) => (
+                      <div key={`procurement-${item.commitment.id}`} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div>
                             <div className="text-[14px] font-medium text-[#171717]">{item.commitment.commitmentName}</div>
                             <div className="mt-1 text-[11px] text-[#4d4944]">{item.commitment.supplier || "Supplier not set"} • {item.commitment.relatedPillar}</div>
                           </div>
-                          <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#2f2b28]">{item.effectiveCertainty}</span>
+                          <div className="flex flex-wrap justify-end gap-1.5">
+                            <span className={`rounded-full border px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] ${
+                              item.readinessState === "Ready to buy"
+                                ? "border-[#2f5d3a] bg-[#eef4ee] text-[#2f5d3a]"
+                                : item.readinessState === "Blocked"
+                                  ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"
+                                  : item.readinessState === "Purchased"
+                                    ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
+                                    : item.readinessState === "Wait"
+                                      ? "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"
+                                      : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
+                            }`}>{item.readinessState}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#2f2b28]">{item.effectiveCertainty}</span>
+                          </div>
                         </div>
                         <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-[#4d4944]">
                           <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">Budget {item.originalBudget !== null ? formatFinanceAmount(item.originalBudget) : "—"}</span>
                           <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">Best {item.targetPrice !== null ? formatFinanceAmount(item.targetPrice) : "—"}</span>
                           <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">Actual {item.actualPurchasePrice !== null ? formatFinanceAmount(item.actualPurchasePrice) : "—"}</span>
+                          <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">Required {formatFinanceAmount(item.amountRequired)}</span>
                           <span className="rounded border border-[#b8c9ba] bg-[#eef4ee] px-2 py-1 text-[#2f5d3a]">Saved {formatFinanceAmount(item.savedAgainstBudget)}</span>
                           <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">{item.commitment.expectedPurchaseDate || item.commitment.dueDate ? `Expected ${item.commitment.expectedPurchaseDate || item.commitment.dueDate}` : "No expected date"}</span>
+                          <span className={`rounded border px-2 py-1 ${item.projectedDeployableCashAfterPurchase !== null && item.projectedDeployableCashAfterPurchase < 0 ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]" : "border-[#d3cbc3] bg-[#f9f7f4]"}`}>Cash after {item.projectedDeployableCashAfterPurchase !== null ? formatFinanceAmount(item.projectedDeployableCashAfterPurchase) : "—"}</span>
                         </div>
-                      </button>
+                        <div className="mt-2 text-[11px] leading-4 text-[#524d49]">{item.readinessReason}</div>
+                        <div className="mt-3 flex flex-wrap gap-2 border-t border-[#e0dad4] pt-2">
+                          <button type="button" onClick={() => handleCommitmentEditOpen(item.commitment)} className="rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]">Open purchase</button>
+                          {item.readinessState === "Ready to buy" && !item.isCommitted ? (
+                            <button type="button" onClick={() => handleMarkCommitmentCommitted(item.commitment)} className="rounded border border-[#171717] bg-[#171717] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#f7f4f1] hover:bg-[#2a2724]">Mark committed</button>
+                          ) : null}
+                          {item.actualPurchasePrice !== null && item.readinessState !== "Purchased" ? (
+                            <button type="button" onClick={() => handleMarkCommitmentPurchased(item.commitment)} className="rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]">Mark purchased</button>
+                          ) : null}
+                        </div>
+                      </div>
                     ))}
                   </div>
                 )}
