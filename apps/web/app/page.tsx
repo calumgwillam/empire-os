@@ -665,6 +665,8 @@ const commitmentTypeOptions = ["Loan", "Lease", "Subscription", "Tax", "Supplier
 const commitmentStatusOptions = ["Upcoming", "Due", "Paid", "Overdue", "Cancelled"] as const;
 const commitmentCertaintyOptions = ["Committed", "Quoted", "Planned"] as const;
 type CommitmentCertainty = (typeof commitmentCertaintyOptions)[number];
+const procurementApprovalStatusOptions = ["Not reviewed", "Approved", "Rejected"] as const;
+type ProcurementApprovalStatus = (typeof procurementApprovalStatusOptions)[number];
 type ProcurementReadinessState = "Researching" | "Price found" | "Ready to buy" | "Pending validation" | "Wait" | "Blocked" | "Purchased";
 
 // Legacy records with no stored certainty behave exactly as before (i.e. as a genuine commitment).
@@ -676,6 +678,16 @@ function getEffectiveCommitmentCertainty(commitment: { certainty?: string }): Co
 
 function hasPendingProcurementValidation(commitment: { pendingValidationReason?: string }): boolean {
   return Boolean(commitment.pendingValidationReason?.trim());
+}
+
+function getEffectiveProcurementApprovalStatus(commitment: { approvalStatus?: string }): ProcurementApprovalStatus {
+  return procurementApprovalStatusOptions.includes(commitment.approvalStatus as ProcurementApprovalStatus)
+    ? (commitment.approvalStatus as ProcurementApprovalStatus)
+    : "Not reviewed";
+}
+
+function hasExecutableProcurementApproval(commitment: { approvalStatus?: string; pendingValidationReason?: string }): boolean {
+  return getEffectiveProcurementApprovalStatus(commitment) === "Approved" && !hasPendingProcurementValidation(commitment);
 }
 
 type CashPositionRecord = {
@@ -745,6 +757,10 @@ type CommitmentRecord = {
   expectedPurchaseDate?: string;
   actualPurchaseDate?: string;
   pendingValidationReason?: string;
+  approvalStatus?: ProcurementApprovalStatus;
+  approvedRejectedBy?: string;
+  approvalDate?: string;
+  approvalRationale?: string;
   notes: string;
   dateCreated: string;
 };
@@ -815,6 +831,10 @@ const defaultCommitmentForm: Omit<CommitmentRecord, "id" | "dateCreated"> = {
   expectedPurchaseDate: "",
   actualPurchaseDate: "",
   pendingValidationReason: "",
+  approvalStatus: "Not reviewed",
+  approvedRejectedBy: "",
+  approvalDate: "",
+  approvalRationale: "",
   notes: "",
 };
 
@@ -3425,7 +3445,7 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
             <select value={getEffectiveCommitmentCertainty(commitment)} onChange={(event) => onChange("certainty", event.target.value)} className={financeFieldClass}>
               {commitmentCertaintyOptions.map((certainty) => <option key={certainty} value={certainty}>{certainty}</option>)}
             </select>
-            <p className="mt-1.5 text-[11px] text-[#5d584f]">Committed counts toward committed cash and the Command funding-gap alert unless the purchase is Pending validation. Quoted, Planned and Pending validation remain planning exposure.</p>
+            <p className="mt-1.5 text-[11px] text-[#5d584f]">Committed counts toward committed cash and the Command funding-gap alert unless the purchase is Pending validation or Rejected. Quoted, Planned and Pending validation remain planning exposure.</p>
           </div>
           <div className="md:col-span-2">
             <label className={financeLabelClass}>Related pillar / area</label>
@@ -3468,6 +3488,30 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
             <label className={financeLabelClass}>Pending validation reason</label>
             <textarea rows={2} value={commitment.pendingValidationReason || ""} onChange={(event) => onChange("pendingValidationReason", event.target.value)} placeholder="External fact, term, quote, suitability, inspection or approval still to confirm" className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
             <p className="mt-1.5 text-[11px] text-[#5d584f]">Adding a reason sets this purchase to Pending validation. Clear it once the dependency is confirmed.</p>
+          </div>
+          <div className="md:col-span-2 border-t border-[#d3cbc3] pt-4">
+            <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Purchase approval</div>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Approval status</label>
+            <select value={getEffectiveProcurementApprovalStatus(commitment)} onChange={(event) => onChange("approvalStatus", event.target.value)} className={financeFieldClass}>
+              {procurementApprovalStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Approved / rejected by</label>
+            <input value={commitment.approvedRejectedBy || ""} onChange={(event) => onChange("approvedRejectedBy", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Approval date</label>
+            <input type="date" value={commitment.approvalDate || ""} onChange={(event) => onChange("approvalDate", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Approval rationale</label>
+            <textarea rows={2} value={commitment.approvalRationale || ""} onChange={(event) => onChange("approvalRationale", event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+            {getEffectiveProcurementApprovalStatus(commitment) === "Approved" && hasPendingProcurementValidation(commitment) ? (
+              <p className="mt-1.5 text-[11px] font-medium text-[#6a4a18]">Approval is recorded but cannot be executed until Pending validation is cleared.</p>
+            ) : null}
           </div>
           <div className="md:col-span-2">
             <label className={financeLabelClass}>Notes</label>
@@ -8075,6 +8119,10 @@ export default function Home() {
             expectedPurchaseDate: typeof record.expectedPurchaseDate === "string" ? record.expectedPurchaseDate : "",
             actualPurchaseDate: typeof record.actualPurchaseDate === "string" ? record.actualPurchaseDate : "",
             pendingValidationReason: typeof record.pendingValidationReason === "string" ? record.pendingValidationReason : "",
+            approvalStatus: procurementApprovalStatusOptions.includes(record.approvalStatus as ProcurementApprovalStatus) ? record.approvalStatus : "Not reviewed",
+            approvedRejectedBy: typeof record.approvedRejectedBy === "string" ? record.approvedRejectedBy : "",
+            approvalDate: typeof record.approvalDate === "string" ? record.approvalDate : "",
+            approvalRationale: typeof record.approvalRationale === "string" ? record.approvalRationale : "",
           })));
         }
       }
@@ -9887,25 +9935,29 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       const hasSupportedActiveStatus = activeCommitmentStatuses.has(status);
       const isFinal = finalCommitmentStatuses.has(status);
       const hasValidPositiveAmount = amount !== null && amount > 0;
-      const needsAttention = !isFinal && (!hasSupportedActiveStatus || !hasValidPositiveAmount);
       const effectiveCertainty = getEffectiveCommitmentCertainty(commitment);
       const pendingValidation = hasPendingProcurementValidation(commitment);
+      const approvalStatus = getEffectiveProcurementApprovalStatus(commitment);
+      const isRejected = approvalStatus === "Rejected";
+      const needsAttention = !isRejected && !isFinal && (!hasSupportedActiveStatus || !hasValidPositiveAmount);
       return {
         commitment,
         amount,
         isFinal,
-        isValidActive: hasSupportedActiveStatus && hasValidPositiveAmount,
+        isValidActive: hasSupportedActiveStatus && hasValidPositiveAmount && !isRejected,
         needsAttention,
         missingOrInvalidDueDate: hasSupportedActiveStatus && !parseCashSnapshotDate(commitment.dueDate),
         effectiveCertainty,
         pendingValidation,
+        approvalStatus,
+        isRejected,
       };
     });
     const validActiveCommitments = commitmentReadModel.filter((item) => item.isValidActive);
     const commitmentsNeedingAttention = commitmentReadModel.filter((item) => item.needsAttention);
     const commitmentsMissingDueDate = commitmentReadModel.filter((item) => item.isValidActive && item.missingOrInvalidDueDate);
     // Pending validation remains planning exposure even if its prior certainty was Committed.
-    const validActiveCommittedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty === "Committed" && !item.pendingValidation);
+    const validActiveCommittedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty === "Committed" && !item.pendingValidation && !item.isRejected);
     const validActivePlannedOrQuotedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty !== "Committed" || item.pendingValidation);
     const committedCash = validActiveCommittedCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
     const plannedOrQuotedExposure = validActivePlannedOrQuotedCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
@@ -9929,7 +9981,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         const isCommitted = item.isValidActive && item.effectiveCertainty === "Committed" && !item.pendingValidation;
         const projectedDeployableCashAfterPurchase = uncommittedDeployableCash === null
           ? null
-          : isPurchased || isCommitted
+          : isPurchased || isCommitted || item.isRejected
             ? uncommittedDeployableCash
             : uncommittedDeployableCash - amountRequired;
         const hasSupplier = Boolean(item.commitment.supplier?.trim());
@@ -9988,6 +10040,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           isPurchased,
           isCommitted,
           effectiveCertainty: item.effectiveCertainty,
+          approvalStatus: item.approvalStatus,
+          isRejected: item.isRejected,
         };
       });
     const procurementReadinessRank: Record<ProcurementReadinessState, number> = {
@@ -10000,12 +10054,13 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       Purchased: 7,
     };
     const procurementQueue = [...procurementItems].sort((left, right) =>
-      procurementReadinessRank[left.readinessState] - procurementReadinessRank[right.readinessState]
+      Number(left.isRejected) - Number(right.isRejected)
+      || procurementReadinessRank[left.readinessState] - procurementReadinessRank[right.readinessState]
       || (left.commitment.expectedPurchaseDate || left.commitment.dueDate || left.commitment.dateCreated).localeCompare(right.commitment.expectedPurchaseDate || right.commitment.dueDate || right.commitment.dateCreated)
       || left.commitment.commitmentName.localeCompare(right.commitment.commitmentName),
     );
     const procurementCommittedCash = procurementItems.filter((item) => item.isCommitted).reduce((sum, item) => sum + (item.amount ?? item.effectivePrice), 0);
-    const procurementPlannedExposure = procurementItems.filter((item) => !item.isCommitted && !item.isPurchased).reduce((sum, item) => sum + item.amountRequired, 0);
+    const procurementPlannedExposure = procurementItems.filter((item) => !item.isCommitted && !item.isPurchased && !item.isRejected).reduce((sum, item) => sum + item.amountRequired, 0);
     const procurementActualSpend = procurementItems.filter((item) => item.isPurchased).reduce((sum, item) => sum + item.effectivePrice, 0);
     const procurementOriginalBudgetTotal = procurementItems.reduce((sum, item) => sum + (item.originalBudget ?? 0), 0);
     const procurementTargetPriceTotal = procurementItems.reduce((sum, item) => sum + (item.targetPrice ?? 0), 0);
@@ -10415,6 +10470,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       // an overdue Planned/Quoted figure is a planning miss, not unpaid unavoidable spend.
       .filter((commitment) => getEffectiveCommitmentCertainty(commitment) === "Committed")
       .filter((commitment) => !hasPendingProcurementValidation(commitment))
+      .filter((commitment) => getEffectiveProcurementApprovalStatus(commitment) !== "Rejected")
       .filter((commitment) => commitment.status !== "Paid" && commitment.status !== "Cancelled" && (commitment.status === "Overdue" || isPast(commitment.dueDate)))
       .map((commitment) => ({
         key: `Finance:commitment:${commitment.id}`,
@@ -11372,24 +11428,33 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
 
     capitalAllocation.procurementQueue.forEach((item) => {
       const purchaseDateValue = getDateValue(item.commitment.expectedPurchaseDate || item.commitment.dueDate);
-      const pendingValidationIsTimeSensitive = purchaseDateValue > 0 && purchaseDateValue <= Date.now() + (7 * 24 * 60 * 60 * 1000);
-      const pendingValidationIsImportant = item.effectiveCertainty === "Committed";
-      const pendingValidationNeedsAttention = item.readinessState === "Pending validation"
-        && (pendingValidationIsTimeSensitive || pendingValidationIsImportant);
+      const isTimeSensitive = purchaseDateValue > 0 && purchaseDateValue <= Date.now() + (7 * 24 * 60 * 60 * 1000);
+      const isImportant = item.effectiveCertainty === "Committed";
+      const isApprovedDependency = item.approvalStatus === "Approved"
+        && (item.readinessState === "Blocked" || item.readinessState === "Pending validation")
+        && (isTimeSensitive || isImportant);
+      const isUnreviewedReadyPurchase = item.approvalStatus === "Not reviewed"
+        && item.readinessState === "Ready to buy"
+        && (isTimeSensitive || isImportant);
+      const isApprovedReadyPurchase = item.approvalStatus === "Approved"
+        && item.readinessState === "Ready to buy"
+        && !item.isCommitted;
 
-      if (item.readinessState !== "Ready to buy" && item.readinessState !== "Blocked" && !pendingValidationNeedsAttention) {
+      if (item.isRejected || (!isApprovedDependency && !isUnreviewedReadyPurchase && !isApprovedReadyPurchase)) {
         return;
       }
 
-      if (item.readinessState === "Ready to buy" && item.isCommitted) {
+      if (item.readinessState === "Ready to buy" && item.isCommitted && item.approvalStatus === "Approved") {
         return;
       }
 
-      const reason = item.readinessState === "Blocked"
-        ? `PROCUREMENT BLOCKED: ${item.readinessReason}`
-        : item.readinessState === "Pending validation"
-          ? `PROCUREMENT VALIDATION REQUIRED: ${item.readinessReason}`
-          : `PROCUREMENT READY: ${item.commitment.commitmentName} can be committed without consuming protected cash.`;
+      const reason = isUnreviewedReadyPurchase
+        ? `PROCUREMENT APPROVAL REQUIRED: ${item.commitment.commitmentName} is operationally ready but has not been reviewed.`
+        : item.readinessState === "Blocked"
+          ? `APPROVED PROCUREMENT BLOCKED: ${item.readinessReason}`
+          : item.readinessState === "Pending validation"
+            ? `APPROVED PROCUREMENT VALIDATION REQUIRED: ${item.readinessReason}`
+            : `APPROVED PROCUREMENT READY: ${item.commitment.commitmentName} can be committed without consuming protected cash.`;
 
       addAttentionItem(reason, {
         id: `commitment:${item.commitment.id}`,
@@ -11397,7 +11462,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         title: item.commitment.commitmentName,
         reason,
         reasons: [reason],
-        statusText: `${item.readinessState} / ${item.effectiveCertainty} / ${item.commitment.expectedPurchaseDate || item.commitment.dueDate || "No date"}`,
+        statusText: `${item.readinessState} / ${item.approvalStatus} / ${item.effectiveCertainty} / ${item.commitment.expectedPurchaseDate || item.commitment.dueDate || "No date"}`,
         area: item.commitment.relatedPillar,
         attentionRank: item.readinessState === "Blocked" ? 1 : item.readinessState === "Pending validation" ? 4 : 5,
         tieWeight: item.readinessState === "Blocked" ? 2 : 1,
@@ -16601,6 +16666,7 @@ const isOwnershipGap =
       return;
     }
 
+    const previousCommitment = commitmentRecords.find((record) => record.id === commitmentEditor.id);
     const nextCommitment: CommitmentRecord = {
       ...commitmentEditor,
       id: commitmentEditor.id || generateFinanceRecordId("commitment"),
@@ -16614,9 +16680,25 @@ const isOwnershipGap =
       supplier: (commitmentEditor.supplier || "").trim(),
       expectedPurchaseDate: (commitmentEditor.expectedPurchaseDate || "").trim(),
       actualPurchaseDate: (commitmentEditor.actualPurchaseDate || "").trim(),
+      pendingValidationReason: (commitmentEditor.pendingValidationReason || "").trim(),
+      approvalStatus: getEffectiveProcurementApprovalStatus(commitmentEditor),
+      approvedRejectedBy: (commitmentEditor.approvedRejectedBy || "").trim(),
+      approvalDate: (commitmentEditor.approvalDate || "").trim(),
+      approvalRationale: (commitmentEditor.approvalRationale || "").trim(),
       notes: commitmentEditor.notes.trim(),
       dateCreated: commitmentEditor.dateCreated || new Date().toISOString(),
     };
+    const wasCommitted = previousCommitment ? getEffectiveCommitmentCertainty(previousCommitment) === "Committed" : false;
+    const wasPurchased = previousCommitment
+      ? previousCommitment.status === "Paid" || Boolean(previousCommitment.actualPurchaseDate) || parseFinanceAmountInput(previousCommitment.actualPurchasePrice || "") !== null
+      : false;
+    const willBeCommitted = getEffectiveCommitmentCertainty(nextCommitment) === "Committed";
+    const willBePurchased = nextCommitment.status === "Paid" || Boolean(nextCommitment.actualPurchaseDate) || parseFinanceAmountInput(nextCommitment.actualPurchasePrice || "") !== null;
+
+    if (((!wasCommitted && willBeCommitted) || (!wasPurchased && willBePurchased)) && !hasExecutableProcurementApproval(nextCommitment)) {
+      setFeedback({ type: "error", message: hasPendingProcurementValidation(nextCommitment) ? "Clear Pending validation before committing or purchasing." : "Approve this purchase before committing or purchasing." });
+      return;
+    }
     const isNew = !commitmentRecords.some((record) => record.id === nextCommitment.id);
 
     setCommitmentRecords((current) =>
@@ -16651,6 +16733,11 @@ const isOwnershipGap =
   };
 
   const handleMarkCommitmentCommitted = (commitment: CommitmentRecord) => {
+    if (!hasExecutableProcurementApproval(commitment)) {
+      setFeedback({ type: "error", message: hasPendingProcurementValidation(commitment) ? "Clear Pending validation before committing this purchase." : "Approve this purchase before marking it committed." });
+      return;
+    }
+
     const nextCommitment: CommitmentRecord = {
       ...commitment,
       certainty: "Committed",
@@ -16665,6 +16752,11 @@ const isOwnershipGap =
   };
 
   const handleMarkCommitmentPurchased = (commitment: CommitmentRecord) => {
+    if (!hasExecutableProcurementApproval(commitment)) {
+      setFeedback({ type: "error", message: hasPendingProcurementValidation(commitment) ? "Clear Pending validation before marking this purchase purchased." : "Approve this purchase before marking it purchased." });
+      return;
+    }
+
     const actualPurchasePrice = parseFinanceAmountInput(commitment.actualPurchasePrice || "");
     if (actualPurchasePrice === null) {
       setFeedback({ type: "error", message: "Record an actual purchase price before marking purchased." });
@@ -17939,7 +18031,7 @@ const isOwnershipGap =
                       <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Committed cash</div>
                       <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">{formatFinanceAmount(capitalAllocation.committedCash)}</div>
                       <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
-                        {capitalAllocation.validActiveCommitments.length} valid active commitment{capitalAllocation.validActiveCommitments.length === 1 ? "" : "s"} • {capitalAllocation.commitmentsNeedingAttention.length} need attention. Committed certainty counts here unless Pending validation; planning exposure is shown separately.
+                        {capitalAllocation.validActiveCommitments.length} valid active commitment{capitalAllocation.validActiveCommitments.length === 1 ? "" : "s"} • {capitalAllocation.commitmentsNeedingAttention.length} need attention. Committed certainty counts here unless Pending validation or Rejected; planning exposure is shown separately.
                       </div>
                     </div>
 
@@ -19014,6 +19106,13 @@ const isOwnershipGap =
                                       ? "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"
                                       : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
                             }`}>{item.readinessState}</span>
+                            <span className={`rounded-full border px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] ${
+                              item.approvalStatus === "Approved"
+                                ? "border-[#2f5d3a] bg-[#eef4ee] text-[#2f5d3a]"
+                                : item.approvalStatus === "Rejected"
+                                  ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"
+                                  : "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"
+                            }`}>{item.approvalStatus}</span>
                             <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#2f2b28]">{item.effectiveCertainty}</span>
                           </div>
                         </div>
@@ -19027,12 +19126,22 @@ const isOwnershipGap =
                           <span className={`rounded border px-2 py-1 ${item.projectedDeployableCashAfterPurchase !== null && item.projectedDeployableCashAfterPurchase < 0 ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]" : "border-[#d3cbc3] bg-[#f9f7f4]"}`}>Cash after {item.projectedDeployableCashAfterPurchase !== null ? formatFinanceAmount(item.projectedDeployableCashAfterPurchase) : "—"}</span>
                         </div>
                         <div className="mt-2 text-[11px] leading-4 text-[#524d49]">{item.readinessReason}</div>
+                        {item.isRejected ? (
+                          <div className="mt-1 text-[11px] font-medium leading-4 text-[#6a3328]">Rejected purchase retained for history; no capital or active purchase action is counted.</div>
+                        ) : null}
+                        {item.commitment.approvalRationale || item.commitment.approvedRejectedBy || item.commitment.approvalDate ? (
+                          <div className="mt-1 text-[11px] leading-4 text-[#524d49]">
+                            {item.commitment.approvalRationale || "No approval rationale recorded."}
+                            {item.commitment.approvedRejectedBy ? ` • ${item.commitment.approvedRejectedBy}` : ""}
+                            {item.commitment.approvalDate ? ` • ${item.commitment.approvalDate}` : ""}
+                          </div>
+                        ) : null}
                         <div className="mt-3 flex flex-wrap gap-2 border-t border-[#e0dad4] pt-2">
                           <button type="button" onClick={() => handleCommitmentEditOpen(item.commitment)} className="rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]">Open purchase</button>
-                          {item.readinessState === "Ready to buy" && !item.isCommitted ? (
+                          {item.readinessState === "Ready to buy" && !item.isCommitted && !item.isRejected ? (
                             <button type="button" onClick={() => handleMarkCommitmentCommitted(item.commitment)} className="rounded border border-[#171717] bg-[#171717] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#f7f4f1] hover:bg-[#2a2724]">Mark committed</button>
                           ) : null}
-                          {item.actualPurchasePrice !== null && item.readinessState !== "Purchased" ? (
+                          {item.actualPurchasePrice !== null && item.readinessState !== "Purchased" && !item.isRejected ? (
                             <button type="button" onClick={() => handleMarkCommitmentPurchased(item.commitment)} className="rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]">Mark purchased</button>
                           ) : null}
                         </div>
