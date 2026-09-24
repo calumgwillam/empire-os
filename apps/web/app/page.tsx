@@ -665,13 +665,17 @@ const commitmentTypeOptions = ["Loan", "Lease", "Subscription", "Tax", "Supplier
 const commitmentStatusOptions = ["Upcoming", "Due", "Paid", "Overdue", "Cancelled"] as const;
 const commitmentCertaintyOptions = ["Committed", "Quoted", "Planned"] as const;
 type CommitmentCertainty = (typeof commitmentCertaintyOptions)[number];
-type ProcurementReadinessState = "Researching" | "Price found" | "Ready to buy" | "Wait" | "Blocked" | "Purchased";
+type ProcurementReadinessState = "Researching" | "Price found" | "Ready to buy" | "Pending validation" | "Wait" | "Blocked" | "Purchased";
 
 // Legacy records with no stored certainty behave exactly as before (i.e. as a genuine commitment).
 function getEffectiveCommitmentCertainty(commitment: { certainty?: string }): CommitmentCertainty {
   return commitmentCertaintyOptions.includes(commitment.certainty as CommitmentCertainty)
     ? (commitment.certainty as CommitmentCertainty)
     : "Committed";
+}
+
+function hasPendingProcurementValidation(commitment: { pendingValidationReason?: string }): boolean {
+  return Boolean(commitment.pendingValidationReason?.trim());
 }
 
 type CashPositionRecord = {
@@ -740,6 +744,7 @@ type CommitmentRecord = {
   supplier?: string;
   expectedPurchaseDate?: string;
   actualPurchaseDate?: string;
+  pendingValidationReason?: string;
   notes: string;
   dateCreated: string;
 };
@@ -809,6 +814,7 @@ const defaultCommitmentForm: Omit<CommitmentRecord, "id" | "dateCreated"> = {
   supplier: "",
   expectedPurchaseDate: "",
   actualPurchaseDate: "",
+  pendingValidationReason: "",
   notes: "",
 };
 
@@ -3419,7 +3425,7 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
             <select value={getEffectiveCommitmentCertainty(commitment)} onChange={(event) => onChange("certainty", event.target.value)} className={financeFieldClass}>
               {commitmentCertaintyOptions.map((certainty) => <option key={certainty} value={certainty}>{certainty}</option>)}
             </select>
-            <p className="mt-1.5 text-[11px] text-[#5d584f]">Only Committed counts toward committed cash and the Command funding-gap alert. Quoted/Planned are visible as planning exposure only.</p>
+            <p className="mt-1.5 text-[11px] text-[#5d584f]">Committed counts toward committed cash and the Command funding-gap alert unless the purchase is Pending validation. Quoted, Planned and Pending validation remain planning exposure.</p>
           </div>
           <div className="md:col-span-2">
             <label className={financeLabelClass}>Related pillar / area</label>
@@ -3457,6 +3463,11 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
           <div>
             <label className={financeLabelClass}>Actual purchase date</label>
             <input type="date" value={commitment.actualPurchaseDate || ""} onChange={(event) => onChange("actualPurchaseDate", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Pending validation reason</label>
+            <textarea rows={2} value={commitment.pendingValidationReason || ""} onChange={(event) => onChange("pendingValidationReason", event.target.value)} placeholder="External fact, term, quote, suitability, inspection or approval still to confirm" className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+            <p className="mt-1.5 text-[11px] text-[#5d584f]">Adding a reason sets this purchase to Pending validation. Clear it once the dependency is confirmed.</p>
           </div>
           <div className="md:col-span-2">
             <label className={financeLabelClass}>Notes</label>
@@ -8063,6 +8074,7 @@ export default function Home() {
             supplier: typeof record.supplier === "string" ? record.supplier : "",
             expectedPurchaseDate: typeof record.expectedPurchaseDate === "string" ? record.expectedPurchaseDate : "",
             actualPurchaseDate: typeof record.actualPurchaseDate === "string" ? record.actualPurchaseDate : "",
+            pendingValidationReason: typeof record.pendingValidationReason === "string" ? record.pendingValidationReason : "",
           })));
         }
       }
@@ -9877,6 +9889,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       const hasValidPositiveAmount = amount !== null && amount > 0;
       const needsAttention = !isFinal && (!hasSupportedActiveStatus || !hasValidPositiveAmount);
       const effectiveCertainty = getEffectiveCommitmentCertainty(commitment);
+      const pendingValidation = hasPendingProcurementValidation(commitment);
       return {
         commitment,
         amount,
@@ -9885,21 +9898,22 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         needsAttention,
         missingOrInvalidDueDate: hasSupportedActiveStatus && !parseCashSnapshotDate(commitment.dueDate),
         effectiveCertainty,
+        pendingValidation,
       };
     });
     const validActiveCommitments = commitmentReadModel.filter((item) => item.isValidActive);
     const commitmentsNeedingAttention = commitmentReadModel.filter((item) => item.needsAttention);
     const commitmentsMissingDueDate = commitmentReadModel.filter((item) => item.isValidActive && item.missingOrInvalidDueDate);
-    // Only genuinely Committed active commitments reduce deployable cash; Quoted/Planned are exposure, not obligations.
-    const validActiveCommittedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty === "Committed");
-    const validActivePlannedOrQuotedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty !== "Committed");
+    // Pending validation remains planning exposure even if its prior certainty was Committed.
+    const validActiveCommittedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty === "Committed" && !item.pendingValidation);
+    const validActivePlannedOrQuotedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty !== "Committed" || item.pendingValidation);
     const committedCash = validActiveCommittedCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
     const plannedOrQuotedExposure = validActivePlannedOrQuotedCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
     const grossDeployableCash = cashConfigured && currentCash !== null && protectedCash !== null ? currentCash - protectedCash : null;
     const uncommittedDeployableCash = grossDeployableCash === null ? null : grossDeployableCash - committedCash;
     const startOfTodayMs = new Date().setHours(0, 0, 0, 0);
     const procurementItems = commitmentReadModel
-      .filter((item) => item.commitment.type === "Supplier" || Boolean(item.commitment.procurementNeed?.trim()) || Boolean(item.commitment.originalBudget?.trim()) || Boolean(item.commitment.targetPrice?.trim()) || Boolean(item.commitment.actualPurchasePrice?.trim()) || Boolean(item.commitment.supplier?.trim()))
+      .filter((item) => item.commitment.type === "Supplier" || Boolean(item.commitment.procurementNeed?.trim()) || Boolean(item.commitment.originalBudget?.trim()) || Boolean(item.commitment.targetPrice?.trim()) || Boolean(item.commitment.actualPurchasePrice?.trim()) || Boolean(item.commitment.supplier?.trim()) || item.pendingValidation)
       .map((item) => {
         const originalBudget = parseOptionalFinanceAmount(item.commitment.originalBudget || "");
         const targetPrice = parseOptionalFinanceAmount(item.commitment.targetPrice || "");
@@ -9912,7 +9926,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         const expectedPurchaseTime = expectedPurchaseDate ? new Date(`${expectedPurchaseDate.slice(0, 10)}T00:00:00`).getTime() : 0;
         const isFuturePurchase = expectedPurchaseTime > startOfTodayMs;
         const isPurchased = item.commitment.status === "Paid" || Boolean(item.commitment.actualPurchaseDate) || actualPurchasePrice !== null;
-        const isCommitted = item.isValidActive && item.effectiveCertainty === "Committed";
+        const isCommitted = item.isValidActive && item.effectiveCertainty === "Committed" && !item.pendingValidation;
         const projectedDeployableCashAfterPurchase = uncommittedDeployableCash === null
           ? null
           : isPurchased || isCommitted
@@ -9929,6 +9943,9 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         if (isPurchased) {
           readinessState = "Purchased";
           readinessReason = "Actual purchase details have been recorded.";
+        } else if (item.pendingValidation) {
+          readinessState = "Pending validation";
+          readinessReason = item.commitment.pendingValidationReason?.trim() || "External validation is still required.";
         } else if (!hasRequiredInfo) {
           readinessState = "Researching";
           readinessReason = [
@@ -9976,10 +9993,11 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     const procurementReadinessRank: Record<ProcurementReadinessState, number> = {
       "Ready to buy": 1,
       Blocked: 2,
-      "Price found": 3,
-      Wait: 4,
-      Researching: 5,
-      Purchased: 6,
+      "Pending validation": 3,
+      "Price found": 4,
+      Wait: 5,
+      Researching: 6,
+      Purchased: 7,
     };
     const procurementQueue = [...procurementItems].sort((left, right) =>
       procurementReadinessRank[left.readinessState] - procurementReadinessRank[right.readinessState]
@@ -10396,6 +10414,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       // Only a genuine (effectively Committed) obligation being overdue is a real cash-attention issue;
       // an overdue Planned/Quoted figure is a planning miss, not unpaid unavoidable spend.
       .filter((commitment) => getEffectiveCommitmentCertainty(commitment) === "Committed")
+      .filter((commitment) => !hasPendingProcurementValidation(commitment))
       .filter((commitment) => commitment.status !== "Paid" && commitment.status !== "Cancelled" && (commitment.status === "Overdue" || isPast(commitment.dueDate)))
       .map((commitment) => ({
         key: `Finance:commitment:${commitment.id}`,
@@ -10418,13 +10437,13 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       }));
 
     // Reuses the canonical deployable-cash-minus-commitments figure from capitalAllocation (already net of
-    // reserved tax, safety buffer, and Quoted/Planned exposure) — this is now a genuine committed-cash shortfall.
+    // reserved tax, safety buffer, and planning exposure) — this is now a genuine committed-cash shortfall.
     const shortfall = capitalAllocation.uncommittedDeployableCash;
     const fundingGap = shortfall !== null && shortfall < 0
       ? {
           key: "Finance:funding-gap",
           title: "Committed obligations exceed available cash",
-          detail: `Committed obligations exceed available operating cash by ${formatFinanceAmount(Math.abs(shortfall))}. Quoted/Planned figures are not included in this shortfall.`,
+          detail: `Committed obligations exceed available operating cash by ${formatFinanceAmount(Math.abs(shortfall))}. Quoted, Planned and Pending validation figures are not included in this shortfall.`,
           amount: Math.abs(shortfall),
         }
       : null;
@@ -11352,7 +11371,13 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     });
 
     capitalAllocation.procurementQueue.forEach((item) => {
-      if (item.readinessState !== "Ready to buy" && item.readinessState !== "Blocked") {
+      const purchaseDateValue = getDateValue(item.commitment.expectedPurchaseDate || item.commitment.dueDate);
+      const pendingValidationIsTimeSensitive = purchaseDateValue > 0 && purchaseDateValue <= Date.now() + (7 * 24 * 60 * 60 * 1000);
+      const pendingValidationIsImportant = item.effectiveCertainty === "Committed";
+      const pendingValidationNeedsAttention = item.readinessState === "Pending validation"
+        && (pendingValidationIsTimeSensitive || pendingValidationIsImportant);
+
+      if (item.readinessState !== "Ready to buy" && item.readinessState !== "Blocked" && !pendingValidationNeedsAttention) {
         return;
       }
 
@@ -11362,7 +11387,9 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
 
       const reason = item.readinessState === "Blocked"
         ? `PROCUREMENT BLOCKED: ${item.readinessReason}`
-        : `PROCUREMENT READY: ${item.commitment.commitmentName} can be committed without consuming protected cash.`;
+        : item.readinessState === "Pending validation"
+          ? `PROCUREMENT VALIDATION REQUIRED: ${item.readinessReason}`
+          : `PROCUREMENT READY: ${item.commitment.commitmentName} can be committed without consuming protected cash.`;
 
       addAttentionItem(reason, {
         id: `commitment:${item.commitment.id}`,
@@ -11372,9 +11399,9 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         reasons: [reason],
         statusText: `${item.readinessState} / ${item.effectiveCertainty} / ${item.commitment.expectedPurchaseDate || item.commitment.dueDate || "No date"}`,
         area: item.commitment.relatedPillar,
-        attentionRank: item.readinessState === "Blocked" ? 1 : 5,
+        attentionRank: item.readinessState === "Blocked" ? 1 : item.readinessState === "Pending validation" ? 4 : 5,
         tieWeight: item.readinessState === "Blocked" ? 2 : 1,
-        priorityScore: item.readinessState === "Blocked" ? 170 : 110,
+        priorityScore: item.readinessState === "Blocked" ? 170 : item.readinessState === "Pending validation" ? 125 : 110,
         sortDate: getDateValue(item.commitment.expectedPurchaseDate || item.commitment.dueDate || item.commitment.dateCreated),
         sortDateAscending: true,
         onOpen: () => handleOpenAttentionRecord("Finance", `commitment:${item.commitment.id}`),
@@ -17912,15 +17939,15 @@ const isOwnershipGap =
                       <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Committed cash</div>
                       <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">{formatFinanceAmount(capitalAllocation.committedCash)}</div>
                       <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
-                        {capitalAllocation.validActiveCommitments.length} valid active commitment{capitalAllocation.validActiveCommitments.length === 1 ? "" : "s"} • {capitalAllocation.commitmentsNeedingAttention.length} need attention. Only Committed certainty counts here; Planned/Quoted are shown separately.
+                        {capitalAllocation.validActiveCommitments.length} valid active commitment{capitalAllocation.validActiveCommitments.length === 1 ? "" : "s"} • {capitalAllocation.commitmentsNeedingAttention.length} need attention. Committed certainty counts here unless Pending validation; planning exposure is shown separately.
                       </div>
                     </div>
 
                     <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
-                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Planned / Quoted exposure</div>
+                      <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">Planning exposure</div>
                       <div className="mt-1.5 text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">{formatFinanceAmount(capitalAllocation.plannedOrQuotedExposure)}</div>
                       <div className="mt-1 text-[11px] leading-4 text-[#4d4944]">
-                        {capitalAllocation.validActivePlannedOrQuotedCommitments.length} valid active commitment{capitalAllocation.validActivePlannedOrQuotedCommitments.length === 1 ? "" : "s"} marked Planned or Quoted. Planning information only — excluded from committed cash and the Command funding-gap alert.
+                        {capitalAllocation.validActivePlannedOrQuotedCommitments.length} valid active commitment{capitalAllocation.validActivePlannedOrQuotedCommitments.length === 1 ? "" : "s"} marked Planned, Quoted or Pending validation. Planning information only — excluded from committed cash and the Command funding-gap alert.
                       </div>
                     </div>
 
@@ -18928,7 +18955,7 @@ const isOwnershipGap =
                     <div className="mt-1.5 text-[18px] font-semibold tracking-[-0.05em] text-[#171717]">{formatFinanceAmount(capitalAllocation.committedCash)}</div>
                   </div>
                   <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
-                    <div className="text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">Planned / Quoted exposure</div>
+                    <div className="text-[9px] uppercase tracking-[0.14em] text-[#4d4944]">Planning exposure</div>
                     <div className="mt-1.5 text-[18px] font-semibold tracking-[-0.05em] text-[#171717]">{formatFinanceAmount(capitalAllocation.plannedOrQuotedExposure)}</div>
                     <div className="mt-1 text-[10px] text-[#5d584f]">Planning information only — excluded from committed cash.</div>
                   </div>
@@ -18949,7 +18976,7 @@ const isOwnershipGap =
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                   <MetricCard label="Tracked purchases" value={String(capitalAllocation.procurementItems.length)} />
                   <MetricCard label="Procurement committed" value={formatFinanceAmount(capitalAllocation.procurementCommittedCash)} />
-                  <MetricCard label="Planned / quoted exposure" value={formatFinanceAmount(capitalAllocation.procurementPlannedExposure)} />
+                  <MetricCard label="Planning exposure" value={formatFinanceAmount(capitalAllocation.procurementPlannedExposure)} />
                   <MetricCard label="Actual purchase spend" value={formatFinanceAmount(capitalAllocation.procurementActualSpend)} />
                   <MetricCard label="Saved vs budget" value={formatFinanceAmount(capitalAllocation.procurementSavedAgainstBudget)} />
                 </div>
@@ -18979,6 +19006,8 @@ const isOwnershipGap =
                                 ? "border-[#2f5d3a] bg-[#eef4ee] text-[#2f5d3a]"
                                 : item.readinessState === "Blocked"
                                   ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"
+                                  : item.readinessState === "Pending validation"
+                                    ? "border-[#8a6a2f] bg-[#f7f1e4] text-[#6a4a18]"
                                   : item.readinessState === "Purchased"
                                     ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
                                     : item.readinessState === "Wait"
