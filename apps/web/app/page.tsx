@@ -668,6 +668,8 @@ type CommitmentCertainty = (typeof commitmentCertaintyOptions)[number];
 const procurementApprovalStatusOptions = ["Not reviewed", "Approved", "Rejected"] as const;
 type ProcurementApprovalStatus = (typeof procurementApprovalStatusOptions)[number];
 type ProcurementReadinessState = "Researching" | "Price found" | "Ready to buy" | "Pending validation" | "Wait" | "Blocked" | "Purchased";
+const capitalDecisionOutcomeOptions = ["Approve", "Reject", "Defer", "Mark Pending validation"] as const;
+type CapitalDecisionOutcome = (typeof capitalDecisionOutcomeOptions)[number];
 
 // Legacy records with no stored certainty behave exactly as before (i.e. as a genuine commitment).
 function getEffectiveCommitmentCertainty(commitment: { certainty?: string }): CommitmentCertainty {
@@ -761,6 +763,8 @@ type CommitmentRecord = {
   approvedRejectedBy?: string;
   approvalDate?: string;
   approvalRationale?: string;
+  capitalDecisionOutcome?: CapitalDecisionOutcome;
+  capitalDecisionDeferredUntil?: string;
   notes: string;
   dateCreated: string;
 };
@@ -835,6 +839,8 @@ const defaultCommitmentForm: Omit<CommitmentRecord, "id" | "dateCreated"> = {
   approvedRejectedBy: "",
   approvalDate: "",
   approvalRationale: "",
+  capitalDecisionOutcome: undefined,
+  capitalDecisionDeferredUntil: "",
   notes: "",
 };
 
@@ -3525,6 +3531,110 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
             <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
             <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidName || hasInvalidAmount || hasInvalidDueDate) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save commitment"}</button>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type CapitalDecisionReviewContext = {
+  commitmentId: string;
+  title: string;
+  amountLabel: string;
+  readinessState?: ProcurementReadinessState;
+  approvalStatus?: ProcurementApprovalStatus;
+  reason: string;
+  area: string;
+  date: string;
+};
+
+function CapitalDecisionReviewPanel({ context, commitment, onClose, onSubmit }: {
+  context: CapitalDecisionReviewContext;
+  commitment: CommitmentRecord;
+  onClose: () => void;
+  onSubmit: (decision: {
+    outcome: CapitalDecisionOutcome;
+    rationale: string;
+    decisionMaker: string;
+    decisionDate: string;
+    deferredUntil: string;
+    pendingValidationReason: string;
+  }) => void;
+}) {
+  const [outcome, setOutcome] = useState<CapitalDecisionOutcome | "">("");
+  const [rationale, setRationale] = useState(commitment.approvalRationale || "");
+  const [decisionMaker, setDecisionMaker] = useState(commitment.approvedRejectedBy || "");
+  const [decisionDate, setDecisionDate] = useState(new Date().toISOString().slice(0, 10));
+  const [deferredUntil, setDeferredUntil] = useState(commitment.capitalDecisionDeferredUntil || "");
+  const [pendingValidationReason, setPendingValidationReason] = useState(commitment.pendingValidationReason || "");
+  const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
+  const missingCoreFields = !outcome || !rationale.trim() || !decisionMaker.trim() || !decisionDate;
+  const missingOutcomeField = outcome === "Defer"
+    ? !deferredUntil || deferredUntil < decisionDate
+    : outcome === "Mark Pending validation"
+      ? !pendingValidationReason.trim()
+      : false;
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-[#171717]/20 px-4">
+      <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+        <div className="flex items-start justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Capital Decision Review</p>
+            <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{context.title}</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.12em] text-[#4d4944]">
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">{context.amountLabel}</span>
+          {context.readinessState ? <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">{context.readinessState}</span> : null}
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">{context.approvalStatus || getEffectiveProcurementApprovalStatus(commitment)}</span>
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">{context.area}</span>
+          {context.date ? <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">{context.date}</span> : null}
+        </div>
+        <div className="mt-3 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] px-3 py-2.5 text-[12px] leading-5 text-[#4d4944]">{context.reason}</div>
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Decision outcome</label>
+            <select value={outcome} onChange={(event) => setOutcome(event.target.value as CapitalDecisionOutcome | "")} className={financeFieldClass}>
+              <option value="">Select outcome</option>
+              {capitalDecisionOutcomeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Decision maker</label>
+            <input value={decisionMaker} onChange={(event) => setDecisionMaker(event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Decision date</label>
+            <input type="date" value={decisionDate} onChange={(event) => setDecisionDate(event.target.value)} className={financeFieldClass} />
+          </div>
+          {outcome === "Defer" ? (
+            <div className="md:col-span-2">
+              <label className={financeLabelClass}>Deferred until</label>
+              <input type="date" value={deferredUntil} onChange={(event) => setDeferredUntil(event.target.value)} min={decisionDate || undefined} className={financeFieldClass} />
+            </div>
+          ) : null}
+          {outcome === "Mark Pending validation" ? (
+            <div className="md:col-span-2">
+              <label className={financeLabelClass}>Pending-validation reason</label>
+              <textarea rows={2} value={pendingValidationReason} onChange={(event) => setPendingValidationReason(event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+            </div>
+          ) : null}
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Decision rationale</label>
+            <textarea rows={3} value={rationale} onChange={(event) => setRationale(event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          {hasAttemptedSubmit && (missingCoreFields || missingOutcomeField) ? (
+            <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Complete the decision, maker, date and rationale, plus the required outcome detail.</p>
+          ) : null}
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2 border-t border-[#d3cbc3] pt-3">
+          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+          <button type="button" onClick={() => { setHasAttemptedSubmit(true); if (!outcome || missingCoreFields || missingOutcomeField) return; onSubmit({ outcome, rationale: rationale.trim(), decisionMaker: decisionMaker.trim(), decisionDate, deferredUntil, pendingValidationReason: pendingValidationReason.trim() }); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1]">Record decision</button>
         </div>
       </div>
     </div>
@@ -7859,6 +7969,7 @@ export default function Home() {
   const [expenseEditor, setExpenseEditor] = useState<ExpenseRecord | null>(null);
   const [selectedCommitmentId, setSelectedCommitmentId] = useState<string | null>(null);
   const [commitmentEditor, setCommitmentEditor] = useState<CommitmentRecord | null>(null);
+  const [capitalDecisionReview, setCapitalDecisionReview] = useState<CapitalDecisionReviewContext | null>(null);
   const [selectedTaxPaymentId, setSelectedTaxPaymentId] = useState<string | null>(null);
   const [taxPaymentEditor, setTaxPaymentEditor] = useState<TaxPaymentRecord | null>(null);
   const [creatingLinkedActionForProblemId, setCreatingLinkedActionForProblemId] = useState<string | null>(null);
@@ -8123,6 +8234,8 @@ export default function Home() {
             approvedRejectedBy: typeof record.approvedRejectedBy === "string" ? record.approvedRejectedBy : "",
             approvalDate: typeof record.approvalDate === "string" ? record.approvalDate : "",
             approvalRationale: typeof record.approvalRationale === "string" ? record.approvalRationale : "",
+            capitalDecisionOutcome: capitalDecisionOutcomeOptions.includes(record.capitalDecisionOutcome as CapitalDecisionOutcome) ? record.capitalDecisionOutcome : undefined,
+            capitalDecisionDeferredUntil: typeof record.capitalDecisionDeferredUntil === "string" ? record.capitalDecisionDeferredUntil : "",
           })));
         }
       }
@@ -11554,6 +11667,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     capitalAllocation.procurementQueue.forEach((item) => {
       if (item.isRejected || item.isPurchased) return;
       const date = item.commitment.expectedPurchaseDate || item.commitment.dueDate || "";
+      const deferredUntilValue = getDateValue(item.commitment.capitalDecisionDeferredUntil);
+      const isActivelyDeferred = item.commitment.capitalDecisionOutcome === "Defer" && deferredUntilValue > todayMs;
       const timeSensitive = isTimeSensitive(date);
       const material = isMaterial(item.amountRequired);
       const approvedDependency = item.approvalStatus === "Approved"
@@ -11564,9 +11679,12 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         && !item.isCommitted;
       const judgementRequired = ["Planned", "Quoted"].includes(item.effectiveCertainty)
         && item.approvalStatus === "Not reviewed"
+        && item.commitment.capitalDecisionOutcome !== "Mark Pending validation"
         && (timeSensitive || material);
       const committedFundingPressure = Boolean(cashAttention.fundingGap) && item.isCommitted;
+      const overdueUrgency = Boolean(date) && getDateValue(date) < todayMs;
 
+      if (isActivelyDeferred && !committedFundingPressure && !overdueUrgency) return;
       if (!approvedDependency && !(readyAwaitingReview && (timeSensitive || material)) && !approvedAwaitingCommitment && !judgementRequired && !committedFundingPressure) return;
 
       const reason = committedFundingPressure
@@ -11610,6 +11728,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     capitalAllocation.validActiveCommitments.forEach((item) => {
       if (procurementCommitmentIds.has(item.commitment.id) || item.isRejected || item.amount === null || !isMaterial(item.amount)) return;
       const date = item.commitment.dueDate || "";
+      const deferredUntilValue = getDateValue(item.commitment.capitalDecisionDeferredUntil);
+      if (item.commitment.capitalDecisionOutcome === "Defer" && deferredUntilValue > todayMs && getDateValue(date) >= todayMs) return;
       addItem({
         key: `Finance:commitment:${item.commitment.id}`,
         objectId: `commitment:${item.commitment.id}`,
@@ -16932,6 +17052,39 @@ const isOwnershipGap =
     setFeedback({ type: "success", message: "Purchase marked purchased." });
   };
 
+  const handleCapitalDecisionReviewSubmit = (decision: {
+    outcome: CapitalDecisionOutcome;
+    rationale: string;
+    decisionMaker: string;
+    decisionDate: string;
+    deferredUntil: string;
+    pendingValidationReason: string;
+  }) => {
+    if (!capitalDecisionReview) return;
+    const commitment = commitmentRecords.find((record) => record.id === capitalDecisionReview.commitmentId);
+    if (!commitment) {
+      setCapitalDecisionReview(null);
+      setFeedback({ type: "error", message: "The commitment could not be found." });
+      return;
+    }
+
+    const nextCommitment: CommitmentRecord = {
+      ...commitment,
+      approvalStatus: decision.outcome === "Approve" ? "Approved" : decision.outcome === "Reject" ? "Rejected" : getEffectiveProcurementApprovalStatus(commitment),
+      approvedRejectedBy: decision.decisionMaker,
+      approvalDate: decision.decisionDate,
+      approvalRationale: decision.rationale,
+      capitalDecisionOutcome: decision.outcome,
+      capitalDecisionDeferredUntil: decision.outcome === "Defer" ? decision.deferredUntil : "",
+      pendingValidationReason: decision.outcome === "Mark Pending validation" ? decision.pendingValidationReason : commitment.pendingValidationReason,
+    };
+
+    setCommitmentRecords((current) => current.map((record) => record.id === commitment.id ? nextCommitment : record));
+    setCommitmentEditor((current) => current?.id === commitment.id ? nextCommitment : current);
+    setCapitalDecisionReview(null);
+    setFeedback({ type: "success", message: `Capital decision recorded: ${decision.outcome}.` });
+  };
+
   const handleTaxPaymentEditOpen = (payment: TaxPaymentRecord) => {
     setSelectedTaxPaymentId(payment.id);
     setTaxPaymentEditor(payment);
@@ -17671,11 +17824,18 @@ const isOwnershipGap =
                   ) : (
                     <div className="mt-3 space-y-2">
                       {founderCapitalAttention.map((item) => (
-                      <button
+                      <div
                         key={item.key}
-                        type="button"
                         onClick={() => handleOpenAttentionRecord("Finance", item.objectId)}
-                        className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            handleOpenAttentionRecord("Finance", item.objectId);
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
+                        className="block w-full cursor-pointer rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
@@ -17689,7 +17849,29 @@ const isOwnershipGap =
                         </div>
                         <div className="mt-1.5 text-[11px] leading-4 text-[#4d4944]">{item.reason}</div>
                         <div className="mt-1 text-[11px] font-medium leading-4 text-[#171717]">Next: {item.nextAction}</div>
-                      </button>
+                        {item.objectId.startsWith("commitment:") ? (
+                          <button
+                            type="button"
+                            onKeyDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setCapitalDecisionReview({
+                                commitmentId: item.objectId.slice("commitment:".length),
+                                title: item.title,
+                                amountLabel: item.amount !== null ? formatFinanceAmount(item.amount) : "Amount unavailable",
+                                readinessState: item.readinessState,
+                                approvalStatus: item.approvalStatus,
+                                reason: item.reason,
+                                area: item.area,
+                                date: item.date,
+                              });
+                            }}
+                            className="mt-2 rounded border border-[#171717] bg-[#171717] px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-[#f7f4f1]"
+                          >
+                            Review capital decision
+                          </button>
+                        ) : null}
+                      </div>
                       ))}
                     </div>
                   )}
@@ -19265,6 +19447,7 @@ const isOwnershipGap =
                         ) : null}
                         {item.commitment.approvalRationale || item.commitment.approvedRejectedBy || item.commitment.approvalDate ? (
                           <div className="mt-1 text-[11px] leading-4 text-[#524d49]">
+                            {item.commitment.capitalDecisionOutcome ? `${item.commitment.capitalDecisionOutcome}${item.commitment.capitalDecisionOutcome === "Defer" && item.commitment.capitalDecisionDeferredUntil ? ` until ${item.commitment.capitalDecisionDeferredUntil}` : ""} • ` : ""}
                             {item.commitment.approvalRationale || "No approval rationale recorded."}
                             {item.commitment.approvedRejectedBy ? ` • ${item.commitment.approvedRejectedBy}` : ""}
                             {item.commitment.approvalDate ? ` • ${item.commitment.approvalDate}` : ""}
@@ -21084,6 +21267,20 @@ const isOwnershipGap =
           onSave={handleCommitmentSave}
           onDelete={handleCommitmentDelete}
         />
+      ) : null}
+
+      {capitalDecisionReview ? (
+        (() => {
+          const commitment = commitmentRecords.find((record) => record.id === capitalDecisionReview.commitmentId);
+          return commitment ? (
+            <CapitalDecisionReviewPanel
+              context={capitalDecisionReview}
+              commitment={commitment}
+              onClose={() => setCapitalDecisionReview(null)}
+              onSubmit={handleCapitalDecisionReviewSubmit}
+            />
+          ) : null;
+        })()
       ) : null}
 
       {selectedTaxPaymentId && taxPaymentEditor ? (
