@@ -11491,6 +11491,180 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     ).values(),
   ).sort(compareAttentionItems);
 
+  type FounderCapitalAttentionItem = {
+    key: string;
+    objectId: string;
+    title: string;
+    amount: number | null;
+    readinessState?: ProcurementReadinessState;
+    approvalStatus?: ProcurementApprovalStatus;
+    reason: string;
+    nextAction: string;
+    area: string;
+    date: string;
+    rank: number;
+    sortDate: number;
+  };
+  const founderCapitalAttention = (() => {
+    const itemsByKey = new Map<string, FounderCapitalAttentionItem>();
+    const addItem = (item: FounderCapitalAttentionItem) => {
+      const existing = itemsByKey.get(item.key);
+      if (!existing || item.rank < existing.rank) itemsByKey.set(item.key, item);
+    };
+    const todayMs = new Date().setHours(0, 0, 0, 0);
+    const sevenDaysFromTodayMs = todayMs + (7 * 24 * 60 * 60 * 1000);
+    const isTimeSensitive = (date: string) => {
+      const dateValue = getDateValue(date);
+      return dateValue > 0 && dateValue <= sevenDaysFromTodayMs;
+    };
+    const isMaterial = (amount: number) =>
+      amount > 0
+      && capitalAllocation.uncommittedDeployableCash !== null
+      && amount >= Math.max(0, capitalAllocation.uncommittedDeployableCash);
+
+    if (cashAttention.fundingGap) {
+      addItem({
+        key: "Finance:funding-gap",
+        objectId: "funding-gap",
+        title: cashAttention.fundingGap.title,
+        amount: cashAttention.fundingGap.amount,
+        reason: cashAttention.fundingGap.detail,
+        nextAction: "Review committed obligations and restore deployable cash.",
+        area: "Finance",
+        date: "",
+        rank: 1,
+        sortDate: 0,
+      });
+    }
+    if (cashAttention.buffer) {
+      addItem({
+        key: "Finance:cash-buffer",
+        objectId: "cash-buffer",
+        title: cashAttention.buffer.title,
+        amount: capitalAllocation.uncommittedDeployableCash,
+        reason: cashAttention.buffer.detail,
+        nextAction: "Review the cash snapshot, protected cash and near-term obligations.",
+        area: "Finance",
+        date: "",
+        rank: 1,
+        sortDate: 0,
+      });
+    }
+
+    capitalAllocation.procurementQueue.forEach((item) => {
+      if (item.isRejected || item.isPurchased) return;
+      const date = item.commitment.expectedPurchaseDate || item.commitment.dueDate || "";
+      const timeSensitive = isTimeSensitive(date);
+      const material = isMaterial(item.amountRequired);
+      const approvedDependency = item.approvalStatus === "Approved"
+        && (item.readinessState === "Blocked" || item.readinessState === "Pending validation");
+      const readyAwaitingReview = item.readinessState === "Ready to buy" && item.approvalStatus === "Not reviewed";
+      const approvedAwaitingCommitment = item.readinessState === "Ready to buy"
+        && item.approvalStatus === "Approved"
+        && !item.isCommitted;
+      const judgementRequired = ["Planned", "Quoted"].includes(item.effectiveCertainty)
+        && item.approvalStatus === "Not reviewed"
+        && (timeSensitive || material);
+      const committedFundingPressure = Boolean(cashAttention.fundingGap) && item.isCommitted;
+
+      if (!approvedDependency && !(readyAwaitingReview && (timeSensitive || material)) && !approvedAwaitingCommitment && !judgementRequired && !committedFundingPressure) return;
+
+      const reason = committedFundingPressure
+        ? "This committed purchase contributes to the current funding gap."
+        : approvedDependency
+          ? `Capital is approved, but execution cannot proceed: ${item.readinessReason}`
+          : readyAwaitingReview
+            ? "The purchase is operationally ready, but capital has not been formally reviewed."
+            : approvedAwaitingCommitment
+              ? "Capital is approved and the purchase is ready, but funds have not been committed."
+              : material
+                ? "Founder judgement is required because this planned exposure would consume current uncommitted deployable cash."
+                : "Founder judgement is required before the time-sensitive planned exposure can be committed.";
+      const nextAction = committedFundingPressure
+        ? "Review this commitment against the funding gap."
+        : approvedDependency
+          ? item.readinessState === "Pending validation" ? "Confirm the external dependency and clear Pending validation." : "Resolve the cash or information blocker."
+          : readyAwaitingReview
+            ? "Review and approve or reject the purchase."
+            : approvedAwaitingCommitment
+              ? "Commit the approved funds or revise the approval."
+              : "Review the quote or plan and approve, reject or defer it.";
+
+      addItem({
+        key: `Finance:commitment:${item.commitment.id}`,
+        objectId: `commitment:${item.commitment.id}`,
+        title: item.commitment.commitmentName,
+        amount: item.amountRequired,
+        readinessState: item.readinessState,
+        approvalStatus: item.approvalStatus,
+        reason,
+        nextAction,
+        area: item.commitment.relatedPillar,
+        date,
+        rank: committedFundingPressure ? 1 : approvedDependency ? 2 : readyAwaitingReview ? 3 : approvedAwaitingCommitment ? 4 : 5,
+        sortDate: getDateValue(date),
+      });
+    });
+
+    const procurementCommitmentIds = new Set(capitalAllocation.procurementItems.map((item) => item.commitment.id));
+    capitalAllocation.validActiveCommitments.forEach((item) => {
+      if (procurementCommitmentIds.has(item.commitment.id) || item.isRejected || item.amount === null || !isMaterial(item.amount)) return;
+      const date = item.commitment.dueDate || "";
+      addItem({
+        key: `Finance:commitment:${item.commitment.id}`,
+        objectId: `commitment:${item.commitment.id}`,
+        title: item.commitment.commitmentName,
+        amount: item.amount,
+        approvalStatus: item.approvalStatus,
+        reason: "This upcoming commitment materially reduces the current uncommitted deployable cash position.",
+        nextAction: "Review timing, necessity and funding coverage before the due date.",
+        area: item.commitment.relatedPillar,
+        date,
+        rank: 5,
+        sortDate: getDateValue(date),
+      });
+    });
+
+    cashAttention.overdueCommitments.forEach((item) => {
+      const commitment = commitmentRecords.find((record) => record.id === item.id);
+      if (!commitment || getEffectiveProcurementApprovalStatus(commitment) === "Rejected") return;
+      addItem({
+        key: `Finance:commitment:${item.id}`,
+        objectId: `commitment:${item.id}`,
+        title: item.title,
+        amount: item.amount,
+        reason: item.detail,
+        nextAction: "Review the overdue obligation and record payment or revised timing.",
+        area: commitment.relatedPillar,
+        date: item.dueDate,
+        rank: 5,
+        sortDate: getDateValue(item.dueDate),
+      });
+    });
+    cashAttention.overdueExpectedIncome.forEach((item) => {
+      const income = incomeRecords.find((record) => record.id === item.id);
+      addItem({
+        key: `Finance:income:${item.id}`,
+        objectId: `income:${item.id}`,
+        title: item.title,
+        amount: item.amount,
+        reason: item.detail,
+        nextAction: "Confirm receipt timing or follow up on the overdue income.",
+        area: income?.area || "Finance",
+        date: item.date,
+        rank: 5,
+        sortDate: getDateValue(item.date),
+      });
+    });
+
+    return [...itemsByKey.values()].sort((left, right) =>
+      left.rank - right.rank
+      || (left.sortDate || Number.POSITIVE_INFINITY) - (right.sortDate || Number.POSITIVE_INFINITY)
+      || (right.amount ?? 0) - (left.amount ?? 0)
+      || left.title.localeCompare(right.title),
+    );
+  })();
+
   const staleRecords = commandAttentionItemList.filter((item) =>
     item.reasons.some((reason) => reason === "STALE PROJECT" || reason === "STALE PROJECT • TARGET APPROACHING" || reason === "STALE IN-PROGRESS ACTION"),
   );
@@ -11831,6 +12005,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     };
 
     correlationLayer.signalled.forEach((record, recordKey) => {
+      if (record.objectType === "Finance") return;
       const signalList = [...record.signals];
       const combinedReason = signalList.length > 1
         ? `Needs attention for ${signalList.length} reasons: ${signalList.join(", ")}.`
@@ -12154,7 +12329,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     const executionGapCount = decisionsWithoutExecution.length;
     const focusCount = founderFocusCandidates.length;
     const ownershipHygieneGapCount = unassignedAccountability.carriedCount;
-    const financeCount = cashAttention.count;
+    const financeCount = founderCapitalAttention.length;
 
     const postureParts: string[] = [];
     const strategicConfidenceAttentionCount =
@@ -12175,10 +12350,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       );
     }
 
-    if (cashAttention.buffer) postureParts.push("cash buffer pressure");
-    if (cashAttention.fundingGap) postureParts.push("committed obligations exceed available cash");
-    if (cashAttention.overdueCommitments.length > 0) postureParts.push(`${cashAttention.overdueCommitments.length} overdue commitment${cashAttention.overdueCommitments.length === 1 ? "" : "s"}`);
-    if (cashAttention.overdueExpectedIncome.length > 0) postureParts.push(`${cashAttention.overdueExpectedIncome.length} expected income overdue`);
+    if (financeCount > 0) postureParts.push(`${financeCount} capital attention item${financeCount === 1 ? " needs" : "s need"} founder review`);
 
     const posture = postureParts.length > 0
       ? postureParts.join(" • ")
@@ -12254,10 +12426,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     decisionsWithoutExecution.forEach((decision) => outstandingRecordKeys.add(`Decision:${decision.id}`));
     recurringProblemLearning.gaps.forEach((problem) => outstandingRecordKeys.add(`Problem:${problem.id}`));
     staleRecords.forEach((item) => outstandingRecordKeys.add(`${item.objectType}:${item.id}`));
-    if (cashAttention.buffer) outstandingRecordKeys.add("Finance:cash-buffer");
-    if (cashAttention.fundingGap) outstandingRecordKeys.add("Finance:funding-gap");
-    cashAttention.overdueCommitments.forEach((item) => outstandingRecordKeys.add(`Finance:commitment:${item.id}`));
-    cashAttention.overdueExpectedIncome.forEach((item) => outstandingRecordKeys.add(`Finance:income:${item.id}`));
+    founderCapitalAttention.forEach((item) => outstandingRecordKeys.add(item.key));
     growthAttention.stalledOpportunities.forEach((item) => outstandingRecordKeys.add(`Opportunity:${item.id}`));
     growthAttention.stalledLeads.forEach((item) => outstandingRecordKeys.add(`Lead:${item.id}`));
     const outstandingCount = outstandingRecordKeys.size;
@@ -12929,16 +13098,6 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       });
       usedNext7Keys.add(key);
       usedNext7Keys.add(topFocus.key);
-    } else if (cashAttention.buffer) {
-      next7Days.push({
-        id: "cash-buffer",
-        objectType: "Finance",
-        title: cashAttention.buffer.title,
-        area: "Finance",
-        why: cashAttention.buffer.detail,
-        onOpen: () => handleOpenAttentionRecord("Finance", "cash-buffer"),
-      });
-      usedNext7Keys.add("Finance:cash-buffer");
     }
 
     if (unassignedAccountability.carriedCount > 0 && !usedNext7Keys.has("People:unassigned")) {
@@ -14268,10 +14427,10 @@ const isOwnershipGap =
   const commandAttentionGroups = ["Blocked / Waiting", "Urgent / Overdue", "Problems", "Actions", "Projects", "Opportunities", "Outreach", "Other Attention"]
     .map((label) => ({
       label,
-      items: commandAttentionItemList.filter((item) => getAttentionGroup(item) === label),
+      items: commandAttentionItemList.filter((item) => item.objectType !== "Finance" && getAttentionGroup(item) === label),
     }))
     .filter((group) => group.items.length > 0);
-  const commandAttentionItems = commandAttentionItemList.length;
+  const commandAttentionItems = commandAttentionItemList.filter((item) => item.objectType !== "Finance").length;
   const executiveAttentionRecordKeys = new Set(todayBrief.outstandingKeys.map((item) => item.key));
   const executiveAttentionItems = todayBrief.outstandingCount;
   const projectAttentionCount = new Set(
@@ -15430,14 +15589,9 @@ const isOwnershipGap =
     }
 
     if (stepLabel === "Clear cash attention") {
-      if (cashAttention.buffer) {
-        handleOpenAttentionRecord("Finance", "cash-buffer");
-      } else if (cashAttention.fundingGap) {
-        handleOpenAttentionRecord("Finance", "funding-gap");
-      } else if (cashAttention.overdueCommitments.length > 0) {
-        handleOpenAttentionRecord("Finance", `commitment:${cashAttention.overdueCommitments[0].id}`);
-      } else if (cashAttention.overdueExpectedIncome.length > 0) {
-        handleOpenAttentionRecord("Finance", `income:${cashAttention.overdueExpectedIncome[0].id}`);
+      const firstCapitalAttentionItem = founderCapitalAttention[0];
+      if (firstCapitalAttentionItem) {
+        handleOpenAttentionRecord("Finance", firstCapitalAttentionItem.objectId);
       } else {
         setActiveView("Finance");
       }
@@ -17502,64 +17656,44 @@ const isOwnershipGap =
                 </div>
               ) : null}
 
-              {cashAttention.count > 0 ? (
-                <div className="mt-4 rounded-2xl border border-[#c9b8a3] bg-[#f5efe6] p-4">
+              <div className="mt-4 rounded-2xl border border-[#c9b8a3] bg-[#f5efe6] p-4">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Cash attention</div>
+                    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Founder Capital Attention</div>
                     <span className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#6a3328]">
-                      {cashAttention.count} item{cashAttention.count === 1 ? "" : "s"}
+                      {founderCapitalAttention.length} item{founderCapitalAttention.length === 1 ? "" : "s"}
                     </span>
                   </div>
 
-                  <div className="mt-3 space-y-2">
-                    {cashAttention.buffer ? (
-                      <button
-                        type="button"
-                        onClick={() => handleOpenAttentionRecord("Finance", "cash-buffer")}
-                        className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
-                      >
-                        <div className="text-[13px] font-medium text-[#171717]">{cashAttention.buffer.title}</div>
-                        <div className="mt-0.5 text-[11px] text-[#4d4944]">{cashAttention.buffer.detail}</div>
-                      </button>
-                    ) : null}
-
-                    {cashAttention.fundingGap ? (
-                      <button
-                        type="button"
-                        onClick={() => handleOpenAttentionRecord("Finance", "funding-gap")}
-                        className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
-                      >
-                        <div className="text-[13px] font-medium text-[#171717]">{cashAttention.fundingGap.title}</div>
-                        <div className="mt-0.5 text-[11px] text-[#4d4944]">{cashAttention.fundingGap.detail}</div>
-                      </button>
-                    ) : null}
-
-                    {cashAttention.overdueCommitments.map((item) => (
+                  {founderCapitalAttention.length === 0 ? (
+                    <div className="mt-3 rounded-xl border border-dashed border-[#d3cbc3] bg-white px-3 py-4 text-[12px] text-[#4d4944]">
+                      No capital decision or finance intervention currently requires founder attention.
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-2">
+                      {founderCapitalAttention.map((item) => (
                       <button
                         key={item.key}
                         type="button"
-                        onClick={() => handleOpenAttentionRecord("Finance", `commitment:${item.id}`)}
+                        onClick={() => handleOpenAttentionRecord("Finance", item.objectId)}
                         className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
                       >
-                        <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
-                        <div className="mt-0.5 text-[11px] text-[#4d4944]">{item.detail}</div>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
+                          <div className="text-[12px] font-semibold text-[#171717]">{item.amount !== null ? formatFinanceAmount(item.amount) : "Amount unavailable"}</div>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1.5 text-[9px] uppercase tracking-[0.12em] text-[#4d4944]">
+                          {item.readinessState ? <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-0.5">{item.readinessState}</span> : null}
+                          {item.approvalStatus ? <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-0.5">{item.approvalStatus}</span> : null}
+                          <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-0.5">{item.area}</span>
+                          {item.date ? <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-0.5">{item.date}</span> : null}
+                        </div>
+                        <div className="mt-1.5 text-[11px] leading-4 text-[#4d4944]">{item.reason}</div>
+                        <div className="mt-1 text-[11px] font-medium leading-4 text-[#171717]">Next: {item.nextAction}</div>
                       </button>
-                    ))}
-
-                    {cashAttention.overdueExpectedIncome.map((item) => (
-                      <button
-                        key={item.key}
-                        type="button"
-                        onClick={() => handleOpenAttentionRecord("Finance", `income:${item.id}`)}
-                        className="block w-full rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5 text-left transition hover:border-[#171717] hover:bg-[#f4f1ee]"
-                      >
-                        <div className="text-[13px] font-medium text-[#171717]">{item.title}</div>
-                        <div className="mt-0.5 text-[11px] text-[#4d4944]">{item.detail}</div>
-                      </button>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              ) : null}
 
               {growthAttention.count > 0 ? (
                 <div className="mt-4 rounded-2xl border border-[#b8c4a3] bg-[#f1f4ea] p-4">
@@ -17612,7 +17746,7 @@ const isOwnershipGap =
 
               {commandAttentionItems === 0 ? (
                 <div className="mt-6 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-8 text-[15px] text-[#4d4944]">
-                  No current items require attention.
+                  No other current items require attention.
                 </div>
               ) : (
                 <div className="mt-6 space-y-5">
