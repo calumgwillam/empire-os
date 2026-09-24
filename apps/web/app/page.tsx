@@ -207,6 +207,8 @@ const actionStatusOptions = ["Open", "In Progress", "Blocked", "Waiting", "Compl
 
 type ActionPriority = (typeof actionPriorityOptions)[number];
 type ActionStatus = (typeof actionStatusOptions)[number];
+const actionReviewOutcomeOptions = ["Continue", "Waiting on external dependency", "Blocked", "Reassign", "Complete", "Cancel"] as const;
+type ActionReviewOutcome = (typeof actionReviewOutcomeOptions)[number];
 
 type ActionRecord = CaptureConversionRecord & {
   actionTitle: string;
@@ -225,6 +227,12 @@ type ActionRecord = CaptureConversionRecord & {
   relatedPillar: string;
   completionEvidence: string;
   completionDate: string;
+  followUpDate?: string;
+  followUpOwner?: string;
+  followUpOwnerPersonId?: string;
+  followUpNote?: string;
+  lastReviewedDate?: string;
+  reviewOutcome?: ActionReviewOutcome;
   releaseSourceType?: "Action" | "Project" | "Lead" | "Problem";
   releaseSourceId?: string;
   releaseIntent?: "Prepare to Delegate" | "Unblock First";
@@ -232,6 +240,18 @@ type ActionRecord = CaptureConversionRecord & {
 
 function isActionWaiting(action: Pick<ActionRecord, "status">): boolean {
   return action.status === "Waiting";
+}
+
+function isActionFollowUpFuture(action: Pick<ActionRecord, "followUpDate">, nowMs = Date.now()): boolean {
+  if (!action.followUpDate) return false;
+  const followUpMs = new Date(`${action.followUpDate.slice(0, 10)}T00:00:00`).getTime();
+  return !Number.isNaN(followUpMs) && followUpMs > new Date(nowMs).setHours(0, 0, 0, 0);
+}
+
+function isActionFollowUpDue(action: Pick<ActionRecord, "followUpDate">, nowMs = Date.now()): boolean {
+  if (!action.followUpDate) return false;
+  const followUpMs = new Date(`${action.followUpDate.slice(0, 10)}T00:00:00`).getTime();
+  return !Number.isNaN(followUpMs) && followUpMs <= new Date(nowMs).setHours(0, 0, 0, 0);
 }
 
 const decisionRiskOptions = ["Low", "Medium", "High", "Critical"] as const;
@@ -1275,6 +1295,14 @@ function normalizeActionRecord(record: CaptureConversionRecord): ActionRecord {
     relatedPillar: record.relatedPillar?.trim() || record.relatedArea,
     completionEvidence: record.completionEvidence?.trim() || "",
     completionDate: record.completionDate?.trim() || "",
+    followUpDate: (record as Partial<ActionRecord>).followUpDate?.trim() || "",
+    followUpOwner: (record as Partial<ActionRecord>).followUpOwner?.trim() || "",
+    followUpOwnerPersonId: (record as Partial<ActionRecord>).followUpOwnerPersonId?.trim() || "",
+    followUpNote: (record as Partial<ActionRecord>).followUpNote?.trim() || "",
+    lastReviewedDate: (record as Partial<ActionRecord>).lastReviewedDate?.trim() || "",
+    reviewOutcome: actionReviewOutcomeOptions.includes((record as Partial<ActionRecord>).reviewOutcome as ActionReviewOutcome)
+      ? (record as Partial<ActionRecord>).reviewOutcome
+      : undefined,
   };
 }
 
@@ -6363,11 +6391,12 @@ type ActionDetailPanelProps = {
   onChange: (field: keyof ActionRecord, value: string) => void;
   onOwnerChange: (personId: string) => void;
   onSave: () => void;
+  onReviewFollowThrough: () => void;
   onOpenRelatedProblem?: () => void;
   onOpenRelatedDecision?: () => void;
 };
 
-function ActionDetailPanel({ action, people, problems, decisions, upstream, downstream, onClose, onChange, onOwnerChange, onSave, onOpenRelatedProblem, onOpenRelatedDecision }: ActionDetailPanelProps) {
+function ActionDetailPanel({ action, people, problems, decisions, upstream, downstream, onClose, onChange, onOwnerChange, onSave, onReviewFollowThrough, onOpenRelatedProblem, onOpenRelatedDecision }: ActionDetailPanelProps) {
   const isCompleted = action.status === "Completed";
   const activePeople = people.filter((person) => person.status === "Active");
   const savedOwner = action.owner?.trim() ?? "";
@@ -6618,6 +6647,20 @@ function ActionDetailPanel({ action, people, problems, decisions, upstream, down
             </>
           ) : null}
 
+          <div className="md:col-span-2 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Execution follow-through</div>
+              <button type="button" onClick={onReviewFollowThrough} className="rounded border border-[#171717] bg-white px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717]">Review follow-through</button>
+            </div>
+            <div className="mt-3 grid gap-2 text-[12px] text-[#2f2b28] sm:grid-cols-2">
+              <div><span className="font-medium">Next review:</span> {action.followUpDate || "Not set"}</div>
+              <div><span className="font-medium">Follow-up owner:</span> {action.followUpOwner || "Not set"}</div>
+              <div><span className="font-medium">Last reviewed:</span> {action.lastReviewedDate || "Not reviewed"}</div>
+              <div><span className="font-medium">Outcome:</span> {action.reviewOutcome || "Not reviewed"}</div>
+              <div className="sm:col-span-2"><span className="font-medium">Follow-up note:</span> {action.followUpNote || "No follow-up note"}</div>
+            </div>
+          </div>
+
           <div className="md:col-span-2 rounded-xl border border-[#d3cbc3] bg-[#f1eee9] p-3">
             <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Linkage</div>
             <div className="mt-2 space-y-2 text-[12px] text-[#2f2b28]">
@@ -6670,6 +6713,114 @@ function ActionDetailPanel({ action, people, problems, decisions, upstream, down
         </div>
 
         <RelatedRecordsPanel upstream={upstream} downstream={downstream} />
+      </div>
+    </div>
+  );
+}
+
+function ActionFollowThroughReviewPanel({ action, people, onClose, onSubmit }: {
+  action: ActionRecord;
+  people: PersonRecord[];
+  onClose: () => void;
+  onSubmit: (review: {
+    outcome: ActionReviewOutcome;
+    followUpDate: string;
+    followUpOwnerPersonId: string;
+    followUpNote: string;
+    reviewedDate: string;
+    reassignedOwnerPersonId: string;
+  }) => void;
+}) {
+  const activePeople = people.filter((person) => person.status === "Active");
+  const [outcome, setOutcome] = useState<ActionReviewOutcome | "">("");
+  const [followUpDate, setFollowUpDate] = useState(action.followUpDate?.slice(0, 10) || "");
+  const [followUpOwnerPersonId, setFollowUpOwnerPersonId] = useState(action.followUpOwnerPersonId || "");
+  const [followUpNote, setFollowUpNote] = useState(action.followUpNote || "");
+  const [reviewedDate, setReviewedDate] = useState(new Date().toISOString().slice(0, 10));
+  const [reassignedOwnerPersonId, setReassignedOwnerPersonId] = useState("");
+  const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
+  const needsFollowUp = outcome === "Continue" || outcome === "Waiting on external dependency" || outcome === "Blocked";
+  const validFollowUpOwner = activePeople.some((person) => person.id === followUpOwnerPersonId);
+  const currentOwnerName = getActionOwnerDisplay(action, people).trim().toLowerCase();
+  const validReassignedOwner = activePeople.some((person) =>
+    person.id === reassignedOwnerPersonId
+    && person.id !== action.ownerPersonId
+    && person.name.trim().toLowerCase() !== currentOwnerName,
+  );
+  const followUpDateIsValid = !needsFollowUp || (Boolean(followUpDate) && followUpDate >= reviewedDate);
+  const isInvalid = !outcome
+    || !reviewedDate
+    || ((needsFollowUp || outcome === "Reassign") && !followUpNote.trim())
+    || (needsFollowUp && (!followUpDateIsValid || !validFollowUpOwner))
+    || (outcome === "Reassign" && !validReassignedOwner);
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-[#171717]/20 px-4">
+      <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+        <div className="flex items-start justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Action Follow-through Review</p>
+            <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{action.actionTitle}</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.12em] text-[#4d4944]">
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">{getActionOwnerDisplay(action, people)}</span>
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">{action.status}</span>
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">{action.priority}</span>
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">Due {action.dueDate ? action.dueDate.slice(0, 10) : "not set"}</span>
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">Follow-up {action.followUpDate || "not set"}</span>
+        </div>
+        {action.followUpNote ? <div className="mt-3 rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#4d4944]">{action.followUpNote}</div> : null}
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Review outcome</label>
+            <select value={outcome} onChange={(event) => setOutcome(event.target.value as ActionReviewOutcome | "")} className={financeFieldClass}>
+              <option value="">Select outcome</option>
+              {actionReviewOutcomeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Reviewed date</label>
+            <input type="date" value={reviewedDate} onChange={(event) => setReviewedDate(event.target.value)} className={financeFieldClass} />
+          </div>
+          {needsFollowUp ? (
+            <>
+              <div>
+                <label className={financeLabelClass}>Next follow-up / review date</label>
+                <input type="date" value={followUpDate} onChange={(event) => setFollowUpDate(event.target.value)} min={reviewedDate || undefined} className={financeFieldClass} />
+              </div>
+              <div className="md:col-span-2">
+                <label className={financeLabelClass}>Follow-up owner</label>
+                <select value={followUpOwnerPersonId} onChange={(event) => setFollowUpOwnerPersonId(event.target.value)} className={financeFieldClass}>
+                  <option value="">Select active person</option>
+                  {activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+                </select>
+              </div>
+            </>
+          ) : null}
+          {outcome === "Reassign" ? (
+            <div className="md:col-span-2">
+              <label className={financeLabelClass}>New action owner</label>
+              <select value={reassignedOwnerPersonId} onChange={(event) => setReassignedOwnerPersonId(event.target.value)} className={financeFieldClass}>
+                <option value="">Select another active person</option>
+                {activePeople.filter((person) => person.id !== action.ownerPersonId && person.name.trim().toLowerCase() !== currentOwnerName).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+              </select>
+            </div>
+          ) : null}
+          {(needsFollowUp || outcome === "Reassign") ? (
+            <div className="md:col-span-2">
+              <label className={financeLabelClass}>Follow-up note / blocker</label>
+              <textarea rows={3} value={followUpNote} onChange={(event) => setFollowUpNote(event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+            </div>
+          ) : null}
+          {hasAttemptedSubmit && isInvalid ? <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Complete the required review date, active owner, next follow-up date and note for this outcome.</p> : null}
+        </div>
+        <div className="mt-5 flex justify-end gap-2 border-t border-[#d3cbc3] pt-3">
+          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+          <button type="button" onClick={() => { setHasAttemptedSubmit(true); if (!outcome || isInvalid) return; onSubmit({ outcome, followUpDate, followUpOwnerPersonId, followUpNote: followUpNote.trim(), reviewedDate, reassignedOwnerPersonId }); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1]">Record review</button>
+        </div>
       </div>
     </div>
   );
@@ -8139,6 +8290,7 @@ export default function Home() {
   const [problemEditor, setProblemEditor] = useState<ProblemRecord | null>(null);
   const [selectedActionId, setSelectedActionId] = useState<string | null>(null);
   const [actionEditor, setActionEditor] = useState<ActionRecord | null>(null);
+  const [followThroughReviewActionId, setFollowThroughReviewActionId] = useState<string | null>(null);
   const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null);
   const [decisionEditor, setDecisionEditor] = useState<DecisionRecord | null>(null);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(null);
@@ -11408,8 +11560,20 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       const reasons: string[] = [];
       const dependencyBlocker = getActionDependencyBlocker(action);
 
-      if (!isActionActive(action) || isActionWaiting(action)) {
+      if (!isActionActive(action)) {
         return;
+      }
+
+      const dueDateValue = getDateValue(action.dueDate);
+      const isOverdue = dueDateValue > 0 && dueDateValue < now;
+      const followUpIsFuture = isActionFollowUpFuture(action, now);
+      const followUpIsDue = isActionFollowUpDue(action, now);
+      const suppressUntilFollowUp = followUpIsFuture && !isOverdue && action.priority !== "Critical";
+
+      if (suppressUntilFollowUp) return;
+
+      if (followUpIsDue) {
+        reasons.push(isActionWaiting(action) ? "WAITING FOLLOW-UP DUE" : "FOLLOW-UP REVIEW DUE");
       }
 
       if (["Critical", "High"].includes(action.priority)) {
@@ -11417,13 +11581,14 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         reasons.push(action.status.toUpperCase());
       }
 
-      if (action.status === "Blocked") {
+      if (action.status === "Blocked" && (followUpIsDue || !action.followUpDate || ["High", "Critical"].includes(action.priority))) {
         if (!reasons.includes("BLOCKED")) {
           reasons.push("BLOCKED");
         }
+        if (action.followUpNote?.trim()) reasons.push(`BLOCKER: ${action.followUpNote.trim()}`);
       }
 
-      if (dependencyBlocker) {
+      if (dependencyBlocker && (!isActionWaiting(action) || followUpIsDue || isOverdue || action.priority === "Critical")) {
         reasons.push(dependencyBlocker.reason);
       }
 
@@ -11443,7 +11608,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       }
 
       const isAlreadyFlagged = reasons.length > 0;
-      if (!isAlreadyFlagged && action.status === "In Progress") {
+      if (!isAlreadyFlagged && action.status === "In Progress" && !followUpIsFuture) {
         const referenceTime = getDateValue(action.dueDate) || getDateValue(action.createdDate || action.createdAt);
         if (referenceTime > 0) {
           const daysSinceReference = Math.floor((now - referenceTime) / (1000 * 60 * 60 * 24));
@@ -11460,7 +11625,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           title: action.actionTitle || action.title,
           reason: reasons.join(" • "),
           reasons,
-          statusText: `${action.status} / ${action.priority} / ${action.dueDate ? formatCapturedAt(action.dueDate) : "No due date"}`,
+          statusText: `${action.status} / ${action.priority} / ${action.dueDate ? formatCapturedAt(action.dueDate) : "No due date"}${action.followUpDate ? ` / Follow-up ${action.followUpDate}` : ""}`,
           area: getAreaText(action),
           attentionRank: action.status === "Blocked" || Boolean(dependencyBlocker) ? 1 : action.dueDate && getDateValue(action.dueDate) < now ? 2 : ["Critical", "High"].includes(action.priority) ? 6 : reasons[0] === "STALE IN-PROGRESS ACTION" ? 7 : 8,
           tieWeight: action.priority === "Critical" ? 2 : action.priority === "High" ? 1 : 0,
@@ -13919,6 +14084,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       isBlocked: boolean,
       dependencyBlockerReason: string | null,
       earliestExecutableDateValue?: string,
+      followUpDateValue?: string,
     ) => {
       const recordKey = `${objectType}:${id}`;
       if (usedRecordKeys.has(recordKey)) return;
@@ -13945,6 +14111,12 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       const earliestExecutableTimestamp = earliestExecutableDateValue ? new Date(`${earliestExecutableDateValue.slice(0, 10)}T00:00:00`).getTime() : 0;
       const isNotYetExecutable = earliestExecutableTimestamp > 0 && !Number.isNaN(earliestExecutableTimestamp) && earliestExecutableTimestamp > startOfTodayForItemMs;
       const isDueSoonForRanking = isDueSoon && !isNotYetExecutable;
+      const followUpTimestamp = followUpDateValue ? new Date(`${followUpDateValue.slice(0, 10)}T00:00:00`).getTime() : 0;
+      const isFollowUpFuture = followUpTimestamp > 0 && !Number.isNaN(followUpTimestamp) && followUpTimestamp > startOfTodayForItemMs;
+
+      if (isFollowUpFuture && status === "Waiting" && !isOverdue && priorityOrSeverity !== "Critical" && !requiresAuthority) {
+        return;
+      }
 
       // Time-gated work with no genuine reason for founder attention now is excluded from release ranking entirely
       // (it still surfaces in Watch, general monitoring, and delegation analysis via other, unaffected code paths).
@@ -14113,7 +14285,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     };
 
     // Scan Founder-owned Actions
-    actionRecords.filter((action) => isActionActive(action) && !isActionWaiting(action) && !isReleaseInterventionAction(action)).forEach((action) => {
+    actionRecords.filter((action) => isActionActive(action) && !isReleaseInterventionAction(action)).forEach((action) => {
       if (isFounderOwned(action.owner, action.ownerPersonId)) {
         const dependencyBlocker = getActionDependencyBlocker(action);
         processFounderItem(
@@ -14128,6 +14300,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           action.status === "Blocked",
           dependencyBlocker ? dependencyBlocker.reason.replace("BLOCKED BY PROBLEM: ", "").replace("WAITING ON DECISION: ", "") : null,
           action.earliestExecutableDate,
+          action.followUpDate,
         );
       }
     });
@@ -15486,6 +15659,72 @@ const isOwnershipGap =
       type: "success",
       message: "Action details saved.",
     });
+  };
+
+  const handleActionFollowThroughReview = (review: {
+    outcome: ActionReviewOutcome;
+    followUpDate: string;
+    followUpOwnerPersonId: string;
+    followUpNote: string;
+    reviewedDate: string;
+    reassignedOwnerPersonId: string;
+  }) => {
+    if (!followThroughReviewActionId) return;
+    const action = actionRecords.find((record) => record.id === followThroughReviewActionId);
+    if (!action) {
+      setFollowThroughReviewActionId(null);
+      setFeedback({ type: "error", message: "The Action could not be found." });
+      return;
+    }
+
+    const followUpOwner = people.find((person) => person.id === review.followUpOwnerPersonId && person.status === "Active");
+    const reassignedOwner = people.find((person) => person.id === review.reassignedOwnerPersonId && person.status === "Active");
+    const nextStatus: ActionStatus = review.outcome === "Waiting on external dependency"
+      ? "Waiting"
+      : review.outcome === "Blocked"
+        ? "Blocked"
+        : review.outcome === "Complete"
+          ? "Completed"
+          : review.outcome === "Cancel"
+            ? "Cancelled"
+            : review.outcome === "Continue"
+              ? action.status === "Open" || action.status === "In Progress" ? action.status : "In Progress"
+              : action.status;
+    const reviewUpdates: Partial<ActionRecord> = {
+      status: nextStatus,
+      owner: review.outcome === "Reassign" && reassignedOwner ? reassignedOwner.name : action.owner,
+      ownerPersonId: review.outcome === "Reassign" && reassignedOwner ? reassignedOwner.id : action.ownerPersonId,
+      followUpDate: review.outcome === "Continue" || review.outcome === "Waiting on external dependency" || review.outcome === "Blocked"
+        ? review.followUpDate
+        : action.followUpDate,
+      followUpOwner: review.outcome === "Reassign" && reassignedOwner ? reassignedOwner.name : followUpOwner?.name || action.followUpOwner,
+      followUpOwnerPersonId: review.outcome === "Reassign" && reassignedOwner ? reassignedOwner.id : followUpOwner?.id || action.followUpOwnerPersonId,
+      followUpNote: review.followUpNote || action.followUpNote,
+      lastReviewedDate: review.reviewedDate,
+      reviewOutcome: review.outcome,
+      completionDate: review.outcome === "Complete" ? review.reviewedDate : action.completionDate,
+    };
+    const nextAction = normalizeActionRecord({ ...action, ...reviewUpdates });
+    const applyReview = () => setConversions((current) => current.map((record) => record.id === action.id ? nextAction : record));
+    const reviewSucceeded = review.outcome === "Reassign" && reassignedOwner
+      ? applyOwnershipChangeWithDelegationIntegrity({
+          objectType: "Action",
+          objectId: action.id,
+          title: action.actionTitle || action.title,
+          area: getAreaText(action),
+          previousOwner: getActionOwnerDisplay(action, people),
+          previousOwnerPersonId: action.ownerPersonId,
+          newOwner: reassignedOwner.name,
+          newOwnerPersonId: reassignedOwner.id,
+          handoffContext: review.followUpNote || action.description,
+          applyOwnershipChange: applyReview,
+        })
+      : (applyReview(), true);
+
+    if (!reviewSucceeded) return;
+    setActionEditor((current) => current?.id === action.id ? nextAction : current);
+    setFollowThroughReviewActionId(null);
+    setFeedback({ type: "success", message: `Action follow-through reviewed: ${review.outcome}.` });
   };
 
   const handleCreateLinkedAction = (problem: ProblemRecord) => {
@@ -21320,9 +21559,24 @@ const isOwnershipGap =
           onChange={handleActionEditorChange}
           onOwnerChange={handleActionOwnerChange}
           onSave={handleActionSave}
+          onReviewFollowThrough={() => setFollowThroughReviewActionId(actionEditor.id)}
           onOpenRelatedProblem={() => handleOpenRelatedProblem(actionEditor)}
           onOpenRelatedDecision={() => handleOpenRelatedDecision(actionEditor)}
         />
+      ) : null}
+
+      {followThroughReviewActionId ? (
+        (() => {
+          const action = actionRecords.find((record) => record.id === followThroughReviewActionId);
+          return action ? (
+            <ActionFollowThroughReviewPanel
+              action={action}
+              people={people}
+              onClose={() => setFollowThroughReviewActionId(null)}
+              onSubmit={handleActionFollowThroughReview}
+            />
+          ) : null;
+        })()
       ) : null}
 
       {selectedDecisionId && decisionEditor ? (
