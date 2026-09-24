@@ -436,11 +436,40 @@ type ProjectRecord = {
   startDate: string;
   targetCompletionDate: string;
   status: string;
+  health?: ProjectHealth;
+  nextReviewDate?: string;
+  lastReviewedDate?: string;
+  reviewOwner?: string;
+  reviewOwnerPersonId?: string;
+  reviewNote?: string;
+  lastReviewOutcome?: ProjectReviewOutcome;
   relatedActionIds?: string[];
   relatedDecisionIds?: string[];
   relatedSystemIds?: string[];
   relatedSopIds?: string[];
 };
+
+const projectHealthOptions = ["On track", "At risk", "Blocked", "Waiting"] as const;
+type ProjectHealth = (typeof projectHealthOptions)[number];
+const projectReviewOutcomeOptions = ["Continue", "Correct course", "Waiting on dependency", "Blocked", "Reassign", "Complete", "Cancel"] as const;
+type ProjectReviewOutcome = (typeof projectReviewOutcomeOptions)[number];
+
+function getEffectiveProjectHealth(project: Pick<ProjectRecord, "health" | "status">): ProjectHealth {
+  if (projectHealthOptions.includes(project.health as ProjectHealth)) return project.health as ProjectHealth;
+  return project.status.trim().toLowerCase() === "blocked" ? "Blocked" : "On track";
+}
+
+function isProjectReviewFuture(project: Pick<ProjectRecord, "nextReviewDate">, nowMs = Date.now()): boolean {
+  if (!project.nextReviewDate) return false;
+  const reviewMs = new Date(`${project.nextReviewDate.slice(0, 10)}T00:00:00`).getTime();
+  return !Number.isNaN(reviewMs) && reviewMs > new Date(nowMs).setHours(0, 0, 0, 0);
+}
+
+function isProjectReviewDue(project: Pick<ProjectRecord, "nextReviewDate">, nowMs = Date.now()): boolean {
+  if (!project.nextReviewDate) return false;
+  const reviewMs = new Date(`${project.nextReviewDate.slice(0, 10)}T00:00:00`).getTime();
+  return !Number.isNaN(reviewMs) && reviewMs <= new Date(nowMs).setHours(0, 0, 0, 0);
+}
 
 type DecisionExecutionState = "No execution path" | "Active execution" | "Blocked execution" | "Completed execution";
 
@@ -941,6 +970,13 @@ const defaultProjectForm: Omit<ProjectRecord, "id"> = {
   startDate: "",
   targetCompletionDate: "",
   status: "Open",
+  health: "On track",
+  nextReviewDate: "",
+  lastReviewedDate: "",
+  reviewOwner: "",
+  reviewOwnerPersonId: "",
+  reviewNote: "",
+  lastReviewOutcome: undefined,
   relatedActionIds: [],
   relatedDecisionIds: [],
   relatedSystemIds: [],
@@ -2632,7 +2668,7 @@ function ProjectExecutionReleaseSection({ releaseItem, latestHandoff, onCreateRe
   );
 }
 
-function ProjectDetailPanel({ project, people, actions, decisions, systems, sops, releaseItem, latestHandoff, onClose, onChange, onSave, onAddLink, onRemoveLink, onOpenRecord, onCreateReleaseAction, onOpenReleaseAction, onDelegateProject, onUpdateHandoff }: {
+function ProjectDetailPanel({ project, people, actions, decisions, systems, sops, releaseItem, latestHandoff, onClose, onChange, onSave, onReviewProject, onAddLink, onRemoveLink, onOpenRecord, onCreateReleaseAction, onOpenReleaseAction, onDelegateProject, onUpdateHandoff }: {
   project: ProjectRecord;
   people: PersonRecord[];
   actions: ActionRecord[];
@@ -2644,6 +2680,7 @@ function ProjectDetailPanel({ project, people, actions, decisions, systems, sops
   onClose: () => void;
   onChange: (field: keyof ProjectRecord, value: string) => void;
   onSave: () => boolean;
+  onReviewProject: () => void;
   onAddLink: (field: ProjectLinkSectionKey, id: string) => void;
   onRemoveLink: (field: ProjectLinkSectionKey, id: string) => void;
   onOpenRecord: (objectType: "Action" | "Decision" | "System" | "SOP", id: string) => void;
@@ -2716,6 +2753,20 @@ function ProjectDetailPanel({ project, people, actions, decisions, systems, sops
               {!projectStatusOptions.includes(project.status as (typeof projectStatusOptions)[number]) && project.status ? <option value={project.status}>{project.status}</option> : null}
               {projectStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
             </select>
+          </div>
+          <div className="md:col-span-2 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Project health &amp; review</div>
+              <button type="button" onClick={onReviewProject} className="rounded border border-[#171717] bg-white px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717]">Review project</button>
+            </div>
+            <div className="mt-3 grid gap-2 text-[12px] text-[#2f2b28] sm:grid-cols-2">
+              <div><span className="font-medium">Health:</span> {getEffectiveProjectHealth(project)}</div>
+              <div><span className="font-medium">Next review:</span> {project.nextReviewDate || "Not set"}</div>
+              <div><span className="font-medium">Review owner:</span> {project.reviewOwner || "Not set"}</div>
+              <div><span className="font-medium">Last reviewed:</span> {project.lastReviewedDate || "Not reviewed"}</div>
+              <div><span className="font-medium">Outcome:</span> {project.lastReviewOutcome || "Not reviewed"}</div>
+              <div className="sm:col-span-2"><span className="font-medium">Review note:</span> {project.reviewNote || "No review note"}</div>
+            </div>
           </div>
         </div>
 
@@ -2848,6 +2899,60 @@ function ProjectLinkSection({ title, objectType, sectionKey, options, linkedIds,
         >
           Link
         </button>
+      </div>
+    </div>
+  );
+}
+
+function ProjectHealthReviewPanel({ project, people, onClose, onSubmit }: {
+  project: ProjectRecord;
+  people: PersonRecord[];
+  onClose: () => void;
+  onSubmit: (review: { outcome: ProjectReviewOutcome; reviewDate: string; nextReviewDate: string; reviewOwnerPersonId: string; reviewNote: string; reassignedOwnerPersonId: string }) => void;
+}) {
+  const activePeople = people.filter((person) => person.status === "Active");
+  const currentOwnerName = project.owner.trim().toLowerCase();
+  const [outcome, setOutcome] = useState<ProjectReviewOutcome | "">("");
+  const [reviewDate, setReviewDate] = useState(new Date().toISOString().slice(0, 10));
+  const [nextReviewDate, setNextReviewDate] = useState(project.nextReviewDate || "");
+  const [reviewOwnerPersonId, setReviewOwnerPersonId] = useState(project.reviewOwnerPersonId || "");
+  const [reviewNote, setReviewNote] = useState(project.reviewNote || "");
+  const [reassignedOwnerPersonId, setReassignedOwnerPersonId] = useState("");
+  const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
+  const needsNextReview = outcome === "Continue" || outcome === "Correct course" || outcome === "Waiting on dependency" || outcome === "Blocked";
+  const needsNote = outcome === "Correct course" || outcome === "Waiting on dependency" || outcome === "Blocked" || outcome === "Reassign";
+  const validReviewOwner = activePeople.some((person) => person.id === reviewOwnerPersonId);
+  const validReassignedOwner = activePeople.some((person) => person.id === reassignedOwnerPersonId && person.name.trim().toLowerCase() !== currentOwnerName);
+  const isInvalid = !outcome || !reviewDate
+    || (needsNextReview && (!nextReviewDate || nextReviewDate <= reviewDate || !validReviewOwner))
+    || (needsNote && !reviewNote.trim())
+    || (outcome === "Reassign" && !validReassignedOwner);
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-[#171717]/20 px-4">
+      <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+        <div className="flex items-start justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+          <div><p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Project Health Review</p><h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{project.projectName}</h3></div>
+          <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.12em] text-[#4d4944]">
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">{project.owner || "Unassigned"}</span>
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">{project.status}</span>
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">Target {project.targetCompletionDate || "not set"}</span>
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">{getEffectiveProjectHealth(project)}</span>
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">Review {project.nextReviewDate || "not set"}</span>
+        </div>
+        {project.reviewNote ? <div className="mt-3 rounded-xl border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#4d4944]">{project.reviewNote}</div> : null}
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2"><label className={financeLabelClass}>Review outcome</label><select value={outcome} onChange={(event) => setOutcome(event.target.value as ProjectReviewOutcome | "")} className={financeFieldClass}><option value="">Select outcome</option>{projectReviewOutcomeOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select></div>
+          <div><label className={financeLabelClass}>Review date</label><input type="date" value={reviewDate} onChange={(event) => setReviewDate(event.target.value)} className={financeFieldClass} /></div>
+          {needsNextReview ? <div><label className={financeLabelClass}>Next project review</label><input type="date" min={reviewDate || undefined} value={nextReviewDate} onChange={(event) => setNextReviewDate(event.target.value)} className={financeFieldClass} /></div> : null}
+          {needsNextReview ? <div className="md:col-span-2"><label className={financeLabelClass}>Review owner</label><select value={reviewOwnerPersonId} onChange={(event) => setReviewOwnerPersonId(event.target.value)} className={financeFieldClass}><option value="">Select active person</option>{activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></div> : null}
+          {outcome === "Reassign" ? <div className="md:col-span-2"><label className={financeLabelClass}>New project owner</label><select value={reassignedOwnerPersonId} onChange={(event) => setReassignedOwnerPersonId(event.target.value)} className={financeFieldClass}><option value="">Select another active person</option>{activePeople.filter((person) => person.name.trim().toLowerCase() !== currentOwnerName).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></div> : null}
+          {(needsNote || needsNextReview) ? <div className="md:col-span-2"><label className={financeLabelClass}>Review note / intervention</label><textarea rows={3} value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" /></div> : null}
+          {hasAttemptedSubmit && isInvalid ? <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">Complete the required active owner, review date, next review date and intervention note for this outcome.</p> : null}
+        </div>
+        <div className="mt-5 flex justify-end gap-2 border-t border-[#d3cbc3] pt-3"><button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button><button type="button" onClick={() => { setHasAttemptedSubmit(true); if (!outcome || isInvalid) return; onSubmit({ outcome, reviewDate, nextReviewDate, reviewOwnerPersonId, reviewNote: reviewNote.trim(), reassignedOwnerPersonId }); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1]">Record review</button></div>
       </div>
     </div>
   );
@@ -8306,6 +8411,7 @@ export default function Home() {
   const [personSaveState, setPersonSaveState] = useState<"idle" | "saved">("idle");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [projectEditor, setProjectEditor] = useState<ProjectRecord | null>(null);
+  const [projectHealthReviewId, setProjectHealthReviewId] = useState<string | null>(null);
   const [leads, setLeads] = useState<LeadRecord[]>([]);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [leadEditor, setLeadEditor] = useState<LeadRecord | null>(null);
@@ -8480,7 +8586,16 @@ export default function Home() {
         const parsedProjects = JSON.parse(storedProjects);
 
         if (Array.isArray(parsedProjects)) {
-          setProjects(parsedProjects);
+          setProjects(parsedProjects.map((project) => ({
+            ...project,
+            health: projectHealthOptions.includes(project.health as ProjectHealth) ? project.health : project.status?.trim().toLowerCase() === "blocked" ? "Blocked" : "On track",
+            nextReviewDate: typeof project.nextReviewDate === "string" ? project.nextReviewDate : "",
+            lastReviewedDate: typeof project.lastReviewedDate === "string" ? project.lastReviewedDate : "",
+            reviewOwner: typeof project.reviewOwner === "string" ? project.reviewOwner : "",
+            reviewOwnerPersonId: typeof project.reviewOwnerPersonId === "string" ? project.reviewOwnerPersonId : "",
+            reviewNote: typeof project.reviewNote === "string" ? project.reviewNote : "",
+            lastReviewOutcome: projectReviewOutcomeOptions.includes(project.lastReviewOutcome as ProjectReviewOutcome) ? project.lastReviewOutcome : undefined,
+          })));
         }
       }
 
@@ -11686,7 +11801,10 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       }
 
       const status = project.status.trim().toLowerCase();
-      const isBlocked = status === "blocked";
+      const health = getEffectiveProjectHealth(project);
+      const reviewIsFuture = isProjectReviewFuture(project, now);
+      const reviewIsDue = isProjectReviewDue(project, now);
+      const isBlocked = status === "blocked" || health === "Blocked";
       const isInProgress = status === "in progress";
       const isOpen = status === "open";
 
@@ -11719,21 +11837,26 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         targetCompletionDate >= startOfToday &&
         (targetCompletionDate.getTime() - startOfToday.getTime()) / (1000 * 60 * 60 * 24) <= 14,
       );
+      const suppressRoutineAttention = reviewIsFuture && (health === "On track" || health === "Waiting") && !isOverdue && !isBlocked;
 
       if (isBlocked) {
         reasons.push("BLOCKED PROJECT");
+        if (project.reviewNote?.trim()) reasons.push(`BLOCKER: ${project.reviewNote.trim()}`);
       }
       if (isOverdue) {
         reasons.push("OVERDUE PROJECT");
         reasons.push(`${daysOverdue} DAY${daysOverdue === 1 ? "" : "S"} OVERDUE`);
       }
-      if (isDueSoon) {
+      if (reviewIsDue) {
+        reasons.push(health === "At risk" ? "AT-RISK PROJECT REVIEW DUE" : health === "Waiting" ? "WAITING PROJECT REVIEW DUE" : "PROJECT REVIEW DUE");
+      }
+      if (isDueSoon && !suppressRoutineAttention) {
         reasons.push("DUE WITHIN 7 DAYS");
       }
-      if (isPastStartNotStarted) {
+      if (isPastStartNotStarted && !suppressRoutineAttention) {
         reasons.push("PAST START DATE • NOT STARTED");
       }
-      if (isStaleActive) {
+      if (isStaleActive && !suppressRoutineAttention) {
         reasons.push(isStaleApproaching ? "STALE PROJECT • TARGET APPROACHING" : "STALE PROJECT");
       }
 
@@ -11744,7 +11867,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           title: project.projectName,
           reason: reasons.join(" • "),
           reasons,
-          statusText: `${project.status || "No status"} / ${project.targetCompletionDate ? formatCapturedAt(project.targetCompletionDate) : "No target completion date"}`,
+          statusText: `${project.status || "No status"} / ${health}${project.nextReviewDate ? ` / Review ${project.nextReviewDate}` : ""} / ${project.targetCompletionDate ? formatCapturedAt(project.targetCompletionDate) : "No target completion date"}`,
           area: project.area,
           attentionRank: isBlocked ? 1 : isOverdue ? 2 : isDueSoon ? 3 : isStaleActive ? 5 : 4,
           tieWeight: 0,
@@ -13864,6 +13987,32 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       }
     });
 
+    projects.filter(isProjectActive).forEach((project) => {
+      const key = `Project:${project.id}`;
+      if (usedKeys.has(key)) return;
+      const health = getEffectiveProjectHealth(project);
+      const reviewDue = isProjectReviewDue(project);
+      const reviewFuture = isProjectReviewFuture(project);
+      if (health === "Waiting" && reviewFuture) return;
+      if (health !== "Blocked" && !reviewDue) return;
+
+      rawBottlenecks.push({
+        id: project.id,
+        category: "Execution",
+        title: project.projectName,
+        objectType: "Project",
+        area: project.area,
+        owner: project.owner || "Unassigned",
+        severity: health === "Blocked" ? "Critical" : "Material",
+        why: health === "Blocked"
+          ? `Project '${project.projectName}' is blocked${project.reviewNote ? `: ${project.reviewNote}` : "."}`
+          : `Project '${project.projectName}' has reached its review date (${project.nextReviewDate}) without resolution.`,
+        releasePath: health === "Blocked" ? "Remove the blocker or correct the project course." : "Complete the project review and set the next intervention point.",
+        onOpen: () => handleOpenAttentionRecord("Project", project.id),
+      });
+      usedKeys.add(key);
+    });
+
     // 3. RECURRING / SYSTEM BOTTLENECK
     // Convergent risk clusters
     correlationLayer.convergentRisks.forEach((cluster) => {
@@ -14085,6 +14234,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       dependencyBlockerReason: string | null,
       earliestExecutableDateValue?: string,
       followUpDateValue?: string,
+      isLegitimatelyWaiting = false,
     ) => {
       const recordKey = `${objectType}:${id}`;
       if (usedRecordKeys.has(recordKey)) return;
@@ -14114,7 +14264,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       const followUpTimestamp = followUpDateValue ? new Date(`${followUpDateValue.slice(0, 10)}T00:00:00`).getTime() : 0;
       const isFollowUpFuture = followUpTimestamp > 0 && !Number.isNaN(followUpTimestamp) && followUpTimestamp > startOfTodayForItemMs;
 
-      if (isFollowUpFuture && status === "Waiting" && !isOverdue && priorityOrSeverity !== "Critical" && !requiresAuthority) {
+      if (isFollowUpFuture && (status === "Waiting" || isLegitimatelyWaiting) && !isOverdue && !isBlocked && priorityOrSeverity !== "Critical" && !requiresAuthority) {
         return;
       }
 
@@ -14301,6 +14451,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           dependencyBlocker ? dependencyBlocker.reason.replace("BLOCKED BY PROBLEM: ", "").replace("WAITING ON DECISION: ", "") : null,
           action.earliestExecutableDate,
           action.followUpDate,
+          isActionWaiting(action),
         );
       }
     });
@@ -14308,7 +14459,8 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     // Scan Founder-owned Projects
     projects.filter(isProjectActive).forEach((project) => {
       if (isFounderOwned(project.owner)) {
-        const isBlocked = project.status.trim().toLowerCase() === "blocked";
+        const projectHealth = getEffectiveProjectHealth(project);
+        const isBlocked = project.status.trim().toLowerCase() === "blocked" || projectHealth === "Blocked";
         processFounderItem(
           "Project",
           project.id,
@@ -14320,6 +14472,9 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           undefined,
           isBlocked,
           isBlocked ? "Project is blocked" : null,
+          undefined,
+          project.nextReviewDate,
+          projectHealth === "Waiting",
         );
       }
     });
@@ -16948,6 +17103,7 @@ const isOwnershipGap =
     };
     const startDate = normalizeProjectDate(projectEditor.startDate);
     const targetCompletionDate = normalizeProjectDate(projectEditor.targetCompletionDate);
+    const nextReviewDate = normalizeProjectDate(projectEditor.nextReviewDate || "");
 
     if (!projectName || (startDate && targetCompletionDate && targetCompletionDate < startDate)) {
       return false;
@@ -16968,6 +17124,13 @@ const isOwnershipGap =
       startDate,
       targetCompletionDate,
       status: projectStatusOptions.includes(selectedStatus as (typeof projectStatusOptions)[number]) ? selectedStatus : "Open",
+      health: getEffectiveProjectHealth(projectEditor),
+      nextReviewDate,
+      lastReviewedDate: normalizeProjectDate(projectEditor.lastReviewedDate || ""),
+      reviewOwner: (projectEditor.reviewOwner || "").trim(),
+      reviewOwnerPersonId: (projectEditor.reviewOwnerPersonId || "").trim(),
+      reviewNote: (projectEditor.reviewNote || "").trim(),
+      lastReviewOutcome: projectReviewOutcomeOptions.includes(projectEditor.lastReviewOutcome as ProjectReviewOutcome) ? projectEditor.lastReviewOutcome : undefined,
       relatedActionIds: projectEditor.relatedActionIds ?? [],
       relatedDecisionIds: projectEditor.relatedDecisionIds ?? [],
       relatedSystemIds: projectEditor.relatedSystemIds ?? [],
@@ -17000,6 +17163,67 @@ const isOwnershipGap =
     return true;
   };
 
+  const handleProjectHealthReview = (review: { outcome: ProjectReviewOutcome; reviewDate: string; nextReviewDate: string; reviewOwnerPersonId: string; reviewNote: string; reassignedOwnerPersonId: string }) => {
+    if (!projectHealthReviewId) return;
+    const project = projects.find((record) => record.id === projectHealthReviewId);
+    if (!project) {
+      setProjectHealthReviewId(null);
+      setFeedback({ type: "error", message: "The Project could not be found." });
+      return;
+    }
+
+    const reviewOwner = people.find((person) => person.id === review.reviewOwnerPersonId && person.status === "Active");
+    const reassignedOwner = people.find((person) => person.id === review.reassignedOwnerPersonId && person.status === "Active");
+    const nextStatus = review.outcome === "Complete"
+      ? "Completed"
+      : review.outcome === "Cancel"
+        ? "Cancelled"
+        : review.outcome === "Blocked" || (review.outcome === "Correct course" && project.status === "Blocked")
+          ? "Blocked"
+          : (review.outcome === "Continue" || review.outcome === "Waiting on dependency") && project.status === "Blocked"
+            ? "In Progress"
+            : project.status;
+    const nextHealth: ProjectHealth = review.outcome === "Correct course"
+      ? getEffectiveProjectHealth(project) === "Blocked" ? "Blocked" : "At risk"
+      : review.outcome === "Waiting on dependency"
+        ? "Waiting"
+        : review.outcome === "Blocked"
+          ? "Blocked"
+          : review.outcome === "Continue"
+            ? "On track"
+            : getEffectiveProjectHealth(project);
+    const needsNextReview = review.outcome === "Continue" || review.outcome === "Correct course" || review.outcome === "Waiting on dependency" || review.outcome === "Blocked";
+    const nextProject: ProjectRecord = {
+      ...project,
+      owner: review.outcome === "Reassign" && reassignedOwner ? reassignedOwner.name : project.owner,
+      status: nextStatus,
+      health: nextHealth,
+      nextReviewDate: needsNextReview ? review.nextReviewDate : project.nextReviewDate,
+      lastReviewedDate: review.reviewDate,
+      reviewOwner: review.outcome === "Reassign" && reassignedOwner ? reassignedOwner.name : reviewOwner?.name || project.reviewOwner,
+      reviewOwnerPersonId: review.outcome === "Reassign" && reassignedOwner ? reassignedOwner.id : reviewOwner?.id || project.reviewOwnerPersonId,
+      reviewNote: review.reviewNote || project.reviewNote,
+      lastReviewOutcome: review.outcome,
+    };
+    const applyReview = () => setProjects((current) => current.map((record) => record.id === project.id ? nextProject : record));
+    const reviewSucceeded = review.outcome === "Reassign" && reassignedOwner
+      ? applyOwnershipChangeWithDelegationIntegrity({
+          objectType: "Project",
+          objectId: project.id,
+          title: project.projectName,
+          area: project.area,
+          previousOwner: project.owner,
+          newOwner: reassignedOwner.name,
+          handoffContext: review.reviewNote || `${project.projectName}; target completion ${project.targetCompletionDate || "not set"}`,
+          applyOwnershipChange: applyReview,
+        })
+      : (applyReview(), true);
+
+    if (!reviewSucceeded) return;
+    setProjectEditor((current) => current?.id === project.id ? nextProject : current);
+    setProjectHealthReviewId(null);
+    setFeedback({ type: "success", message: `Project review recorded: ${review.outcome}.` });
+  };
   const handleCreateProject = () => {
     const newProject: ProjectRecord = {
       ...defaultProjectForm,
@@ -21768,6 +21992,7 @@ const isOwnershipGap =
           }}
           onChange={handleProjectEditorChange}
           onSave={handleProjectSave}
+          onReviewProject={() => setProjectHealthReviewId(projectEditor.id)}
           onAddLink={handleProjectAddLink}
           onRemoveLink={handleProjectRemoveLink}
           onOpenRecord={handleProjectOpenRecord}
@@ -21779,6 +22004,20 @@ const isOwnershipGap =
           onDelegateProject={(personId) => handleDelegateItem("Project", projectEditor.id, personId)}
           onUpdateHandoff={handleUpdateDelegationHandoff}
         />
+      ) : null}
+
+      {projectHealthReviewId ? (
+        (() => {
+          const project = projects.find((record) => record.id === projectHealthReviewId);
+          return project ? (
+            <ProjectHealthReviewPanel
+              project={project}
+              people={people}
+              onClose={() => setProjectHealthReviewId(null)}
+              onSubmit={handleProjectHealthReview}
+            />
+          ) : null;
+        })()
       ) : null}
 
       {selectedLeadId && leadEditor ? (
