@@ -669,6 +669,9 @@ const procurementApprovalStatusOptions = ["Not reviewed", "Approved", "Rejected"
 type ProcurementApprovalStatus = (typeof procurementApprovalStatusOptions)[number];
 type ProcurementReadinessState = "Researching" | "Price found" | "Ready to buy" | "Pending validation" | "Wait" | "Blocked" | "Purchased";
 type ProcurementQuoteState = "Current" | "Expiring soon" | "Expired" | "No expiry recorded";
+const quoteRevalidationOutcomeOptions = ["Price confirmed", "Price changed", "Quote no longer available"] as const;
+type QuoteRevalidationOutcome = (typeof quoteRevalidationOutcomeOptions)[number];
+const QUOTE_UNAVAILABLE_VALIDATION_REASON = "Quoted price is no longer available; further price research is required.";
 const capitalDecisionOutcomeOptions = ["Approve", "Reject", "Defer", "Mark Pending validation"] as const;
 type CapitalDecisionOutcome = (typeof capitalDecisionOutcomeOptions)[number];
 
@@ -790,6 +793,12 @@ type CommitmentRecord = {
   quoteExpiryDate?: string;
   quoteReference?: string;
   quoteNotes?: string;
+  quoteRevalidationOutcome?: QuoteRevalidationOutcome;
+  quoteRevalidatedBy?: string;
+  quoteRevalidationDate?: string;
+  quotePreviousPrice?: string;
+  quoteConfirmedPrice?: string;
+  quoteRevalidationNotes?: string;
   purchaseEvidenceReference?: string;
   invoiceOrderReference?: string;
   evidenceNotes?: string;
@@ -874,6 +883,12 @@ const defaultCommitmentForm: Omit<CommitmentRecord, "id" | "dateCreated"> = {
   quoteExpiryDate: "",
   quoteReference: "",
   quoteNotes: "",
+  quoteRevalidationOutcome: undefined,
+  quoteRevalidatedBy: "",
+  quoteRevalidationDate: "",
+  quotePreviousPrice: "",
+  quoteConfirmedPrice: "",
+  quoteRevalidationNotes: "",
   purchaseEvidenceReference: "",
   invoiceOrderReference: "",
   evidenceNotes: "",
@@ -3737,6 +3752,101 @@ function CapitalDecisionReviewPanel({ context, commitment, onClose, onSubmit }: 
         <div className="mt-5 flex justify-end gap-2 border-t border-[#d3cbc3] pt-3">
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
           <button type="button" onClick={() => { setHasAttemptedSubmit(true); if (!outcome || missingCoreFields || missingOutcomeField) return; onSubmit({ outcome, rationale: rationale.trim(), decisionMaker: decisionMaker.trim(), decisionDate, deferredUntil, pendingValidationReason: pendingValidationReason.trim() }); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1]">Record decision</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QuoteRevalidationPanel({ commitment, quoteState, onClose, onSubmit }: {
+  commitment: CommitmentRecord;
+  quoteState: ProcurementQuoteState | null;
+  onClose: () => void;
+  onSubmit: (result: {
+    outcome: QuoteRevalidationOutcome;
+    revalidatedBy: string;
+    revalidationDate: string;
+    confirmedPrice: string;
+    quoteExpiryDate: string;
+    quoteReference: string;
+    notes: string;
+  }) => void;
+}) {
+  const [outcome, setOutcome] = useState<QuoteRevalidationOutcome | "">("");
+  const [revalidatedBy, setRevalidatedBy] = useState(commitment.quoteRevalidatedBy || "");
+  const [revalidationDate, setRevalidationDate] = useState(new Date().toISOString().slice(0, 10));
+  const [confirmedPrice, setConfirmedPrice] = useState(commitment.targetPrice || "");
+  const [quoteExpiryDate, setQuoteExpiryDate] = useState("");
+  const [quoteReference, setQuoteReference] = useState(commitment.quoteReference || "");
+  const [notes, setNotes] = useState("");
+  const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
+  const requiresPrice = outcome === "Price confirmed" || outcome === "Price changed";
+  const invalidPrice = requiresPrice && parseFinanceAmountInput(confirmedPrice) === null;
+  const expiryIsPast = Boolean(quoteExpiryDate) && new Date(`${quoteExpiryDate}T00:00:00`).getTime() < new Date().setHours(0, 0, 0, 0);
+  const isInvalid = !outcome || !revalidatedBy.trim() || !revalidationDate || !notes.trim() || invalidPrice || expiryIsPast;
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-[#171717]/20 px-4">
+      <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+        <div className="flex items-start justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Quote Revalidation</p>
+            <h3 className="mt-1 text-[20px] font-medium tracking-[-0.05em] text-[#171717]">{commitment.commitmentName}</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.12em] text-[#4d4944]">
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">Best price {commitment.targetPrice || "not set"}</span>
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">Quote: {quoteState || "Not tracked"}</span>
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">Expiry {commitment.quoteExpiryDate || "not recorded"}</span>
+          <span className="rounded border border-[#d3cbc3] bg-white px-2 py-1">{getEffectiveProcurementApprovalStatus(commitment)}</span>
+        </div>
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Outcome</label>
+            <select value={outcome} onChange={(event) => setOutcome(event.target.value as QuoteRevalidationOutcome | "")} className={financeFieldClass}>
+              <option value="">Select outcome</option>
+              {quoteRevalidationOutcomeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Revalidated / checked by</label>
+            <input value={revalidatedBy} onChange={(event) => setRevalidatedBy(event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Revalidation date</label>
+            <input type="date" value={revalidationDate} onChange={(event) => setRevalidationDate(event.target.value)} className={financeFieldClass} />
+          </div>
+          {outcome !== "Quote no longer available" ? (
+            <div>
+              <label className={financeLabelClass}>Confirmed price</label>
+              <input value={confirmedPrice} onChange={(event) => setConfirmedPrice(event.target.value)} className={financeFieldClass} />
+            </div>
+          ) : null}
+          <div>
+            <label className={financeLabelClass}>New quote expiry date</label>
+            <input type="date" value={quoteExpiryDate} onChange={(event) => setQuoteExpiryDate(event.target.value)} className={financeFieldClass} />
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Quote reference or URL</label>
+            <input value={quoteReference} onChange={(event) => setQuoteReference(event.target.value)} className={financeFieldClass} />
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Revalidation notes</label>
+            <textarea rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
+          {hasAttemptedSubmit && isInvalid ? (
+            <p role="alert" className="md:col-span-2 rounded-lg border border-[#d4b4a7] bg-[#f8efeb] px-3 py-2 text-[12px] font-medium text-[#6a3328]">
+              Complete the outcome, reviewer, date and notes. Confirmed/changed prices must be valid, and a new expiry cannot already be past.
+            </p>
+          ) : null}
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2 border-t border-[#d3cbc3] pt-3">
+          <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
+          <button type="button" onClick={() => { setHasAttemptedSubmit(true); if (!outcome || isInvalid) return; onSubmit({ outcome, revalidatedBy: revalidatedBy.trim(), revalidationDate, confirmedPrice: confirmedPrice.trim(), quoteExpiryDate, quoteReference: quoteReference.trim(), notes: notes.trim() }); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1]">Record revalidation</button>
         </div>
       </div>
     </div>
@@ -8072,6 +8182,7 @@ export default function Home() {
   const [selectedCommitmentId, setSelectedCommitmentId] = useState<string | null>(null);
   const [commitmentEditor, setCommitmentEditor] = useState<CommitmentRecord | null>(null);
   const [capitalDecisionReview, setCapitalDecisionReview] = useState<CapitalDecisionReviewContext | null>(null);
+  const [quoteRevalidationCommitmentId, setQuoteRevalidationCommitmentId] = useState<string | null>(null);
   const [selectedTaxPaymentId, setSelectedTaxPaymentId] = useState<string | null>(null);
   const [taxPaymentEditor, setTaxPaymentEditor] = useState<TaxPaymentRecord | null>(null);
   const [creatingLinkedActionForProblemId, setCreatingLinkedActionForProblemId] = useState<string | null>(null);
@@ -8335,6 +8446,12 @@ export default function Home() {
             quoteExpiryDate: typeof record.quoteExpiryDate === "string" ? record.quoteExpiryDate : "",
             quoteReference: typeof record.quoteReference === "string" ? record.quoteReference : "",
             quoteNotes: typeof record.quoteNotes === "string" ? record.quoteNotes : "",
+            quoteRevalidationOutcome: quoteRevalidationOutcomeOptions.includes(record.quoteRevalidationOutcome as QuoteRevalidationOutcome) ? record.quoteRevalidationOutcome : undefined,
+            quoteRevalidatedBy: typeof record.quoteRevalidatedBy === "string" ? record.quoteRevalidatedBy : "",
+            quoteRevalidationDate: typeof record.quoteRevalidationDate === "string" ? record.quoteRevalidationDate : "",
+            quotePreviousPrice: typeof record.quotePreviousPrice === "string" ? record.quotePreviousPrice : "",
+            quoteConfirmedPrice: typeof record.quoteConfirmedPrice === "string" ? record.quoteConfirmedPrice : "",
+            quoteRevalidationNotes: typeof record.quoteRevalidationNotes === "string" ? record.quoteRevalidationNotes : "",
             purchaseEvidenceReference: typeof record.purchaseEvidenceReference === "string" ? record.purchaseEvidenceReference : "",
             invoiceOrderReference: typeof record.invoiceOrderReference === "string" ? record.invoiceOrderReference : "",
             evidenceNotes: typeof record.evidenceNotes === "string" ? record.evidenceNotes : "",
@@ -11726,6 +11843,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     amount: number | null;
     readinessState?: ProcurementReadinessState;
     approvalStatus?: ProcurementApprovalStatus;
+    quoteState?: ProcurementQuoteState | null;
     reason: string;
     nextAction: string;
     area: string;
@@ -11844,6 +11962,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         amount: item.amountRequired,
         readinessState: item.readinessState,
         approvalStatus: item.approvalStatus,
+        quoteState: item.quoteState,
         reason,
         nextAction,
         area: item.commitment.relatedPillar,
@@ -17195,6 +17314,48 @@ const isOwnershipGap =
     setFeedback({ type: "success", message: "Purchase marked purchased." });
   };
 
+  const handleQuoteRevalidationSubmit = (result: {
+    outcome: QuoteRevalidationOutcome;
+    revalidatedBy: string;
+    revalidationDate: string;
+    confirmedPrice: string;
+    quoteExpiryDate: string;
+    quoteReference: string;
+    notes: string;
+  }) => {
+    if (!quoteRevalidationCommitmentId) return;
+    const commitment = commitmentRecords.find((record) => record.id === quoteRevalidationCommitmentId);
+    if (!commitment) {
+      setQuoteRevalidationCommitmentId(null);
+      setFeedback({ type: "error", message: "The commitment could not be found." });
+      return;
+    }
+
+    const quoteIsAvailable = result.outcome !== "Quote no longer available";
+    const nextCommitment: CommitmentRecord = {
+      ...commitment,
+      targetPrice: quoteIsAvailable ? result.confirmedPrice : commitment.targetPrice,
+      quoteCheckedDate: result.revalidationDate,
+      quoteExpiryDate: quoteIsAvailable ? result.quoteExpiryDate : "",
+      quoteReference: result.quoteReference,
+      quoteNotes: result.notes,
+      quoteRevalidationOutcome: result.outcome,
+      quoteRevalidatedBy: result.revalidatedBy,
+      quoteRevalidationDate: result.revalidationDate,
+      quotePreviousPrice: commitment.targetPrice || "",
+      quoteConfirmedPrice: quoteIsAvailable ? result.confirmedPrice : "",
+      quoteRevalidationNotes: result.notes,
+      pendingValidationReason: quoteIsAvailable
+        ? commitment.pendingValidationReason?.trim() === QUOTE_UNAVAILABLE_VALIDATION_REASON ? "" : commitment.pendingValidationReason
+        : commitment.pendingValidationReason?.trim() || QUOTE_UNAVAILABLE_VALIDATION_REASON,
+    };
+
+    setCommitmentRecords((current) => current.map((record) => record.id === commitment.id ? nextCommitment : record));
+    setCommitmentEditor((current) => current?.id === commitment.id ? nextCommitment : current);
+    setQuoteRevalidationCommitmentId(null);
+    setFeedback({ type: "success", message: `Quote revalidation recorded: ${result.outcome}.` });
+  };
+
   const handleCapitalDecisionReviewSubmit = (decision: {
     outcome: CapitalDecisionOutcome;
     rationale: string;
@@ -17993,26 +18154,41 @@ const isOwnershipGap =
                         <div className="mt-1.5 text-[11px] leading-4 text-[#4d4944]">{item.reason}</div>
                         <div className="mt-1 text-[11px] font-medium leading-4 text-[#171717]">Next: {item.nextAction}</div>
                         {item.objectId.startsWith("commitment:") ? (
-                          <button
-                            type="button"
-                            onKeyDown={(event) => event.stopPropagation()}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setCapitalDecisionReview({
-                                commitmentId: item.objectId.slice("commitment:".length),
-                                title: item.title,
-                                amountLabel: item.amount !== null ? formatFinanceAmount(item.amount) : "Amount unavailable",
-                                readinessState: item.readinessState,
-                                approvalStatus: item.approvalStatus,
-                                reason: item.reason,
-                                area: item.area,
-                                date: item.date,
-                              });
-                            }}
-                            className="mt-2 rounded border border-[#171717] bg-[#171717] px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-[#f7f4f1]"
-                          >
-                            Review capital decision
-                          </button>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onKeyDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setCapitalDecisionReview({
+                                  commitmentId: item.objectId.slice("commitment:".length),
+                                  title: item.title,
+                                  amountLabel: item.amount !== null ? formatFinanceAmount(item.amount) : "Amount unavailable",
+                                  readinessState: item.readinessState,
+                                  approvalStatus: item.approvalStatus,
+                                  reason: item.reason,
+                                  area: item.area,
+                                  date: item.date,
+                                });
+                              }}
+                              className="rounded border border-[#171717] bg-[#171717] px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-[#f7f4f1]"
+                            >
+                              Review capital decision
+                            </button>
+                            {item.quoteState === "Expired" || item.quoteState === "Expiring soon" ? (
+                              <button
+                                type="button"
+                                onKeyDown={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setQuoteRevalidationCommitmentId(item.objectId.slice("commitment:".length));
+                                }}
+                                className="rounded border border-[#8a6a2f] bg-[#f7f1e4] px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-[#6a4a18]"
+                              >
+                                Revalidate quote
+                              </button>
+                            ) : null}
+                          </div>
                         ) : null}
                       </div>
                       ))}
@@ -19608,8 +19784,20 @@ const isOwnershipGap =
                             {item.commitment.approvalDate ? ` • ${item.commitment.approvalDate}` : ""}
                           </div>
                         ) : null}
+                        {item.commitment.quoteRevalidationOutcome ? (
+                          <div className="mt-1 text-[11px] leading-4 text-[#524d49]">
+                            Last quote review: {item.commitment.quoteRevalidationOutcome}
+                            {item.commitment.quoteRevalidatedBy ? ` • ${item.commitment.quoteRevalidatedBy}` : ""}
+                            {item.commitment.quoteRevalidationDate ? ` • ${item.commitment.quoteRevalidationDate}` : ""}
+                            {item.commitment.quotePreviousPrice ? ` • previous ${formatFinanceAmount(parseFinanceAmount(item.commitment.quotePreviousPrice))}` : ""}
+                            {item.commitment.quoteConfirmedPrice ? ` • confirmed ${formatFinanceAmount(parseFinanceAmount(item.commitment.quoteConfirmedPrice))}` : ""}
+                          </div>
+                        ) : null}
                         <div className="mt-3 flex flex-wrap gap-2 border-t border-[#e0dad4] pt-2">
                           <button type="button" onClick={() => handleCommitmentEditOpen(item.commitment)} className="rounded border border-[#171717] bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:bg-[#f4f1ee]">Open purchase</button>
+                          {!item.isPurchased && !item.isRejected && item.targetPrice !== null ? (
+                            <button type="button" onClick={() => setQuoteRevalidationCommitmentId(item.commitment.id)} className="rounded border border-[#8a6a2f] bg-[#f7f1e4] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#6a4a18] hover:bg-[#f1e7d2]">Revalidate quote</button>
+                          ) : null}
                           {item.readinessState === "Ready to buy" && !item.isCommitted && !item.isRejected ? (
                             <button type="button" onClick={() => handleMarkCommitmentCommitted(item.commitment)} className="rounded border border-[#171717] bg-[#171717] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-[#f7f4f1] hover:bg-[#2a2724]">Mark committed</button>
                           ) : null}
@@ -21433,6 +21621,20 @@ const isOwnershipGap =
               commitment={commitment}
               onClose={() => setCapitalDecisionReview(null)}
               onSubmit={handleCapitalDecisionReviewSubmit}
+            />
+          ) : null;
+        })()
+      ) : null}
+
+      {quoteRevalidationCommitmentId ? (
+        (() => {
+          const commitment = commitmentRecords.find((record) => record.id === quoteRevalidationCommitmentId);
+          return commitment ? (
+            <QuoteRevalidationPanel
+              commitment={commitment}
+              quoteState={getProcurementQuoteState(commitment)}
+              onClose={() => setQuoteRevalidationCommitmentId(null)}
+              onSubmit={handleQuoteRevalidationSubmit}
             />
           ) : null;
         })()
