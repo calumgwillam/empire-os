@@ -668,6 +668,7 @@ type CommitmentCertainty = (typeof commitmentCertaintyOptions)[number];
 const procurementApprovalStatusOptions = ["Not reviewed", "Approved", "Rejected"] as const;
 type ProcurementApprovalStatus = (typeof procurementApprovalStatusOptions)[number];
 type ProcurementReadinessState = "Researching" | "Price found" | "Ready to buy" | "Pending validation" | "Wait" | "Blocked" | "Purchased";
+type ProcurementQuoteState = "Current" | "Expiring soon" | "Expired" | "No expiry recorded";
 const capitalDecisionOutcomeOptions = ["Approve", "Reject", "Defer", "Mark Pending validation"] as const;
 type CapitalDecisionOutcome = (typeof capitalDecisionOutcomeOptions)[number];
 
@@ -688,8 +689,35 @@ function getEffectiveProcurementApprovalStatus(commitment: { approvalStatus?: st
     : "Not reviewed";
 }
 
-function hasExecutableProcurementApproval(commitment: { approvalStatus?: string; pendingValidationReason?: string }): boolean {
-  return getEffectiveProcurementApprovalStatus(commitment) === "Approved" && !hasPendingProcurementValidation(commitment);
+function getProcurementQuoteState(commitment: {
+  targetPrice?: string;
+  quoteCheckedDate?: string;
+  quoteExpiryDate?: string;
+  quoteReference?: string;
+  quoteNotes?: string;
+}): ProcurementQuoteState | null {
+  const hasQuoteContext = Boolean(
+    commitment.targetPrice?.trim()
+    || commitment.quoteCheckedDate?.trim()
+    || commitment.quoteExpiryDate?.trim()
+    || commitment.quoteReference?.trim()
+    || commitment.quoteNotes?.trim(),
+  );
+  if (!hasQuoteContext) return null;
+  if (!commitment.quoteExpiryDate?.trim()) return "No expiry recorded";
+
+  const todayMs = new Date().setHours(0, 0, 0, 0);
+  const expiryMs = new Date(`${commitment.quoteExpiryDate.slice(0, 10)}T00:00:00`).getTime();
+  if (Number.isNaN(expiryMs)) return "No expiry recorded";
+  if (expiryMs < todayMs) return "Expired";
+  if (expiryMs <= todayMs + (7 * 24 * 60 * 60 * 1000)) return "Expiring soon";
+  return "Current";
+}
+
+function hasExecutableProcurementApproval(commitment: Parameters<typeof getProcurementQuoteState>[0] & { approvalStatus?: string; pendingValidationReason?: string }): boolean {
+  return getEffectiveProcurementApprovalStatus(commitment) === "Approved"
+    && !hasPendingProcurementValidation(commitment)
+    && getProcurementQuoteState(commitment) !== "Expired";
 }
 
 type CashPositionRecord = {
@@ -758,6 +786,14 @@ type CommitmentRecord = {
   supplier?: string;
   expectedPurchaseDate?: string;
   actualPurchaseDate?: string;
+  quoteCheckedDate?: string;
+  quoteExpiryDate?: string;
+  quoteReference?: string;
+  quoteNotes?: string;
+  purchaseEvidenceReference?: string;
+  invoiceOrderReference?: string;
+  evidenceNotes?: string;
+  actualSupplier?: string;
   pendingValidationReason?: string;
   approvalStatus?: ProcurementApprovalStatus;
   approvedRejectedBy?: string;
@@ -834,6 +870,14 @@ const defaultCommitmentForm: Omit<CommitmentRecord, "id" | "dateCreated"> = {
   supplier: "",
   expectedPurchaseDate: "",
   actualPurchaseDate: "",
+  quoteCheckedDate: "",
+  quoteExpiryDate: "",
+  quoteReference: "",
+  quoteNotes: "",
+  purchaseEvidenceReference: "",
+  invoiceOrderReference: "",
+  evidenceNotes: "",
+  actualSupplier: "",
   pendingValidationReason: "",
   approvalStatus: "Not reviewed",
   approvedRejectedBy: "",
@@ -3386,7 +3430,7 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
   canDelete: boolean;
   onClose: () => void;
   onChange: (field: keyof CommitmentRecord, value: string) => void;
-  onSave: () => void;
+  onSave: (commitment: CommitmentRecord) => boolean;
   onDelete: () => void;
 }) {
   const hasInvalidName = !commitment.commitmentName.trim();
@@ -3394,6 +3438,26 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
   const hasInvalidDueDate = !isValidCalendarDateInput(commitment.dueDate);
   const [hasAttemptedSave, setHasAttemptedSave] = useState(false);
   const [hasSaved, markSaved] = useFinanceSavedFeedback();
+  const procurementFormRef = useRef<HTMLFormElement>(null);
+  const getCommitmentSaveSnapshot = (): CommitmentRecord => {
+    const formData = procurementFormRef.current ? new FormData(procurementFormRef.current) : null;
+    const getFieldValue = (field: keyof CommitmentRecord) => {
+      const formValue = formData?.get(field);
+      return typeof formValue === "string" ? formValue : String(commitment[field] || "");
+    };
+
+    return {
+      ...commitment,
+      quoteCheckedDate: getFieldValue("quoteCheckedDate"),
+      quoteExpiryDate: getFieldValue("quoteExpiryDate"),
+      quoteReference: getFieldValue("quoteReference"),
+      quoteNotes: getFieldValue("quoteNotes"),
+      purchaseEvidenceReference: getFieldValue("purchaseEvidenceReference"),
+      invoiceOrderReference: getFieldValue("invoiceOrderReference"),
+      evidenceNotes: getFieldValue("evidenceNotes"),
+      actualSupplier: getFieldValue("actualSupplier"),
+    };
+  };
 
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
@@ -3410,7 +3474,7 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
           <div aria-live="polite" className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">Commitment saved.</div>
         ) : null}
 
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <form ref={procurementFormRef} className="mt-4 grid gap-4 md:grid-cols-2">
           <div className="md:col-span-2">
             <label className={financeLabelClass}>Commitment name</label>
             <input value={commitment.commitmentName} onChange={(event) => onChange("commitmentName", event.target.value)} className={financeFieldClass} />
@@ -3474,6 +3538,25 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
             <label className={financeLabelClass}>Target / best price</label>
             <input value={commitment.targetPrice || ""} onChange={(event) => onChange("targetPrice", event.target.value)} placeholder="e.g. 950" className={financeFieldClass} />
           </div>
+          <div className="md:col-span-2 border-t border-[#d3cbc3] pt-4">
+            <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Quote validity</div>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Quote / price checked date</label>
+            <input name="quoteCheckedDate" type="date" value={commitment.quoteCheckedDate || ""} onChange={(event) => onChange("quoteCheckedDate", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Quote expiry date</label>
+            <input name="quoteExpiryDate" type="date" value={commitment.quoteExpiryDate || ""} onChange={(event) => onChange("quoteExpiryDate", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Quote reference or URL</label>
+            <input name="quoteReference" value={commitment.quoteReference || ""} onChange={(event) => onChange("quoteReference", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Quote notes</label>
+            <textarea name="quoteNotes" rows={2} value={commitment.quoteNotes || ""} onChange={(event) => onChange("quoteNotes", event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
+          </div>
           <div>
             <label className={financeLabelClass}>Actual purchase price</label>
             <input value={commitment.actualPurchasePrice || ""} onChange={(event) => onChange("actualPurchasePrice", event.target.value)} placeholder="e.g. 925" className={financeFieldClass} />
@@ -3489,6 +3572,25 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
           <div>
             <label className={financeLabelClass}>Actual purchase date</label>
             <input type="date" value={commitment.actualPurchaseDate || ""} onChange={(event) => onChange("actualPurchaseDate", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div className="md:col-span-2 border-t border-[#d3cbc3] pt-4">
+            <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Purchase evidence</div>
+          </div>
+          <div>
+            <label className={financeLabelClass}>Purchase evidence / receipt reference</label>
+            <input name="purchaseEvidenceReference" value={commitment.purchaseEvidenceReference || ""} onChange={(event) => onChange("purchaseEvidenceReference", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div>
+            <label className={financeLabelClass}>Invoice / order reference</label>
+            <input name="invoiceOrderReference" value={commitment.invoiceOrderReference || ""} onChange={(event) => onChange("invoiceOrderReference", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Actual supplier if different</label>
+            <input name="actualSupplier" value={commitment.actualSupplier || ""} onChange={(event) => onChange("actualSupplier", event.target.value)} className={financeFieldClass} />
+          </div>
+          <div className="md:col-span-2">
+            <label className={financeLabelClass}>Evidence notes</label>
+            <textarea name="evidenceNotes" rows={2} value={commitment.evidenceNotes || ""} onChange={(event) => onChange("evidenceNotes", event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
           </div>
           <div className="md:col-span-2">
             <label className={financeLabelClass}>Pending validation reason</label>
@@ -3523,13 +3625,13 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
             <label className={financeLabelClass}>Notes</label>
             <textarea rows={3} value={commitment.notes} onChange={(event) => onChange("notes", event.target.value)} className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6" />
           </div>
-        </div>
+        </form>
 
         <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
           <FinanceDeleteControl canDelete={canDelete} label="Delete commitment" onDelete={onDelete} />
           <div className="flex justify-end gap-2">
             <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidName || hasInvalidAmount || hasInvalidDueDate) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save commitment"}</button>
+            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidName || hasInvalidAmount || hasInvalidDueDate) { return; } if (onSave(getCommitmentSaveSnapshot())) markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save commitment"}</button>
           </div>
         </div>
       </div>
@@ -8229,6 +8331,14 @@ export default function Home() {
             supplier: typeof record.supplier === "string" ? record.supplier : "",
             expectedPurchaseDate: typeof record.expectedPurchaseDate === "string" ? record.expectedPurchaseDate : "",
             actualPurchaseDate: typeof record.actualPurchaseDate === "string" ? record.actualPurchaseDate : "",
+            quoteCheckedDate: typeof record.quoteCheckedDate === "string" ? record.quoteCheckedDate : "",
+            quoteExpiryDate: typeof record.quoteExpiryDate === "string" ? record.quoteExpiryDate : "",
+            quoteReference: typeof record.quoteReference === "string" ? record.quoteReference : "",
+            quoteNotes: typeof record.quoteNotes === "string" ? record.quoteNotes : "",
+            purchaseEvidenceReference: typeof record.purchaseEvidenceReference === "string" ? record.purchaseEvidenceReference : "",
+            invoiceOrderReference: typeof record.invoiceOrderReference === "string" ? record.invoiceOrderReference : "",
+            evidenceNotes: typeof record.evidenceNotes === "string" ? record.evidenceNotes : "",
+            actualSupplier: typeof record.actualSupplier === "string" ? record.actualSupplier : "",
             pendingValidationReason: typeof record.pendingValidationReason === "string" ? record.pendingValidationReason : "",
             approvalStatus: procurementApprovalStatusOptions.includes(record.approvalStatus as ProcurementApprovalStatus) ? record.approvalStatus : "Not reviewed",
             approvedRejectedBy: typeof record.approvedRejectedBy === "string" ? record.approvedRejectedBy : "",
@@ -10078,7 +10188,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     const uncommittedDeployableCash = grossDeployableCash === null ? null : grossDeployableCash - committedCash;
     const startOfTodayMs = new Date().setHours(0, 0, 0, 0);
     const procurementItems = commitmentReadModel
-      .filter((item) => item.commitment.type === "Supplier" || Boolean(item.commitment.procurementNeed?.trim()) || Boolean(item.commitment.originalBudget?.trim()) || Boolean(item.commitment.targetPrice?.trim()) || Boolean(item.commitment.actualPurchasePrice?.trim()) || Boolean(item.commitment.supplier?.trim()) || item.pendingValidation)
+      .filter((item) => item.commitment.type === "Supplier" || Boolean(item.commitment.procurementNeed?.trim()) || Boolean(item.commitment.originalBudget?.trim()) || Boolean(item.commitment.targetPrice?.trim()) || Boolean(item.commitment.actualPurchasePrice?.trim()) || Boolean(item.commitment.supplier?.trim()) || Boolean(item.commitment.quoteCheckedDate?.trim()) || Boolean(item.commitment.quoteExpiryDate?.trim()) || Boolean(item.commitment.quoteReference?.trim()) || Boolean(item.commitment.quoteNotes?.trim()) || Boolean(item.commitment.purchaseEvidenceReference?.trim()) || Boolean(item.commitment.invoiceOrderReference?.trim()) || Boolean(item.commitment.evidenceNotes?.trim()) || Boolean(item.commitment.actualSupplier?.trim()) || item.pendingValidation)
       .map((item) => {
         const originalBudget = parseOptionalFinanceAmount(item.commitment.originalBudget || "");
         const targetPrice = parseOptionalFinanceAmount(item.commitment.targetPrice || "");
@@ -10101,6 +10211,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         const hasNeed = Boolean(item.commitment.procurementNeed?.trim());
         const hasTargetPrice = targetPrice !== null && targetPrice > 0;
         const hasRequiredInfo = hasSupplier && hasNeed && hasTargetPrice;
+        const quoteState = getProcurementQuoteState(item.commitment);
         const cashAvailable = projectedDeployableCashAfterPurchase !== null && projectedDeployableCashAfterPurchase >= 0;
         let readinessState: ProcurementReadinessState = "Researching";
         let readinessReason = "Supplier, need or target price is still incomplete.";
@@ -10111,6 +10222,9 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         } else if (item.pendingValidation) {
           readinessState = "Pending validation";
           readinessReason = item.commitment.pendingValidationReason?.trim() || "External validation is still required.";
+        } else if (quoteState === "Expired") {
+          readinessState = "Pending validation";
+          readinessReason = `Quoted pricing expired on ${item.commitment.quoteExpiryDate}; revalidate or replace the price before committing or purchasing.`;
         } else if (!hasRequiredInfo) {
           readinessState = "Researching";
           readinessReason = [
@@ -10155,6 +10269,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
           effectiveCertainty: item.effectiveCertainty,
           approvalStatus: item.approvalStatus,
           isRejected: item.isRejected,
+          quoteState,
         };
       });
     const procurementReadinessRank: Record<ProcurementReadinessState, number> = {
@@ -11681,13 +11796,16 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
         && item.approvalStatus === "Not reviewed"
         && item.commitment.capitalDecisionOutcome !== "Mark Pending validation"
         && (timeSensitive || material);
+      const quoteIssueNeedsAttention = (item.quoteState === "Expired" || item.quoteState === "Expiring soon")
+        && (timeSensitive || material)
+        && (item.approvalStatus === "Approved" || item.readinessState === "Ready to buy" || item.readinessState === "Pending validation");
       const committedFundingPressure = Boolean(cashAttention.fundingGap) && item.isCommitted;
       const overdueUrgency = Boolean(date) && getDateValue(date) < todayMs;
 
       if (isActivelyDeferred && !committedFundingPressure && !overdueUrgency) return;
-      if (!approvedDependency && !(readyAwaitingReview && (timeSensitive || material)) && !approvedAwaitingCommitment && !judgementRequired && !committedFundingPressure) return;
+      if (!approvedDependency && !(readyAwaitingReview && (timeSensitive || material)) && !approvedAwaitingCommitment && !judgementRequired && !quoteIssueNeedsAttention && !committedFundingPressure) return;
 
-      const reason = committedFundingPressure
+      const baseReason = committedFundingPressure
         ? "This committed purchase contributes to the current funding gap."
         : approvedDependency
           ? `Capital is approved, but execution cannot proceed: ${item.readinessReason}`
@@ -11698,7 +11816,15 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
               : material
                 ? "Founder judgement is required because this planned exposure would consume current uncommitted deployable cash."
                 : "Founder judgement is required before the time-sensitive planned exposure can be committed.";
-      const nextAction = committedFundingPressure
+      const quoteReason = item.quoteState === "Expired"
+        ? `The quoted price expired on ${item.commitment.quoteExpiryDate}.`
+        : item.quoteState === "Expiring soon"
+          ? `The quoted price expires soon on ${item.commitment.quoteExpiryDate}.`
+          : "";
+      const reason = quoteIssueNeedsAttention && !baseReason.toLowerCase().includes(item.quoteState === "Expired" ? "expired" : "expires soon")
+        ? `${baseReason} ${quoteReason}`
+        : baseReason;
+      const baseNextAction = committedFundingPressure
         ? "Review this commitment against the funding gap."
         : approvedDependency
           ? item.readinessState === "Pending validation" ? "Confirm the external dependency and clear Pending validation." : "Resolve the cash or information blocker."
@@ -11707,6 +11833,9 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
             : approvedAwaitingCommitment
               ? "Commit the approved funds or revise the approval."
               : "Review the quote or plan and approve, reject or defer it.";
+      const nextAction = quoteIssueNeedsAttention
+        ? `Revalidate or replace the quoted price. ${baseNextAction}`
+        : baseNextAction;
 
       addItem({
         key: `Finance:commitment:${item.commitment.id}`,
@@ -16928,39 +17057,43 @@ const isOwnershipGap =
   };
 
   const handleCommitmentEditorChange = (field: keyof CommitmentRecord, value: string) => {
-    if (!commitmentEditor) {
-      return;
-    }
-
-    setCommitmentEditor({ ...commitmentEditor, [field]: value });
+    setCommitmentEditor((current) => current ? { ...current, [field]: value } : current);
   };
 
-  const handleCommitmentSave = () => {
-    if (!commitmentEditor || !commitmentEditor.commitmentName.trim()) {
-      return;
+  const handleCommitmentSave = (editorSnapshot: CommitmentRecord): boolean => {
+    if (!editorSnapshot.commitmentName.trim()) {
+      return false;
     }
 
-    const previousCommitment = commitmentRecords.find((record) => record.id === commitmentEditor.id);
+    const previousCommitment = commitmentRecords.find((record) => record.id === editorSnapshot.id);
     const nextCommitment: CommitmentRecord = {
-      ...commitmentEditor,
-      id: commitmentEditor.id || generateFinanceRecordId("commitment"),
-      commitmentName: commitmentEditor.commitmentName.trim(),
-      amount: (commitmentEditor.actualPurchasePrice || commitmentEditor.amount).trim(),
-      dueDate: (commitmentEditor.actualPurchaseDate || commitmentEditor.expectedPurchaseDate || commitmentEditor.dueDate).trim(),
-      procurementNeed: (commitmentEditor.procurementNeed || "").trim(),
-      originalBudget: (commitmentEditor.originalBudget || "").trim(),
-      targetPrice: (commitmentEditor.targetPrice || "").trim(),
-      actualPurchasePrice: (commitmentEditor.actualPurchasePrice || "").trim(),
-      supplier: (commitmentEditor.supplier || "").trim(),
-      expectedPurchaseDate: (commitmentEditor.expectedPurchaseDate || "").trim(),
-      actualPurchaseDate: (commitmentEditor.actualPurchaseDate || "").trim(),
-      pendingValidationReason: (commitmentEditor.pendingValidationReason || "").trim(),
-      approvalStatus: getEffectiveProcurementApprovalStatus(commitmentEditor),
-      approvedRejectedBy: (commitmentEditor.approvedRejectedBy || "").trim(),
-      approvalDate: (commitmentEditor.approvalDate || "").trim(),
-      approvalRationale: (commitmentEditor.approvalRationale || "").trim(),
-      notes: commitmentEditor.notes.trim(),
-      dateCreated: commitmentEditor.dateCreated || new Date().toISOString(),
+      ...editorSnapshot,
+      id: editorSnapshot.id || generateFinanceRecordId("commitment"),
+      commitmentName: editorSnapshot.commitmentName.trim(),
+      amount: (editorSnapshot.actualPurchasePrice || editorSnapshot.amount).trim(),
+      dueDate: (editorSnapshot.actualPurchaseDate || editorSnapshot.expectedPurchaseDate || editorSnapshot.dueDate).trim(),
+      procurementNeed: (editorSnapshot.procurementNeed || "").trim(),
+      originalBudget: (editorSnapshot.originalBudget || "").trim(),
+      targetPrice: (editorSnapshot.targetPrice || "").trim(),
+      actualPurchasePrice: (editorSnapshot.actualPurchasePrice || "").trim(),
+      supplier: (editorSnapshot.supplier || "").trim(),
+      expectedPurchaseDate: (editorSnapshot.expectedPurchaseDate || "").trim(),
+      actualPurchaseDate: (editorSnapshot.actualPurchaseDate || "").trim(),
+      quoteCheckedDate: (editorSnapshot.quoteCheckedDate || "").trim(),
+      quoteExpiryDate: (editorSnapshot.quoteExpiryDate || "").trim(),
+      quoteReference: (editorSnapshot.quoteReference || "").trim(),
+      quoteNotes: (editorSnapshot.quoteNotes || "").trim(),
+      purchaseEvidenceReference: (editorSnapshot.purchaseEvidenceReference || "").trim(),
+      invoiceOrderReference: (editorSnapshot.invoiceOrderReference || "").trim(),
+      evidenceNotes: (editorSnapshot.evidenceNotes || "").trim(),
+      actualSupplier: (editorSnapshot.actualSupplier || "").trim(),
+      pendingValidationReason: (editorSnapshot.pendingValidationReason || "").trim(),
+      approvalStatus: getEffectiveProcurementApprovalStatus(editorSnapshot),
+      approvedRejectedBy: (editorSnapshot.approvedRejectedBy || "").trim(),
+      approvalDate: (editorSnapshot.approvalDate || "").trim(),
+      approvalRationale: (editorSnapshot.approvalRationale || "").trim(),
+      notes: editorSnapshot.notes.trim(),
+      dateCreated: editorSnapshot.dateCreated || new Date().toISOString(),
     };
     const wasCommitted = previousCommitment ? getEffectiveCommitmentCertainty(previousCommitment) === "Committed" : false;
     const wasPurchased = previousCommitment
@@ -16970,8 +17103,12 @@ const isOwnershipGap =
     const willBePurchased = nextCommitment.status === "Paid" || Boolean(nextCommitment.actualPurchaseDate) || parseFinanceAmountInput(nextCommitment.actualPurchasePrice || "") !== null;
 
     if (((!wasCommitted && willBeCommitted) || (!wasPurchased && willBePurchased)) && !hasExecutableProcurementApproval(nextCommitment)) {
-      setFeedback({ type: "error", message: hasPendingProcurementValidation(nextCommitment) ? "Clear Pending validation before committing or purchasing." : "Approve this purchase before committing or purchasing." });
-      return;
+      setFeedback({ type: "error", message: getProcurementQuoteState(nextCommitment) === "Expired" ? "Revalidate or replace the expired quote before committing or purchasing." : hasPendingProcurementValidation(nextCommitment) ? "Clear Pending validation before committing or purchasing." : "Approve this purchase before committing or purchasing." });
+      return false;
+    }
+    if (!wasPurchased && willBePurchased && (parseFinanceAmountInput(nextCommitment.actualPurchasePrice || "") === null || !nextCommitment.actualPurchaseDate)) {
+      setFeedback({ type: "error", message: "Record both the actual purchase price and actual purchase date before marking purchased." });
+      return false;
     }
     const isNew = !commitmentRecords.some((record) => record.id === nextCommitment.id);
 
@@ -16981,6 +17118,7 @@ const isOwnershipGap =
     setSelectedCommitmentId(nextCommitment.id);
     setCommitmentEditor(nextCommitment);
     setFeedback({ type: "success", message: isNew ? "Commitment created." : "Commitment saved." });
+    return true;
   };
 
   const handleCommitmentDelete = () => {
@@ -17008,7 +17146,7 @@ const isOwnershipGap =
 
   const handleMarkCommitmentCommitted = (commitment: CommitmentRecord) => {
     if (!hasExecutableProcurementApproval(commitment)) {
-      setFeedback({ type: "error", message: hasPendingProcurementValidation(commitment) ? "Clear Pending validation before committing this purchase." : "Approve this purchase before marking it committed." });
+      setFeedback({ type: "error", message: getProcurementQuoteState(commitment) === "Expired" ? "Revalidate or replace the expired quote before committing this purchase." : hasPendingProcurementValidation(commitment) ? "Clear Pending validation before committing this purchase." : "Approve this purchase before marking it committed." });
       return;
     }
 
@@ -17027,7 +17165,7 @@ const isOwnershipGap =
 
   const handleMarkCommitmentPurchased = (commitment: CommitmentRecord) => {
     if (!hasExecutableProcurementApproval(commitment)) {
-      setFeedback({ type: "error", message: hasPendingProcurementValidation(commitment) ? "Clear Pending validation before marking this purchase purchased." : "Approve this purchase before marking it purchased." });
+      setFeedback({ type: "error", message: getProcurementQuoteState(commitment) === "Expired" ? "Revalidate or replace the expired quote before marking this purchase purchased." : hasPendingProcurementValidation(commitment) ? "Clear Pending validation before marking this purchase purchased." : "Approve this purchase before marking it purchased." });
       return;
     }
 
@@ -17037,7 +17175,12 @@ const isOwnershipGap =
       return;
     }
 
-    const actualPurchaseDate = commitment.actualPurchaseDate || new Date().toISOString().slice(0, 10);
+    if (!commitment.actualPurchaseDate) {
+      setFeedback({ type: "error", message: "Record an actual purchase date before marking purchased." });
+      return;
+    }
+
+    const actualPurchaseDate = commitment.actualPurchaseDate;
     const nextCommitment: CommitmentRecord = {
       ...commitment,
       certainty: "Committed",
@@ -19406,7 +19549,7 @@ const isOwnershipGap =
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div>
                             <div className="text-[14px] font-medium text-[#171717]">{item.commitment.commitmentName}</div>
-                            <div className="mt-1 text-[11px] text-[#4d4944]">{item.commitment.supplier || "Supplier not set"} • {item.commitment.relatedPillar}</div>
+                            <div className="mt-1 text-[11px] text-[#4d4944]">{item.commitment.actualSupplier || item.commitment.supplier || "Supplier not set"} • {item.commitment.relatedPillar}</div>
                           </div>
                           <div className="flex flex-wrap justify-end gap-1.5">
                             <span className={`rounded-full border px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] ${
@@ -19429,6 +19572,15 @@ const isOwnershipGap =
                                   ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"
                                   : "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]"
                             }`}>{item.approvalStatus}</span>
+                            {item.quoteState ? (
+                              <span className={`rounded-full border px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] ${
+                                item.quoteState === "Expired"
+                                  ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]"
+                                  : item.quoteState === "Expiring soon"
+                                    ? "border-[#8a6a2f] bg-[#f7f1e4] text-[#6a4a18]"
+                                    : "border-[#d3cbc3] bg-[#f1eee9] text-[#2f2b28]"
+                              }`}>Quote: {item.quoteState}</span>
+                            ) : null}
                             <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[#2f2b28]">{item.effectiveCertainty}</span>
                           </div>
                         </div>
@@ -19438,7 +19590,10 @@ const isOwnershipGap =
                           <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">Actual {item.actualPurchasePrice !== null ? formatFinanceAmount(item.actualPurchasePrice) : "—"}</span>
                           <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">Required {formatFinanceAmount(item.amountRequired)}</span>
                           <span className="rounded border border-[#b8c9ba] bg-[#eef4ee] px-2 py-1 text-[#2f5d3a]">Saved {formatFinanceAmount(item.savedAgainstBudget)}</span>
+                          {item.commitment.quoteExpiryDate ? <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">Quote expiry {item.commitment.quoteExpiryDate}</span> : null}
                           <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">{item.commitment.expectedPurchaseDate || item.commitment.dueDate ? `Expected ${item.commitment.expectedPurchaseDate || item.commitment.dueDate}` : "No expected date"}</span>
+                          {item.commitment.actualPurchaseDate ? <span className="rounded border border-[#b8c9ba] bg-[#eef4ee] px-2 py-1 text-[#2f5d3a]">Purchased {item.commitment.actualPurchaseDate}</span> : null}
+                          {item.isPurchased ? <span className="rounded border border-[#d3cbc3] bg-[#f9f7f4] px-2 py-1">{item.commitment.purchaseEvidenceReference || item.commitment.invoiceOrderReference || item.commitment.evidenceNotes ? "Evidence recorded" : "No evidence reference"}</span> : null}
                           <span className={`rounded border px-2 py-1 ${item.projectedDeployableCashAfterPurchase !== null && item.projectedDeployableCashAfterPurchase < 0 ? "border-[#6a3328] bg-[#f8efeb] text-[#6a3328]" : "border-[#d3cbc3] bg-[#f9f7f4]"}`}>Cash after {item.projectedDeployableCashAfterPurchase !== null ? formatFinanceAmount(item.projectedDeployableCashAfterPurchase) : "—"}</span>
                         </div>
                         <div className="mt-2 text-[11px] leading-4 text-[#524d49]">{item.readinessReason}</div>
