@@ -40,6 +40,153 @@ const DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY = "empire-os-daily-posture-snapshots";
 const LAST_BACKUP_AT_STORAGE_KEY = "empire-os-last-backup-at";
 const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
 
+const BACKUP_FORMAT = "empire-os-backup";
+const BACKUP_VERSION = 1;
+const SUPPORTED_BACKUP_VERSIONS = [BACKUP_VERSION] as const;
+const BACKUP_CURRENT_DAYS = 7;
+const BACKUP_STALE_DAYS = 30;
+
+const EMPIRE_OS_BACKUP_STORAGE_KEYS = [
+  STORAGE_KEY,
+  CONVERSION_STORAGE_KEY,
+  PERSON_STORAGE_KEY,
+  PROJECT_STORAGE_KEY,
+  LEAD_STORAGE_KEY,
+  OUTREACH_STORAGE_KEY,
+  DELEGATION_HANDOFF_STORAGE_KEY,
+  CASH_POSITION_STORAGE_KEY,
+  INCOME_STORAGE_KEY,
+  EXPENSE_STORAGE_KEY,
+  COMMITMENT_STORAGE_KEY,
+  TAX_PAYMENT_STORAGE_KEY,
+  SAVED_VIEWS_STORAGE_KEY,
+  DEFAULT_SAVED_VIEW_STORAGE_KEY,
+  DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+] as const;
+
+type EmpireOsBackup = {
+  format: typeof BACKUP_FORMAT;
+  version: number;
+  createdAt: string;
+  storage: Record<string, string | null>;
+};
+
+type BackupStoreSummary = {
+  label: string;
+  count: number | null;
+};
+
+type RestoreBackupPreview = {
+  fileName: string;
+  backup: EmpireOsBackup;
+  summaries: BackupStoreSummary[];
+};
+
+const backupSummaryStores = [
+  { key: STORAGE_KEY, label: "Captures" },
+  { key: PROJECT_STORAGE_KEY, label: "Projects" },
+  { key: PERSON_STORAGE_KEY, label: "People" },
+  { key: COMMITMENT_STORAGE_KEY, label: "Financial commitments" },
+  { key: LEAD_STORAGE_KEY, label: "Leads" },
+  { key: OUTREACH_STORAGE_KEY, label: "Outreach contacts" },
+  { key: INCOME_STORAGE_KEY, label: "Income records" },
+  { key: EXPENSE_STORAGE_KEY, label: "Expense records" },
+  { key: TAX_PAYMENT_STORAGE_KEY, label: "Tax payments" },
+] as const;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
+  if (!isPlainObject(value)) throw new Error("The selected file does not contain a JSON object.");
+  if (value.format !== BACKUP_FORMAT) throw new Error("This is not an Empire OS full-backup file.");
+  if (typeof value.version !== "number" || !SUPPORTED_BACKUP_VERSIONS.includes(value.version as typeof BACKUP_VERSION)) {
+    throw new Error(`Backup version ${String(value.version)} is not supported. Supported version: ${BACKUP_VERSION}.`);
+  }
+  if (typeof value.createdAt !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(value.createdAt) || Number.isNaN(new Date(value.createdAt).getTime())) {
+    throw new Error("The backup creation date is missing or invalid.");
+  }
+  if (!isPlainObject(value.storage)) throw new Error("The backup storage section is missing or invalid.");
+  if (Object.keys(value.storage).length === 0) throw new Error("The backup storage section is empty.");
+
+  const supportedKeys = new Set<string>(EMPIRE_OS_BACKUP_STORAGE_KEYS);
+  const storage: Record<string, string | null> = {};
+  for (const [key, storedValue] of Object.entries(value.storage)) {
+    if (!supportedKeys.has(key)) throw new Error(`The backup contains an unsupported storage key: ${key}.`);
+    if (storedValue !== null && typeof storedValue !== "string") {
+      throw new Error(`The stored value for ${key} must be a string or null.`);
+    }
+    storage[key] = storedValue;
+  }
+
+  const arrayStorageKeys = [
+    STORAGE_KEY,
+    CONVERSION_STORAGE_KEY,
+    PERSON_STORAGE_KEY,
+    PROJECT_STORAGE_KEY,
+    LEAD_STORAGE_KEY,
+    OUTREACH_STORAGE_KEY,
+    DELEGATION_HANDOFF_STORAGE_KEY,
+    INCOME_STORAGE_KEY,
+    EXPENSE_STORAGE_KEY,
+    COMMITMENT_STORAGE_KEY,
+    TAX_PAYMENT_STORAGE_KEY,
+    SAVED_VIEWS_STORAGE_KEY,
+    DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+  ];
+  for (const key of arrayStorageKeys) {
+    const storedValue = storage[key];
+    if (typeof storedValue !== "string") continue;
+    try {
+      if (!Array.isArray(JSON.parse(storedValue))) throw new Error();
+    } catch {
+      throw new Error(`The backup contains invalid array data for ${key}.`);
+    }
+  }
+
+  const cashValue = storage[CASH_POSITION_STORAGE_KEY];
+  if (typeof cashValue === "string") {
+    try {
+      if (!isPlainObject(JSON.parse(cashValue))) throw new Error();
+    } catch {
+      throw new Error(`The backup contains invalid object data for ${CASH_POSITION_STORAGE_KEY}.`);
+    }
+  }
+
+  return {
+    format: BACKUP_FORMAT,
+    version: value.version,
+    createdAt: value.createdAt,
+    storage,
+  };
+}
+
+function summarizeBackupStores(storage: Record<string, string | null>): BackupStoreSummary[] {
+  return backupSummaryStores
+    .filter(({ key }) => Object.prototype.hasOwnProperty.call(storage, key))
+    .map(({ key, label }) => {
+      const storedValue = storage[key];
+      if (storedValue === null) return { label, count: 0 };
+      try {
+        const parsed = JSON.parse(storedValue);
+        return { label, count: Array.isArray(parsed) ? parsed.length : null };
+      } catch {
+        return { label, count: null };
+      }
+    });
+}
+
+function getBackupHealth(lastBackupAt: string, nowMs = Date.now()) {
+  if (!lastBackupAt) return { label: "No backup recorded", tone: "text-[#6b655f]" };
+  const backupMs = new Date(lastBackupAt).getTime();
+  if (Number.isNaN(backupMs)) return { label: "No backup recorded", tone: "text-[#6b655f]" };
+  const ageDays = Math.max(0, (nowMs - backupMs) / (1000 * 60 * 60 * 24));
+  if (ageDays <= BACKUP_CURRENT_DAYS) return { label: "Current", tone: "text-[#315b45]" };
+  if (ageDays <= BACKUP_STALE_DAYS) return { label: "Getting stale", tone: "text-[#755520]" };
+  return { label: "Stale", tone: "text-[#7a352b]" };
+}
+
 const sharedAreaOptions = [
   "Garden Maintenance",
   "Hard Landscape Construction",
@@ -8459,6 +8606,10 @@ export default function Home() {
   const [dailyPostureSnapshots, setDailyPostureSnapshots] = useState<DailyPostureSnapshot[]>([]);
   const [operatingDataLoaded, setOperatingDataLoaded] = useState(false);
   const [lastBackupAt, setLastBackupAt] = useState("");
+  const [restoreBackupPreview, setRestoreBackupPreview] = useState<RestoreBackupPreview | null>(null);
+  const [isRestoringBackup, setIsRestoringBackup] = useState(false);
+  const restoreBackupInputRef = useRef<HTMLInputElement | null>(null);
+  const restoreInProgressRef = useRef(false);
   const [cashPositionEditor, setCashPositionEditor] = useState<CashPositionRecord | null>(null);
   const [cashPositionValidationError, setCashPositionValidationError] = useState<string | null>(null);
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
@@ -18025,199 +18176,140 @@ const isOwnershipGap =
     setLastBackupAt(window.localStorage.getItem(LAST_BACKUP_AT_STORAGE_KEY) || "");
   }, []);
 
-  function handleDownloadFullBackup() {
-    const storageKeys = [
-      STORAGE_KEY,
-      CONVERSION_STORAGE_KEY,
-      PERSON_STORAGE_KEY,
-      PROJECT_STORAGE_KEY,
-      LEAD_STORAGE_KEY,
-      DELEGATION_HANDOFF_STORAGE_KEY,
-      CASH_POSITION_STORAGE_KEY,
-      INCOME_STORAGE_KEY,
-      EXPENSE_STORAGE_KEY,
-      COMMITMENT_STORAGE_KEY,
-      SAVED_VIEWS_STORAGE_KEY,
-      DEFAULT_SAVED_VIEW_STORAGE_KEY,
-      DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
-    ];
-
+  function createFullBackup(): EmpireOsBackup {
     const storage: Record<string, string | null> = {};
-
-    for (const key of storageKeys) {
+    for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
       storage[key] = window.localStorage.getItem(key);
     }
 
-    const backup = {
-      format: "empire-os-backup",
-      version: 1,
+    return {
+      format: BACKUP_FORMAT,
+      version: BACKUP_VERSION,
       createdAt: new Date().toISOString(),
       storage,
     };
+  }
 
-    const blob = new Blob([JSON.stringify(backup, null, 2)], {
-      type: "application/json",
-    });
+  function downloadBackup(backup: EmpireOsBackup, filePrefix: string) {
+    let url = "";
+    try {
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      const timestamp = backup.createdAt.replace(/[:.]/g, "-");
 
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      anchor.href = url;
+      anchor.download = `${filePrefix}-${timestamp}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
 
-    anchor.href = url;
-    anchor.download = `empire-os-backup-${timestamp}.json`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
+      const completedAt = new Date().toISOString();
+      window.localStorage.setItem(LAST_BACKUP_AT_STORAGE_KEY, completedAt);
+      setLastBackupAt(completedAt);
+    } finally {
+      if (url) URL.revokeObjectURL(url);
+    }
+  }
 
-    const completedAt = new Date().toISOString();
-    window.localStorage.setItem(LAST_BACKUP_AT_STORAGE_KEY, completedAt);
-    setLastBackupAt(completedAt);
-
-    setFeedback({
-      type: "success",
-      message: "Full Empire OS backup downloaded.",
-    });
+  function handleDownloadFullBackup() {
+    try {
+      downloadBackup(createFullBackup(), "empire-os-backup");
+      setFeedback({ type: "success", message: "Full Empire OS backup downloaded." });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: error instanceof Error ? `Backup could not be created: ${error.message}` : "Backup could not be created.",
+      });
+    }
   }
 
   function handleRestoreFullBackup() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "application/json,.json";
-
-    input.onchange = async () => {
-      const file = input.files?.[0];
-
-      if (!file) {
-        return;
-      }
-
-      try {
-        const text = await file.text();
-        const parsed = JSON.parse(text) as {
-          format?: unknown;
-          version?: unknown;
-          storage?: unknown;
-        };
-
-        if (
-          parsed.format !== "empire-os-backup" ||
-          parsed.version !== 1 ||
-          !parsed.storage ||
-          typeof parsed.storage !== "object" ||
-          Array.isArray(parsed.storage)
-        ) {
-          throw new Error("Invalid Empire OS backup format.");
-        }
-
-        const storage = parsed.storage as Record<string, unknown>;
-
-        const storageKeys = [
-          STORAGE_KEY,
-          CONVERSION_STORAGE_KEY,
-          PERSON_STORAGE_KEY,
-          PROJECT_STORAGE_KEY,
-          LEAD_STORAGE_KEY,
-          DELEGATION_HANDOFF_STORAGE_KEY,
-          CASH_POSITION_STORAGE_KEY,
-          INCOME_STORAGE_KEY,
-          EXPENSE_STORAGE_KEY,
-          COMMITMENT_STORAGE_KEY,
-          SAVED_VIEWS_STORAGE_KEY,
-          DEFAULT_SAVED_VIEW_STORAGE_KEY,
-          DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
-        ];
-
-        for (const key of storageKeys) {
-  const isOptionalLegacyKey = key === DELEGATION_HANDOFF_STORAGE_KEY;
-
-  if (!Object.prototype.hasOwnProperty.call(storage, key)) {
-    if (isOptionalLegacyKey) {
-      continue;
+    if (restoreBackupInputRef.current) {
+      restoreBackupInputRef.current.value = "";
+      restoreBackupInputRef.current.click();
     }
-
-    throw new Error(`Backup is missing required storage key: ${key}`);
   }
 
-  const value = storage[key];
+  async function handleRestoreBackupFile(file: File | undefined) {
+    setRestoreBackupPreview(null);
+    if (!file) return;
 
-  if (value !== null && typeof value !== "string") {
-    throw new Error(`Invalid stored value for: ${key}`);
-  }
-}
-        const arrayStorageKeys = [
-          STORAGE_KEY,
-          CONVERSION_STORAGE_KEY,
-          PERSON_STORAGE_KEY,
-          PROJECT_STORAGE_KEY,
-          LEAD_STORAGE_KEY,
-          DELEGATION_HANDOFF_STORAGE_KEY,
-          INCOME_STORAGE_KEY,
-          EXPENSE_STORAGE_KEY,
-          COMMITMENT_STORAGE_KEY,
-          SAVED_VIEWS_STORAGE_KEY,
-          DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
-        ];
-
-        for (const key of arrayStorageKeys) {
-          const value = storage[key];
-
-          if (typeof value === "string") {
-            const decoded = JSON.parse(value);
-
-            if (!Array.isArray(decoded)) {
-              throw new Error(`Expected an array for: ${key}`);
-            }
-          }
-        }
-
-        const cashValue = storage[CASH_POSITION_STORAGE_KEY];
-
-        if (typeof cashValue === "string") {
-          const decodedCash = JSON.parse(cashValue);
-
-          if (
-            !decodedCash ||
-            typeof decodedCash !== "object" ||
-            Array.isArray(decodedCash)
-          ) {
-            throw new Error("Invalid cash position data.");
-          }
-        }
-
-        const confirmed = window.confirm(
-          "Restore this Empire OS backup? A fresh safety backup of the current data will download first, then the restored data will replace the current browser data."
-        );
-
-        if (!confirmed) {
-          return;
-        }
-
-        handleDownloadFullBackup();
-
-        for (const key of storageKeys) {
-          const value = storage[key];
-
-          if (value === null || value === undefined) {
-            window.localStorage.removeItem(key);
-          } else {
-            window.localStorage.setItem(key, value as string);
-          }
-        }
-
-        window.location.reload();
-      } catch (error) {
-        setFeedback({
-          type: "error",
-          message:
-            error instanceof Error
-              ? `Backup restore blocked: ${error.message}`
-              : "Backup restore blocked: invalid backup file.",
-        });
+    try {
+      const text = await file.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new Error("The selected file is not valid JSON.");
       }
-    };
+      const backup = validateEmpireOsBackup(parsed);
+      setRestoreBackupPreview({ fileName: file.name, backup, summaries: summarizeBackupStores(backup.storage) });
+      setFeedback(null);
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: error instanceof Error ? `Backup restore blocked: ${error.message}` : "Backup restore blocked: invalid backup file.",
+      });
+    } finally {
+      if (restoreBackupInputRef.current) restoreBackupInputRef.current.value = "";
+    }
+  }
 
-    input.click();
+  function handleCancelRestoreBackup() {
+    setRestoreBackupPreview(null);
+    if (restoreBackupInputRef.current) restoreBackupInputRef.current.value = "";
+  }
+
+  function handleConfirmRestoreBackup() {
+    if (!restoreBackupPreview || restoreInProgressRef.current) return;
+
+    restoreInProgressRef.current = true;
+    setIsRestoringBackup(true);
+    const { backup } = restoreBackupPreview;
+    const previousStorage: Record<string, string | null> = {};
+    let restoreWritesStarted = false;
+
+    try {
+      for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) previousStorage[key] = window.localStorage.getItem(key);
+      downloadBackup(createFullBackup(), "empire-os-pre-restore-safety-backup");
+
+      restoreWritesStarted = true;
+      for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
+        const value = Object.prototype.hasOwnProperty.call(backup.storage, key) ? backup.storage[key] : null;
+        if (value === null) window.localStorage.removeItem(key);
+        else window.localStorage.setItem(key, value);
+      }
+
+      const failedKeys = EMPIRE_OS_BACKUP_STORAGE_KEYS.filter((key) => {
+        const expected = Object.prototype.hasOwnProperty.call(backup.storage, key) ? backup.storage[key] : null;
+        return window.localStorage.getItem(key) !== expected;
+      });
+      if (failedKeys.length > 0) throw new Error(`Verification failed for: ${failedKeys.join(", ")}.`);
+
+      setRestoreBackupPreview(null);
+      window.location.reload();
+    } catch (error) {
+      const rollbackFailures: string[] = [];
+      if (restoreWritesStarted) {
+        for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
+          try {
+            const previousValue = previousStorage[key];
+            if (previousValue === null) window.localStorage.removeItem(key);
+            else window.localStorage.setItem(key, previousValue);
+            if (window.localStorage.getItem(key) !== previousValue) rollbackFailures.push(key);
+          } catch {
+            rollbackFailures.push(key);
+          }
+        }
+      }
+      setFeedback({
+        type: "error",
+        message: `${error instanceof Error ? `Backup restore failed: ${error.message}` : "Backup restore failed."}${!restoreWritesStarted ? " No live data was changed." : rollbackFailures.length > 0 ? ` Rollback could not be verified for: ${rollbackFailures.join(", ")}.` : " Existing data was restored."}`,
+      });
+      setIsRestoringBackup(false);
+      restoreInProgressRef.current = false;
+    }
   }
 
   function handleRestoreEmergencySnapshot() {
@@ -18363,7 +18455,7 @@ const isOwnershipGap =
         return;
       }
 
-      handleDownloadFullBackup();
+      downloadBackup(createFullBackup(), "empire-os-pre-emergency-restore-safety-backup");
 
       for (const key of storageKeys) {
         const value = storage[key];
@@ -18397,6 +18489,8 @@ const isOwnershipGap =
     handleSystemEditOpen,
     handleSopEditOpen,
   );
+  const backupHealth = getBackupHealth(lastBackupAt);
+  const hasValidLastBackupAt = Boolean(lastBackupAt) && !Number.isNaN(new Date(lastBackupAt).getTime());
 
   return (
     <div className="min-h-screen bg-[#f1efe9] text-[#171717]">
@@ -18412,6 +18506,49 @@ const isOwnershipGap =
           aria-live="polite"
         >
           {feedback.message}
+        </div>
+      ) : null}
+      {restoreBackupPreview ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#171717]/30 px-4">
+          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.12)]">
+            <div className="flex items-start justify-between gap-3 border-b border-[#d3cbc3] pb-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Restore full backup</p>
+                <h2 className="mt-1 text-[20px] font-medium tracking-[-0.04em] text-[#171717]">Review before replacing data</h2>
+              </div>
+              <button type="button" onClick={handleCancelRestoreBackup} disabled={isRestoringBackup} className="text-[11px] uppercase tracking-[0.16em] text-[#4d4944] disabled:opacity-45">Close</button>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-[#d4b4a7] bg-[#f8efeb] px-3 py-3 text-[13px] leading-5 text-[#5d342b]">
+              Confirming restore will replace existing Empire OS local data. Stores absent from this backup will be removed. Other browser storage is not touched.
+            </div>
+
+            <dl className="mt-4 grid gap-3 text-[12px] sm:grid-cols-2">
+              <div className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2"><dt className="text-[9px] uppercase tracking-[0.14em] text-[#6a625d]">Created</dt><dd className="mt-1 text-[#171717]">{new Date(restoreBackupPreview.backup.createdAt).toLocaleString()}</dd></div>
+              <div className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2"><dt className="text-[9px] uppercase tracking-[0.14em] text-[#6a625d]">Version</dt><dd className="mt-1 text-[#171717]">{restoreBackupPreview.backup.version}</dd></div>
+              <div className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2"><dt className="text-[9px] uppercase tracking-[0.14em] text-[#6a625d]">Storage keys</dt><dd className="mt-1 text-[#171717]">{Object.keys(restoreBackupPreview.backup.storage).length}</dd></div>
+              <div className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2"><dt className="text-[9px] uppercase tracking-[0.14em] text-[#6a625d]">File</dt><dd className="mt-1 break-all text-[#171717]">{restoreBackupPreview.fileName}</dd></div>
+            </dl>
+
+            <div className="mt-4">
+              <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-[#4d4944]">Recognizable stores</div>
+              {restoreBackupPreview.summaries.length > 0 ? (
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  {restoreBackupPreview.summaries.map((summary) => (
+                    <div key={summary.label} className="flex items-center justify-between gap-3 rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[12px]">
+                      <span className="text-[#4d4944]">{summary.label}</span>
+                      <span className="font-medium text-[#171717]">{summary.count === null ? "Present" : summary.count}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="mt-2 text-[12px] text-[#6a625d]">No summarized record stores are present.</p>}
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2 border-t border-[#d3cbc3] pt-4">
+              <button type="button" onClick={handleCancelRestoreBackup} disabled={isRestoringBackup} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.14em] text-[#2f2b28] disabled:opacity-45">Cancel</button>
+              <button type="button" onClick={handleConfirmRestoreBackup} disabled={isRestoringBackup} className="rounded-lg bg-[#6a3328] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-45">{isRestoringBackup ? "Restoring..." : "Confirm restore"}</button>
+            </div>
+          </div>
         </div>
       ) : null}
       <div className="flex min-h-screen">
@@ -18470,6 +18607,13 @@ const isOwnershipGap =
           </nav>
 
           <div className="mt-6 border-t border-[#d7d1ca] pt-4">
+            <input
+              ref={restoreBackupInputRef}
+              type="file"
+              accept="application/json,.json"
+              onChange={(event) => void handleRestoreBackupFile(event.target.files?.[0])}
+              className="hidden"
+            />
             <button
               type="button"
               onClick={handleDownloadFullBackup}
@@ -18483,7 +18627,7 @@ const isOwnershipGap =
               onClick={handleRestoreFullBackup}
               className="mt-2 w-full rounded-lg border border-[#cfc8c1] bg-[#f7f4f1] px-3 py-2.5 text-left text-[12px] font-medium text-[#4d4944] transition-colors hover:bg-[#e7e1da]"
             >
-              Restore from backup
+              Restore full backup
             </button>
 
             <button
@@ -18494,11 +18638,10 @@ const isOwnershipGap =
               Restore emergency snapshot
             </button>
 
-            <p className="mt-2 px-1 text-[10px] leading-4 text-[#6b655f]">
-              {lastBackupAt
-                ? `Last backup: ${new Date(lastBackupAt).toLocaleString()}`
-                : "No external backup recorded yet"}
-            </p>
+            <div className="mt-2 px-1 text-[10px] leading-4 text-[#6b655f]">
+              <div>{hasValidLastBackupAt ? `Last full backup: ${new Date(lastBackupAt).toLocaleString()}` : "No backup recorded"}</div>
+              <div className={`font-medium ${backupHealth.tone}`}>Backup health: {backupHealth.label}</div>
+            </div>
           </div>
         </aside>
 
