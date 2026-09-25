@@ -59,6 +59,7 @@ const reviewOutcomes = [
   "Convert to Action",
   "Convert to Decision",
   "Convert to Lesson",
+  "Convert to Project",
   "Convert to System",
   "Convert to SOP",
   "Close",
@@ -447,7 +448,13 @@ type ProjectRecord = {
   relatedDecisionIds?: string[];
   relatedSystemIds?: string[];
   relatedSopIds?: string[];
+  sourceCaptureId?: string;
+  title?: string;
+  originalRawNote?: string;
+  createdAt?: string;
 };
+
+type ProjectConversionDraft = Pick<ProjectRecord, "projectName" | "owner" | "area" | "targetCompletionDate" | "status">;
 
 const projectHealthOptions = ["On track", "At risk", "Blocked", "Waiting"] as const;
 type ProjectHealth = (typeof projectHealthOptions)[number];
@@ -981,6 +988,14 @@ const defaultProjectForm: Omit<ProjectRecord, "id"> = {
   relatedDecisionIds: [],
   relatedSystemIds: [],
   relatedSopIds: [],
+};
+
+const defaultProjectConversionDraft: ProjectConversionDraft = {
+  projectName: "",
+  owner: "",
+  area: "Garden Maintenance",
+  targetCompletionDate: "",
+  status: "Open",
 };
 
 const defaultPersonForm: PersonFormValues = {
@@ -2668,13 +2683,14 @@ function ProjectExecutionReleaseSection({ releaseItem, latestHandoff, onCreateRe
   );
 }
 
-function ProjectDetailPanel({ project, people, actions, decisions, systems, sops, releaseItem, latestHandoff, onClose, onChange, onSave, onReviewProject, onAddLink, onRemoveLink, onOpenRecord, onCreateReleaseAction, onOpenReleaseAction, onDelegateProject, onUpdateHandoff }: {
+function ProjectDetailPanel({ project, people, actions, decisions, systems, sops, upstream, releaseItem, latestHandoff, onClose, onChange, onSave, onReviewProject, onAddLink, onRemoveLink, onOpenRecord, onCreateReleaseAction, onOpenReleaseAction, onDelegateProject, onUpdateHandoff }: {
   project: ProjectRecord;
   people: PersonRecord[];
   actions: ActionRecord[];
   decisions: DecisionRecord[];
   systems: SystemRecord[];
   sops: SopRecord[];
+  upstream: RelatedRecordItem[];
   releaseItem: ExecutionReleaseItem | null;
   latestHandoff: DelegationHandoffViewItem | null;
   onClose: () => void;
@@ -2821,6 +2837,16 @@ function ProjectDetailPanel({ project, people, actions, decisions, systems, sops
           onRemoveLink={onRemoveLink}
           onOpenRecord={onOpenRecord}
         />
+
+        <RelatedRecordsPanel upstream={upstream} downstream={[]} />
+
+        {project.sourceCaptureId ? (
+          <div className="mt-4 rounded-xl border border-[#d3cbc3] bg-white p-3 text-[12px] leading-5 text-[#4d4944]">
+            <div><span className="font-medium">Original Capture title:</span> {project.title || project.projectName}</div>
+            <div><span className="font-medium">Original raw note:</span> {project.originalRawNote || "Not recorded"}</div>
+            <div><span className="font-medium">Conversion date:</span> {project.createdAt ? formatCapturedAt(project.createdAt) : "Not recorded"}</div>
+          </div>
+        ) : null}
 
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
@@ -8391,6 +8417,8 @@ export default function Home() {
   const [delegationHandoffs, setDelegationHandoffs] = useState<DelegationHandoffRecord[]>([]);
   const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<ReviewOutcome>("Keep as Capture");
+  const [projectConversionDraft, setProjectConversionDraft] = useState<ProjectConversionDraft>(defaultProjectConversionDraft);
+  const convertingCaptureIdsRef = useRef(new Set<string>());
   const [selectedProblemId, setSelectedProblemId] = useState<string | null>(null);
   const [problemEditor, setProblemEditor] = useState<ProblemRecord | null>(null);
   const [selectedActionId, setSelectedActionId] = useState<string | null>(null);
@@ -12543,6 +12571,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       linkCapture(`SOP:${sop.id}`, sop.sourceCaptureId, sop.relatedCapture);
     });
     projects.forEach((project) => {
+      linkCapture(`Project:${project.id}`, project.sourceCaptureId);
       (project.relatedActionIds || []).forEach((actionId) => link(`Project:${project.id}`, `Action:${actionId}`));
       (project.relatedDecisionIds || []).forEach((decisionId) => link(`Project:${project.id}`, `Decision:${decisionId}`));
       (project.relatedSystemIds || []).forEach((systemId) => link(`Project:${project.id}`, `System:${systemId}`));
@@ -15265,7 +15294,7 @@ const isOwnershipGap =
         owner: project.owner || "Unassigned",
         status: project.status || "No status",
         area: project.area,
-        sourceCaptureId: "",
+        sourceCaptureId: project.sourceCaptureId || "",
         onOpen: () => handleProjectEditOpen(project),
       })),
     },
@@ -15399,19 +15428,37 @@ const isOwnershipGap =
 
     setSelectedCaptureId(capture.id);
     setSelectedOutcome("Keep as Capture");
+    setProjectConversionDraft({
+      ...defaultProjectConversionDraft,
+      projectName: capture.title,
+      area: sharedAreaOptions.includes(capture.relatedArea as (typeof sharedAreaOptions)[number])
+        ? capture.relatedArea
+        : defaultProjectConversionDraft.area,
+    });
   };
 
   const handleReviewSubmit = () => {
-    if (!selectedCaptureId) {
+    if (!selectedCaptureId || convertingCaptureIdsRef.current.has(selectedCaptureId)) {
       return;
     }
 
     const capture = captures.find((item) => item.id === selectedCaptureId);
 
-    if (!capture || capture.reviewOutcome) {
+    const existingProject = projects.find((project) => project.sourceCaptureId === selectedCaptureId);
+    if (!capture || capture.reviewOutcome || existingProject) {
       setSelectedCaptureId(null);
+      if (existingProject) {
+        setFeedback({ type: "success", message: "This capture has already been converted to a Project." });
+      }
       return;
     }
+
+    if (selectedOutcome === "Convert to Project" && !projectConversionDraft.projectName.trim()) {
+      setFeedback({ type: "error", message: "Project title is required before conversion." });
+      return;
+    }
+
+    convertingCaptureIdsRef.current.add(selectedCaptureId);
 
     const reviewDate = new Date().toISOString();
     const nextStatus = getStatusFromOutcome(selectedOutcome);
@@ -15430,7 +15477,40 @@ const isOwnershipGap =
 
     setCaptures(nextCaptureList);
 
-    if (selectedOutcome !== "Keep as Capture" && selectedOutcome !== "Close") {
+    if (selectedOutcome === "Convert to Project") {
+      const selectedOwner = people.find((person) =>
+        person.status === "Active" && person.name === projectConversionDraft.owner,
+      );
+      const selectedArea = sharedAreaOptions.includes(projectConversionDraft.area as (typeof sharedAreaOptions)[number])
+        ? projectConversionDraft.area
+        : capture.relatedArea;
+      const selectedStatus = projectStatusOptions.includes(projectConversionDraft.status as (typeof projectStatusOptions)[number])
+        ? projectConversionDraft.status
+        : defaultProjectForm.status;
+      const project: ProjectRecord = {
+        ...defaultProjectForm,
+        id: generateProjectId(),
+        projectName: projectConversionDraft.projectName.trim(),
+        owner: selectedOwner?.name || "",
+        area: sharedAreaOptions.includes(selectedArea as (typeof sharedAreaOptions)[number])
+          ? selectedArea
+          : defaultProjectForm.area,
+        targetCompletionDate: projectConversionDraft.targetCompletionDate,
+        status: selectedStatus,
+        sourceCaptureId: capture.id,
+        title: capture.title,
+        originalRawNote: capture.rawNote,
+        createdAt: reviewDate,
+      };
+
+      setProjects((currentProjects) =>
+        currentProjects.some((currentProject) => currentProject.sourceCaptureId === capture.id)
+          ? currentProjects
+          : [project, ...currentProjects],
+      );
+    }
+
+    if (selectedOutcome !== "Keep as Capture" && selectedOutcome !== "Close" && selectedOutcome !== "Convert to Project") {
       const conversion: CaptureConversionRecord = {
         id: generateConversionId(),
         sourceCaptureId: capture.id,
@@ -15472,6 +15552,7 @@ const isOwnershipGap =
     }
 
     setSelectedCaptureId(null);
+    convertingCaptureIdsRef.current.delete(capture.id);
     setFeedback({
       type: "success",
       message: selectedOutcome === "Close"
@@ -21092,6 +21173,7 @@ const isOwnershipGap =
                   <div className="space-y-3">
                     {orderedCaptures.map((capture) => {
                       const reviewAlreadyComplete = Boolean(capture.reviewOutcome);
+                      const downstreamProject = projects.find((project) => project.sourceCaptureId === capture.id);
 
                       return (
                         <article
@@ -21163,6 +21245,15 @@ const isOwnershipGap =
                               </button>
                             )}
                           </div>
+                          {downstreamProject ? (
+                            <button
+                              type="button"
+                              onClick={() => handleProjectEditOpen(downstreamProject)}
+                              className="mt-3 block w-full rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-left text-[11px] text-[#171717] transition hover:border-[#171717]"
+                            >
+                              <span className="font-medium">Downstream Project:</span> {downstreamProject.projectName}
+                            </button>
+                          ) : null}
                         </article>
                       );
                     })}
@@ -21644,7 +21735,7 @@ const isOwnershipGap =
 
       {selectedCaptureId ? (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
-          <div className="w-full max-w-md rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
+          <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-[18px] font-medium tracking-[-0.04em] text-[#171717]">
                 Review capture
@@ -21687,6 +21778,38 @@ const isOwnershipGap =
               ))}
             </div>
 
+            {selectedOutcome === "Convert to Project" ? (
+              <div className="mt-4 grid gap-3 border-t border-[#d3cbc3] pt-4 sm:grid-cols-2">
+                <div className="sm:col-span-2">
+                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.16em] text-[#2f2b28]">Project title</label>
+                  <input value={projectConversionDraft.projectName} onChange={(event) => setProjectConversionDraft((current) => ({ ...current, projectName: event.target.value }))} className="w-full rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[13px] text-[#171717] outline-none focus:border-[#171717]" />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.16em] text-[#2f2b28]">Owner</label>
+                  <select value={projectConversionDraft.owner} onChange={(event) => setProjectConversionDraft((current) => ({ ...current, owner: event.target.value }))} className="w-full rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[13px] text-[#171717] outline-none focus:border-[#171717]">
+                    <option value="">Unassigned</option>
+                    {people.filter((person) => person.status === "Active").map((person) => <option key={person.id} value={person.name}>{person.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.16em] text-[#2f2b28]">Pillar / area</label>
+                  <select value={projectConversionDraft.area} onChange={(event) => setProjectConversionDraft((current) => ({ ...current, area: event.target.value }))} className="w-full rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[13px] text-[#171717] outline-none focus:border-[#171717]">
+                    {sharedAreaOptions.map((area) => <option key={area} value={area}>{area}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.16em] text-[#2f2b28]">Target date</label>
+                  <input type="date" value={projectConversionDraft.targetCompletionDate} onChange={(event) => setProjectConversionDraft((current) => ({ ...current, targetCompletionDate: event.target.value }))} className="w-full rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[13px] text-[#171717] outline-none focus:border-[#171717]" />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.16em] text-[#2f2b28]">Status</label>
+                  <select value={projectConversionDraft.status} onChange={(event) => setProjectConversionDraft((current) => ({ ...current, status: event.target.value }))} className="w-full rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[13px] text-[#171717] outline-none focus:border-[#171717]">
+                    {projectStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+                  </select>
+                </div>
+              </div>
+            ) : null}
+
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
@@ -21698,7 +21821,8 @@ const isOwnershipGap =
               <button
                 type="button"
                 onClick={handleReviewSubmit}
-                className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1]"
+                disabled={selectedOutcome === "Convert to Project" && !projectConversionDraft.projectName.trim()}
+                className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] disabled:cursor-not-allowed disabled:opacity-45"
               >
                 Confirm review
               </button>
@@ -21984,6 +22108,7 @@ const isOwnershipGap =
           decisions={decisionRecords}
           systems={systemRecords}
           sops={sopRecords}
+          upstream={getCaptureLineage(projectEditor.sourceCaptureId)}
           releaseItem={founderExecutionReleaseSystem.items.find((item) => item.objectType === "Project" && item.id === projectEditor.id) || null}
           latestHandoff={delegationHandoffFollowThrough.items.find((handoff) => handoff.objectType === "Project" && handoff.objectId === projectEditor.id) || null}
           onClose={() => {
