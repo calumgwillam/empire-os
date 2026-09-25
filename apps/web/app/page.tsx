@@ -45,6 +45,7 @@ const BACKUP_VERSION = 1;
 const SUPPORTED_BACKUP_VERSIONS = [BACKUP_VERSION] as const;
 const BACKUP_CURRENT_DAYS = 7;
 const BACKUP_STALE_DAYS = 30;
+const INTEGRITY_MATERIAL_ATTENTION_THRESHOLD = 3;
 
 const EMPIRE_OS_BACKUP_STORAGE_KEYS = [
   STORAGE_KEY,
@@ -1016,6 +1017,420 @@ type CommitmentRecord = {
   notes: string;
   dateCreated: string;
 };
+
+type IntegritySeverity = "Critical" | "Material" | "Warning";
+type IntegrityStatus = "Healthy" | "Needs attention" | "Integrity risk";
+
+type IntegrityIssue = {
+  id: string;
+  severity: IntegritySeverity;
+  category: string;
+  recordType: string;
+  recordTitle: string;
+  recordId?: string;
+  reason: string;
+  nextStep: string;
+  openObjectType?: string;
+  openId?: string;
+};
+
+type IntegrityAuditResult = {
+  auditedAt: string;
+  status: IntegrityStatus;
+  issues: IntegrityIssue[];
+  severityCounts: Record<IntegritySeverity, number>;
+  categoryCounts: Array<{ category: string; count: number }>;
+};
+
+type IntegrityAuditInput = {
+  captures: CaptureRecord[];
+  conversions: CaptureConversionRecord[];
+  actions: ActionRecord[];
+  projects: ProjectRecord[];
+  problems: ProblemRecord[];
+  opportunities: OpportunityRecord[];
+  decisions: DecisionRecord[];
+  lessons: LessonRecord[];
+  systems: SystemRecord[];
+  sops: SopRecord[];
+  people: PersonRecord[];
+  leads: LeadRecord[];
+  commitments: CommitmentRecord[];
+  outreach: OutreachRecord[];
+  handoffs: DelegationHandoffRecord[];
+  storage: Record<string, string | null>;
+};
+
+function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
+  const issues: IntegrityIssue[] = [];
+  let issueSequence = 0;
+  const addIssue = (issue: Omit<IntegrityIssue, "id">) => {
+    issueSequence += 1;
+    issues.push({ ...issue, id: `integrity-${issueSequence}` });
+  };
+  const idSet = <T extends { id: string }>(records: T[]) => new Set(records.map((record) => record.id).filter(Boolean));
+  const captureIds = idSet(input.captures);
+  const actionIds = idSet(input.actions);
+  const projectIds = idSet(input.projects);
+  const problemIds = idSet(input.problems);
+  const opportunityIds = idSet(input.opportunities);
+  const decisionIds = idSet(input.decisions);
+  const lessonIds = idSet(input.lessons);
+  const systemIds = idSet(input.systems);
+  const sopIds = idSet(input.sops);
+  const personIds = idSet(input.people);
+  const leadIds = idSet(input.leads);
+  const activePeopleByName = new Map(input.people.filter((person) => person.status === "Active").map((person) => [person.name.trim().toLowerCase(), person]));
+
+  type MissingCaptureLineageRoot = {
+    records: Map<string, { recordType: string; recordTitle: string; recordId: string }>;
+    recordTypes: Set<string>;
+  };
+  const missingCaptureLineageRoots = new Map<string, MissingCaptureLineageRoot>();
+  const trackMissingCaptureLineage = (captureId: string | undefined, recordType: string, recordTitle: string, recordId: string) => {
+    const missingCaptureId = captureId?.trim();
+    if (!missingCaptureId || captureIds.has(missingCaptureId)) return;
+    if (!missingCaptureLineageRoots.has(missingCaptureId)) {
+      missingCaptureLineageRoots.set(missingCaptureId, { records: new Map(), recordTypes: new Set() });
+    }
+    const root = missingCaptureLineageRoots.get(missingCaptureId)!;
+    root.records.set(`${recordType}:${recordId}`, { recordType, recordTitle, recordId });
+    root.recordTypes.add(recordType);
+  };
+
+  for (const problem of input.problems) {
+    trackMissingCaptureLineage(problem.sourceCaptureId, "Problem", problem.problemStatement || problem.title, problem.id);
+    trackMissingCaptureLineage(problem.relatedCapture, "Problem", problem.problemStatement || problem.title, problem.id);
+  }
+  for (const action of input.actions) {
+    trackMissingCaptureLineage(action.sourceCaptureId, "Action", action.actionTitle || action.title, action.id);
+    trackMissingCaptureLineage(action.relatedCapture, "Action", action.actionTitle || action.title, action.id);
+  }
+  for (const opportunity of input.opportunities) {
+    trackMissingCaptureLineage(opportunity.sourceCaptureId, "Opportunity", opportunity.opportunityTitle || opportunity.title, opportunity.id);
+    trackMissingCaptureLineage(opportunity.relatedCapture, "Opportunity", opportunity.opportunityTitle || opportunity.title, opportunity.id);
+  }
+  for (const decision of input.decisions) {
+    trackMissingCaptureLineage(decision.sourceCaptureId, "Decision", decision.decisionTitle || decision.title, decision.id);
+    trackMissingCaptureLineage(decision.relatedCapture, "Decision", decision.decisionTitle || decision.title, decision.id);
+  }
+  for (const lesson of input.lessons) {
+    trackMissingCaptureLineage(lesson.sourceCaptureId, "Lesson", lesson.lessonTitle || lesson.title, lesson.id);
+    trackMissingCaptureLineage(lesson.relatedCapture, "Lesson", lesson.lessonTitle || lesson.title, lesson.id);
+  }
+  for (const system of input.systems) {
+    trackMissingCaptureLineage(system.sourceCaptureId, "System", system.systemName || system.title, system.id);
+    trackMissingCaptureLineage(system.relatedCapture, "System", system.systemName || system.title, system.id);
+  }
+  for (const sop of input.sops) {
+    trackMissingCaptureLineage(sop.sourceCaptureId, "SOP", sop.sopTitle || sop.title, sop.id);
+    trackMissingCaptureLineage(sop.relatedCapture, "SOP", sop.sopTitle || sop.title, sop.id);
+  }
+  for (const project of input.projects) trackMissingCaptureLineage(project.sourceCaptureId, "Project", project.projectName, project.id);
+
+  const collectionDefinitions: Array<{ type: string; records: Array<{ id: string }>; openObjectType?: string }> = [
+    { type: "Capture", records: input.captures },
+    { type: "Capture conversion", records: input.conversions },
+    { type: "Action", records: input.actions, openObjectType: "Action" },
+    { type: "Project", records: input.projects, openObjectType: "Project" },
+    { type: "Problem", records: input.problems, openObjectType: "Problem" },
+    { type: "Opportunity", records: input.opportunities, openObjectType: "Opportunity" },
+    { type: "Decision", records: input.decisions, openObjectType: "Decision" },
+    { type: "Lesson", records: input.lessons, openObjectType: "Lesson" },
+    { type: "System", records: input.systems, openObjectType: "System" },
+    { type: "SOP", records: input.sops, openObjectType: "SOP" },
+    { type: "Person", records: input.people, openObjectType: "Person" },
+    { type: "Lead", records: input.leads, openObjectType: "Lead" },
+    { type: "Financial commitment", records: input.commitments, openObjectType: "Finance" },
+    { type: "Outreach", records: input.outreach, openObjectType: "Outreach" },
+  ];
+
+  for (const collection of collectionDefinitions) {
+    const counts = new Map<string, number>();
+    for (const record of collection.records) {
+      if (record.id) counts.set(record.id, (counts.get(record.id) || 0) + 1);
+    }
+    for (const [recordId, count] of counts) {
+      if (count < 2) continue;
+      addIssue({
+        severity: "Critical",
+        category: "Duplicate IDs",
+        recordType: collection.type,
+        recordTitle: `${collection.type} ID collision`,
+        recordId,
+        reason: `${count} ${collection.type.toLowerCase()} records share the same ID, making references ambiguous.`,
+        nextStep: "Review the duplicate records manually before changing any IDs or references.",
+        openObjectType: collection.openObjectType,
+        openId: collection.type === "Financial commitment" ? `commitment:${recordId}` : recordId,
+      });
+    }
+  }
+
+  const crossTypeIds = new Map<string, Set<string>>();
+  for (const collection of collectionDefinitions.filter((collection) => collection.type !== "Capture conversion")) {
+    for (const record of collection.records) {
+      if (!record.id) continue;
+      if (!crossTypeIds.has(record.id)) crossTypeIds.set(record.id, new Set());
+      crossTypeIds.get(record.id)!.add(collection.type);
+    }
+  }
+  for (const [recordId, types] of crossTypeIds) {
+    if (types.size < 2) continue;
+    addIssue({
+      severity: "Material",
+      category: "Ambiguous IDs",
+      recordType: "Multiple record types",
+      recordTitle: "Cross-record ID collision",
+      recordId,
+      reason: `The same ID is used by: ${Array.from(types).join(", ")}.`,
+      nextStep: "Inspect all affected records and their relationships before making a manual correction.",
+    });
+  }
+
+  const checkReference = (config: {
+    value?: string;
+    validIds: Set<string>;
+    category?: string;
+    recordType: string;
+    recordTitle: string;
+    recordId: string;
+    fieldLabel: string;
+    openObjectType?: string;
+    openId?: string;
+    severity?: IntegritySeverity;
+  }) => {
+    const value = config.value?.trim();
+    if (!value || config.validIds.has(value)) return;
+    addIssue({
+      severity: config.severity || "Material",
+      category: config.category || "Broken relationships",
+      recordType: config.recordType,
+      recordTitle: config.recordTitle,
+      recordId: config.recordId,
+      reason: `${config.fieldLabel} references missing ID ${value}.`,
+      nextStep: "Open the record and verify or remove the broken relationship manually.",
+      openObjectType: config.openObjectType,
+      openId: config.openId || config.recordId,
+    });
+  };
+
+  const checkPersonId = (recordType: string, recordTitle: string, recordId: string, fieldLabel: string, value?: string, openObjectType?: string, openId?: string) => {
+    checkReference({ value, validIds: personIds, category: "People references", recordType, recordTitle, recordId, fieldLabel, openObjectType, openId });
+  };
+  const checkNamedOwner = (recordType: string, recordTitle: string, recordId: string, owner: string | undefined, isOperational: boolean, openObjectType: string, openId?: string) => {
+    const ownerName = owner?.trim();
+    if (!isOperational || !ownerName || ownerName.toLowerCase() === "unassigned" || activePeopleByName.has(ownerName.toLowerCase())) return;
+    addIssue({
+      severity: "Warning",
+      category: "People references",
+      recordType,
+      recordTitle,
+      recordId,
+      reason: `Named owner “${ownerName}” does not match an active People record.`,
+      nextStep: "Confirm whether the owner should be reassigned or the matching Person record reactivated.",
+      openObjectType,
+      openId: openId || recordId,
+    });
+  };
+
+  for (const action of input.actions) {
+    const title = action.actionTitle || action.title;
+    checkPersonId("Action", title, action.id, "Owner person", action.ownerPersonId, "Action");
+    checkPersonId("Action", title, action.id, "Follow-up owner person", action.followUpOwnerPersonId, "Action");
+    checkNamedOwner("Action", title, action.id, action.owner, !["Completed", "Cancelled"].includes(action.status), "Action");
+    checkReference({ value: action.relatedProblem, validIds: problemIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: "Related Problem", openObjectType: "Action" });
+    checkReference({ value: action.relatedDecision, validIds: decisionIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: "Related Decision", openObjectType: "Action" });
+    checkReference({ value: action.relatedOpportunity, validIds: opportunityIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: "Related Opportunity", openObjectType: "Action" });
+    if (action.releaseSourceType && action.releaseSourceId) {
+      const releaseIds = action.releaseSourceType === "Action" ? actionIds : action.releaseSourceType === "Project" ? projectIds : action.releaseSourceType === "Lead" ? leadIds : problemIds;
+      checkReference({ value: action.releaseSourceId, validIds: releaseIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: `${action.releaseSourceType} release source`, openObjectType: "Action" });
+    }
+  }
+
+  for (const project of input.projects) {
+    checkPersonId("Project", project.projectName, project.id, "Review owner person", project.reviewOwnerPersonId, "Project");
+    checkNamedOwner("Project", project.projectName, project.id, project.owner, !["Completed", "Cancelled"].includes(project.status), "Project");
+    for (const id of project.relatedActionIds || []) checkReference({ value: id, validIds: actionIds, recordType: "Project", recordTitle: project.projectName, recordId: project.id, fieldLabel: "Related Action", openObjectType: "Project" });
+    for (const id of project.relatedDecisionIds || []) checkReference({ value: id, validIds: decisionIds, recordType: "Project", recordTitle: project.projectName, recordId: project.id, fieldLabel: "Related Decision", openObjectType: "Project" });
+    for (const id of project.relatedSystemIds || []) checkReference({ value: id, validIds: systemIds, recordType: "Project", recordTitle: project.projectName, recordId: project.id, fieldLabel: "Related System", openObjectType: "Project" });
+    for (const id of project.relatedSopIds || []) checkReference({ value: id, validIds: sopIds, recordType: "Project", recordTitle: project.projectName, recordId: project.id, fieldLabel: "Related SOP", openObjectType: "Project" });
+    if (project.sourceCaptureId) {
+      const sourceCapture = input.captures.find((capture) => capture.id === project.sourceCaptureId);
+      if (sourceCapture && sourceCapture.reviewOutcome !== "Convert to Project") {
+        addIssue({ severity: "Material", category: "Project lineage", recordType: "Project", recordTitle: project.projectName, recordId: project.id, reason: `Source Capture outcome is ${sourceCapture.reviewOutcome || "not converted"}, not Convert to Project.`, nextStep: "Review the Capture and Project lineage manually.", openObjectType: "Project", openId: project.id });
+      }
+    }
+  }
+
+  for (const problem of input.problems) checkNamedOwner("Problem", problem.problemStatement || problem.title, problem.id, problem.owner, !["Resolved", "Closed"].includes(problem.problemStatus), "Problem");
+  for (const opportunity of input.opportunities) checkNamedOwner("Opportunity", opportunity.opportunityTitle || opportunity.title, opportunity.id, opportunity.owner, !["Rejected", "Completed"].includes(opportunity.status), "Opportunity");
+  for (const lead of input.leads) checkNamedOwner("Lead", lead.leadName, lead.id, lead.owner, !lead.archived && !["Won", "Lost"].includes(lead.status), "Lead");
+  for (const contact of input.outreach) {
+    checkNamedOwner("Outreach", contact.businessName, contact.id, contact.owner, !["Converted to Lead", "Closed / Not Pursuing", "Closed Supplier Network"].includes(contact.status), "Outreach");
+    checkReference({ value: contact.linkedLeadId, validIds: leadIds, recordType: "Outreach", recordTitle: contact.businessName, recordId: contact.id, fieldLabel: "Linked Lead", openObjectType: "Outreach" });
+  }
+
+  for (const decision of input.decisions) checkReference({ value: decision.relatedOpportunity, validIds: opportunityIds, recordType: "Decision", recordTitle: decision.decisionTitle || decision.title, recordId: decision.id, fieldLabel: "Related Opportunity", openObjectType: "Decision" });
+  for (const lesson of input.lessons) {
+    const title = lesson.lessonTitle || lesson.title;
+    checkNamedOwner("Lesson", title, lesson.id, lesson.owner, lesson.status !== "Archived", "Lesson");
+    checkReference({ value: lesson.relatedProblem, validIds: problemIds, recordType: "Lesson", recordTitle: title, recordId: lesson.id, fieldLabel: "Related Problem", openObjectType: "Lesson" });
+    checkReference({ value: lesson.relatedProject, validIds: projectIds, recordType: "Lesson", recordTitle: title, recordId: lesson.id, fieldLabel: "Related Project", openObjectType: "Lesson" });
+    checkReference({ value: lesson.relatedDecision, validIds: decisionIds, recordType: "Lesson", recordTitle: title, recordId: lesson.id, fieldLabel: "Related Decision", openObjectType: "Lesson" });
+    checkReference({ value: lesson.relatedSystem, validIds: systemIds, recordType: "Lesson", recordTitle: title, recordId: lesson.id, fieldLabel: "Related System", openObjectType: "Lesson" });
+  }
+  for (const system of input.systems) {
+    const title = system.systemName || system.title;
+    checkNamedOwner("System", title, system.id, system.owner, system.status !== "Deprecated", "System");
+    checkReference({ value: system.relatedLesson, validIds: lessonIds, recordType: "System", recordTitle: title, recordId: system.id, fieldLabel: "Related Lesson", openObjectType: "System" });
+  }
+  for (const sop of input.sops) {
+    const title = sop.sopTitle || sop.title;
+    checkNamedOwner("SOP", title, sop.id, sop.owner, !["Deprecated", "Archived"].includes(sop.status), "SOP");
+    checkReference({ value: sop.relatedSystem, validIds: systemIds, recordType: "SOP", recordTitle: title, recordId: sop.id, fieldLabel: "Related System", openObjectType: "SOP" });
+    checkReference({ value: sop.relatedLesson, validIds: lessonIds, recordType: "SOP", recordTitle: title, recordId: sop.id, fieldLabel: "Related Lesson", openObjectType: "SOP" });
+  }
+
+  for (const handoff of input.handoffs) {
+    const targetIds = handoff.objectType === "Action" ? actionIds : handoff.objectType === "Project" ? projectIds : handoff.objectType === "Lead" ? leadIds : problemIds;
+    checkReference({ value: handoff.objectId, validIds: targetIds, category: "Delegation references", recordType: "Delegation handoff", recordTitle: handoff.title, recordId: handoff.id, fieldLabel: handoff.objectType, severity: "Warning" });
+    checkPersonId("Delegation handoff", handoff.title, handoff.id, "Previous owner person", handoff.previousOwnerPersonId);
+    checkPersonId("Delegation handoff", handoff.title, handoff.id, "New owner person", handoff.newOwnerPersonId);
+    checkPersonId("Delegation handoff", handoff.title, handoff.id, "Delegated-by person", handoff.delegatedByPersonId);
+  }
+
+  for (const [missingCaptureId, root] of missingCaptureLineageRoots) {
+    const affectedRecords = Array.from(root.records.values());
+    const affectedTypes = Array.from(root.recordTypes).sort();
+    const looksLegacy = affectedRecords.length >= 2 && affectedTypes.length >= 2;
+    addIssue({
+      severity: looksLegacy ? "Warning" : "Material",
+      category: looksLegacy ? "Legacy lineage" : "Capture conversion",
+      recordType: "Capture lineage",
+      recordTitle: "Missing source Capture",
+      recordId: missingCaptureId,
+      reason: `${affectedRecords.length} downstream record${affectedRecords.length === 1 ? "" : "s"} across ${affectedTypes.join(", ")} reference this missing Capture ID.${looksLegacy ? " The shared multi-type root appears to be historical or migration lineage rather than confirmed active corruption." : " There is not enough shared historical lineage to classify this as a legacy root."}`,
+      nextStep: looksLegacy
+        ? "Inspect backup history only if lineage repair is desired; do not relink records without confirming the historical source."
+        : "Inspect the affected record and backup history to confirm whether the missing lineage is current or historical.",
+    });
+  }
+
+  const destinationRecords = new Map<ReviewOutcome, Array<{ id: string; sourceCaptureId?: string; title: string }>>([
+    ["Convert to Problem", input.problems.map((record) => ({ id: record.id, sourceCaptureId: record.sourceCaptureId, title: record.problemStatement || record.title }))],
+    ["Convert to Opportunity", input.opportunities.map((record) => ({ id: record.id, sourceCaptureId: record.sourceCaptureId, title: record.opportunityTitle || record.title }))],
+    ["Convert to Action", input.actions.map((record) => ({ id: record.id, sourceCaptureId: record.sourceCaptureId, title: record.actionTitle || record.title }))],
+    ["Convert to Decision", input.decisions.map((record) => ({ id: record.id, sourceCaptureId: record.sourceCaptureId, title: record.decisionTitle || record.title }))],
+    ["Convert to Lesson", input.lessons.map((record) => ({ id: record.id, sourceCaptureId: record.sourceCaptureId, title: record.lessonTitle || record.title }))],
+    ["Convert to Project", input.projects.map((record) => ({ id: record.id, sourceCaptureId: record.sourceCaptureId, title: record.projectName }))],
+    ["Convert to System", input.systems.map((record) => ({ id: record.id, sourceCaptureId: record.sourceCaptureId, title: record.systemName || record.title }))],
+    ["Convert to SOP", input.sops.map((record) => ({ id: record.id, sourceCaptureId: record.sourceCaptureId, title: record.sopTitle || record.title }))],
+  ]);
+  for (const capture of input.captures) {
+    const outcome = capture.reviewOutcome;
+    if (capture.status === "Converted" && !outcome) {
+      addIssue({ severity: "Warning", category: "Capture conversion", recordType: "Capture", recordTitle: capture.title, recordId: capture.id, reason: "Capture status is Converted but no conversion outcome is recorded.", nextStep: "Review legacy history and downstream records before changing the Capture." });
+      continue;
+    }
+    if (!outcome?.startsWith("Convert to ")) continue;
+    if (capture.status !== "Converted") {
+      addIssue({ severity: "Warning", category: "Capture conversion", recordType: "Capture", recordTitle: capture.title, recordId: capture.id, reason: `${outcome} is recorded but Capture status is “${capture.status}”.`, nextStep: "Review the Capture state and downstream lineage manually." });
+    }
+    const expected = destinationRecords.get(outcome) || [];
+    if (!expected.some((record) => record.sourceCaptureId === capture.id)) {
+      addIssue({ severity: "Material", category: "Capture conversion", recordType: "Capture", recordTitle: capture.title, recordId: capture.id, reason: `${outcome} is recorded but no compatible downstream record links back to this Capture.`, nextStep: "Review the Capture and destination collection; do not recreate anything until lineage is confirmed." });
+    }
+    const linkedTypes = Array.from(destinationRecords.entries()).filter(([, records]) => records.some((record) => record.sourceCaptureId === capture.id)).map(([type]) => type);
+    if (linkedTypes.some((type) => type !== outcome)) {
+      addIssue({ severity: "Material", category: "Capture conversion", recordType: "Capture", recordTitle: capture.title, recordId: capture.id, reason: `Downstream lineage includes ${linkedTypes.join(", ")} while the Capture records ${outcome}.`, nextStep: "Inspect the Capture and downstream records to identify the intended conversion type." });
+    }
+    if (linkedTypes.length > 1 || expected.filter((record) => record.sourceCaptureId === capture.id).length > 1) {
+      addIssue({ severity: "Warning", category: "Capture conversion", recordType: "Capture", recordTitle: capture.title, recordId: capture.id, reason: "More than one downstream conversion record links to this Capture.", nextStep: "Review the downstream records for duplicate or conflicting conversion history." });
+    }
+  }
+  for (const [outcome, records] of destinationRecords) {
+    for (const record of records) {
+      if (!record.sourceCaptureId) continue;
+      if (outcome === "Convert to Project") continue;
+      const capture = input.captures.find((item) => item.id === record.sourceCaptureId);
+      if (capture && capture.reviewOutcome && capture.reviewOutcome !== outcome) {
+        addIssue({ severity: "Material", category: "Capture conversion", recordType: outcome.replace("Convert to ", ""), recordTitle: record.title, recordId: record.id, reason: `Source Capture records ${capture.reviewOutcome}, but this record represents ${outcome}.`, nextStep: "Compare both records and manually confirm the intended conversion." });
+      }
+    }
+  }
+  const conversionTypesByCapture = new Map<string, Set<ReviewOutcome>>();
+  for (const conversion of input.conversions) {
+    if (!conversion.sourceCaptureId) {
+      continue;
+    }
+    if (conversion.relatedCapture && conversion.relatedCapture !== conversion.sourceCaptureId) {
+      addIssue({ severity: "Material", category: "Capture conversion", recordType: "Capture conversion", recordTitle: conversion.title, recordId: conversion.id, reason: `relatedCapture (${conversion.relatedCapture}) does not match sourceCaptureId (${conversion.sourceCaptureId}).`, nextStep: "Open the destination record and compare both lineage references with the source Capture." });
+    }
+    if (!conversionTypesByCapture.has(conversion.sourceCaptureId)) conversionTypesByCapture.set(conversion.sourceCaptureId, new Set());
+    conversionTypesByCapture.get(conversion.sourceCaptureId)!.add(conversion.targetType);
+  }
+  for (const [captureId, types] of conversionTypesByCapture) {
+    if (types.size < 2) continue;
+    const capture = input.captures.find((record) => record.id === captureId);
+    if (!capture) continue;
+    addIssue({ severity: "Material", category: "Capture conversion", recordType: "Capture", recordTitle: capture?.title || "Missing Capture", recordId: captureId, reason: `Conflicting conversion types exist: ${Array.from(types).join(", ")}.`, nextStep: "Review all downstream records and establish the intended conversion manually." });
+  }
+
+  const isMalformedNumber = (value: string | undefined, required = false) => {
+    const trimmed = value?.trim() || "";
+    if (!trimmed) return required;
+    const numericValue = Number(trimmed.replace(/[,£$]/g, ""));
+    return !Number.isFinite(numericValue);
+  };
+  for (const commitment of input.commitments) {
+    const title = commitment.commitmentName || "Unnamed commitment";
+    const financeOpenId = `commitment:${commitment.id}`;
+    const addFinanceIssue = (severity: IntegritySeverity, reason: string, nextStep: string) => addIssue({ severity, category: "Finance structure", recordType: "Financial commitment", recordTitle: title, recordId: commitment.id, reason, nextStep, openObjectType: "Finance", openId: financeOpenId });
+    if (isMalformedNumber(commitment.amount, true)) addFinanceIssue("Material", "Required amount is blank or not numeric.", "Open the commitment and verify the stored amount.");
+    for (const [label, value] of [["Original budget", commitment.originalBudget], ["Target price", commitment.targetPrice], ["Actual purchase price", commitment.actualPurchasePrice], ["Previous quote price", commitment.quotePreviousPrice], ["Confirmed quote price", commitment.quoteConfirmedPrice]] as const) {
+      if (isMalformedNumber(value)) addFinanceIssue("Warning", `${label} is present but not numeric.`, `Open the commitment and verify ${label.toLowerCase()}.`);
+    }
+    if (!commitmentStatusOptions.includes(commitment.status as (typeof commitmentStatusOptions)[number])) addFinanceIssue("Material", `Status “${commitment.status}” is not a supported commitment status.`, "Select a supported status after confirming the intended state.");
+    if (!commitmentTypeOptions.includes(commitment.type as (typeof commitmentTypeOptions)[number])) addFinanceIssue("Warning", `Type “${commitment.type}” is not a supported commitment type.`, "Review the commitment type against the current options.");
+    if (commitment.certainty && !commitmentCertaintyOptions.includes(commitment.certainty as CommitmentCertainty)) addFinanceIssue("Warning", `Certainty “${commitment.certainty}” is not supported.`, "Review the commitment certainty; blank legacy certainty remains valid.");
+    if (commitment.approvalStatus && !procurementApprovalStatusOptions.includes(commitment.approvalStatus as ProcurementApprovalStatus)) addFinanceIssue("Warning", `Approval status “${commitment.approvalStatus}” is not supported.`, "Review the stored approval status manually.");
+    if (commitment.actualPurchaseDate && !commitment.actualPurchasePrice?.trim()) addFinanceIssue("Material", "Actual purchase date is recorded without an actual purchase price.", "Verify the purchase completion fields and add only evidence-backed information.");
+    if (commitment.actualPurchasePrice?.trim() && !commitment.actualPurchaseDate) addFinanceIssue("Warning", "Actual purchase price is recorded without an actual purchase date.", "Verify whether the purchase completed and record the supported date if known.");
+    if (commitment.relatedPillar && !sharedAreaOptions.includes(commitment.relatedPillar as (typeof sharedAreaOptions)[number])) addFinanceIssue("Warning", `Related pillar “${commitment.relatedPillar}” is outside the supported area list.`, "Review the related pillar against the current operating areas.");
+  }
+
+  const arrayStoreKeys = new Set<string>([
+    STORAGE_KEY, CONVERSION_STORAGE_KEY, PERSON_STORAGE_KEY, PROJECT_STORAGE_KEY, LEAD_STORAGE_KEY, OUTREACH_STORAGE_KEY,
+    DELEGATION_HANDOFF_STORAGE_KEY, INCOME_STORAGE_KEY, EXPENSE_STORAGE_KEY, COMMITMENT_STORAGE_KEY, TAX_PAYMENT_STORAGE_KEY,
+    SAVED_VIEWS_STORAGE_KEY, DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+  ]);
+  for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
+    const raw = input.storage[key];
+    if (raw === null) continue;
+    if (key === DEFAULT_SAVED_VIEW_STORAGE_KEY) continue;
+    try {
+      const parsed = JSON.parse(raw);
+      const validShape = key === CASH_POSITION_STORAGE_KEY ? isPlainObject(parsed) : !arrayStoreKeys.has(key) || Array.isArray(parsed);
+      if (!validShape) throw new Error();
+    } catch {
+      addIssue({ severity: "Critical", category: "Local storage", recordType: "Storage", recordTitle: key, recordId: key, reason: `Store ${key} contains malformed JSON or the wrong structural type.`, nextStep: "Download a safety backup and inspect recovery options before editing browser storage." });
+    }
+  }
+
+  const severityCounts: Record<IntegritySeverity, number> = { Critical: 0, Material: 0, Warning: 0 };
+  const categories = new Map<string, number>();
+  for (const issue of issues) {
+    severityCounts[issue.severity] += 1;
+    categories.set(issue.category, (categories.get(issue.category) || 0) + 1);
+  }
+  return {
+    auditedAt: new Date().toISOString(),
+    status: severityCounts.Critical > 0 ? "Integrity risk" : issues.length > 0 ? "Needs attention" : "Healthy",
+    issues,
+    severityCounts,
+    categoryCounts: Array.from(categories, ([category, count]) => ({ category, count })).sort((first, second) => second.count - first.count || first.category.localeCompare(second.category)),
+  };
+}
 
 const taxPaymentStatusOptions = ["Expected", "Received"] as const;
 type TaxPaymentStatus = (typeof taxPaymentStatusOptions)[number];
@@ -6335,6 +6750,78 @@ function RelatedRecordsPanel({ upstream, downstream }: RelatedRecordsPanelProps)
   );
 }
 
+function DataIntegrityPanel({ audit, onRunAudit, onOpenRecord }: {
+  audit: IntegrityAuditResult | null;
+  onRunAudit: () => void;
+  onOpenRecord: (objectType: string, id: string) => void;
+}) {
+  const statusClasses = audit?.status === "Healthy"
+    ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
+    : audit?.status === "Integrity risk"
+      ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]"
+      : "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]";
+  const severityClasses: Record<IntegritySeverity, string> = {
+    Critical: "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]",
+    Material: "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]",
+    Warning: "border-[#d3cbc3] bg-[#f1eee9] text-[#4d4944]",
+  };
+
+  return (
+    <section className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Data Integrity</div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <h2 className="text-[22px] font-semibold tracking-[-0.05em] text-[#171717]">{audit?.status || "Audit pending"}</h2>
+            <span className={`rounded-full border px-2 py-1 text-[9px] font-medium uppercase tracking-[0.14em] ${statusClasses}`}>{audit?.status || "Pending"}</span>
+          </div>
+          <p className="mt-1 text-[12px] leading-5 text-[#4d4944]">
+            {audit ? `${audit.issues.length} structural issue${audit.issues.length === 1 ? "" : "s"} found. Last audit ${new Date(audit.auditedAt).toLocaleString()}.` : "The read-only audit will run after operating data finishes loading."}
+          </p>
+        </div>
+        <button type="button" onClick={onRunAudit} className="rounded-lg border border-[#171717] bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#171717] transition hover:bg-[#f1eee9]">Run integrity audit</button>
+      </div>
+
+      {audit ? (
+        <>
+          <div className="mt-4 grid gap-2 sm:grid-cols-4">
+            <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2"><div className="text-[9px] uppercase tracking-[0.14em] text-[#6a625d]">Total issues</div><div className="mt-1 text-[22px] font-semibold text-[#171717]">{audit.issues.length}</div></div>
+            {(["Critical", "Material", "Warning"] as const).map((severity) => <div key={severity} className={`rounded-xl border px-3 py-2 ${severityClasses[severity]}`}><div className="text-[9px] uppercase tracking-[0.14em]">{severity}</div><div className="mt-1 text-[22px] font-semibold">{audit.severityCounts[severity]}</div></div>)}
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            {audit.categoryCounts.map((item) => <span key={item.category} className="rounded-full border border-[#d3cbc3] bg-white px-2.5 py-1 text-[10px] text-[#4d4944]">{item.category}: <span className="font-medium text-[#171717]">{item.count}</span></span>)}
+          </div>
+
+          {audit.issues.length === 0 ? (
+            <div className="mt-4 rounded-xl border border-[#b8c9ba] bg-[#eef4ee] px-3 py-4 text-[12px] text-[#2f5d3a]">No structural integrity issues were detected in the current operating data.</div>
+          ) : (
+            <div className="mt-4 space-y-2">
+              {audit.issues.map((issue) => (
+                <article key={issue.id} className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] ${severityClasses[issue.severity]}`}>{issue.severity}</span>
+                        <span className="text-[9px] uppercase tracking-[0.14em] text-[#6a625d]">{issue.category} • {issue.recordType}</span>
+                      </div>
+                      <div className="mt-2 text-[14px] font-medium text-[#171717]">{issue.recordTitle}</div>
+                      {issue.recordId ? <div className="mt-0.5 break-all text-[10px] text-[#7a726b]">ID: {issue.recordId}</div> : null}
+                      <p className="mt-2 text-[12px] leading-5 text-[#4d4944]">{issue.reason}</p>
+                      <p className="mt-1 text-[11px] leading-4 text-[#171717]"><span className="font-medium">Manual next step:</span> {issue.nextStep}</p>
+                    </div>
+                    {issue.openObjectType && issue.openId ? <button type="button" onClick={() => onOpenRecord(issue.openObjectType!, issue.openId!)} className="shrink-0 rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] hover:border-[#171717]">Open record</button> : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 type ConvertedDestinationViewProps = {
   title: string;
   description: string;
@@ -8610,6 +9097,8 @@ export default function Home() {
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   const restoreBackupInputRef = useRef<HTMLInputElement | null>(null);
   const restoreInProgressRef = useRef(false);
+  const [integrityAudit, setIntegrityAudit] = useState<IntegrityAuditResult | null>(null);
+  const initialIntegrityStorageRef = useRef<Record<string, string | null> | null>(null);
   const [cashPositionEditor, setCashPositionEditor] = useState<CashPositionRecord | null>(null);
   const [cashPositionValidationError, setCashPositionValidationError] = useState<string | null>(null);
   const [selectedIncomeId, setSelectedIncomeId] = useState<string | null>(null);
@@ -8646,6 +9135,10 @@ export default function Home() {
 
   useEffect(() => {
     try {
+      const initialIntegrityStorage: Record<string, string | null> = {};
+      for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) initialIntegrityStorage[key] = window.localStorage.getItem(key);
+      initialIntegrityStorageRef.current = initialIntegrityStorage;
+
       const storedCaptures = window.localStorage.getItem(STORAGE_KEY);
       const storedConversions = window.localStorage.getItem(CONVERSION_STORAGE_KEY);
       const storedPeople = window.localStorage.getItem(PERSON_STORAGE_KEY);
@@ -9281,6 +9774,36 @@ export default function Home() {
   const lessonRecords = getConvertedRecordsByType("Convert to Lesson").map(normalizeLessonRecord);
   const systemRecords = getConvertedRecordsByType("Convert to System").map(normalizeSystemRecord);
   const sopRecords = getConvertedRecordsByType("Convert to SOP").map(normalizeSopRecord);
+
+  const executeIntegrityAudit = (storageOverride?: Record<string, string | null>) => {
+    const storage = storageOverride || Object.fromEntries(
+      EMPIRE_OS_BACKUP_STORAGE_KEYS.map((key) => [key, window.localStorage.getItem(key)]),
+    );
+    setIntegrityAudit(runIntegrityAudit({
+      captures,
+      conversions,
+      actions: actionRecords,
+      projects,
+      problems: problemRecords,
+      opportunities: opportunityRecords,
+      decisions: decisionRecords,
+      lessons: lessonRecords,
+      systems: systemRecords,
+      sops: sopRecords,
+      people,
+      leads,
+      commitments: commitmentRecords,
+      outreach: outreachContacts,
+      handoffs: delegationHandoffs,
+      storage,
+    }));
+  };
+
+  useEffect(() => {
+    if (!operatingDataLoaded) return;
+    executeIntegrityAudit(initialIntegrityStorageRef.current || undefined);
+    initialIntegrityStorageRef.current = null;
+  }, [operatingDataLoaded, captures, conversions, projects, people, leads, commitmentRecords, outreachContacts, delegationHandoffs]);
 
   type AttentionItem = {
     id: string;
@@ -16404,6 +16927,19 @@ const isOwnershipGap =
     } else if (objectType === "Lesson") {
       const record = lessonRecords.find((item) => item.id === id);
       if (record) handleLessonEditOpen(record);
+    } else if (objectType === "System") {
+      const record = systemRecords.find((item) => item.id === id);
+      if (record) handleSystemEditOpen(record);
+    } else if (objectType === "SOP") {
+      const record = sopRecords.find((item) => item.id === id);
+      if (record) handleSopEditOpen(record);
+    } else if (objectType === "Person") {
+      const record = people.find((item) => item.id === id);
+      if (record) {
+        setActiveView("People");
+        setSelectedPersonId(record.id);
+        setPersonEditor(record);
+      }
     } else if (objectType === "People") {
       setActiveView("People");
       if (id === "unassigned") {
@@ -18491,6 +19027,10 @@ const isOwnershipGap =
   );
   const backupHealth = getBackupHealth(lastBackupAt);
   const hasValidLastBackupAt = Boolean(lastBackupAt) && !Number.isNaN(new Date(lastBackupAt).getTime());
+  const integrityNeedsFounderAttention = Boolean(
+    integrityAudit
+    && (integrityAudit.severityCounts.Critical > 0 || integrityAudit.severityCounts.Material >= INTEGRITY_MATERIAL_ATTENTION_THRESHOLD),
+  );
 
   return (
     <div className="min-h-screen bg-[#f1efe9] text-[#171717]">
@@ -18694,6 +19234,16 @@ const isOwnershipGap =
               <div className="mt-5">
                 <FounderFocusList items={founderFocusList} totalCount={founderFocusCandidates.length} onOpen={handleOpenAttentionRecord} />
               </div>
+
+              {integrityNeedsFounderAttention && integrityAudit ? (
+                <button type="button" onClick={() => setActiveView("Empire")} className="mt-5 block w-full rounded-2xl border border-[#d4b4a7] bg-[#f8efeb] p-4 text-left transition hover:border-[#6a3328]">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#6a3328]">Data Integrity requires founder attention</div>
+                    <span className="rounded-full border border-[#d4b4a7] bg-white px-2 py-1 text-[9px] uppercase tracking-[0.14em] text-[#6a3328]">{integrityAudit.status}</span>
+                  </div>
+                  <div className="mt-2 text-[13px] text-[#4b312b]">{integrityAudit.severityCounts.Critical} critical • {integrityAudit.severityCounts.Material} material. Open Empire to review the read-only audit.</div>
+                </button>
+              ) : null}
 
               <div className="mt-5">
                 <StrategicNextMoveSection candidate={strategicNextMove.candidate} />
@@ -19076,6 +19626,8 @@ const isOwnershipGap =
               <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
                 This view brings together the founder-facing decisions, risk signals, and escalation points already represented across the operating records.
               </p>
+
+              <DataIntegrityPanel audit={integrityAudit} onRunAudit={() => executeIntegrityAudit()} onOpenRecord={handleOpenAttentionRecord} />
 
               <div className="mt-6">
                 <FounderFocusList items={founderFocusList} totalCount={founderFocusCandidates.length} onOpen={handleOpenAttentionRecord} />
