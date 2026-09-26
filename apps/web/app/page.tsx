@@ -41,6 +41,99 @@ const LAST_BACKUP_AT_STORAGE_KEY = "empire-os-last-backup-at";
 const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
 const CHANGE_HISTORY_STORAGE_KEY = "empire-os-change-history";
 const STRATEGIC_OBJECTIVES_STORAGE_KEY = "empire-os-strategic-objectives";
+const STRATEGIC_REVIEWS_STORAGE_KEY = "empire-os-strategic-reviews";
+
+const reviewTriggers = ["Weekly", "Major change", "Project completed", "Founder initiated"] as const;
+const reviewGapTypes = ["Execution Gap", "Decision Gap", "Knowledge Gap", "Capability Gap"] as const;
+const reviewCandidateResponses = ["Project", "Decision", "Investigation", "Organisation/System", "No new work required"] as const;
+const projectCounterfactuals = ["Yes — accelerate", "Yes — continue at current level", "Yes — but remove founder from routine execution", "No — not now", "No — underlying thesis no longer justifies it"] as const;
+const projectDispositions = ["Accelerate", "Continue", "Exit Founder", "Park / Stop"] as const;
+
+type ReviewEvidence = {
+  capturedAt: string;
+  objectives: Array<Pick<StrategicObjective, "id" | "title" | "pillar" | "horizon" | "importance" | "status" | "founderAllocation" | "linkedProjectIds" | "linkedOpportunityIds" | "linkedDecisionIds">>;
+  projects: Array<Pick<ProjectRecord, "id" | "projectName" | "status" | "owner" | "health" | "relatedActionIds">>;
+  opportunities: Array<Pick<OpportunityRecord, "id" | "opportunityTitle" | "status" | "strategicFit" | "estimatedUpside">>;
+  problems: Array<{ id: string; title: string; status: string }>;
+  founderDependency: string;
+  finance: string;
+  execution: string;
+};
+type ReviewConstraint = { id: string; description: string; evidence: string; objectiveIds: string[]; recommendation: string; decision: "" | "Confirm" | "Modify" | "Dismiss"; founderRationale: string; response: string };
+type ReviewOpportunity = { id: string; opportunityId: string; title: string; relevance: string; evidence: string; recommendation: string; decision: "" | "Pursue" | "Investigate" | "Monitor" | "Reject" | "Park"; founderRationale: string };
+type ReviewAssumption = { id: string; statement: string; confidence: "Low" | "Medium" | "High"; supportingEvidence: string; contraryEvidence: string; invalidationCondition: string; needsTesting: boolean; founderNote: string };
+type ReviewCandidate = { id: string; outcome: string; objectiveIds: string[]; whyNow: string; expectedStrategicEffect: string; founderNecessity: string; majorUncertainty: string; response: (typeof reviewCandidateResponses)[number]; representation: "" | "Already represented" | "Partially represented" | "Missing"; matchingProjectIds: string[] };
+type ReviewObjectiveJudgement = { objectiveId: string; evidence: string; recommendation: string; decision: "" | "Keep" | "Modify" | "Pause" | "Achieve"; horizon: StrategicObjective["horizon"]; importance: StrategicObjective["importance"]; founderAllocation: StrategicObjective["founderAllocation"]; rationale: string };
+type ReviewProjectJudgement = { projectId: string; objectiveIds: string[]; evidence: string; recommendation: string; counterfactual: "" | (typeof projectCounterfactuals)[number]; disposition: "" | (typeof projectDispositions)[number]; rationale: string; justification: string };
+type ReviewGap = { id: string; type: (typeof reviewGapTypes)[number]; description: string; evidence: string; objectiveIds: string[]; proposedResponse: string; disposition: "" | "Address" | "Monitor" | "Accept risk" | "Dismiss"; rationale: string };
+type ReviewFounderOutcome = { id: string; outcome: string; objectiveIds: string[]; whyNow: string; whyFounder: string; costOfDelay: string; dependencyUnlocked: string; uncertainty: string; allocation: "Primary" | "Secondary" | "Reserve" };
+type ReviewExclusion = { id: string; item: string; whyNotNow: string; reconsiderWhen: string };
+type ReviewContradiction = { id: string; description: string; blocking: boolean; overrideRationale: string };
+type StrategicReview = {
+  id: string; status: "Draft" | "Applied" | "Superseded"; stage: number;
+  reviewDate: string; trigger: (typeof reviewTriggers)[number]; reviewPeriodStart: string; nextReviewDate: string;
+  realitySummary: string; evidenceSnapshot: ReviewEvidence | null;
+  constraints: ReviewConstraint[]; opportunities: ReviewOpportunity[]; assumptions: ReviewAssumption[];
+  blankSheetCandidates: ReviewCandidate[]; objectiveJudgements: ReviewObjectiveJudgement[];
+  projectJudgements: ReviewProjectJudgement[]; strategicGaps: ReviewGap[];
+  founderAllocation: ReviewFounderOutcome[]; notPrioritising: ReviewExclusion[];
+  contradictions: ReviewContradiction[]; founderNotes: string;
+  createdAt: string; appliedAt: string | null; supersededAt: string | null;
+};
+
+const reviewStages = ["Reality", "Constraints", "Opportunities", "Assumptions", "Blank sheet", "Objectives", "Project challenge", "Strategic gaps", "Founder allocation", "Not prioritising", "Reconciliation", "Summary"] as const;
+
+function reviewGapCandidates(review: StrategicReview, assessments: StrategicAssessment[], projects: ProjectRecord[], opportunities: OpportunityRecord[], actions: ActionRecord[], executableAction: (action: ActionRecord) => boolean): ReviewGap[] {
+  const gaps: ReviewGap[] = [];
+  const add = (id: string, type: ReviewGap["type"], description: string, evidence: string, objectiveIds: string[], proposedResponse: string) => {
+    const existing = review.strategicGaps.find((gap) => gap.id === id);
+    gaps.push({ id, type, description, evidence, objectiveIds, proposedResponse, disposition: existing?.disposition || "", rationale: existing?.rationale || "" });
+  };
+  assessments.forEach(({ objective, linkedProjects, linkedOpportunities, linkedDecisions, hasExecutablePath }) => {
+    const judgment = review.objectiveJudgements.find((entry) => entry.objectiveId === objective.id);
+    const active = objective.status === "Active" && judgment?.decision !== "Pause" && judgment?.decision !== "Achieve";
+    if (active && ["Critical", "High"].includes(judgment?.importance || objective.importance) && !hasExecutablePath)
+      add(`execution:${objective.id}`, "Execution Gap", `${objective.title} lacks a meaningful active path.`, "No executable linked Action or approved Opportunity; Project status alone does not establish execution.", [objective.id], "Define an evidence-backed execution path.");
+    if (active && (judgment?.founderAllocation || objective.founderAllocation) === "Founder attention now" && !review.founderAllocation.some((entry) => entry.objectiveIds.includes(objective.id)))
+      add(`founder:${objective.id}`, "Decision Gap", `${objective.title} needs a defined founder contribution.`, hasExecutablePath ? "Operational work exists, but no founder-specific outcome is recorded." : "No executable linked work or reviewed founder outcome is recorded.", [objective.id], "Specify the judgement or founder outcome required.");
+    if ((judgment?.founderAllocation || objective.founderAllocation) === "Parked" && linkedProjects.some((project) => !["Completed", "Cancelled"].includes(project.status)))
+      add(`parked:${objective.id}`, "Execution Gap", `${objective.title} is parked while linked Projects remain active.`, "Active resources remain attached to a parked objective.", [objective.id], "Reconcile the allocation or the Project disposition.");
+  });
+  review.blankSheetCandidates.filter((entry) => entry.representation === "Missing").forEach((entry) => add(`missing:${entry.id}`, entry.response === "Decision" || entry.response === "No new work required" ? "Decision Gap" : entry.response === "Investigation" ? "Knowledge Gap" : entry.response === "Organisation/System" ? "Capability Gap" : "Execution Gap", `${entry.outcome} is missing from the current portfolio.`, entry.whyNow, entry.objectiveIds, entry.response === "No new work required" ? "Confirm why this missing outcome needs no new work." : `Consider ${entry.response.toLowerCase()} without creating work automatically.`));
+  review.constraints.filter((entry) => entry.decision === "Confirm" && !entry.response.trim()).forEach((entry) => add(`constraint:${entry.id}`, "Capability Gap", `${entry.description} has no response.`, entry.evidence, entry.objectiveIds, "Decide how to address or explicitly accept the constraint."));
+  review.opportunities.filter((entry) => ["Pursue", "Investigate"].includes(entry.decision) && (!entry.opportunityId || !opportunities.some((opportunity) => opportunity.id === entry.opportunityId && ["Evaluating", "Approved"].includes(opportunity.status)))).forEach((entry) => add(`opportunity:${entry.id}`, "Knowledge Gap", `${entry.title} has no active evaluation path.`, entry.evidence, [], "Confirm an investigation or decision path."));
+  projects.filter((project) => !["Completed", "Cancelled"].includes(project.status) && !review.projectJudgements.some((entry) => entry.projectId === project.id && entry.objectiveIds.length > 0)).forEach((project) => add(`unlinked:${project.id}`, "Decision Gap", `${project.projectName} has no Strategic Objective.`, `Project is ${project.status}.`, [], "Link to an objective or record an explicit portfolio justification."));
+  review.projectJudgements.filter((entry) => entry.disposition === "Accelerate" && !projects.some((project) => project.id === entry.projectId && (project.relatedActionIds || []).some((id) => actions.some((action) => action.id === id && executableAction(action))))).forEach((entry) => add(`accelerate:${entry.projectId}`, "Execution Gap", `Accelerate Project has no executable linked Action.`, entry.evidence, entry.objectiveIds, "Identify a concrete next Action before accelerating."));
+  return gaps;
+}
+
+function reviewContradictions(review: StrategicReview, objectives: StrategicObjective[], projects: ProjectRecord[], actions: ActionRecord[], gaps: ReviewGap[], executableAction: (action: ActionRecord) => boolean): ReviewContradiction[] {
+  const result: ReviewContradiction[] = [];
+  const add = (id: string, description: string, blocking: boolean) => result.push({ id, description, blocking, overrideRationale: review.contradictions.find((entry) => entry.id === id)?.overrideRationale || "" });
+  const allocations = review.founderAllocation;
+  if (allocations.filter((entry) => entry.allocation === "Primary").length > 1 || allocations.filter((entry) => entry.allocation === "Secondary").length > 2 || allocations.filter((entry) => entry.allocation === "Reserve").length > 1) add("allocation:capacity", "Founder allocation exceeds the review period budget.", true);
+  review.projectJudgements.forEach((entry) => {
+    const project = projects.find((item) => item.id === entry.projectId);
+    if (entry.disposition === "Accelerate" && gaps.some((gap) => gap.id === `accelerate:${entry.projectId}`)) add(`project:${entry.projectId}:path`, `${project?.projectName || entry.projectId} is set to Accelerate without a concrete executable Action.`, true);
+    if (entry.disposition === "Accelerate" && entry.counterfactual.startsWith("No —")) add(`project:${entry.projectId}:counterfactual`, `${project?.projectName || entry.projectId} is set to Accelerate despite a No counterfactual answer.`, true);
+    if (!entry.objectiveIds.length && !entry.justification.trim() && !["Park / Stop"].includes(entry.disposition)) add(`project:${entry.projectId}:alignment`, `${project?.projectName || entry.projectId} has neither objective linkage nor explicit justification.`, true);
+    if (entry.disposition === "Accelerate" && entry.objectiveIds.some((id) => review.objectiveJudgements.some((judgement) => judgement.objectiveId === id && (judgement.decision === "Pause" || judgement.founderAllocation === "Parked")))) add(`project:${entry.projectId}:parked`, `${project?.projectName || entry.projectId} is accelerating a paused or parked objective.`, true);
+  });
+  review.objectiveJudgements.forEach((entry) => {
+    const objective = objectives.find((item) => item.id === entry.objectiveId);
+    if (entry.founderAllocation === "Founder attention now" && review.projectJudgements.some((project) => project.objectiveIds.includes(entry.objectiveId) && project.disposition === "Exit Founder") && !review.founderAllocation.some((item) => item.objectiveIds.includes(entry.objectiveId))) add(`objective:${entry.objectiveId}:exit`, `${objective?.title || entry.objectiveId} needs founder attention while linked work exits founder ownership.`, true);
+  });
+  gaps.filter((gap) => gap.type === "Execution Gap" && gap.id.startsWith("execution:")).forEach((gap) => add(`gap:${gap.id}`, gap.description, false));
+  const hasActiveLinkedAction = (projectId: string) => Boolean(projects.find((project) => project.id === projectId)?.relatedActionIds?.some((id) => actions.some((action) => action.id === id && executableAction(action))));
+  allocations.filter((entry) => entry.allocation === "Primary").forEach((entry) => {
+    if (entry.objectiveIds.some((id) => review.objectiveJudgements.some((judgement) => judgement.objectiveId === id && (judgement.decision === "Pause" || judgement.decision === "Achieve" || judgement.founderAllocation !== "Founder attention now" || objectives.some((objective) => objective.id === id && objective.status !== "Active"))))) add(`primary:${entry.id}:objective`, `Primary outcome ${entry.outcome} conflicts with the confirmed Objective allocation or status.`, true);
+    const reviewedPath = review.blankSheetCandidates.some((candidate) => candidate.objectiveIds.some((id) => entry.objectiveIds.includes(id)) && (candidate.response === "Decision" || (candidate.representation !== "Missing" && candidate.matchingProjectIds.some(hasActiveLinkedAction))))
+      || review.projectJudgements.some((judgement) => judgement.objectiveIds.some((id) => entry.objectiveIds.includes(id)) && judgement.disposition !== "Park / Stop" && hasActiveLinkedAction(judgement.projectId));
+    if (!entry.objectiveIds.length || !reviewedPath) add(`primary:${entry.id}`, `Primary outcome ${entry.outcome} has no reviewed executable or decision path.`, true);
+  });
+  if (review.assumptions.some((entry) => entry.needsTesting && entry.confidence === "Low") && allocations.length) add("assumptions:testing", "Founder allocation includes work while low-confidence assumptions still need testing; confirm the dependency before commitment.", false);
+  return result;
+}
 
 const strategicPillars = ["Operating Business", "Control & Orchestration", "Organisation & Leadership", "Capital & Resilience", "Expansion & Optionality"] as const;
 const strategicHorizons = ["Now", "Next", "Later"] as const;
@@ -117,6 +210,7 @@ const EMPIRE_OS_BACKUP_STORAGE_KEYS = [
   DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
   CHANGE_HISTORY_STORAGE_KEY,
   STRATEGIC_OBJECTIVES_STORAGE_KEY,
+  STRATEGIC_REVIEWS_STORAGE_KEY,
 ] as const;
 
 type EmpireOsBackup = {
@@ -149,10 +243,58 @@ const backupSummaryStores = [
   { key: TAX_PAYMENT_STORAGE_KEY, label: "Tax payments" },
   { key: CHANGE_HISTORY_STORAGE_KEY, label: "Change history" },
   { key: STRATEGIC_OBJECTIVES_STORAGE_KEY, label: "Strategic objectives" },
+  { key: STRATEGIC_REVIEWS_STORAGE_KEY, label: "Strategic reviews" },
 ] as const;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function reviewShapeIssues(value: unknown): string[] {
+  if (!isPlainObject(value)) return ["Review is not an object."];
+  const issues: string[] = [];
+  const strings = (entry: Record<string, unknown>, fields: string[]) => fields.every((field) => typeof entry[field] === "string");
+  const ids = (entry: unknown) => Array.isArray(entry) && entry.every((id) => typeof id === "string");
+  const rows = (key: string, valid: (entry: Record<string, unknown>) => boolean) => {
+    if (!Array.isArray(value[key]) || !value[key].every((entry: unknown) => isPlainObject(entry) && valid(entry))) issues.push(`Malformed ${key}.`);
+  };
+  if (!strings(value, ["id", "status", "reviewDate", "trigger", "reviewPeriodStart", "nextReviewDate", "realitySummary", "founderNotes", "createdAt"]) || !value.id) issues.push("Missing review identity or dates.");
+  if (!["Draft", "Applied", "Superseded"].includes(String(value.status)) || !reviewTriggers.includes(value.trigger as StrategicReview["trigger"])) issues.push("Unsupported status or trigger.");
+  if (typeof value.stage !== "number" || !Number.isInteger(value.stage) || value.stage < 0 || value.stage > 11) issues.push("Invalid review stage.");
+  for (const field of ["reviewDate", "reviewPeriodStart", "nextReviewDate"] as const) {
+    if (typeof value[field] !== "string" || value.status !== "Draft" || value[field]) {
+      if (typeof value[field] !== "string" || value[field] !== value[field].trim() || !isValidCalendarDateInput(value[field])) issues.push(`Invalid ${field}.`);
+    }
+  }
+  if (value.appliedAt !== null && typeof value.appliedAt !== "string" || value.supersededAt !== null && typeof value.supersededAt !== "string") issues.push("Invalid lifecycle dates.");
+  if ((value.status === "Applied" || value.status === "Superseded") && (!value.appliedAt || !isPlainObject(value.evidenceSnapshot))) issues.push("Applied review lacks an application date or evidence snapshot.");
+  if (value.status === "Superseded" && !value.supersededAt) issues.push("Superseded review lacks prior application or supersession date.");
+  if (value.evidenceSnapshot !== null && (!isPlainObject(value.evidenceSnapshot) || !strings(value.evidenceSnapshot, ["capturedAt", "founderDependency", "finance", "execution"]) || !["objectives", "projects", "opportunities", "problems"].every((field) => Array.isArray((value.evidenceSnapshot as Record<string, unknown>)[field])))) issues.push("Malformed evidence snapshot.");
+  if (isPlainObject(value.evidenceSnapshot) && ["objectives", "projects", "opportunities", "problems"].every((field) => Array.isArray((value.evidenceSnapshot as Record<string, unknown>)[field]))) {
+    const snapshot = value.evidenceSnapshot;
+    if (!(snapshot.objectives as unknown[]).every((entry) => isPlainObject(entry) && strings(entry, ["id", "title", "pillar", "horizon", "importance", "status", "founderAllocation"]) && ids(entry.linkedProjectIds) && ids(entry.linkedOpportunityIds) && ids(entry.linkedDecisionIds))
+      || !(snapshot.projects as unknown[]).every((entry) => isPlainObject(entry) && strings(entry, ["id", "projectName", "status", "owner"]) && ids(entry.relatedActionIds))
+      || !(snapshot.opportunities as unknown[]).every((entry) => isPlainObject(entry) && strings(entry, ["id", "opportunityTitle", "status", "strategicFit", "estimatedUpside"]))
+      || !(snapshot.problems as unknown[]).every((entry) => isPlainObject(entry) && strings(entry, ["id", "title", "status"]))) issues.push("Malformed evidence entries.");
+  }
+  rows("constraints", (entry) => strings(entry, ["id", "description", "evidence", "recommendation", "decision", "founderRationale", "response"]) && ids(entry.objectiveIds) && ["", "Confirm", "Modify", "Dismiss"].includes(String(entry.decision)));
+  rows("opportunities", (entry) => strings(entry, ["id", "opportunityId", "title", "relevance", "evidence", "recommendation", "decision", "founderRationale"]) && ["", "Pursue", "Investigate", "Monitor", "Reject", "Park"].includes(String(entry.decision)));
+  rows("assumptions", (entry) => strings(entry, ["id", "statement", "supportingEvidence", "contraryEvidence", "invalidationCondition", "founderNote"]) && ["Low", "Medium", "High"].includes(String(entry.confidence)) && typeof entry.needsTesting === "boolean");
+  rows("blankSheetCandidates", (entry) => strings(entry, ["id", "outcome", "whyNow", "expectedStrategicEffect", "founderNecessity", "majorUncertainty", "representation"]) && ids(entry.objectiveIds) && ids(entry.matchingProjectIds) && reviewCandidateResponses.includes(entry.response as ReviewCandidate["response"]) && ["", "Already represented", "Partially represented", "Missing"].includes(String(entry.representation)));
+  rows("objectiveJudgements", (entry) => strings(entry, ["objectiveId", "evidence", "recommendation", "rationale"]) && ["", "Keep", "Modify", "Pause", "Achieve"].includes(String(entry.decision)) && strategicHorizons.includes(entry.horizon as StrategicObjective["horizon"]) && strategicImportances.includes(entry.importance as StrategicObjective["importance"]) && founderAllocations.includes(entry.founderAllocation as StrategicObjective["founderAllocation"]));
+  rows("projectJudgements", (entry) => strings(entry, ["projectId", "evidence", "recommendation", "rationale", "justification"]) && ids(entry.objectiveIds) && (entry.counterfactual === "" || projectCounterfactuals.includes(entry.counterfactual as ReviewProjectJudgement["counterfactual"] & (typeof projectCounterfactuals)[number])) && (entry.disposition === "" || projectDispositions.includes(entry.disposition as (typeof projectDispositions)[number])));
+  rows("strategicGaps", (entry) => strings(entry, ["id", "description", "evidence", "proposedResponse", "rationale"]) && ids(entry.objectiveIds) && reviewGapTypes.includes(entry.type as ReviewGap["type"]) && ["", "Address", "Monitor", "Accept risk", "Dismiss"].includes(String(entry.disposition)));
+  rows("founderAllocation", (entry) => strings(entry, ["id", "outcome", "whyNow", "whyFounder", "costOfDelay", "dependencyUnlocked", "uncertainty"]) && ids(entry.objectiveIds) && ["Primary", "Secondary", "Reserve"].includes(String(entry.allocation)));
+  rows("notPrioritising", (entry) => strings(entry, ["id", "item", "whyNotNow", "reconsiderWhen"]));
+  rows("contradictions", (entry) => strings(entry, ["id", "description", "overrideRationale"]) && typeof entry.blocking === "boolean");
+  if (value.status !== "Draft" && Array.isArray(value.founderAllocation)) {
+    if (value.founderAllocation.filter((entry: ReviewFounderOutcome) => entry?.allocation === "Primary").length > 1 || value.founderAllocation.filter((entry: ReviewFounderOutcome) => entry?.allocation === "Secondary").length > 2 || value.founderAllocation.filter((entry: ReviewFounderOutcome) => entry?.allocation === "Reserve").length > 1) issues.push("Founder allocation exceeds capacity.");
+  }
+  return issues;
+}
+
+function isStrategicReview(value: unknown): value is StrategicReview {
+  return reviewShapeIssues(value).length === 0;
 }
 
 type ChangeField = { field: string; before: unknown; after: unknown };
@@ -246,6 +388,7 @@ function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
     DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
     CHANGE_HISTORY_STORAGE_KEY,
     STRATEGIC_OBJECTIVES_STORAGE_KEY,
+    STRATEGIC_REVIEWS_STORAGE_KEY,
   ];
   for (const key of arrayStorageKeys) {
     const storedValue = storage[key];
@@ -1179,6 +1322,7 @@ type IntegrityAuditInput = {
   outreach: OutreachRecord[];
   handoffs: DelegationHandoffRecord[];
   strategicObjectives: StrategicObjective[];
+  strategicReviews: StrategicReview[];
   storage: Record<string, string | null>;
 };
 
@@ -1214,6 +1358,21 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
       if (ids.some((id) => !existing.has(id))) addObjectiveIssue(`A linked ${label} ID does not exist in the operating records.`);
     }
   }
+
+  const reviewIds = new Set<string>();
+  for (const review of input.strategicReviews) {
+    const report = (reason: string) => addIssue({ severity: "Material", category: "Strategic reviews", recordType: "Strategic Review", recordId: review.id, recordTitle: review.reviewDate, reason, nextStep: "Inspect the review and its source records before making corrections." });
+    if (reviewIds.has(review.id)) report("Duplicate Strategic Review ID.");
+    reviewIds.add(review.id);
+    if (!review.nextReviewDate || !/^\d{4}-\d{2}-\d{2}$/.test(review.nextReviewDate)) report("Next review date is missing or invalid.");
+    if (review.founderAllocation.filter((entry) => entry.allocation === "Primary").length > 1 || review.founderAllocation.filter((entry) => entry.allocation === "Secondary").length > 2 || review.founderAllocation.filter((entry) => entry.allocation === "Reserve").length > 1) report("Founder allocation exceeds the review period capacity.");
+    const knownObjectiveIds = review.status === "Draft" ? new Set(input.strategicObjectives.map((objective) => objective.id)) : new Set(review.evidenceSnapshot?.objectives.map((objective) => objective.id) || []);
+    const knownProjectIds = review.status === "Draft" ? projectIds : new Set(review.evidenceSnapshot?.projects.map((project) => project.id) || []);
+    const referencedObjectives = [...review.constraints.flatMap((entry) => entry.objectiveIds), ...review.blankSheetCandidates.flatMap((entry) => entry.objectiveIds), ...review.objectiveJudgements.map((entry) => entry.objectiveId), ...review.projectJudgements.flatMap((entry) => entry.objectiveIds), ...review.strategicGaps.flatMap((entry) => entry.objectiveIds), ...review.founderAllocation.flatMap((entry) => entry.objectiveIds)];
+    if (referencedObjectives.some((id) => !knownObjectiveIds.has(id))) report("An objective reference is not present in the review evidence or current Draft data.");
+    if ([...review.projectJudgements.map((entry) => entry.projectId), ...review.blankSheetCandidates.flatMap((entry) => entry.matchingProjectIds)].some((id) => !knownProjectIds.has(id))) report("A Project reference is not present in the review evidence or current Draft data.");
+  }
+  if (input.strategicReviews.filter((review) => review.status === "Applied").length > 1) addIssue({ severity: "Critical", category: "Strategic reviews", recordType: "Strategic Review", recordTitle: "Current review", reason: "More than one Applied Strategic Review exists.", nextStep: "Inspect review history and confirm the intended current review before changing it." });
 
   type MissingCaptureLineageRoot = {
     records: Map<string, { recordType: string; recordTitle: string; recordId: string }>;
@@ -1535,7 +1694,7 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
   const arrayStoreKeys = new Set<string>([
     STORAGE_KEY, CONVERSION_STORAGE_KEY, PERSON_STORAGE_KEY, PROJECT_STORAGE_KEY, LEAD_STORAGE_KEY, OUTREACH_STORAGE_KEY,
     DELEGATION_HANDOFF_STORAGE_KEY, INCOME_STORAGE_KEY, EXPENSE_STORAGE_KEY, COMMITMENT_STORAGE_KEY, TAX_PAYMENT_STORAGE_KEY,
-    SAVED_VIEWS_STORAGE_KEY, DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, CHANGE_HISTORY_STORAGE_KEY, STRATEGIC_OBJECTIVES_STORAGE_KEY,
+    SAVED_VIEWS_STORAGE_KEY, DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, CHANGE_HISTORY_STORAGE_KEY, STRATEGIC_OBJECTIVES_STORAGE_KEY, STRATEGIC_REVIEWS_STORAGE_KEY,
   ]);
   for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
     const raw = input.storage[key];
@@ -1551,6 +1710,9 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
         });
       }
       if (key === STRATEGIC_OBJECTIVES_STORAGE_KEY && Array.isArray(parsed) && parsed.some((entry) => !isStrategicObjectiveRecord(entry))) throw new Error();
+      if (key === STRATEGIC_REVIEWS_STORAGE_KEY && Array.isArray(parsed)) {
+        parsed.forEach((review: unknown, index: number) => reviewShapeIssues(review).forEach((reason) => addIssue({ severity: "Material", category: "Strategic reviews", recordType: "Strategic Review", recordTitle: `Stored review ${index + 1}`, reason, nextStep: "Inspect the stored review in a safety backup before changing browser storage." })));
+      }
     } catch {
       addIssue({ severity: "Critical", category: "Local storage", recordType: "Storage", recordTitle: key, recordId: key, reason: `Store ${key} contains malformed JSON or the wrong structural type.`, nextStep: "Download a safety backup and inspect recovery options before editing browser storage." });
     }
@@ -5223,6 +5385,26 @@ function StrategicFounderAllocationSection({ objective, reasons, divergence, onO
   </section>;
 }
 
+function AppliedReviewAllocationSection({ review, operational, onOpen }: { review: StrategicReview; operational: OperationalNextMoveCandidate | null; onOpen: () => void }) {
+  const primary = review.founderAllocation.find((entry) => entry.allocation === "Primary");
+  const secondary = review.founderAllocation.filter((entry) => entry.allocation === "Secondary");
+  const overdue = new Date(`${review.nextReviewDate}T23:59:59`).getTime() < Date.now();
+  const aligned = primary && operational && (
+    operational.objectType === "Project" && review.objectiveJudgements.some((entry) => primary.objectiveIds.includes(entry.objectiveId) && review.evidenceSnapshot?.objectives.some((objective) => objective.id === entry.objectiveId && objective.linkedProjectIds.includes(operational.id)))
+  );
+  return <section className="border-t border-[#d3cbc3] pt-4">
+    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Strategic Founder Allocation {overdue ? "· Review overdue" : ""}</div>
+    <button type="button" onClick={onOpen} className="mt-3 block w-full border-l-2 border-[#315b45] bg-[#f7f7f3] px-3 py-3 text-left hover:bg-[#eef4ee]">
+      <div className="text-[10px] text-[#315b45]">Applied {review.reviewDate} · Next review {review.nextReviewDate}</div>
+      <div className="mt-1 text-[16px] font-medium text-[#171717]">{primary?.outcome || "No Primary outcome recorded"}</div>
+      {primary ? <p className="mt-1 text-[12px] text-[#4d4944]">Why now: {primary.whyNow} · Why founder: {primary.whyFounder}</p> : null}
+      {secondary.length ? <p className="mt-2 text-[11px] text-[#4d4944]">Secondary: {secondary.map((entry) => entry.outcome).join("; ")}</p> : null}
+    </button>
+    {overdue ? <p className="mt-2 text-[12px] text-[#855d27]">This allocation is based on an overdue Strategic Review. Reassess before treating it as current.</p> : null}
+    {operational ? <p className="mt-2 text-[12px] text-[#4d4944]">{aligned ? "The operational move supports the reviewed allocation." : `“${operational.title}” is executable operational work; the reviewed founder outcome is a separate strategic allocation.`}</p> : null}
+  </section>;
+}
+
 type OperatingBriefItem = {
   id: string;
   objectType: string;
@@ -7056,6 +7238,172 @@ function StrategicObjectiveEditor({ draft, projects, opportunities, decisions, o
       </div>)}</div>
       <div className="mt-5 flex justify-end gap-2"><button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] px-3 py-2 text-[11px]">Cancel</button><button type="button" onClick={onSave} disabled={!draft.title.trim()} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] text-white disabled:opacity-45">Save objective</button></div>
       <RecordChangeHistory recordType="Strategic Objective" recordId={draft.id} />
+    </div>
+  </div>;
+}
+
+function ReviewText({ label, value, onChange, rows = 1 }: { label: string; value: string; onChange: (value: string) => void; rows?: number }) {
+  const field = "mt-1 w-full rounded border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]";
+  return <label className="block min-w-0 text-[11px] font-medium text-[#4d4944]">{label}{rows > 1
+    ? <textarea rows={rows} value={value} onChange={(event) => onChange(event.target.value)} className={field} />
+    : <input value={value} onChange={(event) => onChange(event.target.value)} className={field} />}</label>;
+}
+
+function ReviewObjectivePicker({ ids, objectives, onChange }: { ids: string[]; objectives: Array<Pick<StrategicObjective, "id" | "title">>; onChange: (ids: string[]) => void }) {
+  return <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">{objectives.map((objective) => <label key={objective.id} className="flex max-w-full items-center gap-1"><input type="checkbox" checked={ids.includes(objective.id)} onChange={(event) => onChange(event.target.checked ? [...ids, objective.id] : ids.filter((id) => id !== objective.id))} /><span className="truncate" title={objective.title}>{objective.title}</span></label>)}</div>;
+}
+
+function StrategicReviewSection({ reviews, onCreate, onOpen }: { reviews: StrategicReview[]; onCreate: () => void; onOpen: (review: StrategicReview) => void }) {
+  return <section className="mt-6 border-t border-[#d3cbc3] pt-5">
+    <div className="flex items-center justify-between gap-2"><h2 className="text-[19px] font-semibold">Strategic Review & Allocation</h2><button type="button" onClick={onCreate} className="rounded bg-[#171717] px-3 py-2 text-[11px] text-white">New review</button></div>
+    <div className="mt-3 divide-y divide-[#d3cbc3]">{[...reviews].reverse().map((review) => <button key={review.id} type="button" onClick={() => onOpen(review)} className="flex w-full flex-wrap items-center justify-between gap-2 py-3 text-left text-[12px] hover:text-[#315b45]"><span>{review.reviewDate} · {review.trigger}</span><span className="text-[#4d4944]">{review.status}{review.status === "Applied" ? ` · Next review ${review.nextReviewDate}` : ""}</span></button>)}
+      {!reviews.length ? <p className="py-3 text-[12px] text-[#6a625d]">No reviews recorded.</p> : null}
+    </div>
+  </section>;
+}
+
+function StrategicReviewPanel({ review, objectives, projects, liveEvidence, gaps, contradictions, systemCandidate, saveStatus, lastSavedAt, onChange, onSave, onApply, onClose }: {
+  review: StrategicReview; objectives: StrategicObjective[]; projects: ProjectRecord[]; liveEvidence: ReviewEvidence;
+  gaps: ReviewGap[]; contradictions: ReviewContradiction[];
+  systemCandidate: { title: string; reasons: string[] } | null;
+  saveStatus: "idle" | "saving" | "saved" | "unsaved" | "error";
+  lastSavedAt: string | null;
+  onChange: (review: StrategicReview) => void; onSave: () => void; onApply: () => void; onClose: () => void;
+}) {
+  const editable = review.status === "Draft";
+  const selectClass = "mt-1 w-full rounded border border-[#beb3aa] bg-white px-2 py-2 text-[12px]";
+  const evidence = review.evidenceSnapshot || liveEvidence;
+  const displayObjectives = review.evidenceSnapshot ? review.evidenceSnapshot.objectives : objectives;
+  const objectiveTitle = (id: string) => evidence.objectives.find((entry) => entry.id === id)?.title || objectives.find((entry) => entry.id === id)?.title || id;
+  const projectTitle = (id: string) => evidence.projects.find((entry) => entry.id === id)?.projectName || projects.find((entry) => entry.id === id)?.projectName || id;
+  const update = <Key extends keyof StrategicReview>(key: Key, value: StrategicReview[Key]) => onChange({ ...review, [key]: value });
+  const visibleGaps = [...gaps, ...review.strategicGaps.filter((entry) => entry.id.startsWith("manual:"))];
+  return <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#171717]/35 px-3">
+    <div className="flex h-[94dvh] max-h-[780px] w-full max-w-4xl flex-col rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] shadow-xl">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[#d3cbc3] px-4 py-3"><div><h2 className="text-[18px] font-semibold">Strategic Review</h2><p className="text-[11px] text-[#6a625d]">{review.status} · {review.reviewDate}{review.appliedAt ? ` · Applied ${new Date(review.appliedAt).toLocaleString()}` : ""}</p></div><button type="button" onClick={onClose} className="text-[12px] text-[#4d4944]">Close</button></header>
+      <nav aria-label="Review stages" className="flex shrink-0 gap-1 overflow-x-auto border-b border-[#d3cbc3] px-3 py-2">{reviewStages.map((stage, index) => <button key={stage} type="button" onClick={() => update("stage", index)} className={`shrink-0 border-b-2 px-2 py-1 text-[11px] ${review.stage === index ? "border-[#315b45] font-semibold text-[#171717]" : "border-transparent text-[#6a625d]"}`}>{index + 1}. {stage}</button>)}</nav>
+      <fieldset disabled={!editable} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pb-12 pt-4 text-[12px] disabled:opacity-85">
+        {review.stage === 0 ? <>
+          <h3 className="text-[15px] font-semibold">What has changed in reality that could alter strategy?</h3>
+          <div className="grid gap-3 sm:grid-cols-3"><label>Trigger<select disabled={!editable} value={review.trigger} onChange={(event) => update("trigger", event.target.value as StrategicReview["trigger"])} className={selectClass}>{reviewTriggers.map((entry) => <option key={entry}>{entry}</option>)}</select></label><label>Review period start<input disabled={!editable} type="date" value={review.reviewPeriodStart} onChange={(event) => update("reviewPeriodStart", event.target.value)} className={selectClass} /></label><label>Next review date<input disabled={!editable} type="date" value={review.nextReviewDate} onChange={(event) => update("nextReviewDate", event.target.value)} className={selectClass} /></label></div>
+          <p className="border-l-2 border-[#315b45] pl-3 text-[#4d4944]">Founder dependency: {evidence.founderDependency}<br />Capital: {evidence.finance}<br />Execution: {evidence.execution}</p>
+          <p className="text-[#6a625d]">{evidence.objectives.length} active/watch objectives · {evidence.projects.length} active Projects · {evidence.opportunities.length} open Opportunities · {evidence.problems.length} unresolved Problems.</p>
+          <ReviewText label="Material changes in reality" value={review.realitySummary} onChange={(value) => update("realitySummary", value)} rows={3} />
+          <ReviewText label="Founder notes" value={review.founderNotes} onChange={(value) => update("founderNotes", value)} rows={2} />
+        </> : null}
+        {review.stage === 1 ? <>
+          <h3 className="text-[15px] font-semibold">Material constraints</h3>
+          {review.constraints.map((entry, index) => <div key={entry.id} className="space-y-2 border-t border-[#d3cbc3] pt-3">
+            <ReviewText label="Constraint" value={entry.description} onChange={(value) => update("constraints", review.constraints.map((item, position) => position === index ? { ...item, description: value } : item))} />
+            <ReviewText label="Observed evidence" value={entry.evidence} onChange={(value) => update("constraints", review.constraints.map((item, position) => position === index ? { ...item, evidence: value } : item))} rows={2} />
+            <p className="text-[#6a625d]">System suggestion: {entry.recommendation}</p>
+            <ReviewObjectivePicker ids={entry.objectiveIds} objectives={displayObjectives} onChange={(ids) => update("constraints", review.constraints.map((item, position) => position === index ? { ...item, objectiveIds: ids } : item))} />
+            <label>Founder disposition<select value={entry.decision} onChange={(event) => update("constraints", review.constraints.map((item, position) => position === index ? { ...item, decision: event.target.value as ReviewConstraint["decision"] } : item))} className={selectClass}><option value="">Select</option>{["Confirm", "Modify", "Dismiss"].map((value) => <option key={value}>{value}</option>)}</select></label>
+            <ReviewText label="Founder rationale" value={entry.founderRationale} onChange={(value) => update("constraints", review.constraints.map((item, position) => position === index ? { ...item, founderRationale: value } : item))} />
+            <ReviewText label="Response (if confirmed)" value={entry.response} onChange={(value) => update("constraints", review.constraints.map((item, position) => position === index ? { ...item, response: value } : item))} />
+          </div>)}
+          <button type="button" onClick={() => update("constraints", [...review.constraints, { id: generateCaptureId(), description: "", evidence: "", objectiveIds: [], recommendation: "Founder observation", decision: "", founderRationale: "", response: "" }])} className="text-[#315b45] underline">Add constraint</button>
+        </> : null}
+        {review.stage === 2 ? <>
+          <h3 className="text-[15px] font-semibold">Strategic opportunities</h3>
+          {review.opportunities.map((entry, index) => <div key={entry.id} className="grid gap-2 border-t border-[#d3cbc3] pt-3 sm:grid-cols-2">
+            <ReviewText label="Opportunity" value={entry.title} onChange={(value) => update("opportunities", review.opportunities.map((item, position) => position === index ? { ...item, title: value } : item))} />
+            <ReviewText label="Strategic relevance" value={entry.relevance} onChange={(value) => update("opportunities", review.opportunities.map((item, position) => position === index ? { ...item, relevance: value } : item))} />
+            <div className="sm:col-span-2"><ReviewText label="Evidence / thesis" value={entry.evidence} onChange={(value) => update("opportunities", review.opportunities.map((item, position) => position === index ? { ...item, evidence: value } : item))} rows={2} /></div>
+            <p className="text-[#6a625d] sm:col-span-2">System suggestion: {entry.recommendation}</p>
+            <label>Founder disposition<select value={entry.decision} onChange={(event) => update("opportunities", review.opportunities.map((item, position) => position === index ? { ...item, decision: event.target.value as ReviewOpportunity["decision"] } : item))} className={selectClass}><option value="">Select</option>{["Pursue", "Investigate", "Monitor", "Reject", "Park"].map((value) => <option key={value}>{value}</option>)}</select></label>
+            <ReviewText label="Founder rationale" value={entry.founderRationale} onChange={(value) => update("opportunities", review.opportunities.map((item, position) => position === index ? { ...item, founderRationale: value } : item))} />
+          </div>)}
+          <button type="button" onClick={() => update("opportunities", [...review.opportunities, { id: generateCaptureId(), opportunityId: "", title: "", relevance: "", evidence: "", recommendation: "Review-only opportunity; no operating record created.", decision: "", founderRationale: "" }])} className="text-[#315b45] underline">Add review-only opportunity</button>
+        </> : null}
+        {review.stage === 3 ? <>
+          <h3 className="text-[15px] font-semibold">Strategic assumptions</h3>
+          {review.assumptions.map((entry, index) => <div key={entry.id} className="grid gap-2 border-t border-[#d3cbc3] pt-3 sm:grid-cols-2">
+            <div className="sm:col-span-2"><ReviewText label="Assumption" value={entry.statement} onChange={(value) => update("assumptions", review.assumptions.map((item, position) => position === index ? { ...item, statement: value } : item))} /></div>
+            <label>Confidence<select value={entry.confidence} onChange={(event) => update("assumptions", review.assumptions.map((item, position) => position === index ? { ...item, confidence: event.target.value as ReviewAssumption["confidence"] } : item))} className={selectClass}>{["Low", "Medium", "High"].map((value) => <option key={value}>{value}</option>)}</select></label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={entry.needsTesting} onChange={(event) => update("assumptions", review.assumptions.map((item, position) => position === index ? { ...item, needsTesting: event.target.checked } : item))} /> Needs testing</label>
+            {(["supportingEvidence", "contraryEvidence", "invalidationCondition", "founderNote"] as const).map((field) => <ReviewText key={field} label={field.replace(/([A-Z])/g, " $1")} value={entry[field]} onChange={(value) => update("assumptions", review.assumptions.map((item, position) => position === index ? { ...item, [field]: value } : item))} />)}
+          </div>)}
+          <button type="button" onClick={() => update("assumptions", [...review.assumptions, { id: generateCaptureId(), statement: "", confidence: "Low", supportingEvidence: "", contraryEvidence: "", invalidationCondition: "", needsTesting: true, founderNote: "" }])} className="text-[#315b45] underline">Add assumption</button>
+        </> : null}
+        {review.stage === 4 ? <>
+          <h3 className="text-[15px] font-semibold">If the current Project and Action lists did not exist, what work would we create now?</h3>
+          {review.blankSheetCandidates.map((entry, index) => <div key={entry.id} className="space-y-2 border-t border-[#d3cbc3] pt-3">
+            <ReviewText label="Outcome" value={entry.outcome} onChange={(value) => update("blankSheetCandidates", review.blankSheetCandidates.map((item, position) => position === index ? { ...item, outcome: value } : item))} />
+            <div className="text-[11px] text-[#4d4944]">Confirmed objectives<ReviewObjectivePicker ids={entry.objectiveIds} objectives={displayObjectives} onChange={(ids) => update("blankSheetCandidates", review.blankSheetCandidates.map((item, position) => position === index ? { ...item, objectiveIds: ids } : item))} /></div>
+            <div className="grid gap-2 sm:grid-cols-2">{(["whyNow", "expectedStrategicEffect", "founderNecessity", "majorUncertainty"] as const).map((field) => <ReviewText key={field} label={field.replace(/([A-Z])/g, " $1")} value={entry[field]} onChange={(value) => update("blankSheetCandidates", review.blankSheetCandidates.map((item, position) => position === index ? { ...item, [field]: value } : item))} />)}</div>
+            <div className="grid gap-2 sm:grid-cols-2"><label>Candidate response<select value={entry.response} onChange={(event) => update("blankSheetCandidates", review.blankSheetCandidates.map((item, position) => position === index ? { ...item, response: event.target.value as ReviewCandidate["response"] } : item))} className={selectClass}>{reviewCandidateResponses.map((value) => <option key={value}>{value}</option>)}</select></label>
+              <label>Compared with current portfolio<select value={entry.representation} onChange={(event) => update("blankSheetCandidates", review.blankSheetCandidates.map((item, position) => position === index ? { ...item, representation: event.target.value as ReviewCandidate["representation"], matchingProjectIds: event.target.value === "Missing" ? [] : item.matchingProjectIds } : item))} className={selectClass}><option value="">Choose</option>{["Already represented", "Partially represented", "Missing"].map((value) => <option key={value}>{value}</option>)}</select></label></div>
+            {entry.representation !== "Missing" ? <label>Matching Project<select value="" onChange={(event) => { if (event.target.value) update("blankSheetCandidates", review.blankSheetCandidates.map((item, position) => position === index ? { ...item, matchingProjectIds: [...item.matchingProjectIds, event.target.value] } : item)); }} className={selectClass}><option value="">Add existing Project</option>{projects.filter((project) => !entry.matchingProjectIds.includes(project.id)).map((project) => <option key={project.id} value={project.id}>{project.projectName}</option>)}</select></label> : null}
+            <div className="flex flex-wrap gap-2">{entry.matchingProjectIds.map((id) => <button key={id} type="button" onClick={() => update("blankSheetCandidates", review.blankSheetCandidates.map((item, position) => position === index ? { ...item, matchingProjectIds: item.matchingProjectIds.filter((value) => value !== id) } : item))} className="text-[11px] text-[#6a3328] underline">Remove {projects.find((project) => project.id === id)?.projectName || id}</button>)}</div>
+          </div>)}
+          <button type="button" onClick={() => update("blankSheetCandidates", [...review.blankSheetCandidates, { id: generateCaptureId(), outcome: "", objectiveIds: [], whyNow: "", expectedStrategicEffect: "", founderNecessity: "", majorUncertainty: "", response: "Investigation", representation: "", matchingProjectIds: [] }])} className="text-[#315b45] underline">Add blank-sheet outcome</button>
+        </> : null}
+        {review.stage === 5 ? <>
+          <h3 className="text-[15px] font-semibold">Strategic Objective judgements</h3>
+          {review.objectiveJudgements.map((entry, index) => <div key={entry.objectiveId} className="space-y-2 border-t border-[#d3cbc3] pt-3">
+            <h4 className="font-medium">{objectiveTitle(entry.objectiveId)}</h4><p className="text-[#6a625d]">Evidence: {entry.evidence}<br />System suggestion: {entry.recommendation}</p>
+            <div className="grid gap-2 sm:grid-cols-2"><label>Founder decision<select value={entry.decision} onChange={(event) => update("objectiveJudgements", review.objectiveJudgements.map((item, position) => position === index ? { ...item, decision: event.target.value as ReviewObjectiveJudgement["decision"] } : item))} className={selectClass}><option value="">Choose</option>{["Keep", "Modify", "Pause", "Achieve"].map((value) => <option key={value}>{value}</option>)}</select></label>
+            {([{ field: "horizon" as const, options: strategicHorizons }, { field: "importance" as const, options: strategicImportances }, { field: "founderAllocation" as const, options: founderAllocations }]).map((group) => <label key={group.field}>Confirmed {group.field.replace(/([A-Z])/g, " $1")}<select value={entry[group.field]} onChange={(event) => update("objectiveJudgements", review.objectiveJudgements.map((item, position) => position === index ? { ...item, [group.field]: event.target.value } : item))} className={selectClass}>{group.options.map((value) => <option key={value}>{value}</option>)}</select></label>)}</div>
+            <ReviewText label="Founder rationale" value={entry.rationale} onChange={(value) => update("objectiveJudgements", review.objectiveJudgements.map((item, position) => position === index ? { ...item, rationale: value } : item))} rows={2} />
+          </div>)}
+        </> : null}
+        {review.stage === 6 ? <>
+          <h3 className="text-[15px] font-semibold">Would we start each Project today?</h3>
+          {review.projectJudgements.map((entry, index) => <div key={entry.projectId} className="space-y-2 border-t border-[#d3cbc3] pt-3">
+            <h4 className="font-medium">{projectTitle(entry.projectId)}</h4><p className="text-[#6a625d]">Evidence: {entry.evidence}<br />System suggestion: {entry.recommendation}</p>
+            <div className="text-[11px] text-[#4d4944]">Strategic alignment<ReviewObjectivePicker ids={entry.objectiveIds} objectives={displayObjectives} onChange={(ids) => update("projectJudgements", review.projectJudgements.map((item, position) => position === index ? { ...item, objectiveIds: ids } : item))} /></div>
+            <div className="grid gap-2 sm:grid-cols-2"><label>Counterfactual answer<select value={entry.counterfactual} onChange={(event) => update("projectJudgements", review.projectJudgements.map((item, position) => position === index ? { ...item, counterfactual: event.target.value as ReviewProjectJudgement["counterfactual"] } : item))} className={selectClass}><option value="">Choose</option>{projectCounterfactuals.map((value) => <option key={value}>{value}</option>)}</select></label>
+            <label>Portfolio disposition<select value={entry.disposition} onChange={(event) => update("projectJudgements", review.projectJudgements.map((item, position) => position === index ? { ...item, disposition: event.target.value as ReviewProjectJudgement["disposition"] } : item))} className={selectClass}><option value="">Choose</option>{projectDispositions.map((value) => <option key={value}>{value}</option>)}</select></label></div>
+            {!entry.objectiveIds.length ? <ReviewText label="Explicit justification if no objective is linked" value={entry.justification} onChange={(value) => update("projectJudgements", review.projectJudgements.map((item, position) => position === index ? { ...item, justification: value } : item))} /> : null}
+            <ReviewText label="Founder rationale" value={entry.rationale} onChange={(value) => update("projectJudgements", review.projectJudgements.map((item, position) => position === index ? { ...item, rationale: value } : item))} rows={2} />
+          </div>)}
+        </> : null}
+        {review.stage === 7 ? <>
+          <h3 className="text-[15px] font-semibold">Strategic gaps</h3>
+          {visibleGaps.map((entry) => <div key={entry.id} className="space-y-2 border-t border-[#d3cbc3] pt-3">
+            <p><span className="font-medium">{entry.type}:</span> {entry.description}</p><p className="text-[#6a625d]">Evidence: {entry.evidence}<br />Proposed response: {entry.proposedResponse}</p>
+            <label>Founder disposition<select value={entry.disposition} onChange={(event) => update("strategicGaps", [...review.strategicGaps.filter((item) => item.id !== entry.id), { ...entry, disposition: event.target.value as ReviewGap["disposition"] }])} className={selectClass}><option value="">Choose</option>{["Address", "Monitor", "Accept risk", "Dismiss"].map((value) => <option key={value}>{value}</option>)}</select></label>
+            <ReviewText label="Founder rationale" value={entry.rationale} onChange={(value) => update("strategicGaps", [...review.strategicGaps.filter((item) => item.id !== entry.id), { ...entry, rationale: value }])} />
+          </div>)}
+          <button type="button" onClick={() => update("strategicGaps", [...review.strategicGaps, { id: `manual:${generateCaptureId()}`, type: "Knowledge Gap", description: "", evidence: "", objectiveIds: [], proposedResponse: "", disposition: "", rationale: "" }])} className="text-[#315b45] underline">Add strategic gap</button>
+          {visibleGaps.filter((entry) => entry.id.startsWith("manual:")).map((entry) => <div key={`edit:${entry.id}`} className="grid gap-2 border-t border-[#d3cbc3] pt-2 sm:grid-cols-2"><label>Gap type<select value={entry.type} onChange={(event) => update("strategicGaps", review.strategicGaps.map((item) => item.id === entry.id ? { ...item, type: event.target.value as ReviewGap["type"] } : item))} className={selectClass}>{reviewGapTypes.map((value) => <option key={value}>{value}</option>)}</select></label><ReviewText label="Description" value={entry.description} onChange={(value) => update("strategicGaps", review.strategicGaps.map((item) => item.id === entry.id ? { ...item, description: value } : item))} /><ReviewText label="Evidence" value={entry.evidence} onChange={(value) => update("strategicGaps", review.strategicGaps.map((item) => item.id === entry.id ? { ...item, evidence: value } : item))} /><ReviewText label="Proposed response" value={entry.proposedResponse} onChange={(value) => update("strategicGaps", review.strategicGaps.map((item) => item.id === entry.id ? { ...item, proposedResponse: value } : item))} /></div>)}
+        </> : null}
+        {review.stage === 8 ? <>
+          <h3 className="text-[15px] font-semibold">Founder attention budget</h3><p className="text-[#6a625d]">One Primary · up to two Secondary · one Reserve. Select outcomes, not due-date-driven tasks.</p>
+          {systemCandidate ? <p className="border-l-2 border-[#315b45] pl-3 text-[#4d4944]">System candidate: {systemCandidate.title}. {systemCandidate.reasons.join("; ")}. Founder confirmation is required.</p> : null}
+          {review.founderAllocation.map((entry, index) => <div key={entry.id} className="space-y-2 border-t border-[#d3cbc3] pt-3">
+            <div className="grid gap-2 sm:grid-cols-2"><label>Allocation<select value={entry.allocation} onChange={(event) => update("founderAllocation", review.founderAllocation.map((item, position) => position === index ? { ...item, allocation: event.target.value as ReviewFounderOutcome["allocation"] } : item))} className={selectClass}>{["Primary", "Secondary", "Reserve"].map((value) => <option key={value}>{value}</option>)}</select></label><ReviewText label="Founder outcome" value={entry.outcome} onChange={(value) => update("founderAllocation", review.founderAllocation.map((item, position) => position === index ? { ...item, outcome: value } : item))} /></div>
+            <ReviewObjectivePicker ids={entry.objectiveIds} objectives={displayObjectives} onChange={(ids) => update("founderAllocation", review.founderAllocation.map((item, position) => position === index ? { ...item, objectiveIds: ids } : item))} />
+            <div className="grid gap-2 sm:grid-cols-2">{(["whyNow", "whyFounder", "costOfDelay", "dependencyUnlocked", "uncertainty"] as const).map((field) => <ReviewText key={field} label={field.replace(/([A-Z])/g, " $1")} value={entry[field]} onChange={(value) => update("founderAllocation", review.founderAllocation.map((item, position) => position === index ? { ...item, [field]: value } : item))} />)}</div>
+            <button type="button" onClick={() => update("founderAllocation", review.founderAllocation.filter((item) => item.id !== entry.id))} className="text-[11px] text-[#6a3328] underline">Remove outcome</button>
+          </div>)}
+          <button type="button" disabled={review.founderAllocation.length >= 4} onClick={() => update("founderAllocation", [...review.founderAllocation, { id: generateCaptureId(), outcome: "", objectiveIds: [], whyNow: "", whyFounder: "", costOfDelay: "", dependencyUnlocked: "", uncertainty: "", allocation: review.founderAllocation.some((entry) => entry.allocation === "Primary") ? "Secondary" : "Primary" }])} className="text-[#315b45] underline disabled:opacity-45">Add founder outcome</button>
+        </> : null}
+        {review.stage === 9 ? <>
+          <h3 className="text-[15px] font-semibold">Deliberately not prioritising</h3>
+          {review.notPrioritising.map((entry, index) => <div key={entry.id} className="grid gap-2 border-t border-[#d3cbc3] pt-3 sm:grid-cols-3">{(["item", "whyNotNow", "reconsiderWhen"] as const).map((field) => <ReviewText key={field} label={field.replace(/([A-Z])/g, " $1")} value={entry[field]} onChange={(value) => update("notPrioritising", review.notPrioritising.map((item, position) => position === index ? { ...item, [field]: value } : item))} />)}</div>)}
+          <button type="button" onClick={() => update("notPrioritising", [...review.notPrioritising, { id: generateCaptureId(), item: "", whyNotNow: "", reconsiderWhen: "" }])} className="text-[#315b45] underline">Add exclusion</button>
+        </> : null}
+        {review.stage === 10 ? <>
+          <h3 className="text-[15px] font-semibold">Reconciliation</h3>
+          {!contradictions.length ? <p className="text-[#315b45]">No structural contradictions detected.</p> : contradictions.map((entry) => <div key={entry.id} className="border-t border-[#d3cbc3] pt-3"><div className="font-medium">{entry.blocking ? "Blocking" : "Warning"}: {entry.description}</div>{entry.blocking ? <ReviewText label="Founder override rationale (required if not resolved)" value={entry.overrideRationale} onChange={(value) => update("contradictions", [...review.contradictions.filter((item) => item.id !== entry.id), { ...entry, overrideRationale: value }])} rows={2} /> : null}</div>)}
+        </> : null}
+        {review.stage === 11 ? <>
+          <h3 className="text-[15px] font-semibold">Pre-Apply portfolio summary</h3>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div><h4 className="font-medium">Founder attention</h4>{["Primary", "Secondary", "Reserve"].map((level) => <p key={level} className="mt-1 text-[#4d4944]">{level}: {review.founderAllocation.filter((entry) => entry.allocation === level).map((entry) => entry.outcome || "Unnamed outcome").join("; ") || "None"}</p>)}</div>
+            <div><h4 className="font-medium">Objectives</h4>{["Keep", "Modify", "Pause", "Achieve"].map((decision) => <p key={decision} className="mt-1 text-[#4d4944]">{decision}: {review.objectiveJudgements.filter((entry) => entry.decision === decision).length}</p>)}</div>
+            <div><h4 className="font-medium">Projects</h4>{projectDispositions.map((disposition) => <p key={disposition} className="mt-1 text-[#4d4944]">{disposition}: {review.projectJudgements.filter((entry) => entry.disposition === disposition).length}</p>)}</div>
+            <div><h4 className="font-medium">Missing strategic work</h4>{reviewGapTypes.map((type) => <p key={type} className="mt-1 text-[#4d4944]">{type}: {review.strategicGaps.filter((entry) => entry.type === type).length}</p>)}</div>
+          </div>
+          <div className="border-t border-[#d3cbc3] pt-3"><h4 className="font-medium">Not prioritising</h4>{review.notPrioritising.map((entry) => <p key={entry.id}>{entry.item}: {entry.whyNotNow} · Reconsider: {entry.reconsiderWhen}</p>)}</div>
+          <div className="border-t border-[#d3cbc3] pt-3"><h4 className="font-medium">Key assumptions and constraints</h4>{review.assumptions.map((entry) => <p key={entry.id}>{entry.statement} · {entry.confidence}{entry.needsTesting ? " · Test required" : ""}</p>)}{review.constraints.filter((entry) => entry.decision !== "Dismiss").map((entry) => <p key={entry.id}>{entry.description} · {entry.decision || "Not reviewed"}</p>)}</div>
+          <div className="border-t border-[#d3cbc3] pt-3"><h4 className="font-medium">Risks to monitor</h4>{visibleGaps.filter((entry) => entry.disposition === "Monitor" || entry.disposition === "Accept risk").map((entry) => <p key={entry.id}>{entry.description}</p>)}<p className="mt-2">Next review: {review.nextReviewDate}</p></div>
+          {contradictions.some((entry) => entry.blocking && !entry.overrideRationale.trim()) ? <p role="alert" className="text-[#6a3328]">Blocking contradictions need a founder override rationale or a changed decision before Apply.</p> : null}
+        </> : null}
+      </fieldset>
+      <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-[#d3cbc3] bg-[#f9f7f4] px-4 py-3"><div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]"><span className="text-[#6a625d]">{reviewStages[review.stage]}</span>{editable && saveStatus === "saved" ? <span role="status" className="font-semibold text-[#315b45]">Saved ✓</span> : null}{editable && saveStatus === "saving" ? <span role="status" className="text-[#4d4944]">Saving…</span> : null}{editable && saveStatus === "error" ? <span role="alert" className="text-[#6a3328]">Save failed</span> : null}{editable && lastSavedAt ? <span className="text-[#6a625d]">Last saved {lastSavedAt}</span> : null}</div><div className="flex gap-2">{editable ? <button type="button" onClick={onSave} className="rounded border border-[#d3cbc3] px-3 py-2 text-[11px]">Save draft</button> : null}{review.stage > 0 ? <button type="button" onClick={() => update("stage", review.stage - 1)} className="rounded border border-[#d3cbc3] px-3 py-2 text-[11px]">Back</button> : null}{review.stage < 11 ? <button type="button" onClick={() => update("stage", review.stage + 1)} className="rounded bg-[#171717] px-3 py-2 text-[11px] text-white">Next</button> : editable ? <button type="button" onClick={onApply} className="rounded bg-[#315b45] px-3 py-2 text-[11px] text-white">Apply Review</button> : null}</div></footer>
     </div>
   </div>;
 }
@@ -9421,6 +9769,13 @@ export default function Home() {
   const [operatingDataLoaded, setOperatingDataLoaded] = useState(false);
   const [changeHistory, setChangeHistory] = useState<ChangeEvent[]>([]);
   const [strategicObjectives, setStrategicObjectives] = useState<StrategicObjective[]>([]);
+  const [strategicReviews, setStrategicReviews] = useState<StrategicReview[]>([]);
+  const [strategicReviewsLoaded, setStrategicReviewsLoaded] = useState(false);
+  const strategicReviewsWritableRef = useRef(false);
+  const [reviewDraft, setReviewDraft] = useState<StrategicReview | null>(null);
+  const [reviewSaveStatus, setReviewSaveStatus] = useState<"idle" | "saving" | "saved" | "unsaved" | "error">("idle");
+  const [reviewLastSavedAt, setReviewLastSavedAt] = useState<string | null>(null);
+  const pendingReviewSaveRef = useRef<{ id: string; snapshot: string } | null>(null);
   const [strategicObjectiveEditor, setStrategicObjectiveEditor] = useState<StrategicObjective | null>(null);
   const [strategicObjectivesLoaded, setStrategicObjectivesLoaded] = useState(false);
   const strategicObjectivesWritableRef = useRef(false);
@@ -9428,6 +9783,7 @@ export default function Home() {
   const changeHistoryWritableRef = useRef(false);
   const auditBaselineRef = useRef<Record<string, Record<string, unknown>[]> | null>(null);
   const auditRestoreInProgressRef = useRef(false);
+  const reviewApplyInProgressRef = useRef(false);
   const [lastBackupAt, setLastBackupAt] = useState("");
   const [restoreBackupPreview, setRestoreBackupPreview] = useState<RestoreBackupPreview | null>(null);
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
@@ -9498,6 +9854,20 @@ export default function Home() {
       setFeedback({ type: "error", message: "Strategic objectives could not be loaded. Existing storage was left untouched; inspect it through a safety backup." });
     } finally {
       setStrategicObjectivesLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(STRATEGIC_REVIEWS_STORAGE_KEY);
+      const parsed: unknown = stored === null ? [] : JSON.parse(stored);
+      if (!Array.isArray(parsed) || !parsed.every(isStrategicReview)) throw new Error();
+      setStrategicReviews(parsed);
+      strategicReviewsWritableRef.current = true;
+    } catch {
+      setFeedback({ type: "error", message: "Strategic reviews could not be loaded. Existing storage was left untouched; inspect a safety backup." });
+    } finally {
+      setStrategicReviewsLoaded(true);
     }
   }, []);
 
@@ -9994,6 +10364,31 @@ export default function Home() {
     }
   }, [strategicObjectives, strategicObjectivesLoaded, operatingDataLoaded]);
 
+  useEffect(() => {
+    if (!operatingDataLoaded || !strategicReviewsLoaded || !strategicReviewsWritableRef.current || auditRestoreInProgressRef.current) return;
+    try {
+      const serialized = JSON.stringify(strategicReviews);
+      window.localStorage.setItem(STRATEGIC_REVIEWS_STORAGE_KEY, serialized);
+      if (pendingReviewSaveRef.current) {
+        if (window.localStorage.getItem(STRATEGIC_REVIEWS_STORAGE_KEY) !== serialized) throw new Error("Strategic Review write could not be verified.");
+        const pending = pendingReviewSaveRef.current;
+        pendingReviewSaveRef.current = null;
+        if (reviewDraft?.id === pending.id && strategicReviews.some((review) => review.id === pending.id && JSON.stringify(review) === pending.snapshot)) {
+          setReviewLastSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+          const currentDraftSaved = JSON.stringify(reviewDraft) === pending.snapshot;
+          setReviewSaveStatus(currentDraftSaved ? "saved" : "unsaved");
+          if (currentDraftSaved) setFeedback({ type: "success", message: "Strategic Review draft saved." });
+        }
+      }
+    } catch {
+      if (pendingReviewSaveRef.current) {
+        pendingReviewSaveRef.current = null;
+        setReviewSaveStatus("error");
+      }
+      setFeedback({ type: "error", message: "Strategic reviews could not be saved. Check browser storage before continuing." });
+    }
+  }, [strategicReviews, strategicReviewsLoaded, operatingDataLoaded]);
+
   const orderedCaptures = [...captures].sort(
     (first, second) =>
       new Date(second.capturedAt).getTime() - new Date(first.capturedAt).getTime(),
@@ -10153,7 +10548,7 @@ export default function Home() {
   const sopRecords = getConvertedRecordsByType("Convert to SOP").map(normalizeSopRecord);
 
   useEffect(() => {
-    if (!operatingDataLoaded || !changeHistoryLoaded || !strategicObjectivesLoaded) return;
+    if (!operatingDataLoaded || !changeHistoryLoaded || !strategicObjectivesLoaded || !strategicReviewsLoaded) return;
     const records = (entries: object[]): Record<string, unknown>[] => entries as Record<string, unknown>[];
     const snapshot: Record<string, Record<string, unknown>[]> = {
       Capture: records(captures),
@@ -10174,6 +10569,7 @@ export default function Home() {
       Commitment: records(commitmentRecords),
       "Tax payment": records(taxPaymentRecords),
       "Strategic Objective": records(strategicObjectives),
+      "Strategic Review": records(strategicReviews),
     };
     const previous = auditBaselineRef.current;
     if (!previous || auditRestoreInProgressRef.current) {
@@ -10187,6 +10583,7 @@ export default function Home() {
       SOP: "sopTitle", Person: "name", Lead: "leadName", Outreach: "businessName", "Cash position": "id",
       Income: "description", Expense: "description", Commitment: "commitmentName", "Tax payment": "description",
       "Strategic Objective": "title",
+      "Strategic Review": "reviewDate",
     };
     const events = Object.entries(snapshot).flatMap(([type, current]) =>
       diffChangeRecords(type, previous[type] || [], current, titles[type]));
@@ -10204,7 +10601,7 @@ export default function Home() {
       }
     }
     auditBaselineRef.current = snapshot;
-  }, [operatingDataLoaded, changeHistoryLoaded, strategicObjectivesLoaded, captures, conversions, projects, people, leads, outreachContacts, cashPosition, incomeRecords, expenseRecords, commitmentRecords, taxPaymentRecords, strategicObjectives]);
+  }, [operatingDataLoaded, changeHistoryLoaded, strategicObjectivesLoaded, strategicReviewsLoaded, captures, conversions, projects, people, leads, outreachContacts, cashPosition, incomeRecords, expenseRecords, commitmentRecords, taxPaymentRecords, strategicObjectives, strategicReviews]);
 
   const executeIntegrityAudit = (storageOverride?: Record<string, string | null>) => {
     const storage = storageOverride || Object.fromEntries(
@@ -10227,6 +10624,7 @@ export default function Home() {
       outreach: outreachContacts,
       handoffs: delegationHandoffs,
       strategicObjectives,
+      strategicReviews,
       storage,
     }));
   };
@@ -10235,7 +10633,7 @@ export default function Home() {
     if (!operatingDataLoaded) return;
     executeIntegrityAudit(initialIntegrityStorageRef.current || undefined);
     initialIntegrityStorageRef.current = null;
-  }, [operatingDataLoaded, captures, conversions, projects, people, leads, commitmentRecords, outreachContacts, delegationHandoffs, strategicObjectives]);
+  }, [operatingDataLoaded, captures, conversions, projects, people, leads, commitmentRecords, outreachContacts, delegationHandoffs, strategicObjectives, strategicReviews]);
 
   type AttentionItem = {
     id: string;
@@ -12731,6 +13129,10 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     return null;
   };
 
+  const executableAction = (action: ActionRecord) => isActionActive(action) && !isActionWaiting(action) && action.status !== "Blocked"
+    && !getActionDependencyBlocker(action)
+    && (!action.earliestExecutableDate || new Date(`${action.earliestExecutableDate.slice(0, 10)}T00:00:00`).getTime() <= new Date().setHours(0, 0, 0, 0));
+
   const strategicAssessments = strategicObjectives.map((objective) => {
     const linkedProjects = projects.filter((project) => objective.linkedProjectIds.includes(project.id));
     const linkedOpportunities = opportunityRecords.filter((opportunity) => objective.linkedOpportunityIds.includes(opportunity.id));
@@ -12740,9 +13142,6 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     const activeDecisions = linkedDecisions.filter((decision) => ["Active", "Under Review"].includes(decision.decisionStatus));
     const hasLinkedPath = linkedProjects.length + linkedOpportunities.length + linkedDecisions.length > 0;
     const hasActivePath = activeProjects.length + activeOpportunities.length + activeDecisions.length > 0;
-    const executableAction = (action: ActionRecord) => isActionActive(action) && !isActionWaiting(action) && action.status !== "Blocked"
-      && !getActionDependencyBlocker(action)
-      && (!action.earliestExecutableDate || new Date(`${action.earliestExecutableDate.slice(0, 10)}T00:00:00`).getTime() <= new Date().setHours(0, 0, 0, 0));
     const hasExecutablePath = activeProjects.some((project) => (project.relatedActionIds || []).some((id) => actionRecords.some((action) => action.id === id && executableAction(action))))
       || linkedOpportunities.some((opportunity) => opportunity.status === "Approved")
       || activeDecisions.some((decision) => actionRecords.some((action) => action.relatedDecision === decision.id && executableAction(action)));
@@ -15010,9 +15409,13 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     };
   })();
 
+  const getFounderAttentionObjectiveForProject = (projectId: string) => strategicObjectives.find((objective) =>
+    objective.status === "Active" && objective.founderAllocation === "Founder attention now" && objective.linkedProjectIds.includes(projectId));
+
   const founderBottleneckMap = (() => {
     const rawBottlenecks: BottleneckItem[] = [];
     const usedKeys = new Set<string>();
+    const routineDelegateItems = empireDecisionQueue.delegateItems.filter((item) => item.objectType !== "Project" || !getFounderAttentionObjectiveForProject(item.id));
 
     // 1. AUTHORITY BOTTLENECK
     for (const item of empireDecisionQueue.founderReviewQueue) {
@@ -15045,6 +15448,26 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       });
       usedKeys.add(key);
     }
+
+    projects.filter(isProjectActive).forEach((project) => {
+      if (!isFounderOwned(project.owner)) return;
+      const objective = getFounderAttentionObjectiveForProject(project.id);
+      const key = `Project:${project.id}`;
+      if (!objective || usedKeys.has(key)) return;
+      rawBottlenecks.push({
+        id: project.id,
+        category: "Authority",
+        title: `Founder-retained project: ${project.projectName}`,
+        objectType: "Project",
+        area: project.area,
+        owner: project.owner,
+        severity: "Material",
+        why: `Linked to active Strategic Objective '${objective.title}', explicitly allocated to founder attention.`,
+        releasePath: "Retain under founder authority while this Strategic Objective requires founder attention.",
+        onOpen: () => handleOpenAttentionRecord("Project", project.id),
+      });
+      usedKeys.add(key);
+    });
 
     // High/Exceptional fit evaluating opportunities needing approval
     opportunityRecords
@@ -15214,7 +15637,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     });
 
     // 4. CAPABILITY BOTTLENECK
-    if (empireDecisionQueue.delegateItems.length > 0) {
+    if (routineDelegateItems.length > 0) {
       if (activeOperationalDelegationPeople.length === 0) {
         const key = "People:no-nonfounder";
         if (!usedKeys.has(key)) {
@@ -15225,7 +15648,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
             objectType: "People",
             area: "People",
             severity: "Critical",
-            why: `${empireDecisionQueue.delegateItems.length} routine founder-owned item(s) sit with the founder because no active non-founder team member exists.`,
+            why: `${routineDelegateItems.length} routine founder-owned item(s) sit with the founder because no active non-founder team member exists.`,
             releasePath: "Onboard or activate team members in People to absorb operational load.",
             onOpen: () => setActiveView("People"),
           });
@@ -15241,7 +15664,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
             objectType: "People",
             area: "People",
             severity: "Material",
-            why: `${empireDecisionQueue.delegateItems.length} founder-owned routine item(s) are ready for delegation, but readiness gaps remain: ${teamDelegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`,
+            why: `${routineDelegateItems.length} founder-owned routine item(s) are ready for delegation, but readiness gaps remain: ${teamDelegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`,
             releasePath: `Complete delegation readiness in People: ${teamDelegationReadinessGapPeople.map((person) => `${person.name} — ${getDelegationReadinessMissingFields(person).join(", ")}`).join("; ")}.`,
             onOpen: () => setActiveView("People"),
           });
@@ -15271,7 +15694,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
 
     // 5. OWNERSHIP BOTTLENECK
     // Routine delegable items carried by founder
-    for (const item of empireDecisionQueue.delegateItems) {
+    for (const item of routineDelegateItems) {
       const key = `${item.objectType}:${item.id}`;
       if (usedKeys.has(key)) continue;
       const areaDelegationReadyPeople = getCapacityRankedDelegationPeopleForArea(item.pillar);
@@ -15398,8 +15821,9 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       const recordKey = `${objectType}:${id}`;
       if (usedRecordKeys.has(recordKey)) return;
 
+      // V1 retains founder strategic judgement at Project level; direct task execution is not separately classified yet.
       const founderAttentionObjective = objectType === "Project"
-        ? strategicObjectives.find((objective) => objective.status === "Active" && objective.founderAllocation === "Founder attention now" && objective.linkedProjectIds.includes(id))
+        ? getFounderAttentionObjectiveForProject(id)
         : undefined;
       const requiresAuthority = authorityKeys.has(recordKey) || Boolean(founderAttentionObjective);
       const areaDelegationReadyPeople = getDelegationReadyPeopleForArea(area);
@@ -15987,6 +16411,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       : `“${operational.title}” is executable now, but “${objective.title}” has ${objective.horizon.toLowerCase()}-horizon ${objective.importance.toLowerCase()} importance and is explicitly allocated to founder judgement${gaps.length ? `; ${gaps[0].toLowerCase()}` : "."}`;
     return { objective, reasons, divergence };
   })();
+  const currentAppliedReview = strategicReviews.find((review) => review.status === "Applied") || null;
 
   const decisionControlLayer = (() => {
     const items: DecisionControlItem[] = [];
@@ -17469,6 +17894,144 @@ const isOwnershipGap =
   const handleCreateStrategicObjective = () => {
     if (!strategicObjectivesWritableRef.current) return;
     setStrategicObjectiveEditor({ id: generateCaptureId(), title: "", pillar: strategicPillars[0], horizon: "Now", importance: "Medium", status: "Active", founderAllocation: "Monitor", owner: "", whyItMatters: "", successCondition: "", linkedProjectIds: [], linkedOpportunityIds: [], linkedDecisionIds: [], createdAt: new Date().toISOString(), overrides: [] });
+  };
+
+  const captureReviewEvidence = (review?: StrategicReview): ReviewEvidence => ({
+    capturedAt: new Date().toISOString(),
+    objectives: strategicObjectives.filter((objective) => ["Active", "Watching"].includes(objective.status) || Boolean(review && [
+      ...review.constraints.flatMap((entry) => entry.objectiveIds), ...review.blankSheetCandidates.flatMap((entry) => entry.objectiveIds), ...review.objectiveJudgements.map((entry) => entry.objectiveId), ...review.projectJudgements.flatMap((entry) => entry.objectiveIds), ...review.strategicGaps.flatMap((entry) => entry.objectiveIds), ...review.founderAllocation.flatMap((entry) => entry.objectiveIds),
+    ].includes(objective.id))).map(({ id, title, pillar, horizon, importance, status, founderAllocation, linkedProjectIds, linkedOpportunityIds, linkedDecisionIds }) => ({ id, title, pillar, horizon, importance, status, founderAllocation, linkedProjectIds: [...linkedProjectIds], linkedOpportunityIds: [...linkedOpportunityIds], linkedDecisionIds: [...linkedDecisionIds] })),
+    projects: projects.filter((project) => isProjectActive(project) || Boolean(review && [
+      ...review.projectJudgements.map((entry) => entry.projectId), ...review.blankSheetCandidates.flatMap((entry) => entry.matchingProjectIds),
+    ].includes(project.id))).map(({ id, projectName, status, owner, health, relatedActionIds }) => ({ id, projectName, status, owner, health, relatedActionIds: [...(relatedActionIds || [])] })),
+    opportunities: opportunityRecords.filter((entry) => !["Completed", "Rejected"].includes(entry.status)).map(({ id, opportunityTitle, status, strategicFit, estimatedUpside }) => ({ id, opportunityTitle, status, strategicFit, estimatedUpside })),
+    problems: problemRecords.filter(isProblemUnresolved).map((problem) => ({ id: problem.id, title: problem.problemStatement || problem.title, status: problem.problemStatus })),
+    founderDependency: founderExecutionReleaseSystem.summary.headline,
+    finance: `Available operating cash: ${cashAmountsValid ? formatFinanceAmount(availableOperatingCash) : "not verified"}.`,
+    execution: `${founderExecutionReleaseSystem.summary.totalFounderOwned} founder-owned execution items; ${founderExecutionReleaseSystem.summary.retainAuthorityCount} authority-bound; ${founderExecutionReleaseSystem.summary.prepareToDelegateCount} awaiting delegation readiness.`,
+  });
+
+  const handleStartStrategicReview = () => {
+    if (!strategicReviewsWritableRef.current || !strategicObjectivesWritableRef.current) return;
+    setReviewSaveStatus("idle");
+    setReviewLastSavedAt(null);
+    const today = new Date();
+    const next = new Date(today);
+    next.setDate(next.getDate() + 7);
+    const createdAt = today.toISOString();
+    const founderConcentration = organisationalHealth.selfSufficiencyPct === 0
+      && delegationReadyPeople.length === 0
+      && founderExecutionReleaseSystem.summary.totalFounderOwned > 0;
+    const delegationShortage = founderExecutionReleaseSystem.summary.prepareToDelegateCount > 0
+      && delegationReadyPeople.length === 0;
+    const organisationObjectiveIds = strategicObjectives.filter((objective) => objective.status === "Active" && objective.pillar === "Organisation & Leadership").map((objective) => objective.id);
+    const constraints: ReviewConstraint[] = [];
+    if (founderConcentration) constraints.push({
+      id: generateCaptureId(), description: "Founder dependency and delegation capacity",
+      evidence: `0% of validly owned active work is owned outside the primary Founder; no delegation-ready non-founder is available; ${founderExecutionReleaseSystem.summary.totalFounderOwned} founder-owned execution items remain.`,
+      objectiveIds: organisationObjectiveIds, recommendation: "Confirm whether founder concentration materially limits progress.",
+      decision: "", founderRationale: "", response: "",
+    });
+    if (delegationShortage && !founderConcentration) constraints.push({
+      id: generateCaptureId(), description: "Delegation-readiness shortage",
+      evidence: `${founderExecutionReleaseSystem.summary.prepareToDelegateCount} founder-owned execution items are classified Prepare to Delegate, with no delegation-ready non-founder available.`,
+      objectiveIds: organisationObjectiveIds, recommendation: "Confirm whether readiness limits organisational execution.",
+      decision: "", founderRationale: "", response: "",
+    });
+    const review: StrategicReview = {
+      id: generateCaptureId(), status: "Draft", stage: 0, reviewDate: createdAt.slice(0, 10), trigger: "Founder initiated", reviewPeriodStart: createdAt.slice(0, 10), nextReviewDate: next.toISOString().slice(0, 10), realitySummary: "", evidenceSnapshot: null,
+      constraints,
+      opportunities: opportunityRecords.filter((opportunity) => ["Evaluating", "Approved"].includes(opportunity.status) && ["High", "Exceptional"].includes(opportunity.strategicFit)).map((opportunity) => ({ id: generateCaptureId(), opportunityId: opportunity.id, title: opportunity.opportunityTitle, relevance: opportunity.strategicFit, evidence: opportunity.evidence || "", recommendation: "Review strategic relevance before committing.", decision: "", founderRationale: "" })),
+      assumptions: [], blankSheetCandidates: [],
+      objectiveJudgements: strategicObjectives.filter((objective) => ["Active", "Watching"].includes(objective.status)).map((objective) => ({ objectiveId: objective.id, evidence: `${objective.status}; ${objective.horizon}; ${objective.importance}. ${strategicAssessments.find((entry) => entry.objective.id === objective.id)?.gaps.join(" ") || "No structural gap detected."}`, recommendation: "Reassess against current reality.", decision: "", horizon: objective.horizon, importance: objective.importance, founderAllocation: objective.founderAllocation, rationale: "" })),
+      projectJudgements: projects.filter(isProjectActive).map((project) => ({ projectId: project.id, objectiveIds: strategicObjectives.filter((objective) => objective.linkedProjectIds.includes(project.id)).map((objective) => objective.id), evidence: `${project.status}; ${project.owner || "unassigned"}; ${(project.relatedActionIds || []).length} linked Actions.`, recommendation: "Apply the counterfactual before deciding.", counterfactual: "", disposition: "", rationale: "", justification: "" })),
+      strategicGaps: [], founderAllocation: [], notPrioritising: [], contradictions: [], founderNotes: "", createdAt, appliedAt: null, supersededAt: null,
+    };
+    setReviewDraft(review);
+  };
+
+  const handleSaveStrategicReviewDraft = () => {
+    if (!reviewDraft || reviewDraft.status !== "Draft" || !strategicReviewsWritableRef.current) return;
+    pendingReviewSaveRef.current = { id: reviewDraft.id, snapshot: JSON.stringify(reviewDraft) };
+    setReviewSaveStatus("saving");
+    setStrategicReviews((current) => current.some((review) => review.id === reviewDraft.id)
+      ? current.map((review) => review.id === reviewDraft.id && review.status === "Draft" ? reviewDraft : review)
+      : [...current, reviewDraft]);
+  };
+
+  const handleApplyStrategicReview = () => {
+    const draft = reviewDraft;
+    if (!draft || draft.status !== "Draft" || reviewApplyInProgressRef.current || !strategicReviewsWritableRef.current || !strategicObjectivesWritableRef.current || !changeHistoryWritableRef.current) return;
+    const gaps = reviewGapCandidates(draft, strategicAssessments, projects, opportunityRecords, actionRecords, executableAction);
+    const retainedGaps = draft.strategicGaps.filter((gap) => gap.id.startsWith("manual:"));
+    const reviewedGaps = [...gaps, ...retainedGaps];
+    const contradictions = reviewContradictions(draft, strategicObjectives, projects, actionRecords, reviewedGaps, executableAction);
+    const errors: string[] = [];
+    errors.push(...reviewShapeIssues(draft));
+    if (!strategicReviews.some((review) => review.id === draft.id && review.status === "Draft")) errors.push("Save this Draft before applying.");
+    if (!draft.realitySummary.trim()) errors.push("Record what changed in reality.");
+    if (!draft.nextReviewDate || draft.nextReviewDate <= draft.reviewDate || draft.reviewPeriodStart > draft.nextReviewDate) errors.push("Choose a future next review date after the review period starts.");
+    if (strategicReviews.filter((review) => review.status === "Applied").length > 1) errors.push("Multiple current Applied reviews must be reconciled first.");
+    if (draft.constraints.some((entry) => !entry.description.trim() || !entry.evidence.trim() || !entry.decision || entry.decision === "Modify" && !entry.founderRationale.trim())) errors.push("Review each constraint and record its evidence.");
+    if (draft.opportunities.some((entry) => !entry.title.trim() || !entry.decision)) errors.push("Disposition every strategic Opportunity.");
+    if (draft.assumptions.some((entry) => !entry.statement.trim() || entry.needsTesting && !entry.invalidationCondition.trim())) errors.push("Complete assumptions and testing conditions.");
+    if (!draft.blankSheetCandidates.length || draft.blankSheetCandidates.some((entry) => !entry.outcome.trim() || !entry.objectiveIds.length || !entry.whyNow.trim() || !entry.representation || entry.representation !== "Missing" && !entry.matchingProjectIds.length)) errors.push("Complete the blank-sheet reconstruction and compare each candidate to existing work.");
+    if (strategicObjectives.filter((objective) => ["Active", "Watching"].includes(objective.status)).some((objective) => !draft.objectiveJudgements.some((entry) => entry.objectiveId === objective.id && entry.decision && entry.rationale.trim()))) errors.push("Confirm every Active or Watching objective with a rationale.");
+    if (projects.filter(isProjectActive).some((project) => !draft.projectJudgements.some((entry) => entry.projectId === project.id && entry.counterfactual && entry.disposition && entry.rationale.trim()))) errors.push("Answer the counterfactual and disposition every active Project.");
+    if (reviewedGaps.some((entry) => !entry.description.trim() || !entry.evidence.trim() || !entry.proposedResponse.trim() || !entry.disposition || !entry.rationale.trim())) errors.push("Describe, evidence, disposition and explain every strategic gap.");
+    if (draft.founderAllocation.filter((entry) => entry.allocation === "Primary").length !== 1 || draft.founderAllocation.filter((entry) => entry.allocation === "Secondary").length > 2 || draft.founderAllocation.filter((entry) => entry.allocation === "Reserve").length > 1 || draft.founderAllocation.some((entry) => !entry.outcome.trim() || !entry.objectiveIds.length || !entry.whyNow.trim() || !entry.whyFounder.trim())) errors.push("Set one Primary, at most two Secondary and one Reserve outcome with founder rationale.");
+    if (draft.notPrioritising.some((entry) => !entry.item.trim() || !entry.whyNotNow.trim() || !entry.reconsiderWhen.trim())) errors.push("Complete all recorded exclusions.");
+    if (contradictions.some((entry) => entry.blocking && !entry.overrideRationale.trim())) errors.push("Resolve blocking contradictions or record an explicit founder override rationale.");
+    if (errors.length) { setFeedback({ type: "error", message: errors[0] }); return; }
+    if (!window.confirm("Apply this Strategic Review? Confirmed objective fields and Command allocation will change; Project dispositions remain review evidence.")) return;
+
+    reviewApplyInProgressRef.current = true;
+
+    const appliedAt = new Date().toISOString();
+    const nextObjectives = strategicObjectives.map((objective) => {
+      const judgement = draft.objectiveJudgements.find((entry) => entry.objectiveId === objective.id);
+      if (!judgement) return objective;
+      if (judgement.decision === "Pause") return { ...objective, status: "Paused" as const };
+      if (judgement.decision === "Achieve") return { ...objective, status: "Achieved" as const };
+      if (judgement.decision === "Modify") return { ...objective, horizon: judgement.horizon, importance: judgement.importance, founderAllocation: judgement.founderAllocation };
+      return objective;
+    });
+    const applied: StrategicReview = { ...draft, status: "Applied", evidenceSnapshot: captureReviewEvidence({ ...draft, strategicGaps: reviewedGaps }), strategicGaps: reviewedGaps, contradictions, appliedAt };
+    const nextReviews = strategicReviews.map((review) => review.id === draft.id ? applied : review.status === "Applied" ? { ...review, status: "Superseded" as const, supersededAt: appliedAt } : review);
+    const keys = [STRATEGIC_OBJECTIVES_STORAGE_KEY, STRATEGIC_REVIEWS_STORAGE_KEY, CHANGE_HISTORY_STORAGE_KEY];
+    const previous: Record<string, string | null> = {};
+    let writesStarted = false;
+    try {
+      for (const key of keys) previous[key] = window.localStorage.getItem(key);
+      const persistedReviews: unknown = previous[STRATEGIC_REVIEWS_STORAGE_KEY] === null ? [] : JSON.parse(previous[STRATEGIC_REVIEWS_STORAGE_KEY]!);
+      const persistedObjectives: unknown = JSON.parse(previous[STRATEGIC_OBJECTIVES_STORAGE_KEY] || "null");
+      const persistedHistory: unknown = previous[CHANGE_HISTORY_STORAGE_KEY] === null ? [] : JSON.parse(previous[CHANGE_HISTORY_STORAGE_KEY]!);
+      if (!Array.isArray(persistedReviews) || !persistedReviews.every(isStrategicReview) || JSON.stringify(persistedReviews) !== JSON.stringify(strategicReviews)
+        || !Array.isArray(persistedObjectives) || JSON.stringify(persistedObjectives) !== JSON.stringify(strategicObjectives)
+        || !Array.isArray(persistedHistory) || !persistedHistory.every(isValidChangeEvent)) throw new Error("Stored records changed since loading; reload before applying.");
+      const history = [...persistedHistory,
+        ...diffChangeRecords("Strategic Review", strategicReviews as unknown as Record<string, unknown>[], nextReviews as unknown as Record<string, unknown>[], "reviewDate"),
+        ...diffChangeRecords("Strategic Objective", strategicObjectives as unknown as Record<string, unknown>[], nextObjectives as unknown as Record<string, unknown>[], "title")];
+      auditRestoreInProgressRef.current = true;
+      writesStarted = true;
+      window.localStorage.setItem(STRATEGIC_REVIEWS_STORAGE_KEY, JSON.stringify(nextReviews));
+      window.localStorage.setItem(STRATEGIC_OBJECTIVES_STORAGE_KEY, JSON.stringify(nextObjectives));
+      window.localStorage.setItem(CHANGE_HISTORY_STORAGE_KEY, JSON.stringify(history));
+      if (keys.some((key) => window.localStorage.getItem(key) !== (key === STRATEGIC_REVIEWS_STORAGE_KEY ? JSON.stringify(nextReviews) : key === STRATEGIC_OBJECTIVES_STORAGE_KEY ? JSON.stringify(nextObjectives) : JSON.stringify(history)))) throw new Error("Storage verification failed.");
+      window.location.reload();
+    } catch (error) {
+      const failedRollback: string[] = [];
+      if (writesStarted) for (const key of keys) {
+        try {
+          if (previous[key] === null) window.localStorage.removeItem(key);
+          else window.localStorage.setItem(key, previous[key]!);
+          if (window.localStorage.getItem(key) !== previous[key]) failedRollback.push(key);
+        } catch { failedRollback.push(key); }
+      }
+      if (!failedRollback.length) auditRestoreInProgressRef.current = false;
+      if (!failedRollback.length) reviewApplyInProgressRef.current = false;
+      setFeedback({ type: "error", message: `Strategic Review was not applied: ${error instanceof Error ? error.message : "Storage failed."}${failedRollback.length ? ` Rollback could not be verified for ${failedRollback.join(", ")}.` : ""}` });
+    }
   };
   const handleDelegateItem = (
     objectType: "Action" | "Project" | "Lead" | "Problem",
@@ -19764,8 +20327,11 @@ const isOwnershipGap =
 
               <div className="mt-5">
                 <div className="space-y-4">
-                  <OperationalNextMoveSection candidate={operationalNextMove.candidate} />
-                  {strategicObjectivesLoaded ? <StrategicFounderAllocationSection
+                  {strategicReviewsLoaded && currentAppliedReview ? <AppliedReviewAllocationSection
+                    review={currentAppliedReview}
+                    operational={operationalNextMove.candidate}
+                    onOpen={() => setReviewDraft({ ...currentAppliedReview, stage: 11 })}
+                  /> : strategicObjectivesLoaded && strategicReviewsLoaded ? <StrategicFounderAllocationSection
                     objective={strategicFounderAllocation.objective}
                     reasons={strategicFounderAllocation.reasons}
                     divergence={strategicFounderAllocation.divergence}
@@ -19778,6 +20344,7 @@ const isOwnershipGap =
                         : objective));
                     }}
                   /> : null}
+                  <OperationalNextMoveSection candidate={operationalNextMove.candidate} />
                 </div>
               </div>
 
@@ -20158,6 +20725,8 @@ const isOwnershipGap =
               <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
                 This view brings together the founder-facing decisions, risk signals, and escalation points already represented across the operating records.
               </p>
+
+              {strategicReviewsLoaded && strategicReviewsWritableRef.current ? <StrategicReviewSection reviews={strategicReviews} onCreate={handleStartStrategicReview} onOpen={(review) => { setReviewSaveStatus("idle"); setReviewLastSavedAt(null); setReviewDraft({ ...review }); }} /> : null}
 
               {!strategicObjectivesLoaded ? null : strategicObjectivesWritableRef.current ? <StrategicPrioritiesSection
                 assessments={strategicAssessments}
@@ -23093,6 +23662,22 @@ const isOwnershipGap =
         onChange={setStrategicObjectiveEditor}
         onSave={handleSaveStrategicObjective}
         onClose={() => setStrategicObjectiveEditor(null)}
+      /> : null}
+
+      {reviewDraft ? <StrategicReviewPanel
+        review={reviewDraft}
+        objectives={strategicObjectives}
+        projects={projects}
+        liveEvidence={captureReviewEvidence()}
+        gaps={reviewDraft.status === "Draft" ? reviewGapCandidates(reviewDraft, strategicAssessments, projects, opportunityRecords, actionRecords, executableAction) : reviewDraft.strategicGaps.filter((gap) => !gap.id.startsWith("manual:"))}
+        contradictions={reviewDraft.status === "Draft" ? reviewContradictions(reviewDraft, strategicObjectives, projects, actionRecords, reviewGapCandidates(reviewDraft, strategicAssessments, projects, opportunityRecords, actionRecords, executableAction), executableAction) : reviewDraft.contradictions}
+        systemCandidate={strategicFounderAllocation.objective ? { title: strategicFounderAllocation.objective.title, reasons: strategicFounderAllocation.reasons } : null}
+        saveStatus={reviewSaveStatus}
+        lastSavedAt={reviewLastSavedAt}
+        onChange={(updated) => { setReviewDraft(updated); setReviewSaveStatus("unsaved"); }}
+        onSave={handleSaveStrategicReviewDraft}
+        onApply={handleApplyStrategicReview}
+        onClose={() => setReviewDraft(null)}
       /> : null}
 
       {selectedProblemId && problemEditor ? (
