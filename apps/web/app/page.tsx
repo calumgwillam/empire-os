@@ -6750,14 +6750,14 @@ function RelatedRecordsPanel({ upstream, downstream }: RelatedRecordsPanelProps)
   );
 }
 
-function DataIntegrityPanel({ audit, onRunAudit, onOpenRecord }: {
+function DataIntegrityPanel({ audit, integrityAuditFeedback, onRunAudit, onOpenRecord }: {
   audit: IntegrityAuditResult | null;
+  integrityAuditFeedback: "idle" | "running" | "complete";
   onRunAudit: () => void;
-  onOpenRecord: (objectType: string, id: string) => void;
+ onOpenRecord: (objectType: string, id: string) => void;
 }) {
   const statusClasses = audit?.status === "Healthy"
-    ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"
-    : audit?.status === "Integrity risk"
+    ? "border-[#b8c9ba] bg-[#eef4ee] text-[#2f5d3a]"   : audit?.status === "Integrity risk"
       ? "border-[#d4b4a7] bg-[#f8efeb] text-[#6a3328]"
       : "border-[#c9b8a3] bg-[#f5efe6] text-[#6a4a28]";
   const severityClasses: Record<IntegritySeverity, string> = {
@@ -6779,7 +6779,17 @@ function DataIntegrityPanel({ audit, onRunAudit, onOpenRecord }: {
             {audit ? `${audit.issues.length} structural issue${audit.issues.length === 1 ? "" : "s"} found. Last audit ${new Date(audit.auditedAt).toLocaleString()}.` : "The read-only audit will run after operating data finishes loading."}
           </p>
         </div>
-        <button type="button" onClick={onRunAudit} className="rounded-lg border border-[#171717] bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#171717] transition hover:bg-[#f1eee9]">Run integrity audit</button>
+        <button
+  type="button"
+  onClick={onRunAudit}
+  className="rounded-lg border border-[#171717] bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-[#171717] transition hover:bg-[#f1eee9]"
+>
+  {integrityAuditFeedback === "running"
+    ? "Running audit..."
+    : integrityAuditFeedback === "complete"
+      ? "Audit complete"
+      : "Run integrity audit"}
+</button>
       </div>
 
       {audit ? (
@@ -9098,6 +9108,7 @@ export default function Home() {
   const restoreBackupInputRef = useRef<HTMLInputElement | null>(null);
   const restoreInProgressRef = useRef(false);
   const [integrityAudit, setIntegrityAudit] = useState<IntegrityAuditResult | null>(null);
+  const [integrityAuditFeedback, setIntegrityAuditFeedback] = useState<"idle" | "running" | "complete">("idle");
   const initialIntegrityStorageRef = useRef<Record<string, string | null> | null>(null);
   const [cashPositionEditor, setCashPositionEditor] = useState<CashPositionRecord | null>(null);
   const [cashPositionValidationError, setCashPositionValidationError] = useState<string | null>(null);
@@ -19627,7 +19638,23 @@ const isOwnershipGap =
                 This view brings together the founder-facing decisions, risk signals, and escalation points already represented across the operating records.
               </p>
 
-              <DataIntegrityPanel audit={integrityAudit} onRunAudit={() => executeIntegrityAudit()} onOpenRecord={handleOpenAttentionRecord} />
+              <DataIntegrityPanel
+  audit={integrityAudit}
+  integrityAuditFeedback={integrityAuditFeedback}
+  onRunAudit={() => {
+    setIntegrityAuditFeedback("running");
+    executeIntegrityAudit();
+
+    window.setTimeout(() => {
+      setIntegrityAuditFeedback("complete");
+
+      window.setTimeout(() => {
+        setIntegrityAuditFeedback("idle");
+      }, 1500);
+    }, 150);
+  }}
+  onOpenRecord={handleOpenAttentionRecord}
+/>
 
               <div className="mt-6">
                 <FounderFocusList items={founderFocusList} totalCount={founderFocusCandidates.length} onOpen={handleOpenAttentionRecord} />
