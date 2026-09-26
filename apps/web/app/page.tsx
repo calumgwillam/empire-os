@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { createContext, FormEvent, useContext, useEffect, useRef, useState } from "react";
 
 const navigation = [
   "Empire OS",
@@ -39,6 +39,7 @@ const DEFAULT_SAVED_VIEW_STORAGE_KEY = "empire-os-records-in-motion-default-view
 const DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY = "empire-os-daily-posture-snapshots";
 const LAST_BACKUP_AT_STORAGE_KEY = "empire-os-last-backup-at";
 const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
+const CHANGE_HISTORY_STORAGE_KEY = "empire-os-change-history";
 
 const BACKUP_FORMAT = "empire-os-backup";
 const BACKUP_VERSION = 1;
@@ -63,6 +64,7 @@ const EMPIRE_OS_BACKUP_STORAGE_KEYS = [
   SAVED_VIEWS_STORAGE_KEY,
   DEFAULT_SAVED_VIEW_STORAGE_KEY,
   DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+  CHANGE_HISTORY_STORAGE_KEY,
 ] as const;
 
 type EmpireOsBackup = {
@@ -93,10 +95,64 @@ const backupSummaryStores = [
   { key: INCOME_STORAGE_KEY, label: "Income records" },
   { key: EXPENSE_STORAGE_KEY, label: "Expense records" },
   { key: TAX_PAYMENT_STORAGE_KEY, label: "Tax payments" },
+  { key: CHANGE_HISTORY_STORAGE_KEY, label: "Change history" },
 ] as const;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+type ChangeField = { field: string; before: unknown; after: unknown };
+type ChangeEvent = {
+  id: string;
+  timestamp: string;
+  recordType: string;
+  recordId: string;
+  recordTitle: string;
+  actor: string;
+  action: "Created" | "Updated" | "Status changed" | "Ownership changed" | "Deleted" | "Archived";
+  changes: ChangeField[];
+};
+
+const ChangeHistoryContext = createContext<ChangeEvent[]>([]);
+
+function isValidChangeEvent(value: unknown): value is ChangeEvent {
+  return isPlainObject(value)
+    && [value.id, value.recordType, value.recordId, value.timestamp, value.actor, value.action].every((entry) => typeof entry === "string" && entry.trim().length > 0)
+    && typeof value.recordTitle === "string"
+    && ["Created", "Updated", "Status changed", "Ownership changed", "Deleted", "Archived"].includes(value.action as string)
+    && !Number.isNaN(new Date(value.timestamp as string).getTime())
+    && Array.isArray(value.changes)
+    && value.changes.every((change: unknown) => isPlainObject(change) && typeof change.field === "string" && change.field.length > 0 && "before" in change && "after" in change);
+}
+
+function diffChangeFields(before: Record<string, unknown> | undefined, after: Record<string, unknown> | undefined): ChangeField[] {
+  const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
+  keys.delete("id");
+  return [...keys].filter((field) => JSON.stringify(before?.[field]) !== JSON.stringify(after?.[field]))
+    .map((field) => ({ field, before: before?.[field] ?? null, after: after?.[field] ?? null }));
+}
+
+function diffChangeRecords(recordType: string, previous: Record<string, unknown>[], current: Record<string, unknown>[], titleField: string): ChangeEvent[] {
+  const previousById = new Map(previous.map((record) => [String(record.id), record]));
+  const currentById = new Map(current.map((record) => [String(record.id), record]));
+  const events: ChangeEvent[] = [];
+  for (const record of [...current, ...previous.filter((entry) => !currentById.has(String(entry.id)))]) {
+    if (typeof record.id !== "string" || !record.id) continue;
+    const before = previousById.get(record.id);
+    const after = currentById.get(record.id);
+    if (before === after) continue;
+    const changes = diffChangeFields(before, after);
+    if (!changes.length && before && after) continue;
+    const action = !after ? "Deleted" : !before ? "Created"
+      : changes.some((change) => change.field === "archived" && change.after === true) ? "Archived"
+        : changes.some((change) => change.field === "owner" || change.field === "ownerPersonId") ? "Ownership changed"
+          : changes.some((change) => change.field === "status" || change.field.endsWith("Status")) ? "Status changed" : "Updated";
+    // Single-user manual-actor default, not a verified authentication identity.
+    events.push({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), recordType, recordId: record.id,
+      recordTitle: String((after || before)?.[titleField] || (after || before)?.title || record.id), actor: "Calum", action, changes });
+  }
+  return events;
 }
 
 function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
@@ -135,6 +191,7 @@ function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
     TAX_PAYMENT_STORAGE_KEY,
     SAVED_VIEWS_STORAGE_KEY,
     DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+    CHANGE_HISTORY_STORAGE_KEY,
   ];
   for (const key of arrayStorageKeys) {
     const storedValue = storage[key];
@@ -143,6 +200,15 @@ function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
       if (!Array.isArray(JSON.parse(storedValue))) throw new Error();
     } catch {
       throw new Error(`The backup contains invalid array data for ${key}.`);
+    }
+  }
+
+  if (typeof storage[CHANGE_HISTORY_STORAGE_KEY] === "string") {
+    try {
+      const events: unknown = JSON.parse(storage[CHANGE_HISTORY_STORAGE_KEY]);
+      if (!Array.isArray(events) || !events.every(isValidChangeEvent)) throw new Error();
+    } catch {
+      throw new Error("The backup contains invalid change history events.");
     }
   }
 
@@ -1402,7 +1468,7 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
   const arrayStoreKeys = new Set<string>([
     STORAGE_KEY, CONVERSION_STORAGE_KEY, PERSON_STORAGE_KEY, PROJECT_STORAGE_KEY, LEAD_STORAGE_KEY, OUTREACH_STORAGE_KEY,
     DELEGATION_HANDOFF_STORAGE_KEY, INCOME_STORAGE_KEY, EXPENSE_STORAGE_KEY, COMMITMENT_STORAGE_KEY, TAX_PAYMENT_STORAGE_KEY,
-    SAVED_VIEWS_STORAGE_KEY, DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+    SAVED_VIEWS_STORAGE_KEY, DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, CHANGE_HISTORY_STORAGE_KEY,
   ]);
   for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
     const raw = input.storage[key];
@@ -1412,6 +1478,11 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
       const parsed = JSON.parse(raw);
       const validShape = key === CASH_POSITION_STORAGE_KEY ? isPlainObject(parsed) : !arrayStoreKeys.has(key) || Array.isArray(parsed);
       if (!validShape) throw new Error();
+      if (key === CHANGE_HISTORY_STORAGE_KEY && Array.isArray(parsed)) {
+        parsed.forEach((event, index) => {
+          if (!isValidChangeEvent(event)) addIssue({ severity: "Material", category: "Change history", recordType: "Audit event", recordTitle: `Event ${index + 1}`, reason: "Audit event has missing or invalid identity, timestamp, or field changes.", nextStep: "Inspect the audit history in a safety backup before making changes to browser storage." });
+        });
+      }
     } catch {
       addIssue({ severity: "Critical", category: "Local storage", recordType: "Storage", recordTitle: key, recordId: key, reason: `Store ${key} contains malformed JSON or the wrong structural type.`, nextStep: "Download a safety backup and inspect recovery options before editing browser storage." });
     }
@@ -3401,6 +3472,7 @@ function ProjectDetailPanel({ project, people, actions, decisions, systems, sops
         />
 
         <RelatedRecordsPanel upstream={upstream} downstream={[]} />
+        <RecordChangeHistory recordType="Project" recordId={project.id} />
 
         {project.sourceCaptureId ? (
           <div className="mt-4 rounded-xl border border-[#d3cbc3] bg-white p-3 text-[12px] leading-5 text-[#4d4944]">
@@ -3694,6 +3766,7 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
             <button type="button" onClick={() => { if (onSave()) setHasSaved(true); }} disabled={hasInvalidLeadName} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45">{hasSaved ? "Saved" : "Save lead"}</button>
           </div>
         </div>
+        <RecordChangeHistory recordType="Lead" recordId={lead.id} />
       </div>
     </div>
   );
@@ -3822,6 +3895,7 @@ function OutreachDetailPanel({ contact, leads, onClose, onChange, onSave, onDele
             <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidBusinessName) { return; } if (onSave()) markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save outreach contact"}</button>
           </div>
         </div>
+        <RecordChangeHistory recordType="Outreach" recordId={contact.id} />
       </div>
     </div>
   );
@@ -3979,6 +4053,7 @@ function CashPositionPanel({ value, validationError, onClose, onChange, onSave }
           <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
           <button type="button" onClick={() => { if (onSave()) markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save cash position"}</button>
         </div>
+        <RecordChangeHistory recordType="Cash position" recordId="cash-position" />
       </div>
     </div>
   );
@@ -4064,6 +4139,7 @@ function IncomeDetailPanel({ income, canDelete, onClose, onChange, onSave, onDel
             <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save income"}</button>
           </div>
         </div>
+        <RecordChangeHistory recordType="Income" recordId={income.id} />
       </div>
     </div>
   );
@@ -4156,6 +4232,7 @@ function ExpenseDetailPanel({ expense, canDelete, onClose, onChange, onSave, onD
             <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save expense"}</button>
           </div>
         </div>
+        <RecordChangeHistory recordType="Expense" recordId={expense.id} />
       </div>
     </div>
   );
@@ -4370,6 +4447,7 @@ function CommitmentDetailPanel({ commitment, canDelete, onClose, onChange, onSav
             <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidName || hasInvalidAmount || hasInvalidDueDate) { return; } if (onSave(getCommitmentSaveSnapshot())) markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save commitment"}</button>
           </div>
         </div>
+        <RecordChangeHistory recordType="Commitment" recordId={commitment.id} />
       </div>
     </div>
   );
@@ -4683,6 +4761,7 @@ function TaxPaymentDetailPanel({ payment, canDelete, onClose, onChange, onSave, 
             <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidPayPeriod || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save payment"}</button>
           </div>
         </div>
+        <RecordChangeHistory recordType="Tax payment" recordId={payment.id} />
       </div>
     </div>
   );
@@ -6750,6 +6829,60 @@ function RelatedRecordsPanel({ upstream, downstream }: RelatedRecordsPanelProps)
   );
 }
 
+function formatChangeValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "Not set";
+  if (typeof value === "string") return value;
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (Array.isArray(value)) return value.length ? value.map(formatChangeValue).join(", ") : "None";
+  return JSON.stringify(value);
+}
+
+function ChangeEventList({ events }: { events: ChangeEvent[] }) {
+  return <div className="mt-3 max-h-80 space-y-3 overflow-y-auto">
+    {events.map((event) => <article key={event.id} className="border-t border-[#d3cbc3] pt-3 text-[11px] text-[#4d4944]">
+      <div className="flex flex-wrap items-center justify-between gap-1">
+        <span className="font-medium text-[#171717]">{event.action} · {event.recordType}: {event.recordTitle || event.recordId}</span>
+        <time dateTime={event.timestamp}>{new Date(event.timestamp).toLocaleString()}</time>
+      </div>
+      <div className="mt-1">{event.actor} · ID: {event.recordId}</div>
+      <ul className="mt-2 space-y-1">
+        {event.changes.map((change, index) => <li key={`${change.field}-${index}`} className="break-words">
+          <span className="font-medium text-[#2f2b28]">{change.field.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase())}:</span> {formatChangeValue(change.before)} → {formatChangeValue(change.after)}
+        </li>)}
+      </ul>
+    </article>)}
+  </div>;
+}
+
+function RecordChangeHistory({ recordType, recordId }: { recordType: string; recordId: string }) {
+  const events = useContext(ChangeHistoryContext).filter((event) => event.recordType === recordType && event.recordId === recordId).reverse();
+  return <details className="mt-5 border-t border-[#d3cbc3] pt-4">
+    <summary className="cursor-pointer text-[11px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Change history ({events.length})</summary>
+    {events.length ? <ChangeEventList events={events} /> : <p className="mt-3 text-[12px] text-[#6a625d]">No changes recorded since change history was enabled.</p>}
+  </details>;
+}
+
+function OrganisationChangeHistory() {
+  const events = useContext(ChangeHistoryContext);
+  const [recordType, setRecordType] = useState("All types");
+  const types = [...new Set(events.map((event) => event.recordType))].sort();
+  const filtered = events.filter((event) => recordType === "All types" || event.recordType === recordType).slice().reverse().slice(0, 100);
+  return <section className="mt-6 border-t border-[#d3cbc3] pt-5">
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 className="text-[18px] font-semibold text-[#171717]">Change History</h2>
+        <p className="mt-1 text-[12px] text-[#4d4944]">Historical evidence of recorded changes since audit tracking began, not an action queue.</p>
+      </div>
+      <select aria-label="Filter history by record type" value={recordType} onChange={(event) => setRecordType(event.target.value)} className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px]">
+        <option>All types</option>
+        {types.map((type) => <option key={type}>{type}</option>)}
+      </select>
+    </div>
+    {filtered.length ? <ChangeEventList events={filtered} /> : <p className="mt-4 text-[12px] text-[#6a625d]">No history for this selection.</p>}
+    {events.length > 100 ? <p className="mt-2 text-[11px] text-[#6a625d]">Showing the 100 most recent matching events. The full history remains in backups.</p> : null}
+  </section>;
+}
+
 function DataIntegrityPanel({ audit, integrityAuditFeedback, onRunAudit, onOpenRecord }: {
   audit: IntegrityAuditResult | null;
   integrityAuditFeedback: "idle" | "running" | "complete";
@@ -7150,6 +7283,7 @@ function ProblemDetailPanel({ problem, people, linkedActions, linkedLessons, ups
         </div>
 
         <RelatedRecordsPanel upstream={upstream} downstream={downstream} />
+        <RecordChangeHistory recordType="Problem" recordId={problem.id} />
       </div>
     </div>
   );
@@ -7488,6 +7622,7 @@ function ActionDetailPanel({ action, people, problems, decisions, upstream, down
         </div>
 
         <RelatedRecordsPanel upstream={upstream} downstream={downstream} />
+        <RecordChangeHistory recordType="Action" recordId={action.id} />
       </div>
     </div>
   );
@@ -7901,6 +8036,7 @@ function OpportunityDetailPanel({ opportunity, linkedDecisions, upstream, downst
         </div>
 
         <RelatedRecordsPanel upstream={upstream} downstream={downstream} />
+        <RecordChangeHistory recordType="Opportunity" recordId={opportunity.id} />
       </div>
     </div>
   );
@@ -8162,6 +8298,7 @@ function LessonDetailPanel({ lesson, linkedSystems, upstream, downstream, onClos
         </div>
 
         <RelatedRecordsPanel upstream={upstream} downstream={downstream} />
+        <RecordChangeHistory recordType="Lesson" recordId={lesson.id} />
       </div>
     </div>
   );
@@ -8422,6 +8559,7 @@ function SystemDetailPanel({ system, linkedSops, upstream, downstream, onClose, 
         </div>
 
         <RelatedRecordsPanel upstream={upstream} downstream={downstream} />
+        <RecordChangeHistory recordType="System" recordId={system.id} />
       </div>
     </div>
   );
@@ -8662,6 +8800,7 @@ function SopDetailPanel({ sop, upstream, downstream, onClose, onChange, onSave, 
         </div>
 
         <RelatedRecordsPanel upstream={upstream} downstream={downstream} />
+        <RecordChangeHistory recordType="SOP" recordId={sop.id} />
       </div>
     </div>
   );
@@ -9047,6 +9186,7 @@ function DecisionDetailPanel({ decision, executionState, linkedActions, linkedLe
         </div>
 
         <RelatedRecordsPanel upstream={upstream} downstream={downstream} />
+        <RecordChangeHistory recordType="Decision" recordId={decision.id} />
       </div>
     </div>
   );
@@ -9102,6 +9242,11 @@ export default function Home() {
   const [taxPaymentRecords, setTaxPaymentRecords] = useState<TaxPaymentRecord[]>([]);
   const [dailyPostureSnapshots, setDailyPostureSnapshots] = useState<DailyPostureSnapshot[]>([]);
   const [operatingDataLoaded, setOperatingDataLoaded] = useState(false);
+  const [changeHistory, setChangeHistory] = useState<ChangeEvent[]>([]);
+  const [changeHistoryLoaded, setChangeHistoryLoaded] = useState(false);
+  const changeHistoryWritableRef = useRef(false);
+  const auditBaselineRef = useRef<Record<string, Record<string, unknown>[]> | null>(null);
+  const auditRestoreInProgressRef = useRef(false);
   const [lastBackupAt, setLastBackupAt] = useState("");
   const [restoreBackupPreview, setRestoreBackupPreview] = useState<RestoreBackupPreview | null>(null);
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
@@ -9143,6 +9288,20 @@ export default function Home() {
     const timeoutId = window.setTimeout(() => setFeedback(null), 1800);
     return () => window.clearTimeout(timeoutId);
   }, [feedback]);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(CHANGE_HISTORY_STORAGE_KEY);
+      const parsed: unknown = stored === null ? [] : JSON.parse(stored);
+      if (!Array.isArray(parsed) || !parsed.every(isValidChangeEvent)) throw new Error();
+      setChangeHistory(parsed);
+      changeHistoryWritableRef.current = true;
+    } catch {
+      setFeedback({ type: "error", message: "Change history could not be loaded. Existing history has been left untouched; inspect storage through a safety backup." });
+    } finally {
+      setChangeHistoryLoaded(true);
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -9785,6 +9944,58 @@ export default function Home() {
   const lessonRecords = getConvertedRecordsByType("Convert to Lesson").map(normalizeLessonRecord);
   const systemRecords = getConvertedRecordsByType("Convert to System").map(normalizeSystemRecord);
   const sopRecords = getConvertedRecordsByType("Convert to SOP").map(normalizeSopRecord);
+
+  useEffect(() => {
+    if (!operatingDataLoaded || !changeHistoryLoaded) return;
+    const records = (entries: object[]): Record<string, unknown>[] => entries as Record<string, unknown>[];
+    const snapshot: Record<string, Record<string, unknown>[]> = {
+      Capture: records(captures),
+      Action: records(conversions.filter((entry) => entry.targetType === "Convert to Action")),
+      Project: records(projects),
+      Problem: records(conversions.filter((entry) => entry.targetType === "Convert to Problem")),
+      Opportunity: records(conversions.filter((entry) => entry.targetType === "Convert to Opportunity")),
+      Decision: records(conversions.filter((entry) => entry.targetType === "Convert to Decision")),
+      Lesson: records(conversions.filter((entry) => entry.targetType === "Convert to Lesson")),
+      System: records(conversions.filter((entry) => entry.targetType === "Convert to System")),
+      SOP: records(conversions.filter((entry) => entry.targetType === "Convert to SOP")),
+      Person: records(people),
+      Lead: records(leads),
+      Outreach: records(outreachContacts),
+      "Cash position": [{ ...cashPosition, id: "cash-position" }],
+      Income: records(incomeRecords),
+      Expense: records(expenseRecords),
+      Commitment: records(commitmentRecords),
+      "Tax payment": records(taxPaymentRecords),
+    };
+    const previous = auditBaselineRef.current;
+    if (!previous || auditRestoreInProgressRef.current) {
+      auditBaselineRef.current = snapshot;
+      return;
+    }
+    if (!changeHistoryWritableRef.current) return;
+    const titles: Record<string, string> = {
+      Capture: "title", Action: "actionTitle", Project: "projectName", Problem: "problemStatement",
+      Opportunity: "opportunityTitle", Decision: "decisionTitle", Lesson: "lessonTitle", System: "systemName",
+      SOP: "sopTitle", Person: "name", Lead: "leadName", Outreach: "businessName", "Cash position": "id",
+      Income: "description", Expense: "description", Commitment: "commitmentName", "Tax payment": "description",
+    };
+    const events = Object.entries(snapshot).flatMap(([type, current]) =>
+      diffChangeRecords(type, previous[type] || [], current, titles[type]));
+    if (events.length) {
+      try {
+        const stored = window.localStorage.getItem(CHANGE_HISTORY_STORAGE_KEY);
+        const existing: unknown = stored === null ? [] : JSON.parse(stored);
+        if (!Array.isArray(existing) || !existing.every(isValidChangeEvent)) throw new Error("Stored history is invalid.");
+        const next = [...existing, ...events];
+        window.localStorage.setItem(CHANGE_HISTORY_STORAGE_KEY, JSON.stringify(next));
+        setChangeHistory(next);
+      } catch {
+        setFeedback({ type: "error", message: "Change history could not be saved. Download a safety backup and check available browser storage." });
+        return;
+      }
+    }
+    auditBaselineRef.current = snapshot;
+  }, [operatingDataLoaded, changeHistoryLoaded, captures, conversions, projects, people, leads, outreachContacts, cashPosition, incomeRecords, expenseRecords, commitmentRecords, taxPaymentRecords]);
 
   const executeIntegrityAudit = (storageOverride?: Record<string, string | null>) => {
     const storage = storageOverride || Object.fromEntries(
@@ -18821,6 +19032,7 @@ const isOwnershipGap =
       for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) previousStorage[key] = window.localStorage.getItem(key);
       downloadBackup(createFullBackup(), "empire-os-pre-restore-safety-backup");
 
+      auditRestoreInProgressRef.current = true;
       restoreWritesStarted = true;
       for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
         const value = Object.prototype.hasOwnProperty.call(backup.storage, key) ? backup.storage[key] : null;
@@ -18856,6 +19068,7 @@ const isOwnershipGap =
       });
       setIsRestoringBackup(false);
       restoreInProgressRef.current = false;
+      auditRestoreInProgressRef.current = false;
     }
   }
 
@@ -19004,6 +19217,7 @@ const isOwnershipGap =
 
       downloadBackup(createFullBackup(), "empire-os-pre-emergency-restore-safety-backup");
 
+      auditRestoreInProgressRef.current = true;
       for (const key of storageKeys) {
         const value = storage[key];
 
@@ -19016,6 +19230,7 @@ const isOwnershipGap =
 
       window.location.reload();
     } catch (error) {
+      auditRestoreInProgressRef.current = false;
       setFeedback({
         type: "error",
         message:
@@ -19044,6 +19259,7 @@ const isOwnershipGap =
   );
 
   return (
+    <ChangeHistoryContext.Provider value={changeHistory}>
     <div className="min-h-screen bg-[#f1efe9] text-[#171717]">
       {feedback ? (
         <div
@@ -19655,6 +19871,8 @@ const isOwnershipGap =
   }}
   onOpenRecord={handleOpenAttentionRecord}
 />
+
+              <OrganisationChangeHistory />
 
               <div className="mt-6">
                 <FounderFocusList items={founderFocusList} totalCount={founderFocusCandidates.length} onOpen={handleOpenAttentionRecord} />
@@ -22549,6 +22767,7 @@ const isOwnershipGap =
                 Confirm review
               </button>
             </div>
+            <RecordChangeHistory recordType="Capture" recordId={selectedCaptureId} />
           </div>
         </div>
       ) : null}
@@ -23200,10 +23419,12 @@ const isOwnershipGap =
                 {personSaveState === "saved" ? "Saved" : "Save person"}
               </button>
             </div>
+            <RecordChangeHistory recordType="Person" recordId={personEditor.id} />
           </div>
         </div>
       ) : null}
     </div>
+    </ChangeHistoryContext.Provider>
   );
 }
 
