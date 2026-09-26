@@ -40,6 +40,57 @@ const DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY = "empire-os-daily-posture-snapshots";
 const LAST_BACKUP_AT_STORAGE_KEY = "empire-os-last-backup-at";
 const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
 const CHANGE_HISTORY_STORAGE_KEY = "empire-os-change-history";
+const STRATEGIC_OBJECTIVES_STORAGE_KEY = "empire-os-strategic-objectives";
+
+const strategicPillars = ["Operating Business", "Control & Orchestration", "Organisation & Leadership", "Capital & Resilience", "Expansion & Optionality"] as const;
+const strategicHorizons = ["Now", "Next", "Later"] as const;
+const strategicImportances = ["Critical", "High", "Medium"] as const;
+const strategicStatuses = ["Active", "Watching", "Achieved", "Paused"] as const;
+const founderAllocations = ["Founder attention now", "Advance through organisation", "Monitor", "Parked"] as const;
+
+type StrategicObjective = {
+  id: string;
+  title: string;
+  pillar: (typeof strategicPillars)[number];
+  horizon: (typeof strategicHorizons)[number];
+  importance: (typeof strategicImportances)[number];
+  status: (typeof strategicStatuses)[number];
+  founderAllocation: (typeof founderAllocations)[number];
+  owner: string;
+  whyItMatters: string;
+  successCondition: string;
+  linkedProjectIds: string[];
+  linkedOpportunityIds: string[];
+  linkedDecisionIds: string[];
+  createdAt: string;
+  overrides: Array<{ id: string; chosenAlternative: string; rationale: string; timestamp: string; actor: string }>;
+};
+
+type StrategicAssessment = {
+  objective: StrategicObjective;
+  linkedProjects: ProjectRecord[];
+  linkedOpportunities: OpportunityRecord[];
+  linkedDecisions: DecisionRecord[];
+  gaps: string[];
+  hasExecutablePath: boolean;
+};
+
+const initialStrategicObjectives: Array<Pick<StrategicObjective, "title" | "pillar" | "horizon" | "importance" | "founderAllocation">> = [
+  { title: "Validate FG Exterior Care as a reliable cash-generating operating business", pillar: "Operating Business", horizon: "Now", importance: "High", founderAllocation: "Advance through organisation" },
+  { title: "Build reliable strategic prioritisation and founder allocation", pillar: "Control & Orchestration", horizon: "Now", importance: "Critical", founderAllocation: "Founder attention now" },
+  { title: "Reduce routine founder dependency through systems, people and delegation", pillar: "Organisation & Leadership", horizon: "Next", importance: "High", founderAllocation: "Advance through organisation" },
+  { title: "Protect capital and financial resilience", pillar: "Capital & Resilience", horizon: "Now", importance: "High", founderAllocation: "Monitor" },
+  { title: "Build future optionality across new services, partnerships, geographies and ventures", pillar: "Expansion & Optionality", horizon: "Later", importance: "Medium", founderAllocation: "Parked" },
+];
+
+function isStrategicObjectiveRecord(value: unknown): value is StrategicObjective {
+  if (!isPlainObject(value)) return false;
+  return ["id", "title", "pillar", "horizon", "importance", "status", "founderAllocation", "owner", "whyItMatters", "successCondition", "createdAt"]
+    .every((field) => typeof value[field] === "string")
+    && ["linkedProjectIds", "linkedOpportunityIds", "linkedDecisionIds"].every((field) => Array.isArray(value[field]) && (value[field] as unknown[]).every((id) => typeof id === "string"))
+    && Array.isArray(value.overrides)
+    && value.overrides.every((entry: unknown) => isPlainObject(entry) && ["id", "chosenAlternative", "rationale", "timestamp", "actor"].every((field) => typeof entry[field] === "string"));
+}
 
 const BACKUP_FORMAT = "empire-os-backup";
 const BACKUP_VERSION = 1;
@@ -65,6 +116,7 @@ const EMPIRE_OS_BACKUP_STORAGE_KEYS = [
   DEFAULT_SAVED_VIEW_STORAGE_KEY,
   DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
   CHANGE_HISTORY_STORAGE_KEY,
+  STRATEGIC_OBJECTIVES_STORAGE_KEY,
 ] as const;
 
 type EmpireOsBackup = {
@@ -96,6 +148,7 @@ const backupSummaryStores = [
   { key: EXPENSE_STORAGE_KEY, label: "Expense records" },
   { key: TAX_PAYMENT_STORAGE_KEY, label: "Tax payments" },
   { key: CHANGE_HISTORY_STORAGE_KEY, label: "Change history" },
+  { key: STRATEGIC_OBJECTIVES_STORAGE_KEY, label: "Strategic objectives" },
 ] as const;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -192,6 +245,7 @@ function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
     SAVED_VIEWS_STORAGE_KEY,
     DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
     CHANGE_HISTORY_STORAGE_KEY,
+    STRATEGIC_OBJECTIVES_STORAGE_KEY,
   ];
   for (const key of arrayStorageKeys) {
     const storedValue = storage[key];
@@ -1124,6 +1178,7 @@ type IntegrityAuditInput = {
   commitments: CommitmentRecord[];
   outreach: OutreachRecord[];
   handoffs: DelegationHandoffRecord[];
+  strategicObjectives: StrategicObjective[];
   storage: Record<string, string | null>;
 };
 
@@ -1147,6 +1202,18 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
   const personIds = idSet(input.people);
   const leadIds = idSet(input.leads);
   const activePeopleByName = new Map(input.people.filter((person) => person.status === "Active").map((person) => [person.name.trim().toLowerCase(), person]));
+
+  const objectiveIds = new Set<string>();
+  for (const objective of input.strategicObjectives) {
+    const addObjectiveIssue = (reason: string) => addIssue({ severity: "Material", category: "Strategic objectives", recordType: "Strategic Objective", recordId: objective.id, recordTitle: objective.title || "Untitled objective", reason, nextStep: "Review the objective and correct its stored fields or links." });
+    if (!objective.id.trim() || objectiveIds.has(objective.id)) addObjectiveIssue("Objective ID is missing or duplicated.");
+    objectiveIds.add(objective.id);
+    if (!objective.title.trim() || !strategicPillars.includes(objective.pillar)) addObjectiveIssue("Title or strategic pillar is missing or unsupported.");
+    if (!strategicHorizons.includes(objective.horizon) || !strategicImportances.includes(objective.importance) || !strategicStatuses.includes(objective.status) || !founderAllocations.includes(objective.founderAllocation)) addObjectiveIssue("An objective state, horizon, importance, or allocation value is unsupported.");
+    for (const [ids, existing, label] of [[objective.linkedProjectIds, projectIds, "Project"], [objective.linkedOpportunityIds, opportunityIds, "Opportunity"], [objective.linkedDecisionIds, decisionIds, "Decision"]] as const) {
+      if (ids.some((id) => !existing.has(id))) addObjectiveIssue(`A linked ${label} ID does not exist in the operating records.`);
+    }
+  }
 
   type MissingCaptureLineageRoot = {
     records: Map<string, { recordType: string; recordTitle: string; recordId: string }>;
@@ -1468,7 +1535,7 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
   const arrayStoreKeys = new Set<string>([
     STORAGE_KEY, CONVERSION_STORAGE_KEY, PERSON_STORAGE_KEY, PROJECT_STORAGE_KEY, LEAD_STORAGE_KEY, OUTREACH_STORAGE_KEY,
     DELEGATION_HANDOFF_STORAGE_KEY, INCOME_STORAGE_KEY, EXPENSE_STORAGE_KEY, COMMITMENT_STORAGE_KEY, TAX_PAYMENT_STORAGE_KEY,
-    SAVED_VIEWS_STORAGE_KEY, DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, CHANGE_HISTORY_STORAGE_KEY,
+    SAVED_VIEWS_STORAGE_KEY, DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, CHANGE_HISTORY_STORAGE_KEY, STRATEGIC_OBJECTIVES_STORAGE_KEY,
   ]);
   for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
     const raw = input.storage[key];
@@ -1483,6 +1550,7 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
           if (!isValidChangeEvent(event)) addIssue({ severity: "Material", category: "Change history", recordType: "Audit event", recordTitle: `Event ${index + 1}`, reason: "Audit event has missing or invalid identity, timestamp, or field changes.", nextStep: "Inspect the audit history in a safety backup before making changes to browser storage." });
         });
       }
+      if (key === STRATEGIC_OBJECTIVES_STORAGE_KEY && Array.isArray(parsed) && parsed.some((entry) => !isStrategicObjectiveRecord(entry))) throw new Error();
     } catch {
       addIssue({ severity: "Critical", category: "Local storage", recordType: "Storage", recordTitle: key, recordId: key, reason: `Store ${key} contains malformed JSON or the wrong structural type.`, nextStep: "Download a safety backup and inspect recovery options before editing browser storage." });
     }
@@ -5077,7 +5145,7 @@ type CapacityRankedDelegationPerson = PersonRecord & {
   attentionCount: number;
 };
 
-type StrategicNextMoveCandidate = {
+type OperationalNextMoveCandidate = {
   objectType: "Action" | "Project" | "Opportunity" | "Outreach";
   id: string;
   title: string;
@@ -5087,11 +5155,11 @@ type StrategicNextMoveCandidate = {
 };
 
 // Deliberately calm/neutral styling (not attention red/amber) — nothing is wrong here, this is a recommendation.
-function StrategicNextMoveSection({ candidate }: { candidate: StrategicNextMoveCandidate | null }) {
+function OperationalNextMoveSection({ candidate }: { candidate: OperationalNextMoveCandidate | null }) {
   return (
     <div className="rounded-2xl border border-[#b8c9ba] bg-[#f4f8f4] p-4">
       <div className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-[#3f6a49]">
-        Strategic Next Move
+        Operational Next Move
       </div>
 
       {candidate ? (
@@ -5114,11 +5182,45 @@ function StrategicNextMoveSection({ candidate }: { candidate: StrategicNextMoveC
         </button>
       ) : (
         <div className="rounded-xl border border-dashed border-[#cfe0d1] bg-white px-3 py-4 text-[13px] text-[#4d4944]">
-          No strategic executable move is currently ranked from existing records.
+          No executable operational move is currently ranked from existing records.
         </div>
       )}
     </div>
   );
+}
+
+function StrategicFounderAllocationSection({ objective, reasons, divergence, onOpen, onOverride }: {
+  objective: StrategicObjective | null;
+  reasons: string[];
+  divergence: string | null;
+  onOpen: () => void;
+  onOverride: (alternative: string, rationale: string) => void;
+}) {
+  const [editingOverride, setEditingOverride] = useState(false);
+  const [alternative, setAlternative] = useState("");
+  const [rationale, setRationale] = useState("");
+  const latestOverride = objective?.overrides?.at(-1);
+  return <section className="border-t border-[#d3cbc3] pt-4">
+    <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Strategic Founder Allocation</div>
+    {objective ? <>
+      <button type="button" onClick={onOpen} className="mt-3 block w-full border-l-2 border-[#315b45] bg-[#f7f7f3] px-3 py-3 text-left hover:bg-[#eef4ee]">
+        <span className="text-[10px] uppercase text-[#315b45]">{objective.pillar} · {objective.horizon} · {objective.importance}</span>
+        <div className="mt-1 text-[16px] font-medium text-[#171717]">{objective.title}</div>
+        <div className="mt-1 text-[12px] leading-5 text-[#4d4944]">{reasons.join("; ")}.</div>
+      </button>
+      {divergence ? <p className="mt-3 text-[12px] leading-5 text-[#4d4944]"><span className="font-medium text-[#171717]">Why they differ:</span> {divergence}</p> : null}
+      {latestOverride ? <div className="mt-3 border-l-2 border-[#6a4a28] pl-3 text-[12px] text-[#4d4944]">
+        <div className="font-medium text-[#171717]">Founder override: {latestOverride.chosenAlternative}</div>
+        <div>{latestOverride.rationale}</div>
+        <div className="mt-1 text-[10px]">{latestOverride.actor} · {new Date(latestOverride.timestamp).toLocaleString()} · {objective.overrides.length} recorded</div>
+      </div> : null}
+      {editingOverride ? <form className="mt-3 space-y-2" onSubmit={(event) => { event.preventDefault(); if (!alternative.trim() || !rationale.trim()) return; onOverride(alternative.trim(), rationale.trim()); setEditingOverride(false); setAlternative(""); setRationale(""); }}>
+        <input aria-label="Chosen alternative" placeholder="Chosen alternative" value={alternative} onChange={(event) => setAlternative(event.target.value)} required className="w-full rounded border border-[#beb3aa] bg-white px-3 py-2 text-[12px]" />
+        <textarea aria-label="Override rationale" placeholder="Rationale" value={rationale} onChange={(event) => setRationale(event.target.value)} required rows={2} className="w-full rounded border border-[#beb3aa] bg-white px-3 py-2 text-[12px]" />
+        <div className="flex gap-2"><button type="submit" className="rounded bg-[#171717] px-3 py-2 text-[11px] text-white">Record override</button><button type="button" onClick={() => setEditingOverride(false)} className="text-[11px] text-[#4d4944]">Cancel</button></div>
+      </form> : <button type="button" onClick={() => setEditingOverride(true)} className="mt-3 text-[11px] font-medium text-[#315b45] underline">Use founder judgement instead</button>}
+    </> : <p className="mt-3 text-[12px] text-[#4d4944]">No active Now or Next objective is allocated to founder attention. Set one in Empire to guide this recommendation.</p>}
+  </section>;
 }
 
 type OperatingBriefItem = {
@@ -6881,6 +6983,81 @@ function OrganisationChangeHistory() {
     {filtered.length ? <ChangeEventList events={filtered} /> : <p className="mt-4 text-[12px] text-[#6a625d]">No history for this selection.</p>}
     {events.length > 100 ? <p className="mt-2 text-[11px] text-[#6a625d]">Showing the 100 most recent matching events. The full history remains in backups.</p> : null}
   </section>;
+}
+
+function StrategicPrioritiesSection({ assessments, unlinkedProjects, onCreate, onEdit, onOpenRecord }: {
+  assessments: StrategicAssessment[];
+  unlinkedProjects: ProjectRecord[];
+  onCreate: () => void;
+  onEdit: (objective: StrategicObjective) => void;
+  onOpenRecord: (type: "Project" | "Opportunity" | "Decision", id: string) => void;
+}) {
+  return <section className="mt-6 border-t border-[#d3cbc3] pt-5">
+    <div className="flex items-center justify-between gap-3">
+      <h2 className="text-[19px] font-semibold text-[#171717]">Strategic Priorities</h2>
+      <button type="button" onClick={onCreate} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium text-white">New objective</button>
+    </div>
+    {strategicPillars.map((pillar) => <div key={pillar} className="mt-5 border-t border-[#d3cbc3] pt-3">
+      <h3 className="text-[13px] font-semibold text-[#2f2b28]">{pillar}</h3>
+      <div className="mt-2 divide-y divide-[#e2dcd5]">
+        {assessments.filter(({ objective }) => objective.pillar === pillar).map(({ objective, linkedProjects, linkedOpportunities, linkedDecisions, gaps }) => <div key={objective.id} className="py-3">
+          <button type="button" onClick={() => onEdit(objective)} className="text-left text-[14px] font-medium text-[#171717] underline-offset-2 hover:underline">{objective.title}</button>
+          <div className="mt-1 text-[11px] text-[#4d4944]">{objective.horizon} · {objective.importance} · {objective.status} · {objective.founderAllocation}{objective.owner ? ` · ${objective.owner}` : ""}</div>
+          {(linkedProjects.length + linkedOpportunities.length + linkedDecisions.length > 0) ? <div className="mt-2 flex flex-wrap gap-2">
+            {([...linkedProjects.map((record) => ({ type: "Project" as const, id: record.id, title: record.projectName })), ...linkedOpportunities.map((record) => ({ type: "Opportunity" as const, id: record.id, title: record.opportunityTitle })), ...linkedDecisions.map((record) => ({ type: "Decision" as const, id: record.id, title: record.decisionTitle }))]).map((link) => <button key={`${link.type}-${link.id}`} type="button" onClick={() => onOpenRecord(link.type, link.id)} className="border-b border-[#b7b1a8] text-[11px] text-[#315b45] hover:border-[#315b45]">{link.type}: {link.title}</button>)}
+          </div> : null}
+          {gaps.map((gap) => <p key={gap} className="mt-1 text-[11px] text-[#855d27]">{gap}</p>)}
+        </div>)}
+        {!assessments.some(({ objective }) => objective.pillar === pillar) ? <p className="py-3 text-[12px] text-[#6a625d]">No objectives yet.</p> : null}
+      </div>
+    </div>)}
+    {unlinkedProjects.length ? <div className="mt-5 border-t border-[#d3cbc3] pt-3">
+      <h3 className="text-[12px] font-medium text-[#855d27]">Active Projects without a Strategic Objective ({unlinkedProjects.length})</h3>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">{unlinkedProjects.map((project) => <button key={project.id} type="button" onClick={() => onOpenRecord("Project", project.id)} className="text-[11px] text-[#315b45] underline">{project.projectName}</button>)}</div>
+    </div> : null}
+  </section>;
+}
+
+function StrategicObjectiveEditor({ draft, projects, opportunities, decisions, onChange, onSave, onClose }: {
+  draft: StrategicObjective;
+  projects: ProjectRecord[];
+  opportunities: OpportunityRecord[];
+  decisions: DecisionRecord[];
+  onChange: (draft: StrategicObjective) => void;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const fieldClass = "w-full rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[13px] text-[#171717] outline-none focus:border-[#171717]";
+  const linkGroups = [
+    { label: "Projects", field: "linkedProjectIds" as const, options: projects.map((record) => ({ id: record.id, title: record.projectName })) },
+    { label: "Opportunities", field: "linkedOpportunityIds" as const, options: opportunities.map((record) => ({ id: record.id, title: record.opportunityTitle })) },
+    { label: "Decisions", field: "linkedDecisionIds" as const, options: decisions.map((record) => ({ id: record.id, title: record.decisionTitle })) },
+  ];
+  return <div className="fixed inset-0 z-30 flex items-center justify-center bg-[#171717]/30 px-4">
+    <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-lg">
+      <div className="flex items-start justify-between gap-3 border-b border-[#d3cbc3] pb-3"><h2 className="text-[18px] font-semibold">Strategic Objective</h2><button type="button" onClick={onClose} className="text-[12px] text-[#4d4944]">Close</button></div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <label className="sm:col-span-2 text-[11px] font-medium text-[#4d4944]">Objective title<input autoFocus value={draft.title} onChange={(event) => onChange({ ...draft, title: event.target.value })} className={`mt-1 ${fieldClass}`} /></label>
+        <label className="text-[11px] font-medium text-[#4d4944]">Strategic pillar<select value={draft.pillar} onChange={(event) => onChange({ ...draft, pillar: event.target.value as StrategicObjective["pillar"] })} className={`mt-1 ${fieldClass}`}>{strategicPillars.map((value) => <option key={value}>{value}</option>)}</select></label>
+        <label className="text-[11px] font-medium text-[#4d4944]">Owner<input value={draft.owner} onChange={(event) => onChange({ ...draft, owner: event.target.value })} className={`mt-1 ${fieldClass}`} /></label>
+        {([
+          { label: "Horizon", field: "horizon" as const, options: strategicHorizons },
+          { label: "Importance", field: "importance" as const, options: strategicImportances },
+          { label: "Status", field: "status" as const, options: strategicStatuses },
+          { label: "Founder allocation", field: "founderAllocation" as const, options: founderAllocations },
+        ]).map((group) => <label key={group.field} className="text-[11px] font-medium text-[#4d4944]">{group.label}<select value={draft[group.field]} onChange={(event) => onChange({ ...draft, [group.field]: event.target.value })} className={`mt-1 ${fieldClass}`}>{group.options.map((value) => <option key={value}>{value}</option>)}</select></label>)}
+        <label className="sm:col-span-2 text-[11px] font-medium text-[#4d4944]">Why it matters<textarea rows={2} value={draft.whyItMatters} onChange={(event) => onChange({ ...draft, whyItMatters: event.target.value })} className={`mt-1 ${fieldClass}`} /></label>
+        <label className="sm:col-span-2 text-[11px] font-medium text-[#4d4944]">Success condition<textarea rows={2} value={draft.successCondition} onChange={(event) => onChange({ ...draft, successCondition: event.target.value })} className={`mt-1 ${fieldClass}`} /></label>
+      </div>
+      <div className="mt-4 border-t border-[#d3cbc3] pt-4 text-[12px] font-medium">Linked execution</div>
+      <div className="mt-2 grid gap-3 sm:grid-cols-3">{linkGroups.map((group) => <div key={group.field}>
+        <label className="text-[11px] text-[#4d4944]">{group.label}<select value="" onChange={(event) => { if (event.target.value) onChange({ ...draft, [group.field]: [...draft[group.field], event.target.value] }); }} className={`mt-1 ${fieldClass}`}><option value="">Add {group.label.toLowerCase().slice(0, -1)}</option>{group.options.filter((option) => !draft[group.field].includes(option.id)).map((option) => <option key={option.id} value={option.id}>{option.title}</option>)}</select></label>
+        <div className="mt-2 space-y-1">{draft[group.field].map((id) => <div key={id} className="flex items-center justify-between gap-2 text-[11px]"><span className="min-w-0 truncate" title={id}>{group.options.find((option) => option.id === id)?.title || id}</span><button type="button" aria-label={`Remove ${group.label} link`} onClick={() => onChange({ ...draft, [group.field]: draft[group.field].filter((item) => item !== id) })} className="shrink-0 text-[#6a3328]">Remove</button></div>)}</div>
+      </div>)}</div>
+      <div className="mt-5 flex justify-end gap-2"><button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] px-3 py-2 text-[11px]">Cancel</button><button type="button" onClick={onSave} disabled={!draft.title.trim()} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] text-white disabled:opacity-45">Save objective</button></div>
+      <RecordChangeHistory recordType="Strategic Objective" recordId={draft.id} />
+    </div>
+  </div>;
 }
 
 function DataIntegrityPanel({ audit, integrityAuditFeedback, onRunAudit, onOpenRecord }: {
@@ -9243,6 +9420,10 @@ export default function Home() {
   const [dailyPostureSnapshots, setDailyPostureSnapshots] = useState<DailyPostureSnapshot[]>([]);
   const [operatingDataLoaded, setOperatingDataLoaded] = useState(false);
   const [changeHistory, setChangeHistory] = useState<ChangeEvent[]>([]);
+  const [strategicObjectives, setStrategicObjectives] = useState<StrategicObjective[]>([]);
+  const [strategicObjectiveEditor, setStrategicObjectiveEditor] = useState<StrategicObjective | null>(null);
+  const [strategicObjectivesLoaded, setStrategicObjectivesLoaded] = useState(false);
+  const strategicObjectivesWritableRef = useRef(false);
   const [changeHistoryLoaded, setChangeHistoryLoaded] = useState(false);
   const changeHistoryWritableRef = useRef(false);
   const auditBaselineRef = useRef<Record<string, Record<string, unknown>[]> | null>(null);
@@ -9300,6 +9481,23 @@ export default function Home() {
       setFeedback({ type: "error", message: "Change history could not be loaded. Existing history has been left untouched; inspect storage through a safety backup." });
     } finally {
       setChangeHistoryLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(STRATEGIC_OBJECTIVES_STORAGE_KEY);
+      const parsed: unknown = stored === null ? null : JSON.parse(stored);
+      if (stored !== null && (!Array.isArray(parsed) || !parsed.every(isStrategicObjectiveRecord))) throw new Error();
+      setStrategicObjectives(Array.isArray(parsed) ? parsed : initialStrategicObjectives.map((seed) => ({
+        ...seed, id: generateCaptureId(), status: "Active", owner: "", whyItMatters: "", successCondition: "",
+        linkedProjectIds: [], linkedOpportunityIds: [], linkedDecisionIds: [], createdAt: new Date().toISOString(), overrides: [],
+      })));
+      strategicObjectivesWritableRef.current = true;
+    } catch {
+      setFeedback({ type: "error", message: "Strategic objectives could not be loaded. Existing storage was left untouched; inspect it through a safety backup." });
+    } finally {
+      setStrategicObjectivesLoaded(true);
     }
   }, []);
 
@@ -9787,6 +9985,15 @@ export default function Home() {
     }
   }, [outreachContacts, operatingDataLoaded]);
 
+  useEffect(() => {
+    if (!operatingDataLoaded || !strategicObjectivesLoaded || !strategicObjectivesWritableRef.current || auditRestoreInProgressRef.current) return;
+    try {
+      window.localStorage.setItem(STRATEGIC_OBJECTIVES_STORAGE_KEY, JSON.stringify(strategicObjectives));
+    } catch {
+      setFeedback({ type: "error", message: "Strategic objectives could not be saved. Check browser storage before continuing." });
+    }
+  }, [strategicObjectives, strategicObjectivesLoaded, operatingDataLoaded]);
+
   const orderedCaptures = [...captures].sort(
     (first, second) =>
       new Date(second.capturedAt).getTime() - new Date(first.capturedAt).getTime(),
@@ -9946,7 +10153,7 @@ export default function Home() {
   const sopRecords = getConvertedRecordsByType("Convert to SOP").map(normalizeSopRecord);
 
   useEffect(() => {
-    if (!operatingDataLoaded || !changeHistoryLoaded) return;
+    if (!operatingDataLoaded || !changeHistoryLoaded || !strategicObjectivesLoaded) return;
     const records = (entries: object[]): Record<string, unknown>[] => entries as Record<string, unknown>[];
     const snapshot: Record<string, Record<string, unknown>[]> = {
       Capture: records(captures),
@@ -9966,6 +10173,7 @@ export default function Home() {
       Expense: records(expenseRecords),
       Commitment: records(commitmentRecords),
       "Tax payment": records(taxPaymentRecords),
+      "Strategic Objective": records(strategicObjectives),
     };
     const previous = auditBaselineRef.current;
     if (!previous || auditRestoreInProgressRef.current) {
@@ -9978,6 +10186,7 @@ export default function Home() {
       Opportunity: "opportunityTitle", Decision: "decisionTitle", Lesson: "lessonTitle", System: "systemName",
       SOP: "sopTitle", Person: "name", Lead: "leadName", Outreach: "businessName", "Cash position": "id",
       Income: "description", Expense: "description", Commitment: "commitmentName", "Tax payment": "description",
+      "Strategic Objective": "title",
     };
     const events = Object.entries(snapshot).flatMap(([type, current]) =>
       diffChangeRecords(type, previous[type] || [], current, titles[type]));
@@ -9995,7 +10204,7 @@ export default function Home() {
       }
     }
     auditBaselineRef.current = snapshot;
-  }, [operatingDataLoaded, changeHistoryLoaded, captures, conversions, projects, people, leads, outreachContacts, cashPosition, incomeRecords, expenseRecords, commitmentRecords, taxPaymentRecords]);
+  }, [operatingDataLoaded, changeHistoryLoaded, strategicObjectivesLoaded, captures, conversions, projects, people, leads, outreachContacts, cashPosition, incomeRecords, expenseRecords, commitmentRecords, taxPaymentRecords, strategicObjectives]);
 
   const executeIntegrityAudit = (storageOverride?: Record<string, string | null>) => {
     const storage = storageOverride || Object.fromEntries(
@@ -10017,6 +10226,7 @@ export default function Home() {
       commitments: commitmentRecords,
       outreach: outreachContacts,
       handoffs: delegationHandoffs,
+      strategicObjectives,
       storage,
     }));
   };
@@ -10025,7 +10235,7 @@ export default function Home() {
     if (!operatingDataLoaded) return;
     executeIntegrityAudit(initialIntegrityStorageRef.current || undefined);
     initialIntegrityStorageRef.current = null;
-  }, [operatingDataLoaded, captures, conversions, projects, people, leads, commitmentRecords, outreachContacts, delegationHandoffs]);
+  }, [operatingDataLoaded, captures, conversions, projects, people, leads, commitmentRecords, outreachContacts, delegationHandoffs, strategicObjectives]);
 
   type AttentionItem = {
     id: string;
@@ -12520,6 +12730,30 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
 
     return null;
   };
+
+  const strategicAssessments = strategicObjectives.map((objective) => {
+    const linkedProjects = projects.filter((project) => objective.linkedProjectIds.includes(project.id));
+    const linkedOpportunities = opportunityRecords.filter((opportunity) => objective.linkedOpportunityIds.includes(opportunity.id));
+    const linkedDecisions = decisionRecords.filter((decision) => objective.linkedDecisionIds.includes(decision.id));
+    const activeProjects = linkedProjects.filter(isProjectActive);
+    const activeOpportunities = linkedOpportunities.filter((opportunity) => ["New", "Evaluating", "Approved"].includes(opportunity.status));
+    const activeDecisions = linkedDecisions.filter((decision) => ["Active", "Under Review"].includes(decision.decisionStatus));
+    const hasLinkedPath = linkedProjects.length + linkedOpportunities.length + linkedDecisions.length > 0;
+    const hasActivePath = activeProjects.length + activeOpportunities.length + activeDecisions.length > 0;
+    const executableAction = (action: ActionRecord) => isActionActive(action) && !isActionWaiting(action) && action.status !== "Blocked"
+      && !getActionDependencyBlocker(action)
+      && (!action.earliestExecutableDate || new Date(`${action.earliestExecutableDate.slice(0, 10)}T00:00:00`).getTime() <= new Date().setHours(0, 0, 0, 0));
+    const hasExecutablePath = activeProjects.some((project) => (project.relatedActionIds || []).some((id) => actionRecords.some((action) => action.id === id && executableAction(action))))
+      || linkedOpportunities.some((opportunity) => opportunity.status === "Approved")
+      || activeDecisions.some((decision) => actionRecords.some((action) => action.relatedDecision === decision.id && executableAction(action)));
+    const gaps: string[] = [];
+    if (objective.status === "Active" && objective.horizon === "Now" && !hasLinkedPath) gaps.push("Active Now objective has no linked Project, Opportunity or Decision.");
+    if (objective.status === "Active" && ["Critical", "High"].includes(objective.importance) && !hasActivePath) gaps.push("High-importance objective has no active execution path.");
+    if (objective.status === "Active" && objective.founderAllocation === "Founder attention now" && !hasExecutablePath) gaps.push("Founder attention is needed, but no executable linked path is recorded.");
+    if (objective.founderAllocation === "Parked" && activeProjects.length) gaps.push("Parked objective still has active linked Projects.");
+    return { objective, linkedProjects, linkedOpportunities, linkedDecisions, gaps, hasExecutablePath };
+  });
+  const unlinkedStrategicProjects = projects.filter((project) => isProjectActive(project) && !strategicObjectives.some((objective) => objective.linkedProjectIds.includes(project.id)));
 
   const buildCommandAttention = (): Record<string, AttentionItem[]> => {
     const groups: Record<string, AttentionItem[]> = {};
@@ -15164,7 +15398,10 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       const recordKey = `${objectType}:${id}`;
       if (usedRecordKeys.has(recordKey)) return;
 
-      const requiresAuthority = authorityKeys.has(recordKey);
+      const founderAttentionObjective = objectType === "Project"
+        ? strategicObjectives.find((objective) => objective.status === "Active" && objective.founderAllocation === "Founder attention now" && objective.linkedProjectIds.includes(id))
+        : undefined;
+      const requiresAuthority = authorityKeys.has(recordKey) || Boolean(founderAttentionObjective);
       const areaDelegationReadyPeople = getDelegationReadyPeopleForArea(area);
       const capacityRankedDelegationPeople = getCapacityRankedDelegationPeopleForArea(area);
 
@@ -15211,7 +15448,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       }
 
       // 1. Check UNBLOCK FIRST
-      if (isBlocked || dependencyBlockerReason) {
+      if ((isBlocked || dependencyBlockerReason) && !founderAttentionObjective) {
         releaseAction = "Unblock First";
         severity = "Critical";
         why = dependencyBlockerReason
@@ -15225,8 +15462,12 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       else if (requiresAuthority) {
         releaseAction = "Retain — Founder Authority Required";
         severity = "Critical";
-        why = `Founder-owned ${objectType.toLowerCase()} '${title}' requires founder judgement or strategic decision authority.`;
-        releasePath = "Retain under founder ownership and execute or issue formal decision.";
+        why = founderAttentionObjective
+          ? `Founder-owned project '${title}' is linked to active Strategic Objective '${founderAttentionObjective.title}', explicitly allocated to founder attention.`
+          : `Founder-owned ${objectType.toLowerCase()} '${title}' requires founder judgement or strategic decision authority.`;
+        releasePath = founderAttentionObjective
+          ? "Retain under founder authority while this Strategic Objective requires founder attention; resolve any blockers before execution."
+          : "Retain under founder ownership and execute or issue formal decision.";
       }
       // 3. Check COMPLETE PERSONALLY
       else if (isOverdue || (isDueSoonForRanking && (priorityOrSeverity === "Critical" || priorityOrSeverity === "High"))) {
@@ -15458,14 +15699,14 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     let headline = "";
     if (totalFounderOwned === 0) {
       headline = "Founder execution load is fully distributed — no active founder-owned execution items.";
+    } else if (retainAuthorityCount > 0) {
+      headline = `${retainAuthorityCount} founder-owned item${retainAuthorityCount === 1 ? " is" : "s are"} intentionally retained for founder authority${prepareToDelegateCount > 0 ? `; ${prepareToDelegateCount} await${prepareToDelegateCount === 1 ? "s" : ""} delegation readiness` : ""}.`;
     } else if (releasableCount === totalFounderOwned) {
       headline = "Founder execution load is broadly releasable.";
     } else if (delegateNowCount > 0) {
       headline = `${releasableCount} of ${totalFounderOwned} founder-owned execution items are structurally releasable.`;
     } else if (prepareToDelegateCount > 0 && !hasDelegationReadyPeople) {
-      headline = "Founder load is constrained by delegation capacity, not work suitability.";
-    } else if (retainAuthorityCount > totalFounderOwned / 2) {
-      headline = "Most founder-owned execution is authority-bound; limited delegation leverage exists.";
+      headline = `${prepareToDelegateCount} founder-owned item${prepareToDelegateCount === 1 ? " awaits" : "s await"} delegation readiness.`;
     } else {
       headline = `${releasableCount} of ${totalFounderOwned} founder-owned execution items can be released.`;
     }
@@ -15487,14 +15728,14 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     };
   })();
 
-  // Strategic Next Move: when nothing requires intervention, what is the strongest currently
+  // Operational Next Move: when nothing requires intervention, what is the strongest currently
   // executable piece of work? Reuses founderExecutionReleaseSystem's release classification and
   // Command's own attention/founder-focus keys purely to exclude anything already surfaced there.
-  const strategicNextMove = (() => {
+  const operationalNextMove = (() => {
     const attentionKeys = new Set(commandAttentionItemList.map((item) => `${item.objectType}:${item.id}`));
     founderFocusCandidates.forEach((item) => attentionKeys.add(`${item.objectType}:${item.id}`));
 
-    const candidates: Array<StrategicNextMoveCandidate & { tier: number; score: number; sortDate: number }> = [];
+    const candidates: Array<OperationalNextMoveCandidate & { tier: number; score: number; sortDate: number }> = [];
 
     // An Opportunity's execution is treated as "already existing" once any Decision converted from it
     // (directly, or via a linked Action) has spun up real Actions/Projects — at that point the concrete
@@ -15714,6 +15955,37 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     );
 
     return { candidate: best ? { objectType: best.objectType, id: best.id, title: best.title, area: best.area, reasons: best.reasons, onOpen: best.onOpen } : null };
+  })();
+
+  const strategicFounderAllocation = (() => {
+    const [selected] = strategicAssessments
+      .filter(({ objective }) => objective.status === "Active" && objective.founderAllocation === "Founder attention now" && ["Now", "Next"].includes(objective.horizon) && strategicImportances.includes(objective.importance) && strategicPillars.includes(objective.pillar))
+      .sort((left, right) =>
+        strategicHorizons.indexOf(left.objective.horizon) - strategicHorizons.indexOf(right.objective.horizon)
+        || strategicImportances.indexOf(left.objective.importance) - strategicImportances.indexOf(right.objective.importance)
+        || Number(left.hasExecutablePath) - Number(right.hasExecutablePath)
+        || left.objective.createdAt.localeCompare(right.objective.createdAt)
+        || left.objective.title.localeCompare(right.objective.title));
+    if (!selected) return { objective: null, reasons: [], divergence: null };
+    const { objective, gaps } = selected;
+    const reasons = [`${objective.horizon} horizon`, `${objective.importance.toLowerCase()} importance`, "explicitly allocated to founder attention"];
+    if (gaps.length) reasons.push(gaps[0]);
+    else if (selected.hasExecutablePath) reasons.push("linked execution is available");
+    if (objective.whyItMatters.trim()) reasons.push(objective.whyItMatters.trim());
+
+    const operational = operationalNextMove.candidate;
+    const aligned = operational && (
+      (operational.objectType === "Project" && objective.linkedProjectIds.includes(operational.id))
+      || (operational.objectType === "Opportunity" && objective.linkedOpportunityIds.includes(operational.id))
+      || (operational.objectType === "Action" && actionRecords.some((action) => action.id === operational.id && (
+        objective.linkedDecisionIds.includes(action.relatedDecision)
+        || selected.linkedProjects.some((project) => (project.relatedActionIds || []).includes(action.id))
+      )))
+    );
+    const divergence = !operational ? null : aligned
+      ? "The executable operational move advances this strategic objective."
+      : `“${operational.title}” is executable now, but “${objective.title}” has ${objective.horizon.toLowerCase()}-horizon ${objective.importance.toLowerCase()} importance and is explicitly allocated to founder judgement${gaps.length ? `; ${gaps[0].toLowerCase()}` : "."}`;
+    return { objective, reasons, divergence };
   })();
 
   const decisionControlLayer = (() => {
@@ -17179,6 +17451,24 @@ const isOwnershipGap =
         if (record) handleIncomeEditOpen(record);
       }
     }
+  };
+
+  const handleSaveStrategicObjective = () => {
+    const draft = strategicObjectiveEditor;
+    if (!draft || !strategicObjectivesWritableRef.current || !draft.title.trim()
+      || !strategicPillars.includes(draft.pillar) || !strategicHorizons.includes(draft.horizon)
+      || !strategicImportances.includes(draft.importance) || !strategicStatuses.includes(draft.status)
+      || !founderAllocations.includes(draft.founderAllocation)) return;
+    const updated = { ...draft, title: draft.title.trim(), owner: draft.owner.trim(), whyItMatters: draft.whyItMatters.trim(), successCondition: draft.successCondition.trim() };
+    setStrategicObjectives((current) => current.some((entry) => entry.id === updated.id)
+      ? current.map((entry) => entry.id === updated.id ? updated : entry)
+      : [...current, updated]);
+    setStrategicObjectiveEditor(null);
+  };
+
+  const handleCreateStrategicObjective = () => {
+    if (!strategicObjectivesWritableRef.current) return;
+    setStrategicObjectiveEditor({ id: generateCaptureId(), title: "", pillar: strategicPillars[0], horizon: "Now", importance: "Medium", status: "Active", founderAllocation: "Monitor", owner: "", whyItMatters: "", successCondition: "", linkedProjectIds: [], linkedOpportunityIds: [], linkedDecisionIds: [], createdAt: new Date().toISOString(), overrides: [] });
   };
   const handleDelegateItem = (
     objectType: "Action" | "Project" | "Lead" | "Problem",
@@ -19473,7 +19763,22 @@ const isOwnershipGap =
               ) : null}
 
               <div className="mt-5">
-                <StrategicNextMoveSection candidate={strategicNextMove.candidate} />
+                <div className="space-y-4">
+                  <OperationalNextMoveSection candidate={operationalNextMove.candidate} />
+                  {strategicObjectivesLoaded ? <StrategicFounderAllocationSection
+                    objective={strategicFounderAllocation.objective}
+                    reasons={strategicFounderAllocation.reasons}
+                    divergence={strategicFounderAllocation.divergence}
+                    onOpen={() => { if (strategicFounderAllocation.objective) setStrategicObjectiveEditor(strategicFounderAllocation.objective); setActiveView("Empire"); }}
+                    onOverride={(alternative, rationale) => {
+                      const selected = strategicFounderAllocation.objective;
+                      if (!selected) return;
+                      setStrategicObjectives((current) => current.map((objective) => objective.id === selected.id
+                        ? { ...objective, overrides: [...objective.overrides, { id: generateCaptureId(), chosenAlternative: alternative, rationale, timestamp: new Date().toISOString(), actor: "Calum" }] }
+                        : objective));
+                    }}
+                  /> : null}
+                </div>
               </div>
 
               <div className="mt-5">
@@ -19853,6 +20158,14 @@ const isOwnershipGap =
               <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
                 This view brings together the founder-facing decisions, risk signals, and escalation points already represented across the operating records.
               </p>
+
+              {!strategicObjectivesLoaded ? null : strategicObjectivesWritableRef.current ? <StrategicPrioritiesSection
+                assessments={strategicAssessments}
+                unlinkedProjects={unlinkedStrategicProjects}
+                onCreate={handleCreateStrategicObjective}
+                onEdit={setStrategicObjectiveEditor}
+                onOpenRecord={(type, id) => handleOpenAttentionRecord(type, id)}
+              /> : <p className="mt-5 text-[12px] text-[#6a3328]">Strategic Objectives are unavailable until their stored data is repaired.</p>}
 
               <DataIntegrityPanel
   audit={integrityAudit}
@@ -21040,7 +21353,7 @@ const isOwnershipGap =
                   </div>
                 ))}
               </div>
-              <p className="mt-2 text-[11px] text-[#5d584f]">Only Due today and Overdue follow-ups surface in Command. Ready for Initial Outreach prospects can surface as a Strategic Next Move, never as attention.</p>
+              <p className="mt-2 text-[11px] text-[#5d584f]">Only Due today and Overdue follow-ups surface in Command. Ready for Initial Outreach prospects can surface as an Operational Next Move, never as attention.</p>
 
               <div className="mt-6 flex flex-wrap items-center gap-2">
                 <select value={outreachStatusFilter} onChange={(event) => setOutreachStatusFilter(event.target.value)} className="rounded-lg border border-[#cfc8c1] bg-white px-2.5 py-1.5 text-[11px] text-[#2f2b28] outline-none transition focus:border-[#171717]">
@@ -22771,6 +23084,16 @@ const isOwnershipGap =
           </div>
         </div>
       ) : null}
+
+      {strategicObjectiveEditor ? <StrategicObjectiveEditor
+        draft={strategicObjectiveEditor}
+        projects={projects}
+        opportunities={opportunityRecords}
+        decisions={decisionRecords}
+        onChange={setStrategicObjectiveEditor}
+        onSave={handleSaveStrategicObjective}
+        onClose={() => setStrategicObjectiveEditor(null)}
+      /> : null}
 
       {selectedProblemId && problemEditor ? (
         <ProblemDetailPanel
