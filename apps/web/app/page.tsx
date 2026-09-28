@@ -785,6 +785,100 @@ const personAccessLevelOptions = ["Founder", "Executive", "Manager", "Team Membe
 type PersonStatus = (typeof personStatusOptions)[number];
 type PersonAccessLevel = (typeof personAccessLevelOptions)[number];
 
+const compatibilityEvidenceStatusOptions = [
+  "Stated Preference",
+  "Observed Once",
+  "Repeated Pattern",
+  "Proven Through Time",
+  "Contradicted",
+  "Needs Evidence",
+] as const;
+const compatibilityConfidenceOptions = ["Low", "Medium", "High"] as const;
+
+type CompatibilityEvidenceStatus = (typeof compatibilityEvidenceStatusOptions)[number];
+type CompatibilityConfidence = (typeof compatibilityConfidenceOptions)[number];
+
+type CompatibilityDimension = {
+  value: string;
+  evidence: string;
+  evidenceStatus: CompatibilityEvidenceStatus;
+  confidence: CompatibilityConfidence;
+  lastReviewed?: string;
+  changeCondition?: string;
+};
+
+type OperatingProfile = {
+  communicationStyle: CompatibilityDimension;
+  decisionStyle: CompatibilityDimension;
+  riskTolerance: CompatibilityDimension;
+  ambitionScaleOrientation: CompatibilityDimension;
+  commitmentWorkEthic: CompatibilityDimension;
+  standards: CompatibilityDimension;
+  strengths: CompatibilityDimension;
+  developmentAreas: CompatibilityDimension;
+  pressureResponse: CompatibilityDimension;
+  conflictStyle: CompatibilityDimension;
+  motivators: CompatibilityDimension;
+  frustrationsTriggers: CompatibilityDimension;
+  boundariesNonNegotiables: CompatibilityDimension;
+  trustSignals: CompatibilityDimension;
+  loyaltySignals: CompatibilityDimension;
+  preferredFeedbackStyle: CompatibilityDimension;
+  likelyRoleFit: CompatibilityDimension;
+  needsFromOthers: CompatibilityDimension;
+  whatOthersNeedToUnderstand: CompatibilityDimension;
+};
+
+const compatibilityDimensionDefinitions = [
+  { key: "communicationStyle", label: "Communication style" },
+  { key: "decisionStyle", label: "Decision style" },
+  { key: "riskTolerance", label: "Risk tolerance" },
+  { key: "ambitionScaleOrientation", label: "Ambition / scale orientation" },
+  { key: "commitmentWorkEthic", label: "Commitment & work ethic" },
+  { key: "standards", label: "Standards" },
+  { key: "strengths", label: "Strengths (observed)" },
+  { key: "developmentAreas", label: "Development areas (observed)" },
+  { key: "pressureResponse", label: "Pressure response" },
+  { key: "conflictStyle", label: "Conflict style" },
+  { key: "motivators", label: "Motivators" },
+  { key: "frustrationsTriggers", label: "Frustrations & triggers" },
+  { key: "boundariesNonNegotiables", label: "Boundaries & non-negotiables" },
+  { key: "trustSignals", label: "Trust signals" },
+  { key: "loyaltySignals", label: "Loyalty signals" },
+  { key: "preferredFeedbackStyle", label: "Preferred feedback style" },
+  { key: "likelyRoleFit", label: "Likely role fit" },
+  { key: "needsFromOthers", label: "Needs from others" },
+  { key: "whatOthersNeedToUnderstand", label: "What others need to understand" },
+] as const satisfies ReadonlyArray<{ key: keyof OperatingProfile; label: string }>;
+
+type CompatibilityDimensionKey = (typeof compatibilityDimensionDefinitions)[number]["key"];
+
+function normaliseCompatibilityDimension(value: unknown): CompatibilityDimension {
+  const source = isPlainObject(value) ? value : {};
+  return {
+    value: typeof source.value === "string" ? source.value : "",
+    evidence: typeof source.evidence === "string" ? source.evidence : "",
+    evidenceStatus: compatibilityEvidenceStatusOptions.includes(source.evidenceStatus as CompatibilityEvidenceStatus)
+      ? (source.evidenceStatus as CompatibilityEvidenceStatus)
+      : "Needs Evidence",
+    confidence: compatibilityConfidenceOptions.includes(source.confidence as CompatibilityConfidence)
+      ? (source.confidence as CompatibilityConfidence)
+      : "Low",
+    lastReviewed: typeof source.lastReviewed === "string" ? source.lastReviewed : "",
+    changeCondition: typeof source.changeCondition === "string" ? source.changeCondition : "",
+  };
+}
+
+// Legacy People records have no operatingProfile, so every read is normalised to empty defaults.
+function normaliseOperatingProfile(value: unknown): OperatingProfile {
+  const source = isPlainObject(value) ? value : {};
+  const profile = {} as OperatingProfile;
+  compatibilityDimensionDefinitions.forEach(({ key }) => {
+    profile[key] = normaliseCompatibilityDimension(source[key]);
+  });
+  return profile;
+}
+
 type PersonRecord = {
   id: string;
   name: string;
@@ -799,6 +893,7 @@ type PersonRecord = {
   accessLevel: PersonAccessLevel;
   status: PersonStatus;
   dateCreated: string;
+  operatingProfile?: OperatingProfile;
 };
 
 type PersonFormValues = Omit<PersonRecord, "id" | "dateCreated">;
@@ -18837,6 +18932,29 @@ const isOwnershipGap =
     });
   };
 
+  const personOperatingProfile = normaliseOperatingProfile(personEditor?.operatingProfile);
+
+  const handlePersonOperatingProfileChange = (
+    dimension: CompatibilityDimensionKey,
+    field: keyof CompatibilityDimension,
+    value: string,
+  ) => {
+    if (!personEditor) {
+      return;
+    }
+
+    const currentProfile = normaliseOperatingProfile(personEditor.operatingProfile);
+
+    setPersonSaveState("idle");
+    setPersonEditor({
+      ...personEditor,
+      operatingProfile: {
+        ...currentProfile,
+        [dimension]: { ...currentProfile[dimension], [field]: value },
+      },
+    });
+  };
+
   const handlePersonSave = () => {
     if (!personEditor) {
       return;
@@ -18861,6 +18979,9 @@ const isOwnershipGap =
         ? (personEditor.status as PersonStatus)
         : "Active",
       dateCreated: personEditor.dateCreated || new Date().toISOString(),
+      operatingProfile: personEditor.operatingProfile
+        ? normaliseOperatingProfile(personEditor.operatingProfile)
+        : undefined,
     };
 
     const isNewPerson = !people.some((person) => person.id === nextPerson.id);
@@ -24325,6 +24446,114 @@ const isOwnershipGap =
                   onChange={(event) => handlePersonEditorChange("performanceIndicators", event.target.value)}
                   className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
                 />
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                Compatibility &amp; Operating Profile
+              </div>
+              <p className="mt-1 text-[11px] leading-5 text-[#4d4944]">
+                Evidence-based human operating profile. Separate from formal responsibilities, authority, skills and performance. Record only what evidence supports — blank is valid.
+              </p>
+
+              <div className="mt-3 space-y-2">
+                {compatibilityDimensionDefinitions.map(({ key, label }) => {
+                  const dimension = personOperatingProfile[key];
+
+                  return (
+                    <details key={key} className="rounded-xl border border-[#d3cbc3] bg-white p-3">
+                      <summary className="cursor-pointer list-none text-[13px] font-medium text-[#171717]">
+                        <span>{label}</span>
+                        <span className="ml-2 text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
+                          {dimension.evidenceStatus} • {dimension.confidence} confidence
+                        </span>
+                      </summary>
+
+                      <div className="mt-3 space-y-3">
+                        <div>
+                          <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                            Current understanding
+                          </label>
+                          <textarea
+                            rows={2}
+                            value={dimension.value}
+                            onChange={(event) => handlePersonOperatingProfileChange(key, "value", event.target.value)}
+                            className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                            Evidence
+                          </label>
+                          <textarea
+                            rows={2}
+                            value={dimension.evidence}
+                            onChange={(event) => handlePersonOperatingProfileChange(key, "evidence", event.target.value)}
+                            className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                          />
+                        </div>
+
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          <div>
+                            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                              Evidence status
+                            </label>
+                            <select
+                              value={dimension.evidenceStatus}
+                              onChange={(event) => handlePersonOperatingProfileChange(key, "evidenceStatus", event.target.value)}
+                              className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                            >
+                              {compatibilityEvidenceStatusOptions.map((status) => (
+                                <option key={status} value={status}>{status}</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                              Confidence
+                            </label>
+                            <select
+                              value={dimension.confidence}
+                              onChange={(event) => handlePersonOperatingProfileChange(key, "confidence", event.target.value)}
+                              className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                            >
+                              {compatibilityConfidenceOptions.map((confidence) => (
+                                <option key={confidence} value={confidence}>{confidence}</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                              Last reviewed
+                            </label>
+                            <input
+                              type="date"
+                              value={dimension.lastReviewed || ""}
+                              onChange={(event) => handlePersonOperatingProfileChange(key, "lastReviewed", event.target.value)}
+                              className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                            What would change this conclusion?
+                          </label>
+                          <textarea
+                            rows={2}
+                            value={dimension.changeCondition || ""}
+                            onChange={(event) => handlePersonOperatingProfileChange(key, "changeCondition", event.target.value)}
+                            className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                          />
+                        </div>
+                      </div>
+                    </details>
+                  );
+                })}
               </div>
             </div>
 
