@@ -42,6 +42,7 @@ const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
 const CHANGE_HISTORY_STORAGE_KEY = "empire-os-change-history";
 const STRATEGIC_OBJECTIVES_STORAGE_KEY = "empire-os-strategic-objectives";
 const STRATEGIC_REVIEWS_STORAGE_KEY = "empire-os-strategic-reviews";
+const WORKING_RELATIONSHIP_STORAGE_KEY = "empire-os-working-relationships";
 
 const reviewTriggers = ["Weekly", "Major change", "Project completed", "Founder initiated"] as const;
 const reviewGapTypes = ["Execution Gap", "Decision Gap", "Knowledge Gap", "Capability Gap"] as const;
@@ -211,6 +212,7 @@ const EMPIRE_OS_BACKUP_STORAGE_KEYS = [
   CHANGE_HISTORY_STORAGE_KEY,
   STRATEGIC_OBJECTIVES_STORAGE_KEY,
   STRATEGIC_REVIEWS_STORAGE_KEY,
+  WORKING_RELATIONSHIP_STORAGE_KEY,
 ] as const;
 
 type EmpireOsBackup = {
@@ -244,6 +246,7 @@ const backupSummaryStores = [
   { key: CHANGE_HISTORY_STORAGE_KEY, label: "Change history" },
   { key: STRATEGIC_OBJECTIVES_STORAGE_KEY, label: "Strategic objectives" },
   { key: STRATEGIC_REVIEWS_STORAGE_KEY, label: "Strategic reviews" },
+  { key: WORKING_RELATIONSHIP_STORAGE_KEY, label: "Working relationships" },
 ] as const;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -389,6 +392,7 @@ function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
     CHANGE_HISTORY_STORAGE_KEY,
     STRATEGIC_OBJECTIVES_STORAGE_KEY,
     STRATEGIC_REVIEWS_STORAGE_KEY,
+    WORKING_RELATIONSHIP_STORAGE_KEY,
   ];
   for (const key of arrayStorageKeys) {
     const storedValue = storage[key];
@@ -877,6 +881,76 @@ function normaliseOperatingProfile(value: unknown): OperatingProfile {
     profile[key] = normaliseCompatibilityDimension(source[key]);
   });
   return profile;
+}
+
+type WorkingRelationship = {
+  id: string;
+  personAId: string;
+  personBId: string;
+  naturalAlignment: CompatibilityDimension;
+  complementaryStrengths: CompatibilityDimension;
+  frictionRisks: CompatibilityDimension;
+  communicationDynamic: CompatibilityDimension;
+  decisionDynamic: CompatibilityDimension;
+  pressureConflictDynamic: CompatibilityDimension;
+  trustDynamic: CompatibilityDimension;
+  roleComplementarity: CompatibilityDimension;
+  workingAgreements: CompatibilityDimension;
+  unresolvedQuestions: CompatibilityDimension;
+  dateCreated: string;
+  lastUpdated?: string;
+};
+
+const workingRelationshipDimensionDefinitions = [
+  { key: "naturalAlignment", label: "Natural alignment" },
+  { key: "complementaryStrengths", label: "Complementary strengths" },
+  { key: "frictionRisks", label: "Friction risks" },
+  { key: "communicationDynamic", label: "Communication dynamic" },
+  { key: "decisionDynamic", label: "Decision-making dynamic" },
+  { key: "pressureConflictDynamic", label: "Pressure / conflict dynamic" },
+  { key: "trustDynamic", label: "Trust dynamic" },
+  { key: "roleComplementarity", label: "Role complementarity" },
+  { key: "workingAgreements", label: "Working agreements / considerations" },
+  { key: "unresolvedQuestions", label: "Unresolved questions" },
+] as const satisfies ReadonlyArray<{ key: keyof WorkingRelationship; label: string }>;
+
+type WorkingRelationshipDimensionKey = (typeof workingRelationshipDimensionDefinitions)[number]["key"];
+
+// Unordered pair identity: A/B and B/A are the same relationship.
+function getWorkingRelationshipPairKey(personAId: string, personBId: string): string {
+  return [personAId, personBId].sort().join("::");
+}
+
+function normaliseWorkingRelationship(value: unknown): WorkingRelationship | null {
+  if (!isPlainObject(value)) return null;
+  const { id, personAId, personBId } = value;
+  if (typeof id !== "string" || !id.trim()) return null;
+  if (typeof personAId !== "string" || !personAId.trim()) return null;
+  if (typeof personBId !== "string" || !personBId.trim()) return null;
+  if (personAId === personBId) return null;
+
+  const relationship = {
+    id,
+    personAId,
+    personBId,
+    dateCreated: typeof value.dateCreated === "string" ? value.dateCreated : new Date().toISOString(),
+    lastUpdated: typeof value.lastUpdated === "string" ? value.lastUpdated : "",
+  } as WorkingRelationship;
+
+  workingRelationshipDimensionDefinitions.forEach(({ key }) => {
+    relationship[key] = normaliseCompatibilityDimension(value[key]);
+  });
+
+  return relationship;
+}
+
+function createWorkingRelationship(personAId: string, personBId: string): WorkingRelationship {
+  return normaliseWorkingRelationship({
+    id: generatePersonId(),
+    personAId,
+    personBId,
+    dateCreated: new Date().toISOString(),
+  })!;
 }
 
 type PersonRecord = {
@@ -1794,6 +1868,7 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
     STORAGE_KEY, CONVERSION_STORAGE_KEY, PERSON_STORAGE_KEY, PROJECT_STORAGE_KEY, LEAD_STORAGE_KEY, OUTREACH_STORAGE_KEY,
     DELEGATION_HANDOFF_STORAGE_KEY, INCOME_STORAGE_KEY, EXPENSE_STORAGE_KEY, COMMITMENT_STORAGE_KEY, TAX_PAYMENT_STORAGE_KEY,
     SAVED_VIEWS_STORAGE_KEY, DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, CHANGE_HISTORY_STORAGE_KEY, STRATEGIC_OBJECTIVES_STORAGE_KEY, STRATEGIC_REVIEWS_STORAGE_KEY,
+    WORKING_RELATIONSHIP_STORAGE_KEY,
   ]);
   for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
     const raw = input.storage[key];
@@ -9866,6 +9941,9 @@ export default function Home() {
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
   const [personEditor, setPersonEditor] = useState<PersonRecord | null>(null);
   const [personSaveState, setPersonSaveState] = useState<"idle" | "saved">("idle");
+  const [workingRelationships, setWorkingRelationships] = useState<WorkingRelationship[]>([]);
+  const [selectedWorkingRelationshipId, setSelectedWorkingRelationshipId] = useState<string | null>(null);
+  const [newRelationshipPersonId, setNewRelationshipPersonId] = useState<string>("");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [projectEditor, setProjectEditor] = useState<ProjectRecord | null>(null);
   const [projectHealthReviewId, setProjectHealthReviewId] = useState<string | null>(null);
@@ -10003,6 +10081,7 @@ export default function Home() {
       const storedProjects = window.localStorage.getItem(PROJECT_STORAGE_KEY);
       const storedLeads = window.localStorage.getItem(LEAD_STORAGE_KEY);
       const storedDelegationHandoffs = window.localStorage.getItem(DELEGATION_HANDOFF_STORAGE_KEY);
+      const storedWorkingRelationships = window.localStorage.getItem(WORKING_RELATIONSHIP_STORAGE_KEY);
       const storedCashPosition = window.localStorage.getItem(CASH_POSITION_STORAGE_KEY);
       const storedIncome = window.localStorage.getItem(INCOME_STORAGE_KEY);
       const storedExpenses = window.localStorage.getItem(EXPENSE_STORAGE_KEY);
@@ -10109,6 +10188,21 @@ export default function Home() {
 
         if (Array.isArray(parsedPeople)) {
           setPeople(parsedPeople);
+        }
+      }
+
+      if (storedWorkingRelationships) {
+        const parsedWorkingRelationships = JSON.parse(storedWorkingRelationships);
+
+        if (Array.isArray(parsedWorkingRelationships)) {
+          const byPair = new Map<string, WorkingRelationship>();
+          parsedWorkingRelationships.forEach((entry) => {
+            const relationship = normaliseWorkingRelationship(entry);
+            if (!relationship) return;
+            const pairKey = getWorkingRelationshipPairKey(relationship.personAId, relationship.personBId);
+            if (!byPair.has(pairKey)) byPair.set(pairKey, relationship);
+          });
+          setWorkingRelationships([...byPair.values()]);
         }
       }
 
@@ -10407,6 +10501,18 @@ export default function Home() {
   }, [delegationHandoffs, operatingDataLoaded]);
 
   useEffect(() => {
+    if (!operatingDataLoaded) {
+      return;
+    }
+
+    if (workingRelationships.length === 0) {
+      window.localStorage.removeItem(WORKING_RELATIONSHIP_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(WORKING_RELATIONSHIP_STORAGE_KEY, JSON.stringify(workingRelationships));
+    }
+  }, [workingRelationships, operatingDataLoaded]);
+
+  useEffect(() => {
     // Gated on operatingDataLoaded (like every other Finance record) so this never fires before the stored cash position has been read back into state.
     if (!operatingDataLoaded) {
       return;
@@ -10690,6 +10796,7 @@ export default function Home() {
       "Tax payment": records(taxPaymentRecords),
       "Strategic Objective": records(strategicObjectives),
       "Strategic Review": records(strategicReviews),
+      "Working Relationship": records(workingRelationships),
     };
     const previous = auditBaselineRef.current;
     if (!previous || auditRestoreInProgressRef.current) {
@@ -10704,6 +10811,7 @@ export default function Home() {
       Income: "description", Expense: "description", Commitment: "commitmentName", "Tax payment": "description",
       "Strategic Objective": "title",
       "Strategic Review": "reviewDate",
+      "Working Relationship": "id",
     };
     const events = Object.entries(snapshot).flatMap(([type, current]) =>
       diffChangeRecords(type, previous[type] || [], current, titles[type]));
@@ -10721,7 +10829,7 @@ export default function Home() {
       }
     }
     auditBaselineRef.current = snapshot;
-  }, [operatingDataLoaded, changeHistoryLoaded, strategicObjectivesLoaded, strategicReviewsLoaded, captures, conversions, projects, people, leads, outreachContacts, cashPosition, incomeRecords, expenseRecords, commitmentRecords, taxPaymentRecords, strategicObjectives, strategicReviews]);
+  }, [operatingDataLoaded, changeHistoryLoaded, strategicObjectivesLoaded, strategicReviewsLoaded, captures, conversions, projects, people, leads, outreachContacts, cashPosition, incomeRecords, expenseRecords, commitmentRecords, taxPaymentRecords, strategicObjectives, strategicReviews, workingRelationships]);
 
   const executeIntegrityAudit = (storageOverride?: Record<string, string | null>) => {
     const storage = storageOverride || Object.fromEntries(
@@ -19012,6 +19120,63 @@ const isOwnershipGap =
     setPersonSaveState("idle");
   };
 
+  const getWorkingRelationshipsForPerson = (personId: string) =>
+    workingRelationships.filter((relationship) => relationship.personAId === personId || relationship.personBId === personId);
+
+  const getWorkingRelationshipCounterpartId = (relationship: WorkingRelationship, personId: string) =>
+    relationship.personAId === personId ? relationship.personBId : relationship.personAId;
+
+  const getPersonDisplayName = (personId: string) =>
+    people.find((person) => person.id === personId)?.name || "Unknown person";
+
+  const selectedWorkingRelationship = selectedWorkingRelationshipId
+    ? workingRelationships.find((relationship) => relationship.id === selectedWorkingRelationshipId) ?? null
+    : null;
+
+  const handleCreateWorkingRelationship = (personAId: string, personBId: string) => {
+    if (!personAId || !personBId || personAId === personBId) {
+      setFeedback({ type: "error", message: "A working relationship needs two different people." });
+      return;
+    }
+
+    const pairKey = getWorkingRelationshipPairKey(personAId, personBId);
+    const existing = workingRelationships.find(
+      (relationship) => getWorkingRelationshipPairKey(relationship.personAId, relationship.personBId) === pairKey,
+    );
+
+    if (existing) {
+      setSelectedWorkingRelationshipId(existing.id);
+      setNewRelationshipPersonId("");
+      setFeedback({ type: "error", message: "A working relationship already exists for this pair. Opening the existing record." });
+      return;
+    }
+
+    const relationship = createWorkingRelationship(personAId, personBId);
+    setWorkingRelationships((current) => [relationship, ...current]);
+    setSelectedWorkingRelationshipId(relationship.id);
+    setNewRelationshipPersonId("");
+    setFeedback({ type: "success", message: "Working relationship created." });
+  };
+
+  const handleWorkingRelationshipDimensionChange = (
+    relationshipId: string,
+    dimension: WorkingRelationshipDimensionKey,
+    field: keyof CompatibilityDimension,
+    value: string,
+  ) => {
+    setWorkingRelationships((current) =>
+      current.map((relationship) =>
+        relationship.id === relationshipId
+          ? {
+              ...relationship,
+              [dimension]: { ...relationship[dimension], [field]: value },
+              lastUpdated: new Date().toISOString(),
+            }
+          : relationship,
+      ),
+    );
+  };
+
   const handleProjectEditOpen = (project: ProjectRecord) => {
     setSelectedProjectId(project.id);
     setProjectEditor(project);
@@ -24555,6 +24720,205 @@ const isOwnershipGap =
                   );
                 })}
               </div>
+            </div>
+
+            <div className="mt-6 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                Working Relationships
+              </div>
+              <p className="mt-1 text-[11px] leading-5 text-[#4d4944]">
+                Each working relationship is one shared record between two people. Record only evidence-backed observations — blank is valid.
+              </p>
+
+              {(() => {
+                const personRelationships = getWorkingRelationshipsForPerson(personEditor.id);
+                const relatedPersonIds = new Set(
+                  personRelationships.map((relationship) => getWorkingRelationshipCounterpartId(relationship, personEditor.id)),
+                );
+                const availablePeople = people.filter(
+                  (person) => person.id !== personEditor.id && !relatedPersonIds.has(person.id),
+                );
+                // A relationship can only reference a saved Person, so unsaved new People cannot create orphan pairs.
+                const personIsPersisted = people.some((person) => person.id === personEditor.id);
+
+                return (
+                  <>
+                    <div className="mt-3 space-y-2">
+                      {personRelationships.length === 0 ? (
+                        <p className="text-[12px] text-[#4d4944]">No working relationships recorded for this person yet.</p>
+                      ) : (
+                        personRelationships.map((relationship) => {
+                          const counterpartId = getWorkingRelationshipCounterpartId(relationship, personEditor.id);
+                          const isOpen = selectedWorkingRelationshipId === relationship.id;
+
+                          return (
+                            <div key={relationship.id} className="rounded-xl border border-[#d3cbc3] bg-white p-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <div className="text-[13px] font-medium text-[#171717]">
+                                    {personEditor.name || "This person"} &amp; {getPersonDisplayName(counterpartId)}
+                                  </div>
+                                  <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
+                                    Created {formatCapturedAt(relationship.dateCreated)}
+                                    {relationship.lastUpdated ? ` • Updated ${formatCapturedAt(relationship.lastUpdated)}` : ""}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedWorkingRelationshipId(isOpen ? null : relationship.id)}
+                                  className="rounded border border-[#171717] bg-white px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717]"
+                                >
+                                  {isOpen ? "Close relationship" : "Open relationship"}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {personIsPersisted && availablePeople.length > 0 ? (
+                      <div className="mt-3 flex flex-wrap items-end gap-2">
+                        <div className="min-w-[220px] flex-1">
+                          <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                            Add working relationship
+                          </label>
+                          <select
+                            value={newRelationshipPersonId}
+                            onChange={(event) => setNewRelationshipPersonId(event.target.value)}
+                            className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                          >
+                            <option value="">Select a person</option>
+                            {availablePeople.map((person) => (
+                              <option key={person.id} value={person.id}>{person.name || "Unnamed person"}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!newRelationshipPersonId}
+                          onClick={() => handleCreateWorkingRelationship(personEditor.id, newRelationshipPersonId)}
+                          className="rounded-lg bg-[#171717] px-3 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] disabled:opacity-40"
+                        >
+                          Create relationship
+                        </button>
+                      </div>
+                    ) : null}
+
+                    {!personIsPersisted ? (
+                      <p className="mt-3 text-[12px] text-[#4d4944]">Save this person before recording working relationships.</p>
+                    ) : null}
+
+                    {selectedWorkingRelationship
+                      && personRelationships.some((relationship) => relationship.id === selectedWorkingRelationship.id) ? (
+                      <div className="mt-3 rounded-xl border border-[#d3cbc3] bg-white p-3">
+                        <div className="text-[12px] font-medium text-[#171717]">
+                          {getPersonDisplayName(selectedWorkingRelationship.personAId)} &amp; {getPersonDisplayName(selectedWorkingRelationship.personBId)}
+                        </div>
+
+                        <div className="mt-3 space-y-2">
+                          {workingRelationshipDimensionDefinitions.map(({ key, label }) => {
+                            const dimension = selectedWorkingRelationship[key];
+
+                            return (
+                              <details key={key} className="rounded-xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                                <summary className="cursor-pointer list-none text-[13px] font-medium text-[#171717]">
+                                  <span>{label}</span>
+                                  <span className="ml-2 text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
+                                    {dimension.evidenceStatus} • {dimension.confidence} confidence
+                                  </span>
+                                </summary>
+
+                                <div className="mt-3 space-y-3">
+                                  <div>
+                                    <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                                      Current understanding
+                                    </label>
+                                    <textarea
+                                      rows={2}
+                                      value={dimension.value}
+                                      onChange={(event) => handleWorkingRelationshipDimensionChange(selectedWorkingRelationship.id, key, "value", event.target.value)}
+                                      className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                                    />
+                                  </div>
+
+                                  <div>
+                                    <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                                      Evidence
+                                    </label>
+                                    <textarea
+                                      rows={2}
+                                      value={dimension.evidence}
+                                      onChange={(event) => handleWorkingRelationshipDimensionChange(selectedWorkingRelationship.id, key, "evidence", event.target.value)}
+                                      className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                                    />
+                                  </div>
+
+                                  <div className="grid gap-3 sm:grid-cols-3">
+                                    <div>
+                                      <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                                        Evidence status
+                                      </label>
+                                      <select
+                                        value={dimension.evidenceStatus}
+                                        onChange={(event) => handleWorkingRelationshipDimensionChange(selectedWorkingRelationship.id, key, "evidenceStatus", event.target.value)}
+                                        className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                                      >
+                                        {compatibilityEvidenceStatusOptions.map((status) => (
+                                          <option key={status} value={status}>{status}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+
+                                    <div>
+                                      <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                                        Confidence
+                                      </label>
+                                      <select
+                                        value={dimension.confidence}
+                                        onChange={(event) => handleWorkingRelationshipDimensionChange(selectedWorkingRelationship.id, key, "confidence", event.target.value)}
+                                        className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                                      >
+                                        {compatibilityConfidenceOptions.map((confidence) => (
+                                          <option key={confidence} value={confidence}>{confidence}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+
+                                    <div>
+                                      <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                                        Last reviewed
+                                      </label>
+                                      <input
+                                        type="date"
+                                        value={dimension.lastReviewed || ""}
+                                        onChange={(event) => handleWorkingRelationshipDimensionChange(selectedWorkingRelationship.id, key, "lastReviewed", event.target.value)}
+                                        className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                                      What would change this conclusion?
+                                    </label>
+                                    <textarea
+                                      rows={2}
+                                      value={dimension.changeCondition || ""}
+                                      onChange={(event) => handleWorkingRelationshipDimensionChange(selectedWorkingRelationship.id, key, "changeCondition", event.target.value)}
+                                      className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
+                                    />
+                                  </div>
+                                </div>
+                              </details>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                );
+              })()}
             </div>
 
             <div className="mt-6 rounded-xl border border-[#d3cbc3] bg-[#f1eee9] p-3 text-[11px] uppercase tracking-[0.14em] text-[#4d4944]">
