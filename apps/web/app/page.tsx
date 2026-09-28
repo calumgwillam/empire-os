@@ -863,9 +863,13 @@ type ProjectRecord = {
   title?: string;
   originalRawNote?: string;
   createdAt?: string;
+  executionAuthority?: ProjectExecutionAuthority;
 };
 
 type ProjectConversionDraft = Pick<ProjectRecord, "projectName" | "owner" | "area" | "targetCompletionDate" | "status">;
+
+const projectExecutionAuthorityOptions = ["Normal", "Founder Authority Required", "Delegable"] as const;
+type ProjectExecutionAuthority = (typeof projectExecutionAuthorityOptions)[number];
 
 const projectHealthOptions = ["On track", "At risk", "Blocked", "Waiting"] as const;
 type ProjectHealth = (typeof projectHealthOptions)[number];
@@ -3631,6 +3635,12 @@ function ProjectDetailPanel({ project, people, actions, decisions, systems, sops
             <select value={project.status} onChange={(event) => onChange("status", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6">
               {!projectStatusOptions.includes(project.status as (typeof projectStatusOptions)[number]) && project.status ? <option value={project.status}>{project.status}</option> : null}
               {projectStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">Execution authority</label>
+            <select value={project.executionAuthority ?? "Normal"} onChange={(event) => onChange("executionAuthority", event.target.value)} className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6">
+              {projectExecutionAuthorityOptions.map((authority) => <option key={authority} value={authority}>{authority}</option>)}
             </select>
           </div>
           <div className="md:col-span-2 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] p-3">
@@ -15840,7 +15850,10 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       const founderAttentionObjective = objectType === "Project"
         ? getFounderAttentionObjectiveForProject(id)
         : undefined;
-      const requiresAuthority = authorityKeys.has(recordKey) || Boolean(founderAttentionObjective);
+      // Explicit Project-level authority is independent of blocked state and Strategic Objective linkage.
+      const requiresExplicitProjectAuthority = objectType === "Project"
+        && projects.find((project) => project.id === id)?.executionAuthority === "Founder Authority Required";
+      const requiresAuthority = authorityKeys.has(recordKey) || Boolean(founderAttentionObjective) || requiresExplicitProjectAuthority;
       const areaDelegationReadyPeople = getDelegationReadyPeopleForArea(area);
       const capacityRankedDelegationPeople = getCapacityRankedDelegationPeopleForArea(area);
 
