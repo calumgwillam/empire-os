@@ -64,6 +64,8 @@ import {
   sanitizeExpenseRecord,
   sanitizeIncomeRecord,
   sanitizeTaxPaymentRecord,
+  markTaxReserveSetAside,
+  parseCashPositionAmount,
   taxPaymentStatusOptions,
   validateCommitmentSave,
   type CapitalDecisionOutcome,
@@ -78,6 +80,7 @@ import {
   type QuoteRevalidationOutcome,
   type TaxPaymentRecord,
   type TaxPaymentStatus,
+  type CashPositionRecord,
 } from "./lib/finance";
 
 const navigation = [
@@ -1211,13 +1214,6 @@ const commitmentTypeOptions = ["Loan", "Lease", "Subscription", "Tax", "Supplier
 const commitmentStatusOptions = ["Upcoming", "Due", "Paid", "Overdue", "Cancelled"] as const;
 type ProcurementReadinessState = "Researching" | "Price found" | "Ready to buy" | "Pending validation" | "Wait" | "Blocked" | "Purchased";
 
-type CashPositionRecord = {
-  currentCash: string;
-  reservedTax: string;
-  safetyBuffer: string;
-  lastUpdated: string;
-};
-
 type DailyPostureSnapshot = {
   date: string;
   focusCount: number;
@@ -1958,31 +1954,6 @@ function formatCashSnapshotDate(value: string) {
   const [year, month, day] = normalised.split("-").map(Number);
 
   return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" }).format(new Date(year, month - 1, day));
-}
-
-// Editor-only validation parser: "0" is a valid amount, so emptiness is tested explicitly rather than by truthiness.
-function parseCashPositionAmount(value: unknown) {
-  if (typeof value === "number") {
-    return Number.isFinite(value) && value >= 0 ? value : null;
-  }
-
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const normalised = value.replace(/[£$,\s]/g, "");
-
-  if (normalised === "") {
-    return null;
-  }
-
-  if (!/^\+?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalised)) {
-    return null;
-  }
-
-  const parsed = Number(normalised);
-
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function formatSavedViewUpdatedAt(value?: string) {
@@ -19700,7 +19671,7 @@ const isOwnershipGap =
     setTaxPaymentRecords((current) =>
       current.map((record) =>
         record.id === paymentId
-          ? { ...record, reserveSetAside: true, setAsideDate: record.setAsideDate || new Date().toISOString().slice(0, 10) }
+          ? markTaxReserveSetAside(record, new Date().toISOString().slice(0, 10))
           : record,
       ),
     );

@@ -374,3 +374,46 @@ export function sanitizeTaxPaymentRecord(
     dateCreated: record.dateCreated || deps.nowIso(),
   };
 }
+
+export type CashPositionRecord = {
+  currentCash: string;
+  reservedTax: string;
+  safetyBuffer: string;
+  lastUpdated: string;
+};
+
+// Editor validation parser: zero is valid; empty or negative values are invalid.
+export function parseCashPositionAmount(value: unknown) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalised = value.replace(/[£$,\s]/g, "");
+
+  if (normalised === "") {
+    return null;
+  }
+
+  if (!/^\+?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalised)) {
+    return null;
+  }
+
+  const parsed = Number(normalised);
+
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+export function markTaxReserveSetAside(
+  payment: TaxPaymentRecord,
+  today: string,
+): TaxPaymentRecord {
+  return {
+    ...payment,
+    reserveSetAside: true,
+    setAsideDate: payment.setAsideDate || today,
+  };
+}

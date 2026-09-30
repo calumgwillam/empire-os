@@ -397,3 +397,72 @@ describe("sanitizeTaxPaymentRecord", () => {
     expect(result.dateCreated).toBe("2026-10-01T12:00:00.000Z");
   });
 });
+
+describe("parseCashPositionAmount", () => {
+  it("accepts valid non-negative money values", async () => {
+    const { parseCashPositionAmount } = await import("./finance");
+
+    expect(parseCashPositionAmount("0")).toBe(0);
+    expect(parseCashPositionAmount("£1,250.50")).toBe(1250.5);
+    expect(parseCashPositionAmount("+75")).toBe(75);
+    expect(parseCashPositionAmount(42)).toBe(42);
+  });
+
+  it("rejects empty, negative and malformed values", async () => {
+    const { parseCashPositionAmount } = await import("./finance");
+
+    expect(parseCashPositionAmount("")).toBeNull();
+    expect(parseCashPositionAmount("   ")).toBeNull();
+    expect(parseCashPositionAmount("-1")).toBeNull();
+    expect(parseCashPositionAmount("12abc")).toBeNull();
+    expect(parseCashPositionAmount(Number.NaN)).toBeNull();
+  });
+});
+
+describe("markTaxReserveSetAside", () => {
+  it("marks the reserve as set aside and adds today's date when missing", async () => {
+    const { markTaxReserveSetAside } = await import("./finance");
+
+    const result = markTaxReserveSetAside(
+      {
+        id: "tax-1",
+        payPeriod: "2026-09",
+        date: "2026-09-30",
+        description: "September pay",
+        grossAmount: "1605",
+        status: "Received",
+        reserveSetAside: false,
+        setAsideDate: "",
+        notes: "",
+        dateCreated: "2026-09-30T12:00:00.000Z",
+      },
+      "2026-10-01",
+    );
+
+    expect(result.reserveSetAside).toBe(true);
+    expect(result.setAsideDate).toBe("2026-10-01");
+  });
+
+  it("preserves an existing set-aside date", async () => {
+    const { markTaxReserveSetAside } = await import("./finance");
+
+    const result = markTaxReserveSetAside(
+      {
+        id: "tax-1",
+        payPeriod: "2026-09",
+        date: "2026-09-30",
+        description: "September pay",
+        grossAmount: "1605",
+        status: "Received",
+        reserveSetAside: false,
+        setAsideDate: "2026-09-30",
+        notes: "",
+        dateCreated: "2026-09-30T12:00:00.000Z",
+      },
+      "2026-10-01",
+    );
+
+    expect(result.reserveSetAside).toBe(true);
+    expect(result.setAsideDate).toBe("2026-09-30");
+  });
+});
