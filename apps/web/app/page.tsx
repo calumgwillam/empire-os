@@ -32,6 +32,15 @@ import {
   type ChangeField,
   type EmpireOsBackup,
 } from "./lib/backup";
+import {
+  findCrossTypeIdCollisions,
+  findDuplicateIds,
+  groupMissingCaptureLineage,
+  summarizeIntegrityIssues,
+  type CaptureLineageReference,
+  type IntegritySeverity,
+  type IntegrityStatus,
+} from "./lib/integrity-core";
 
 const navigation = [
   "Empire OS",
@@ -1319,9 +1328,6 @@ type CommitmentRecord = {
   dateCreated: string;
 };
 
-type IntegritySeverity = "Critical" | "Material" | "Warning";
-type IntegrityStatus = "Healthy" | "Needs attention" | "Integrity risk";
-
 type IntegrityIssue = {
   id: string;
   severity: IntegritySeverity;
@@ -1412,20 +1418,9 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
   }
   if (input.strategicReviews.filter((review) => review.status === "Applied").length > 1) addIssue({ severity: "Critical", category: "Strategic reviews", recordType: "Strategic Review", recordTitle: "Current review", reason: "More than one Applied Strategic Review exists.", nextStep: "Inspect review history and confirm the intended current review before changing it." });
 
-  type MissingCaptureLineageRoot = {
-    records: Map<string, { recordType: string; recordTitle: string; recordId: string }>;
-    recordTypes: Set<string>;
-  };
-  const missingCaptureLineageRoots = new Map<string, MissingCaptureLineageRoot>();
+  const captureLineageReferences: CaptureLineageReference[] = [];
   const trackMissingCaptureLineage = (captureId: string | undefined, recordType: string, recordTitle: string, recordId: string) => {
-    const missingCaptureId = captureId?.trim();
-    if (!missingCaptureId || captureIds.has(missingCaptureId)) return;
-    if (!missingCaptureLineageRoots.has(missingCaptureId)) {
-      missingCaptureLineageRoots.set(missingCaptureId, { records: new Map(), recordTypes: new Set() });
-    }
-    const root = missingCaptureLineageRoots.get(missingCaptureId)!;
-    root.records.set(`${recordType}:${recordId}`, { recordType, recordTitle, recordId });
-    root.recordTypes.add(recordType);
+    captureLineageReferences.push({ captureId, recordType, recordTitle, recordId });
   };
 
   for (const problem of input.problems) {
@@ -1457,6 +1452,7 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
     trackMissingCaptureLineage(sop.relatedCapture, "SOP", sop.sopTitle || sop.title, sop.id);
   }
   for (const project of input.projects) trackMissingCaptureLineage(project.sourceCaptureId, "Project", project.projectName, project.id);
+  const missingCaptureLineageRoots = groupMissingCaptureLineage(captureIds, captureLineageReferences);
 
   const collectionDefinitions: Array<{ type: string; records: Array<{ id: string }>; openObjectType?: string }> = [
     { type: "Capture", records: input.captures },
@@ -1476,12 +1472,7 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
   ];
 
   for (const collection of collectionDefinitions) {
-    const counts = new Map<string, number>();
-    for (const record of collection.records) {
-      if (record.id) counts.set(record.id, (counts.get(record.id) || 0) + 1);
-    }
-    for (const [recordId, count] of counts) {
-      if (count < 2) continue;
+    for (const [recordId, count] of findDuplicateIds(collection.records)) {
       addIssue({
         severity: "Critical",
         category: "Duplicate IDs",
@@ -1496,23 +1487,14 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
     }
   }
 
-  const crossTypeIds = new Map<string, Set<string>>();
-  for (const collection of collectionDefinitions.filter((collection) => collection.type !== "Capture conversion")) {
-    for (const record of collection.records) {
-      if (!record.id) continue;
-      if (!crossTypeIds.has(record.id)) crossTypeIds.set(record.id, new Set());
-      crossTypeIds.get(record.id)!.add(collection.type);
-    }
-  }
-  for (const [recordId, types] of crossTypeIds) {
-    if (types.size < 2) continue;
+  for (const [recordId, types] of findCrossTypeIdCollisions(collectionDefinitions)) {
     addIssue({
       severity: "Material",
       category: "Ambiguous IDs",
       recordType: "Multiple record types",
       recordTitle: "Cross-record ID collision",
       recordId,
-      reason: `The same ID is used by: ${Array.from(types).join(", ")}.`,
+      reason: `The same ID is used by: ${types.join(", ")}.`,
       nextStep: "Inspect all affected records and their relationships before making a manual correction.",
     });
   }
@@ -1757,18 +1739,13 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
     }
   }
 
-  const severityCounts: Record<IntegritySeverity, number> = { Critical: 0, Material: 0, Warning: 0 };
-  const categories = new Map<string, number>();
-  for (const issue of issues) {
-    severityCounts[issue.severity] += 1;
-    categories.set(issue.category, (categories.get(issue.category) || 0) + 1);
-  }
+  const { status, severityCounts, categoryCounts } = summarizeIntegrityIssues(issues);
   return {
     auditedAt: new Date().toISOString(),
-    status: severityCounts.Critical > 0 ? "Integrity risk" : issues.length > 0 ? "Needs attention" : "Healthy",
+    status,
     issues,
     severityCounts,
-    categoryCounts: Array.from(categories, ([category, count]) => ({ category, count })).sort((first, second) => second.count - first.count || first.category.localeCompare(second.category)),
+    categoryCounts,
   };
 }
 
