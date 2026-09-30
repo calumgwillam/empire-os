@@ -277,3 +277,50 @@ export function linkOutreachToLead(
     linkedLeadId: leadId,
   };
 }
+
+type LeadSanitizerDeps = {
+  generateId: () => string;
+  nowIso: () => string;
+  resolvedOwnerName: string | null;
+  isAllowedPillar: (value: string) => boolean;
+};
+
+export function sanitizeLeadRecord(
+  record: LeadRecord,
+  deps: LeadSanitizerDeps,
+): LeadRecord {
+  const leadName = record.leadName.trim();
+  const selectedStatus = record.status.trim();
+  const selectedSource = record.sourceChannel.trim();
+  const selectedPillar = record.relatedPillar.trim();
+
+  return {
+    ...record,
+    id: record.id || deps.generateId(),
+    leadName,
+    contactName: record.contactName.trim(),
+    phone: record.phone.trim(),
+    email: record.email.trim(),
+    location: record.location.trim(),
+    serviceRequested: record.serviceRequested.trim(),
+    sourceChannel: leadSourceOptions.includes(selectedSource as LeadSource)
+      ? (selectedSource as LeadSource)
+      : "Other",
+    sourceDetail: record.sourceDetail.trim(),
+    dateReceived: record.dateReceived,
+    status: leadStatusOptions.includes(selectedStatus as LeadStatus)
+      ? (selectedStatus as LeadStatus)
+      : "New",
+    quoteValue: record.quoteValue.trim(),
+    quoteSentDate: record.quoteSentDate,
+    followUpDate: record.followUpDate,
+    outcome: record.outcome.trim(),
+    finalJobValue: record.finalJobValue.trim(),
+    notes: record.notes.trim(),
+    owner: deps.resolvedOwnerName ?? record.owner.trim(),
+    relatedPillar: deps.isAllowedPillar(selectedPillar)
+      ? selectedPillar
+      : "Garden Maintenance",
+    dateCreated: record.dateCreated || deps.nowIso(),
+  };
+}

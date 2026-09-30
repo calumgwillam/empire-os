@@ -243,3 +243,95 @@ describe("linkOutreachToLead", () => {
     expect(result.notes).toBe("Keep this note");
   });
 });
+
+describe("sanitizeLeadRecord", () => {
+  it("trims editable fields and applies deterministic defaults", async () => {
+    const { sanitizeLeadRecord } = await import("./crm");
+
+    const result = sanitizeLeadRecord(
+      {
+        id: "",
+        leadName: "  Garden enquiry  ",
+        contactName: "  Alex Smith  ",
+        phone: "  07123456789  ",
+        email: "  alex@example.com  ",
+        location: "  Sidcup  ",
+        serviceRequested: "  Hedge cutting  ",
+        sourceChannel: "Referral",
+        sourceDetail: "  Existing customer  ",
+        dateReceived: "2026-09-30",
+        status: "Contacted",
+        quoteValue: " 350 ",
+        quoteSentDate: "2026-09-30",
+        followUpDate: "2026-10-03",
+        outcome: "  Won  ",
+        finalJobValue: " 325 ",
+        notes: "  Call Friday  ",
+        owner: "  Lewis  ",
+        relatedPillar: "Marketing / Growth",
+        dateCreated: "",
+      },
+      {
+        generateId: () => "lead-2",
+        nowIso: () => "2026-10-01T12:00:00.000Z",
+        resolvedOwnerName: "Lewis",
+        isAllowedPillar: (value) => value === "Marketing / Growth",
+      },
+    );
+
+    expect(result.id).toBe("lead-2");
+    expect(result.leadName).toBe("Garden enquiry");
+    expect(result.contactName).toBe("Alex Smith");
+    expect(result.phone).toBe("07123456789");
+    expect(result.email).toBe("alex@example.com");
+    expect(result.location).toBe("Sidcup");
+    expect(result.serviceRequested).toBe("Hedge cutting");
+    expect(result.sourceDetail).toBe("Existing customer");
+    expect(result.quoteValue).toBe("350");
+    expect(result.outcome).toBe("Won");
+    expect(result.finalJobValue).toBe("325");
+    expect(result.notes).toBe("Call Friday");
+    expect(result.owner).toBe("Lewis");
+    expect(result.relatedPillar).toBe("Marketing / Growth");
+    expect(result.dateCreated).toBe("2026-10-01T12:00:00.000Z");
+  });
+
+  it("falls back safely for invalid source, status and pillar values", async () => {
+    const { sanitizeLeadRecord } = await import("./crm");
+
+    const record = {
+      id: "lead-1",
+      leadName: "Lead",
+      contactName: "",
+      phone: "",
+      email: "",
+      location: "",
+      serviceRequested: "",
+      sourceChannel: "Invalid source",
+      sourceDetail: "",
+      dateReceived: "",
+      status: "Invalid status",
+      quoteValue: "",
+      quoteSentDate: "",
+      followUpDate: "",
+      outcome: "",
+      finalJobValue: "",
+      notes: "",
+      owner: "  Unknown Owner  ",
+      relatedPillar: "Invalid pillar",
+      dateCreated: "2026-09-30T12:00:00.000Z",
+    } as unknown as import("./crm").LeadRecord;
+
+    const result = sanitizeLeadRecord(record, {
+      generateId: () => "unused",
+      nowIso: () => "unused",
+      resolvedOwnerName: null,
+      isAllowedPillar: () => false,
+    });
+
+    expect(result.sourceChannel).toBe("Other");
+    expect(result.status).toBe("New");
+    expect(result.owner).toBe("Unknown Owner");
+    expect(result.relatedPillar).toBe("Garden Maintenance");
+  });
+});

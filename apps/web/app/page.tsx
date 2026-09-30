@@ -17,6 +17,7 @@ import {
   outreachContactTypeOptions,
   outreachStatusOptions,
   sanitizeOutreachRecord,
+  sanitizeLeadRecord,
   type LeadRecord,
   type LeadSource,
   type LeadStatus,
@@ -18891,33 +18892,13 @@ const isOwnershipGap =
     const selectedOwner = people.find((person) =>
       person.status === "Active" && person.name === leadEditor.owner.trim(),
     );
-    const selectedStatus = leadEditor.status.trim();
-    const selectedSource = leadEditor.sourceChannel.trim();
-    const selectedPillar = leadEditor.relatedPillar.trim();
-
-    const nextLead: LeadRecord = {
-      ...leadEditor,
-      id: leadEditor.id || generateLeadId(),
-      leadName,
-      contactName: leadEditor.contactName.trim(),
-      phone: leadEditor.phone.trim(),
-      email: leadEditor.email.trim(),
-      location: leadEditor.location.trim(),
-      serviceRequested: leadEditor.serviceRequested.trim(),
-      sourceChannel: leadSourceOptions.includes(selectedSource as LeadSource) ? (selectedSource as LeadSource) : "Other",
-      sourceDetail: leadEditor.sourceDetail.trim(),
-      dateReceived: leadEditor.dateReceived,
-      status: leadStatusOptions.includes(selectedStatus as LeadStatus) ? (selectedStatus as LeadStatus) : "New",
-      quoteValue: leadEditor.quoteValue.trim(),
-      quoteSentDate: leadEditor.quoteSentDate,
-      followUpDate: leadEditor.followUpDate,
-      outcome: leadEditor.outcome.trim(),
-      finalJobValue: leadEditor.finalJobValue.trim(),
-      notes: leadEditor.notes.trim(),
-      owner: selectedOwner ? selectedOwner.name : leadEditor.owner.trim(),
-      relatedPillar: sharedAreaOptions.includes(selectedPillar as (typeof sharedAreaOptions)[number]) ? selectedPillar : "Garden Maintenance",
-      dateCreated: leadEditor.dateCreated || new Date().toISOString(),
-    };
+    const nextLead = sanitizeLeadRecord(leadEditor, {
+      generateId: generateLeadId,
+      nowIso: () => new Date().toISOString(),
+      resolvedOwnerName: selectedOwner ? selectedOwner.name : null,
+      isAllowedPillar: (value) =>
+        sharedAreaOptions.includes(value as (typeof sharedAreaOptions)[number]),
+    });
     const isNewLead = !leads.some((lead) => lead.id === nextLead.id);
     const persistedLead = leads.find((lead) => lead.id === nextLead.id);
     const applySave = () => setLeads((currentLeads) =>
