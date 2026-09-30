@@ -1,6 +1,37 @@
 "use client";
 
 import { createContext, FormEvent, ReactNode, useContext, useEffect, useRef, useState } from "react";
+import {
+  BACKUP_FORMAT,
+  BACKUP_VERSION,
+  CASH_POSITION_STORAGE_KEY,
+  CHANGE_HISTORY_STORAGE_KEY,
+  COMMITMENT_STORAGE_KEY,
+  CONVERSION_STORAGE_KEY,
+  DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+  DEFAULT_SAVED_VIEW_STORAGE_KEY,
+  DELEGATION_HANDOFF_STORAGE_KEY,
+  EMPIRE_OS_BACKUP_STORAGE_KEYS,
+  EXPENSE_STORAGE_KEY,
+  getBackupHealth,
+  INCOME_STORAGE_KEY,
+  isPlainObject,
+  isValidChangeEvent,
+  LEAD_STORAGE_KEY,
+  OUTREACH_STORAGE_KEY,
+  PERSON_STORAGE_KEY,
+  PROJECT_STORAGE_KEY,
+  SAVED_VIEWS_STORAGE_KEY,
+  STORAGE_KEY,
+  STRATEGIC_OBJECTIVES_STORAGE_KEY,
+  STRATEGIC_REVIEWS_STORAGE_KEY,
+  TAX_PAYMENT_STORAGE_KEY,
+  validateEmpireOsBackup,
+  WORKING_RELATIONSHIP_STORAGE_KEY,
+  type ChangeEvent,
+  type ChangeField,
+  type EmpireOsBackup,
+} from "./lib/backup";
 
 const navigation = [
   "Empire OS",
@@ -22,27 +53,8 @@ const navigation = [
   "Pillars",
 ];
 
-const STORAGE_KEY = "empire-os-captures";
-const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
-const PERSON_STORAGE_KEY = "empire-os-people";
-const PROJECT_STORAGE_KEY = "empire-os-projects";
-const LEAD_STORAGE_KEY = "empire-os-leads";
-const OUTREACH_STORAGE_KEY = "empire-os-outreach-contacts";
-const DELEGATION_HANDOFF_STORAGE_KEY = "empire-os-delegation-handoffs";
-const CASH_POSITION_STORAGE_KEY = "empire-os-cash-position";
-const INCOME_STORAGE_KEY = "empire-os-income-records";
-const EXPENSE_STORAGE_KEY = "empire-os-expense-records";
-const COMMITMENT_STORAGE_KEY = "empire-os-financial-commitments";
-const TAX_PAYMENT_STORAGE_KEY = "empire-os-tax-payment-records";
-const SAVED_VIEWS_STORAGE_KEY = "empire-os-records-in-motion-views";
-const DEFAULT_SAVED_VIEW_STORAGE_KEY = "empire-os-records-in-motion-default-view";
-const DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY = "empire-os-daily-posture-snapshots";
 const LAST_BACKUP_AT_STORAGE_KEY = "empire-os-last-backup-at";
 const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
-const CHANGE_HISTORY_STORAGE_KEY = "empire-os-change-history";
-const STRATEGIC_OBJECTIVES_STORAGE_KEY = "empire-os-strategic-objectives";
-const STRATEGIC_REVIEWS_STORAGE_KEY = "empire-os-strategic-reviews";
-const WORKING_RELATIONSHIP_STORAGE_KEY = "empire-os-working-relationships";
 
 const reviewTriggers = ["Weekly", "Major change", "Project completed", "Founder initiated"] as const;
 const reviewGapTypes = ["Execution Gap", "Decision Gap", "Knowledge Gap", "Capability Gap"] as const;
@@ -186,41 +198,7 @@ function isStrategicObjectiveRecord(value: unknown): value is StrategicObjective
     && value.overrides.every((entry: unknown) => isPlainObject(entry) && ["id", "chosenAlternative", "rationale", "timestamp", "actor"].every((field) => typeof entry[field] === "string"));
 }
 
-const BACKUP_FORMAT = "empire-os-backup";
-const BACKUP_VERSION = 1;
-const SUPPORTED_BACKUP_VERSIONS = [BACKUP_VERSION] as const;
-const BACKUP_CURRENT_DAYS = 7;
-const BACKUP_STALE_DAYS = 30;
 const INTEGRITY_MATERIAL_ATTENTION_THRESHOLD = 3;
-
-const EMPIRE_OS_BACKUP_STORAGE_KEYS = [
-  STORAGE_KEY,
-  CONVERSION_STORAGE_KEY,
-  PERSON_STORAGE_KEY,
-  PROJECT_STORAGE_KEY,
-  LEAD_STORAGE_KEY,
-  OUTREACH_STORAGE_KEY,
-  DELEGATION_HANDOFF_STORAGE_KEY,
-  CASH_POSITION_STORAGE_KEY,
-  INCOME_STORAGE_KEY,
-  EXPENSE_STORAGE_KEY,
-  COMMITMENT_STORAGE_KEY,
-  TAX_PAYMENT_STORAGE_KEY,
-  SAVED_VIEWS_STORAGE_KEY,
-  DEFAULT_SAVED_VIEW_STORAGE_KEY,
-  DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
-  CHANGE_HISTORY_STORAGE_KEY,
-  STRATEGIC_OBJECTIVES_STORAGE_KEY,
-  STRATEGIC_REVIEWS_STORAGE_KEY,
-  WORKING_RELATIONSHIP_STORAGE_KEY,
-] as const;
-
-type EmpireOsBackup = {
-  format: typeof BACKUP_FORMAT;
-  version: number;
-  createdAt: string;
-  storage: Record<string, string | null>;
-};
 
 type BackupStoreSummary = {
   label: string;
@@ -248,10 +226,6 @@ const backupSummaryStores = [
   { key: STRATEGIC_REVIEWS_STORAGE_KEY, label: "Strategic reviews" },
   { key: WORKING_RELATIONSHIP_STORAGE_KEY, label: "Working relationships" },
 ] as const;
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function reviewShapeIssues(value: unknown): string[] {
   if (!isPlainObject(value)) return ["Review is not an object."];
@@ -300,29 +274,7 @@ function isStrategicReview(value: unknown): value is StrategicReview {
   return reviewShapeIssues(value).length === 0;
 }
 
-type ChangeField = { field: string; before: unknown; after: unknown };
-type ChangeEvent = {
-  id: string;
-  timestamp: string;
-  recordType: string;
-  recordId: string;
-  recordTitle: string;
-  actor: string;
-  action: "Created" | "Updated" | "Status changed" | "Ownership changed" | "Deleted" | "Archived";
-  changes: ChangeField[];
-};
-
 const ChangeHistoryContext = createContext<ChangeEvent[]>([]);
-
-function isValidChangeEvent(value: unknown): value is ChangeEvent {
-  return isPlainObject(value)
-    && [value.id, value.recordType, value.recordId, value.timestamp, value.actor, value.action].every((entry) => typeof entry === "string" && entry.trim().length > 0)
-    && typeof value.recordTitle === "string"
-    && ["Created", "Updated", "Status changed", "Ownership changed", "Deleted", "Archived"].includes(value.action as string)
-    && !Number.isNaN(new Date(value.timestamp as string).getTime())
-    && Array.isArray(value.changes)
-    && value.changes.every((change: unknown) => isPlainObject(change) && typeof change.field === "string" && change.field.length > 0 && "before" in change && "after" in change);
-}
 
 function diffChangeFields(before: Record<string, unknown> | undefined, after: Record<string, unknown> | undefined): ChangeField[] {
   const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
@@ -353,83 +305,6 @@ function diffChangeRecords(recordType: string, previous: Record<string, unknown>
   return events;
 }
 
-function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
-  if (!isPlainObject(value)) throw new Error("The selected file does not contain a JSON object.");
-  if (value.format !== BACKUP_FORMAT) throw new Error("This is not an Empire OS full-backup file.");
-  if (typeof value.version !== "number" || !SUPPORTED_BACKUP_VERSIONS.includes(value.version as typeof BACKUP_VERSION)) {
-    throw new Error(`Backup version ${String(value.version)} is not supported. Supported version: ${BACKUP_VERSION}.`);
-  }
-  if (typeof value.createdAt !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(value.createdAt) || Number.isNaN(new Date(value.createdAt).getTime())) {
-    throw new Error("The backup creation date is missing or invalid.");
-  }
-  if (!isPlainObject(value.storage)) throw new Error("The backup storage section is missing or invalid.");
-  if (Object.keys(value.storage).length === 0) throw new Error("The backup storage section is empty.");
-
-  const supportedKeys = new Set<string>(EMPIRE_OS_BACKUP_STORAGE_KEYS);
-  const storage: Record<string, string | null> = {};
-  for (const [key, storedValue] of Object.entries(value.storage)) {
-    if (!supportedKeys.has(key)) throw new Error(`The backup contains an unsupported storage key: ${key}.`);
-    if (storedValue !== null && typeof storedValue !== "string") {
-      throw new Error(`The stored value for ${key} must be a string or null.`);
-    }
-    storage[key] = storedValue;
-  }
-
-  const arrayStorageKeys = [
-    STORAGE_KEY,
-    CONVERSION_STORAGE_KEY,
-    PERSON_STORAGE_KEY,
-    PROJECT_STORAGE_KEY,
-    LEAD_STORAGE_KEY,
-    OUTREACH_STORAGE_KEY,
-    DELEGATION_HANDOFF_STORAGE_KEY,
-    INCOME_STORAGE_KEY,
-    EXPENSE_STORAGE_KEY,
-    COMMITMENT_STORAGE_KEY,
-    TAX_PAYMENT_STORAGE_KEY,
-    SAVED_VIEWS_STORAGE_KEY,
-    DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
-    CHANGE_HISTORY_STORAGE_KEY,
-    STRATEGIC_OBJECTIVES_STORAGE_KEY,
-    STRATEGIC_REVIEWS_STORAGE_KEY,
-    WORKING_RELATIONSHIP_STORAGE_KEY,
-  ];
-  for (const key of arrayStorageKeys) {
-    const storedValue = storage[key];
-    if (typeof storedValue !== "string") continue;
-    try {
-      if (!Array.isArray(JSON.parse(storedValue))) throw new Error();
-    } catch {
-      throw new Error(`The backup contains invalid array data for ${key}.`);
-    }
-  }
-
-  if (typeof storage[CHANGE_HISTORY_STORAGE_KEY] === "string") {
-    try {
-      const events: unknown = JSON.parse(storage[CHANGE_HISTORY_STORAGE_KEY]);
-      if (!Array.isArray(events) || !events.every(isValidChangeEvent)) throw new Error();
-    } catch {
-      throw new Error("The backup contains invalid change history events.");
-    }
-  }
-
-  const cashValue = storage[CASH_POSITION_STORAGE_KEY];
-  if (typeof cashValue === "string") {
-    try {
-      if (!isPlainObject(JSON.parse(cashValue))) throw new Error();
-    } catch {
-      throw new Error(`The backup contains invalid object data for ${CASH_POSITION_STORAGE_KEY}.`);
-    }
-  }
-
-  return {
-    format: BACKUP_FORMAT,
-    version: value.version,
-    createdAt: value.createdAt,
-    storage,
-  };
-}
-
 function summarizeBackupStores(storage: Record<string, string | null>): BackupStoreSummary[] {
   return backupSummaryStores
     .filter(({ key }) => Object.prototype.hasOwnProperty.call(storage, key))
@@ -443,16 +318,6 @@ function summarizeBackupStores(storage: Record<string, string | null>): BackupSt
         return { label, count: null };
       }
     });
-}
-
-function getBackupHealth(lastBackupAt: string, nowMs = Date.now()) {
-  if (!lastBackupAt) return { label: "No backup recorded", tone: "text-[#6b655f]" };
-  const backupMs = new Date(lastBackupAt).getTime();
-  if (Number.isNaN(backupMs)) return { label: "No backup recorded", tone: "text-[#6b655f]" };
-  const ageDays = Math.max(0, (nowMs - backupMs) / (1000 * 60 * 60 * 24));
-  if (ageDays <= BACKUP_CURRENT_DAYS) return { label: "Current", tone: "text-[#315b45]" };
-  if (ageDays <= BACKUP_STALE_DAYS) return { label: "Getting stale", tone: "text-[#755520]" };
-  return { label: "Stale", tone: "text-[#7a352b]" };
 }
 
 const sharedAreaOptions = [
