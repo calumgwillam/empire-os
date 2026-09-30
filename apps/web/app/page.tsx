@@ -41,6 +41,7 @@ import {
   type IntegritySeverity,
   type IntegrityStatus,
 } from "./lib/integrity-core";
+import { persistJsonArray, persistJsonValue } from "./lib/persistence";
 
 const navigation = [
   "Empire OS",
@@ -10276,11 +10277,7 @@ export default function Home() {
       return;
     }
 
-    if (captures.length === 0) {
-      window.localStorage.removeItem(STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(captures));
-    }
+    persistJsonArray(window.localStorage, STORAGE_KEY, captures);
   }, [captures, operatingDataLoaded]);
 
   useEffect(() => {
@@ -10288,11 +10285,7 @@ export default function Home() {
       return;
     }
 
-    if (conversions.length === 0) {
-      window.localStorage.removeItem(CONVERSION_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(CONVERSION_STORAGE_KEY, JSON.stringify(conversions));
-    }
+    persistJsonArray(window.localStorage, CONVERSION_STORAGE_KEY, conversions);
   }, [conversions, operatingDataLoaded]);
 
   useEffect(() => {
@@ -10300,11 +10293,7 @@ export default function Home() {
       return;
     }
 
-    if (people.length === 0) {
-      window.localStorage.removeItem(PERSON_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(PERSON_STORAGE_KEY, JSON.stringify(people));
-    }
+    persistJsonArray(window.localStorage, PERSON_STORAGE_KEY, people);
   }, [people, operatingDataLoaded]);
 
   useEffect(() => {
@@ -10312,11 +10301,7 @@ export default function Home() {
       return;
     }
 
-    if (projects.length === 0) {
-      window.localStorage.removeItem(PROJECT_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(projects));
-    }
+    persistJsonArray(window.localStorage, PROJECT_STORAGE_KEY, projects);
   }, [projects, operatingDataLoaded]);
 
   useEffect(() => {
@@ -10324,11 +10309,7 @@ export default function Home() {
       return;
     }
 
-    if (leads.length === 0) {
-      window.localStorage.removeItem(LEAD_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(LEAD_STORAGE_KEY, JSON.stringify(leads));
-    }
+    persistJsonArray(window.localStorage, LEAD_STORAGE_KEY, leads);
   }, [leads, operatingDataLoaded]);
 
   useEffect(() => {
@@ -10336,11 +10317,7 @@ export default function Home() {
       return;
     }
 
-    if (delegationHandoffs.length === 0) {
-      window.localStorage.removeItem(DELEGATION_HANDOFF_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(DELEGATION_HANDOFF_STORAGE_KEY, JSON.stringify(delegationHandoffs));
-    }
+    persistJsonArray(window.localStorage, DELEGATION_HANDOFF_STORAGE_KEY, delegationHandoffs);
   }, [delegationHandoffs, operatingDataLoaded]);
 
   useEffect(() => {
@@ -10348,11 +10325,7 @@ export default function Home() {
       return;
     }
 
-    if (workingRelationships.length === 0) {
-      window.localStorage.removeItem(WORKING_RELATIONSHIP_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(WORKING_RELATIONSHIP_STORAGE_KEY, JSON.stringify(workingRelationships));
-    }
+    persistJsonArray(window.localStorage, WORKING_RELATIONSHIP_STORAGE_KEY, workingRelationships);
   }, [workingRelationships, operatingDataLoaded]);
 
   useEffect(() => {
@@ -10361,7 +10334,7 @@ export default function Home() {
       return;
     }
 
-    window.localStorage.setItem(CASH_POSITION_STORAGE_KEY, JSON.stringify(cashPosition));
+    persistJsonValue(window.localStorage, CASH_POSITION_STORAGE_KEY, cashPosition);
   }, [cashPosition, operatingDataLoaded]);
 
   useEffect(() => {
@@ -10369,11 +10342,7 @@ export default function Home() {
       return;
     }
 
-    if (incomeRecords.length === 0) {
-      window.localStorage.removeItem(INCOME_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(INCOME_STORAGE_KEY, JSON.stringify(incomeRecords));
-    }
+    persistJsonArray(window.localStorage, INCOME_STORAGE_KEY, incomeRecords);
   }, [incomeRecords, operatingDataLoaded]);
 
   useEffect(() => {
@@ -10381,11 +10350,7 @@ export default function Home() {
       return;
     }
 
-    if (expenseRecords.length === 0) {
-      window.localStorage.removeItem(EXPENSE_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(EXPENSE_STORAGE_KEY, JSON.stringify(expenseRecords));
-    }
+    persistJsonArray(window.localStorage, EXPENSE_STORAGE_KEY, expenseRecords);
   }, [expenseRecords, operatingDataLoaded]);
 
   useEffect(() => {
@@ -10393,11 +10358,7 @@ export default function Home() {
       return;
     }
 
-    if (commitmentRecords.length === 0) {
-      window.localStorage.removeItem(COMMITMENT_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(COMMITMENT_STORAGE_KEY, JSON.stringify(commitmentRecords));
-    }
+    persistJsonArray(window.localStorage, COMMITMENT_STORAGE_KEY, commitmentRecords);
   }, [commitmentRecords, operatingDataLoaded]);
 
   useEffect(() => {
@@ -10405,11 +10366,7 @@ export default function Home() {
       return;
     }
 
-    if (taxPaymentRecords.length === 0) {
-      window.localStorage.removeItem(TAX_PAYMENT_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(TAX_PAYMENT_STORAGE_KEY, JSON.stringify(taxPaymentRecords));
-    }
+    persistJsonArray(window.localStorage, TAX_PAYMENT_STORAGE_KEY, taxPaymentRecords);
   }, [taxPaymentRecords, operatingDataLoaded]);
 
   useEffect(() => {
@@ -10417,11 +10374,7 @@ export default function Home() {
       return;
     }
 
-    if (outreachContacts.length === 0) {
-      window.localStorage.removeItem(OUTREACH_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(OUTREACH_STORAGE_KEY, JSON.stringify(outreachContacts));
-    }
+    persistJsonArray(window.localStorage, OUTREACH_STORAGE_KEY, outreachContacts);
   }, [outreachContacts, operatingDataLoaded]);
 
   useEffect(() => {
