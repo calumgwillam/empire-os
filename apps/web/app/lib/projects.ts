@@ -115,3 +115,85 @@ export function isProjectReviewDue(
     && reviewMs <= new Date(nowMs).setHours(0, 0, 0, 0)
   );
 }
+
+type ProjectSanitizerDeps = {
+  generateId: () => string;
+  resolvedOwnerName: string | null;
+  isAllowedArea: (value: string) => boolean;
+};
+
+export function normalizeProjectDate(value: string): string {
+  const dateValue = value.trim();
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+    return "";
+  }
+
+  const parsedDate = new Date(`${dateValue}T00:00:00`);
+  const [year, month, day] = dateValue.split("-").map(Number);
+
+  return (
+    !Number.isNaN(parsedDate.getTime())
+    && parsedDate.getFullYear() === year
+    && parsedDate.getMonth() === month - 1
+    && parsedDate.getDate() === day
+  )
+    ? dateValue
+    : "";
+}
+
+export function sanitizeProjectRecord(
+  project: ProjectRecord,
+  deps: ProjectSanitizerDeps,
+): ProjectRecord | null {
+  const projectName = project.projectName.trim();
+  const startDate = normalizeProjectDate(project.startDate);
+  const targetCompletionDate = normalizeProjectDate(project.targetCompletionDate);
+  const nextReviewDate = normalizeProjectDate(project.nextReviewDate || "");
+
+  if (
+    !projectName
+    || (
+      startDate
+      && targetCompletionDate
+      && targetCompletionDate < startDate
+    )
+  ) {
+    return null;
+  }
+
+  const selectedArea = project.area.trim();
+  const selectedStatus = project.status.trim();
+
+  return {
+    ...project,
+    id: project.id || deps.generateId(),
+    projectName,
+    owner: deps.resolvedOwnerName ?? "",
+    area: deps.isAllowedArea(selectedArea)
+      ? selectedArea
+      : "Garden Maintenance",
+    startDate,
+    targetCompletionDate,
+    status: projectStatusOptions.includes(
+      selectedStatus as (typeof projectStatusOptions)[number],
+    )
+      ? selectedStatus
+      : "Open",
+    health: getEffectiveProjectHealth(project),
+    nextReviewDate,
+    lastReviewedDate: normalizeProjectDate(project.lastReviewedDate || ""),
+    reviewOwner: (project.reviewOwner || "").trim(),
+    reviewOwnerPersonId: (project.reviewOwnerPersonId || "").trim(),
+    reviewNote: (project.reviewNote || "").trim(),
+    lastReviewOutcome: projectReviewOutcomeOptions.includes(
+      project.lastReviewOutcome as ProjectReviewOutcome,
+    )
+      ? project.lastReviewOutcome
+      : undefined,
+    relatedActionIds: project.relatedActionIds ?? [],
+    relatedDecisionIds: project.relatedDecisionIds ?? [],
+    relatedSystemIds: project.relatedSystemIds ?? [],
+    relatedSopIds: project.relatedSopIds ?? [],
+  };
+}
