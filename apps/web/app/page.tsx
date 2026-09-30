@@ -1,6 +1,21 @@
 "use client";
 
 import {
+  getEffectiveProjectHealth,
+  isProjectReviewDue,
+  isProjectReviewFuture,
+  projectExecutionAuthorityOptions,
+  projectHealthOptions,
+  projectReviewOutcomeOptions,
+  projectStatusOptions,
+  type ProjectConversionDraft,
+  type ProjectExecutionAuthority,
+  type ProjectHealth,
+  type ProjectRecord,
+  type ProjectReviewOutcome,
+} from "./lib/projects";
+
+import {
   buildAcquisitionAnalytics,
   getWonLeadValue,
 } from "./lib/acquisition-analytics";
@@ -954,59 +969,6 @@ type DelegationHandoffViewItem = DelegationHandoffRecord & {
 };
 type DelegationHandoffUpdate = Partial<Pick<DelegationHandoffRecord, "status" | "reviewDate" | "handoffReason" | "outcomeLesson" | "reviewNote" | "lastReviewDecision" | "lastReviewedAt">>;
 
-type ProjectRecord = {
-  id: string;
-  projectName: string;
-  owner: string;
-  area: string;
-  startDate: string;
-  targetCompletionDate: string;
-  status: string;
-  health?: ProjectHealth;
-  nextReviewDate?: string;
-  lastReviewedDate?: string;
-  reviewOwner?: string;
-  reviewOwnerPersonId?: string;
-  reviewNote?: string;
-  lastReviewOutcome?: ProjectReviewOutcome;
-  relatedActionIds?: string[];
-  relatedDecisionIds?: string[];
-  relatedSystemIds?: string[];
-  relatedSopIds?: string[];
-  sourceCaptureId?: string;
-  title?: string;
-  originalRawNote?: string;
-  createdAt?: string;
-  executionAuthority?: ProjectExecutionAuthority;
-};
-
-type ProjectConversionDraft = Pick<ProjectRecord, "projectName" | "owner" | "area" | "targetCompletionDate" | "status">;
-
-const projectExecutionAuthorityOptions = ["Normal", "Founder Authority Required", "Delegable"] as const;
-type ProjectExecutionAuthority = (typeof projectExecutionAuthorityOptions)[number];
-
-const projectHealthOptions = ["On track", "At risk", "Blocked", "Waiting"] as const;
-type ProjectHealth = (typeof projectHealthOptions)[number];
-const projectReviewOutcomeOptions = ["Continue", "Correct course", "Waiting on dependency", "Blocked", "Reassign", "Complete", "Cancel"] as const;
-type ProjectReviewOutcome = (typeof projectReviewOutcomeOptions)[number];
-
-function getEffectiveProjectHealth(project: Pick<ProjectRecord, "health" | "status">): ProjectHealth {
-  if (projectHealthOptions.includes(project.health as ProjectHealth)) return project.health as ProjectHealth;
-  return project.status.trim().toLowerCase() === "blocked" ? "Blocked" : "On track";
-}
-
-function isProjectReviewFuture(project: Pick<ProjectRecord, "nextReviewDate">, nowMs = Date.now()): boolean {
-  if (!project.nextReviewDate) return false;
-  const reviewMs = new Date(`${project.nextReviewDate.slice(0, 10)}T00:00:00`).getTime();
-  return !Number.isNaN(reviewMs) && reviewMs > new Date(nowMs).setHours(0, 0, 0, 0);
-}
-
-function isProjectReviewDue(project: Pick<ProjectRecord, "nextReviewDate">, nowMs = Date.now()): boolean {
-  if (!project.nextReviewDate) return false;
-  const reviewMs = new Date(`${project.nextReviewDate.slice(0, 10)}T00:00:00`).getTime();
-  return !Number.isNaN(reviewMs) && reviewMs <= new Date(nowMs).setHours(0, 0, 0, 0);
-}
-
 type DecisionExecutionState = "No execution path" | "Active execution" | "Blocked execution" | "Completed execution";
 
 function deriveDecisionExecutionState(decision: DecisionRecord, actions: ActionRecord[], projects: ProjectRecord[]) {
@@ -1041,7 +1003,6 @@ function deriveDecisionExecutionState(decision: DecisionRecord, actions: ActionR
   };
 }
 
-const projectStatusOptions = ["Open", "In Progress", "Blocked", "Completed", "Cancelled"] as const;
 
 const expenseCategoryOptions = ["Materials", "Equipment", "Fuel", "Labour", "Subcontractor", "Insurance", "Marketing", "Software", "Vehicle", "Other"] as const;
 
