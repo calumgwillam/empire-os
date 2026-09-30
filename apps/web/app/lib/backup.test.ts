@@ -4,10 +4,16 @@ import {
   BACKUP_VERSION,
   CASH_POSITION_STORAGE_KEY,
   CHANGE_HISTORY_STORAGE_KEY,
+  EMPIRE_OS_BACKUP_STORAGE_KEYS,
+  PERSON_STORAGE_KEY,
   PROJECT_STORAGE_KEY,
   STORAGE_KEY,
+  buildFullBackup,
   getBackupHealth,
+  runBackupRestoreTransaction,
   validateEmpireOsBackup,
+  type BackupStorage,
+  type EmpireOsBackup,
 } from "./backup";
 
 const validChangeEvent = {
@@ -138,5 +144,158 @@ describe("getBackupHealth", () => {
   it("reports Stale after 30 days", () => {
     expect(getBackupHealth(new Date(Date.parse(daysAgo(30)) - 1).toISOString(), nowMs).label).toBe("Stale");
     expect(getBackupHealth(daysAgo(365), nowMs).label).toBe("Stale");
+  });
+});
+
+class MemoryStorage implements BackupStorage {
+  data = new Map<string, string>();
+  writes: string[] = [];
+  onSet?: (key: string, value: string) => string;
+  onRemove?: (key: string) => void;
+
+  constructor(initial: Record<string, string> = {}) {
+    for (const [key, value] of Object.entries(initial)) this.data.set(key, value);
+  }
+
+  getItem(key: string) {
+    return this.data.has(key) ? this.data.get(key)! : null;
+  }
+
+  setItem(key: string, value: string) {
+    this.writes.push(`set:${key}`);
+    this.data.set(key, this.onSet ? this.onSet(key, value) : value);
+  }
+
+  removeItem(key: string) {
+    this.writes.push(`remove:${key}`);
+    this.onRemove?.(key);
+    this.data.delete(key);
+  }
+
+  snapshot() {
+    return Object.fromEntries(this.data);
+  }
+}
+
+const initialLiveData = {
+  [STORAGE_KEY]: "[\"old-capture\"]",
+  [CASH_POSITION_STORAGE_KEY]: "{\"currentCash\":\"50\"}",
+  "unrelated-key": "untouched",
+};
+
+const restoreBackup: EmpireOsBackup = {
+  format: BACKUP_FORMAT,
+  version: BACKUP_VERSION,
+  createdAt: "2026-01-01T12:00:00.000Z",
+  storage: {
+    [STORAGE_KEY]: "[\"new-capture\"]",
+    [PROJECT_STORAGE_KEY]: "[\"new-project\"]",
+    [PERSON_STORAGE_KEY]: null,
+  },
+};
+
+describe("buildFullBackup", () => {
+  it("uses the current format and version with a deterministic createdAt", () => {
+    const backup = buildFullBackup(new MemoryStorage(), "2026-09-30T08:00:00.000Z");
+    expect(backup.format).toBe(BACKUP_FORMAT);
+    expect(backup.version).toBe(BACKUP_VERSION);
+    expect(backup.createdAt).toBe("2026-09-30T08:00:00.000Z");
+  });
+
+  it("captures exactly the supported keys, with missing values as null", () => {
+    const backup = buildFullBackup(new MemoryStorage(initialLiveData), "2026-09-30T08:00:00.000Z");
+    expect(Object.keys(backup.storage)).toEqual([...EMPIRE_OS_BACKUP_STORAGE_KEYS]);
+    expect(backup.storage[STORAGE_KEY]).toBe(initialLiveData[STORAGE_KEY]);
+    expect(backup.storage[CASH_POSITION_STORAGE_KEY]).toBe(initialLiveData[CASH_POSITION_STORAGE_KEY]);
+    expect(backup.storage[PROJECT_STORAGE_KEY]).toBeNull();
+    expect(backup.storage).not.toHaveProperty("unrelated-key");
+  });
+
+  it("defaults createdAt to a valid ISO timestamp and passes validation", () => {
+    const backup = buildFullBackup(new MemoryStorage(initialLiveData));
+    expect(Number.isNaN(Date.parse(backup.createdAt))).toBe(false);
+    expect(validateEmpireOsBackup(JSON.parse(JSON.stringify(backup)))).toEqual(backup);
+  });
+});
+
+describe("runBackupRestoreTransaction", () => {
+  it("writes backup values and removes keys that are null or missing in the backup", () => {
+    const storage = new MemoryStorage({ ...initialLiveData, [PERSON_STORAGE_KEY]: "[\"old-person\"]" });
+    const result = runBackupRestoreTransaction(storage, restoreBackup);
+
+    expect(result).toEqual({ ok: true });
+    expect(storage.snapshot()).toEqual({
+      [STORAGE_KEY]: "[\"new-capture\"]",
+      [PROJECT_STORAGE_KEY]: "[\"new-project\"]",
+      "unrelated-key": "untouched",
+    });
+  });
+
+  it("runs beforeWrites after the snapshot and before any live write", () => {
+    const storage = new MemoryStorage(initialLiveData);
+    let safetyBackup: EmpireOsBackup | null = null;
+    runBackupRestoreTransaction(storage, restoreBackup, () => {
+      expect(storage.writes).toEqual([]);
+      safetyBackup = buildFullBackup(storage, "2026-09-30T08:00:00.000Z");
+    });
+    expect(safetyBackup).toEqual(buildFullBackup(new MemoryStorage(initialLiveData), "2026-09-30T08:00:00.000Z"));
+  });
+
+  it("changes no live data when beforeWrites fails", () => {
+    const storage = new MemoryStorage(initialLiveData);
+    const failure = new Error("download failed");
+    const result = runBackupRestoreTransaction(storage, restoreBackup, () => {
+      throw failure;
+    });
+
+    expect(result).toEqual({ ok: false, error: failure, writesStarted: false, rollbackFailures: [] });
+    expect(storage.writes).toEqual([]);
+    expect(storage.snapshot()).toEqual(initialLiveData);
+  });
+
+  it("rolls back previously-present and previously-absent keys when verification fails", () => {
+    const storage = new MemoryStorage(initialLiveData);
+    storage.onSet = (key, value) => (key === PROJECT_STORAGE_KEY ? "corrupted" : value);
+    const result = runBackupRestoreTransaction(storage, restoreBackup);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.writesStarted).toBe(true);
+    expect((result.error as Error).message).toBe(`Verification failed for: ${PROJECT_STORAGE_KEY}.`);
+    expect(result.rollbackFailures).toEqual([]);
+    expect(storage.snapshot()).toEqual(initialLiveData);
+  });
+
+  it("rolls back when a write throws", () => {
+    const storage = new MemoryStorage(initialLiveData);
+    storage.onSet = (key, value) => {
+      if (key === PROJECT_STORAGE_KEY) throw new Error("QuotaExceededError");
+      return value;
+    };
+    const result = runBackupRestoreTransaction(storage, restoreBackup);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.writesStarted).toBe(true);
+    expect((result.error as Error).message).toBe("QuotaExceededError");
+    expect(result.rollbackFailures).toEqual([]);
+    expect(storage.snapshot()).toEqual(initialLiveData);
+  });
+
+  it("reports keys whose rollback could not be verified or threw", () => {
+    const storage = new MemoryStorage(initialLiveData);
+    storage.onSet = (key, value) => (key === STORAGE_KEY ? "corrupted" : value);
+    let restoreWritesDone = false;
+    storage.onRemove = (key) => {
+      if (restoreWritesDone && key === PROJECT_STORAGE_KEY) throw new Error("remove failed");
+      if (key === EMPIRE_OS_BACKUP_STORAGE_KEYS[EMPIRE_OS_BACKUP_STORAGE_KEYS.length - 1]) restoreWritesDone = true;
+    };
+    const result = runBackupRestoreTransaction(storage, restoreBackup);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.writesStarted).toBe(true);
+    expect((result.error as Error).message).toBe(`Verification failed for: ${STORAGE_KEY}.`);
+    expect(result.rollbackFailures).toEqual([STORAGE_KEY, PROJECT_STORAGE_KEY]);
   });
 });

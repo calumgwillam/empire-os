@@ -2,8 +2,7 @@
 
 import { createContext, FormEvent, ReactNode, useContext, useEffect, useRef, useState } from "react";
 import {
-  BACKUP_FORMAT,
-  BACKUP_VERSION,
+  buildFullBackup,
   CASH_POSITION_STORAGE_KEY,
   CHANGE_HISTORY_STORAGE_KEY,
   COMMITMENT_STORAGE_KEY,
@@ -21,6 +20,7 @@ import {
   OUTREACH_STORAGE_KEY,
   PERSON_STORAGE_KEY,
   PROJECT_STORAGE_KEY,
+  runBackupRestoreTransaction,
   SAVED_VIEWS_STORAGE_KEY,
   STORAGE_KEY,
   STRATEGIC_OBJECTIVES_STORAGE_KEY,
@@ -19968,17 +19968,7 @@ const isOwnershipGap =
   }, []);
 
   function createFullBackup(): EmpireOsBackup {
-    const storage: Record<string, string | null> = {};
-    for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
-      storage[key] = window.localStorage.getItem(key);
-    }
-
-    return {
-      format: BACKUP_FORMAT,
-      version: BACKUP_VERSION,
-      createdAt: new Date().toISOString(),
-      storage,
-    };
+    return buildFullBackup(window.localStorage);
   }
 
   function downloadBackup(backup: EmpireOsBackup, filePrefix: string) {
@@ -20058,51 +20048,25 @@ const isOwnershipGap =
     restoreInProgressRef.current = true;
     setIsRestoringBackup(true);
     const { backup } = restoreBackupPreview;
-    const previousStorage: Record<string, string | null> = {};
-    let restoreWritesStarted = false;
-
-    try {
-      for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) previousStorage[key] = window.localStorage.getItem(key);
+    const result = runBackupRestoreTransaction(window.localStorage, backup, () => {
       downloadBackup(createFullBackup(), "empire-os-pre-restore-safety-backup");
-
       auditRestoreInProgressRef.current = true;
-      restoreWritesStarted = true;
-      for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
-        const value = Object.prototype.hasOwnProperty.call(backup.storage, key) ? backup.storage[key] : null;
-        if (value === null) window.localStorage.removeItem(key);
-        else window.localStorage.setItem(key, value);
-      }
+    });
 
-      const failedKeys = EMPIRE_OS_BACKUP_STORAGE_KEYS.filter((key) => {
-        const expected = Object.prototype.hasOwnProperty.call(backup.storage, key) ? backup.storage[key] : null;
-        return window.localStorage.getItem(key) !== expected;
-      });
-      if (failedKeys.length > 0) throw new Error(`Verification failed for: ${failedKeys.join(", ")}.`);
-
+    if (result.ok) {
       setRestoreBackupPreview(null);
       window.location.reload();
-    } catch (error) {
-      const rollbackFailures: string[] = [];
-      if (restoreWritesStarted) {
-        for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
-          try {
-            const previousValue = previousStorage[key];
-            if (previousValue === null) window.localStorage.removeItem(key);
-            else window.localStorage.setItem(key, previousValue);
-            if (window.localStorage.getItem(key) !== previousValue) rollbackFailures.push(key);
-          } catch {
-            rollbackFailures.push(key);
-          }
-        }
-      }
-      setFeedback({
-        type: "error",
-        message: `${error instanceof Error ? `Backup restore failed: ${error.message}` : "Backup restore failed."}${!restoreWritesStarted ? " No live data was changed." : rollbackFailures.length > 0 ? ` Rollback could not be verified for: ${rollbackFailures.join(", ")}.` : " Existing data was restored."}`,
-      });
-      setIsRestoringBackup(false);
-      restoreInProgressRef.current = false;
-      auditRestoreInProgressRef.current = false;
+      return;
     }
+
+    const { error, writesStarted: restoreWritesStarted, rollbackFailures } = result;
+    setFeedback({
+      type: "error",
+      message: `${error instanceof Error ? `Backup restore failed: ${error.message}` : "Backup restore failed."}${!restoreWritesStarted ? " No live data was changed." : rollbackFailures.length > 0 ? ` Rollback could not be verified for: ${rollbackFailures.join(", ")}.` : " Existing data was restored."}`,
+    });
+    setIsRestoringBackup(false);
+    restoreInProgressRef.current = false;
+    auditRestoreInProgressRef.current = false;
   }
 
   function handleRestoreEmergencySnapshot() {

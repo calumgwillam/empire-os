@@ -53,6 +53,71 @@ export type EmpireOsBackup = {
   storage: Record<string, string | null>;
 };
 
+export type BackupStorage = {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+};
+
+export function buildFullBackup(source: Pick<BackupStorage, "getItem">, createdAt: string = new Date().toISOString()): EmpireOsBackup {
+  const storage: Record<string, string | null> = {};
+  for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
+    storage[key] = source.getItem(key);
+  }
+
+  return {
+    format: BACKUP_FORMAT,
+    version: BACKUP_VERSION,
+    createdAt,
+    storage,
+  };
+}
+
+export type BackupRestoreResult =
+  | { ok: true }
+  | { ok: false; error: unknown; writesStarted: boolean; rollbackFailures: string[] };
+
+// beforeWrites runs after the pre-restore snapshot and before any live write; if it throws, nothing is written.
+export function runBackupRestoreTransaction(target: BackupStorage, backup: EmpireOsBackup, beforeWrites?: () => void): BackupRestoreResult {
+  const previousStorage: Record<string, string | null> = {};
+  let writesStarted = false;
+
+  try {
+    for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) previousStorage[key] = target.getItem(key);
+    beforeWrites?.();
+
+    writesStarted = true;
+    for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
+      const value = Object.prototype.hasOwnProperty.call(backup.storage, key) ? backup.storage[key] : null;
+      if (value === null) target.removeItem(key);
+      else target.setItem(key, value);
+    }
+
+    const failedKeys = EMPIRE_OS_BACKUP_STORAGE_KEYS.filter((key) => {
+      const expected = Object.prototype.hasOwnProperty.call(backup.storage, key) ? backup.storage[key] : null;
+      return target.getItem(key) !== expected;
+    });
+    if (failedKeys.length > 0) throw new Error(`Verification failed for: ${failedKeys.join(", ")}.`);
+
+    return { ok: true };
+  } catch (error) {
+    const rollbackFailures: string[] = [];
+    if (writesStarted) {
+      for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
+        try {
+          const previousValue = previousStorage[key];
+          if (previousValue === null) target.removeItem(key);
+          else target.setItem(key, previousValue);
+          if (target.getItem(key) !== previousValue) rollbackFailures.push(key);
+        } catch {
+          rollbackFailures.push(key);
+        }
+      }
+    }
+    return { ok: false, error, writesStarted, rollbackFailures };
+  }
+}
+
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
