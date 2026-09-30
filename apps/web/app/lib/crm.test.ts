@@ -138,3 +138,108 @@ describe("isReadyForInitialOutreach", () => {
     ).toBe(false);
   });
 });
+
+describe("sanitizeOutreachRecord", () => {
+  it("trims editable fields and applies deterministic defaults", async () => {
+    const { sanitizeOutreachRecord } = await import("./crm");
+
+    const result = sanitizeOutreachRecord(
+      {
+        ...makeOutreach(),
+        id: "",
+        businessName: "  Example Estates  ",
+        contactName: "  Alex Smith  ",
+        email: "  alex@example.com  ",
+        phone: "  07123456789  ",
+        relationshipStatus: "  Warm  ",
+        notes: "  Follow up next week  ",
+        owner: "  Calum  ",
+        dateCreated: "",
+      },
+      {
+        generateId: () => "outreach-2",
+        nowIso: () => "2026-10-01T12:00:00.000Z",
+      },
+    );
+
+    expect(result.id).toBe("outreach-2");
+    expect(result.businessName).toBe("Example Estates");
+    expect(result.contactName).toBe("Alex Smith");
+    expect(result.email).toBe("alex@example.com");
+    expect(result.phone).toBe("07123456789");
+    expect(result.relationshipStatus).toBe("Warm");
+    expect(result.notes).toBe("Follow up next week");
+    expect(result.owner).toBe("Calum");
+    expect(result.dateCreated).toBe("2026-10-01T12:00:00.000Z");
+  });
+
+  it("falls back safely for invalid contact type and status values", async () => {
+    const { sanitizeOutreachRecord } = await import("./crm");
+
+    const record = {
+      ...makeOutreach(),
+      contactType: "Invalid type",
+      status: "Invalid status",
+    } as unknown as OutreachRecord;
+
+    const result = sanitizeOutreachRecord(record, {
+      generateId: () => "unused",
+      nowIso: () => "2026-10-01T12:00:00.000Z",
+    });
+
+    expect(result.contactType).toBe("Other");
+    expect(result.status).toBe("Not Contacted");
+  });
+});
+
+describe("convertOutreachToLead", () => {
+  it("creates a deterministic Lead and links the Outreach record", async () => {
+    const { convertOutreachToLead } = await import("./crm");
+
+    const contact = makeOutreach({
+      businessName: "Example Estates",
+      contactName: "Alex Smith",
+      phone: "07123456789",
+      email: "alex@example.com",
+      owner: "Calum",
+      notes: "Interested in garden maintenance.",
+    });
+
+    const result = convertOutreachToLead(contact, {
+      generateLeadId: () => "lead-1",
+      today: () => "2026-10-01",
+      nowIso: () => "2026-10-01T12:00:00.000Z",
+    });
+
+    expect(result.lead.id).toBe("lead-1");
+    expect(result.lead.leadName).toBe("Example Estates");
+    expect(result.lead.sourceChannel).toBe("Estate Agent / Property Manager");
+    expect(result.lead.sourceDetail).toBe("Example Estates");
+    expect(result.lead.dateReceived).toBe("2026-10-01");
+    expect(result.lead.owner).toBe("Calum");
+    expect(result.lead.relatedPillar).toBe("Marketing / Growth");
+    expect(result.lead.notes).toContain("Interested in garden maintenance.");
+    expect(result.lead.dateCreated).toBe("2026-10-01T12:00:00.000Z");
+
+    expect(result.outreach.status).toBe("Converted to Lead");
+    expect(result.outreach.linkedLeadId).toBe("lead-1");
+  });
+});
+
+describe("linkOutreachToLead", () => {
+  it("links to an existing Lead without altering unrelated Outreach data", async () => {
+    const { linkOutreachToLead } = await import("./crm");
+
+    const contact = makeOutreach({
+      businessName: "Example Estates",
+      notes: "Keep this note",
+    });
+
+    const result = linkOutreachToLead(contact, "existing-lead-1");
+
+    expect(result.status).toBe("Converted to Lead");
+    expect(result.linkedLeadId).toBe("existing-lead-1");
+    expect(result.businessName).toBe("Example Estates");
+    expect(result.notes).toBe("Keep this note");
+  });
+});

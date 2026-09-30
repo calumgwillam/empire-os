@@ -4,16 +4,19 @@ import { createContext, FormEvent, ReactNode, useContext, useEffect, useRef, use
 import {
   READY_FOR_INITIAL_OUTREACH_FILTER,
   classifyOutreachFollowUp,
+  convertOutreachToLead,
   defaultLeadForm,
   defaultOutreachForm,
   getOutreachBucket,
   isReadyForInitialOutreach,
   isOutreachFollowUpExcluded,
+  linkOutreachToLead,
   leadOutcomeOptions,
   leadSourceOptions,
   leadStatusOptions,
   outreachContactTypeOptions,
   outreachStatusOptions,
+  sanitizeOutreachRecord,
   type LeadRecord,
   type LeadSource,
   type LeadStatus,
@@ -18991,23 +18994,10 @@ const isOwnershipGap =
       return false;
     }
 
-    const selectedContactType = outreachEditor.contactType.trim();
-    const selectedStatus = outreachEditor.status.trim();
-
-    const nextContact: OutreachRecord = {
-      ...outreachEditor,
-      id: outreachEditor.id || generateFinanceRecordId("outreach"),
-      businessName: outreachEditor.businessName.trim(),
-      contactName: outreachEditor.contactName.trim(),
-      email: outreachEditor.email.trim(),
-      phone: outreachEditor.phone.trim(),
-      contactType: outreachContactTypeOptions.includes(selectedContactType as OutreachContactType) ? (selectedContactType as OutreachContactType) : "Other",
-      status: outreachStatusOptions.includes(selectedStatus as OutreachStatus) ? (selectedStatus as OutreachStatus) : "Not Contacted",
-      relationshipStatus: outreachEditor.relationshipStatus.trim(),
-      notes: outreachEditor.notes.trim(),
-      owner: outreachEditor.owner.trim(),
-      dateCreated: outreachEditor.dateCreated || new Date().toISOString(),
-    };
+    const nextContact = sanitizeOutreachRecord(outreachEditor, {
+      generateId: () => generateFinanceRecordId("outreach"),
+      nowIso: () => new Date().toISOString(),
+    });
     const isNew = !outreachContacts.some((contact) => contact.id === nextContact.id);
 
     setOutreachContacts((current) =>
@@ -19044,25 +19034,13 @@ const isOwnershipGap =
 
   // Converts an outreach contact into a genuine Lead without duplicating or removing the outreach record.
   const handleConvertOutreachToLead = (contact: OutreachRecord) => {
-    const newLead: LeadRecord = {
-      ...defaultLeadForm,
-      id: generateLeadId(),
-      leadName: contact.businessName,
-      contactName: contact.contactName,
-      phone: contact.phone,
-      email: contact.email,
-      sourceChannel: "Estate Agent / Property Manager",
-      sourceDetail: contact.businessName,
-      dateReceived: new Date().toISOString().slice(0, 10),
-      owner: contact.owner,
-      relatedPillar: "Marketing / Growth",
-      notes: `Converted from outreach contact "${contact.businessName}".${contact.notes ? ` Outreach notes: ${contact.notes}` : ""}`,
-      dateCreated: new Date().toISOString(),
-    };
+    const { lead: newLead, outreach: updatedContact } = convertOutreachToLead(contact, {
+      generateLeadId,
+      today: () => new Date().toISOString().slice(0, 10),
+      nowIso: () => new Date().toISOString(),
+    });
 
     setLeads((current) => [newLead, ...current]);
-
-    const updatedContact: OutreachRecord = { ...contact, status: "Converted to Lead", linkedLeadId: newLead.id };
     setOutreachContacts((current) => current.map((entry) => entry.id === contact.id ? updatedContact : entry));
     setSelectedOutreachId(updatedContact.id);
     setOutreachEditor(updatedContact);
@@ -19071,7 +19049,7 @@ const isOwnershipGap =
 
   // Links an outreach contact to an existing Lead (e.g. one already created separately) without creating a duplicate.
   const handleLinkOutreachToExistingLead = (contact: OutreachRecord, leadId: string) => {
-    const updatedContact: OutreachRecord = { ...contact, status: "Converted to Lead", linkedLeadId: leadId };
+    const updatedContact = linkOutreachToLead(contact, leadId);
     setOutreachContacts((current) => current.map((entry) => entry.id === contact.id ? updatedContact : entry));
     setSelectedOutreachId(updatedContact.id);
     setOutreachEditor(updatedContact);

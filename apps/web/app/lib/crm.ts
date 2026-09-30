@@ -198,3 +198,82 @@ export function isReadyForInitialOutreach(
 
   return true;
 }
+
+type OutreachSanitizerDeps = {
+  generateId: () => string;
+  nowIso: () => string;
+};
+
+export function sanitizeOutreachRecord(
+  record: OutreachRecord,
+  deps: OutreachSanitizerDeps,
+): OutreachRecord {
+  const selectedContactType = record.contactType.trim();
+  const selectedStatus = record.status.trim();
+
+  return {
+    ...record,
+    id: record.id || deps.generateId(),
+    businessName: record.businessName.trim(),
+    contactName: record.contactName.trim(),
+    email: record.email.trim(),
+    phone: record.phone.trim(),
+    contactType: outreachContactTypeOptions.includes(selectedContactType as OutreachContactType)
+      ? (selectedContactType as OutreachContactType)
+      : "Other",
+    status: outreachStatusOptions.includes(selectedStatus as OutreachStatus)
+      ? (selectedStatus as OutreachStatus)
+      : "Not Contacted",
+    relationshipStatus: record.relationshipStatus.trim(),
+    notes: record.notes.trim(),
+    owner: record.owner.trim(),
+    dateCreated: record.dateCreated || deps.nowIso(),
+  };
+}
+
+type OutreachConversionDeps = {
+  generateLeadId: () => string;
+  today: () => string;
+  nowIso: () => string;
+};
+
+export function convertOutreachToLead(
+  contact: OutreachRecord,
+  deps: OutreachConversionDeps,
+): { lead: LeadRecord; outreach: OutreachRecord } {
+  const lead: LeadRecord = {
+    ...defaultLeadForm,
+    id: deps.generateLeadId(),
+    leadName: contact.businessName,
+    contactName: contact.contactName,
+    phone: contact.phone,
+    email: contact.email,
+    sourceChannel: "Estate Agent / Property Manager",
+    sourceDetail: contact.businessName,
+    dateReceived: deps.today(),
+    owner: contact.owner,
+    relatedPillar: "Marketing / Growth",
+    notes: `Converted from outreach contact "${contact.businessName}".${contact.notes ? ` Outreach notes: ${contact.notes}` : ""}`,
+    dateCreated: deps.nowIso(),
+  };
+
+  return {
+    lead,
+    outreach: {
+      ...contact,
+      status: "Converted to Lead",
+      linkedLeadId: lead.id,
+    },
+  };
+}
+
+export function linkOutreachToLead(
+  contact: OutreachRecord,
+  leadId: string,
+): OutreachRecord {
+  return {
+    ...contact,
+    status: "Converted to Lead",
+    linkedLeadId: leadId,
+  };
+}
