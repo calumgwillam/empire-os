@@ -42,6 +42,31 @@ import {
   type IntegrityStatus,
 } from "./lib/integrity-core";
 import { persistJsonArray, persistJsonValue } from "./lib/persistence";
+import {
+  applyCapitalDecision,
+  applyQuoteRevalidation,
+  capitalDecisionOutcomeOptions,
+  commitmentCertaintyOptions,
+  getEffectiveCommitmentCertainty,
+  getEffectiveProcurementApprovalStatus,
+  getProcurementQuoteState,
+  hasExecutableProcurementApproval,
+  hasPendingProcurementValidation,
+  markCommitmentCommitted,
+  markCommitmentPurchased,
+  parseFinanceAmountInput,
+  procurementApprovalStatusOptions,
+  quoteRevalidationOutcomeOptions,
+  QUOTE_UNAVAILABLE_VALIDATION_REASON,
+  sanitizeCommitmentFromEditor,
+  validateCommitmentSave,
+  type CapitalDecisionOutcome,
+  type CommitmentCertainty,
+  type CommitmentRecord,
+  type ProcurementApprovalStatus,
+  type ProcurementQuoteState,
+  type QuoteRevalidationOutcome,
+} from "./lib/finance";
 
 const navigation = [
   "Empire OS",
@@ -1178,65 +1203,7 @@ const expenseCategoryOptions = ["Materials", "Equipment", "Fuel", "Labour", "Sub
 
 const commitmentTypeOptions = ["Loan", "Lease", "Subscription", "Tax", "Supplier", "Insurance", "Other"] as const;
 const commitmentStatusOptions = ["Upcoming", "Due", "Paid", "Overdue", "Cancelled"] as const;
-const commitmentCertaintyOptions = ["Committed", "Quoted", "Planned"] as const;
-type CommitmentCertainty = (typeof commitmentCertaintyOptions)[number];
-const procurementApprovalStatusOptions = ["Not reviewed", "Approved", "Rejected"] as const;
-type ProcurementApprovalStatus = (typeof procurementApprovalStatusOptions)[number];
 type ProcurementReadinessState = "Researching" | "Price found" | "Ready to buy" | "Pending validation" | "Wait" | "Blocked" | "Purchased";
-type ProcurementQuoteState = "Current" | "Expiring soon" | "Expired" | "No expiry recorded";
-const quoteRevalidationOutcomeOptions = ["Price confirmed", "Price changed", "Quote no longer available"] as const;
-type QuoteRevalidationOutcome = (typeof quoteRevalidationOutcomeOptions)[number];
-const QUOTE_UNAVAILABLE_VALIDATION_REASON = "Quoted price is no longer available; further price research is required.";
-const capitalDecisionOutcomeOptions = ["Approve", "Reject", "Defer", "Mark Pending validation"] as const;
-type CapitalDecisionOutcome = (typeof capitalDecisionOutcomeOptions)[number];
-
-// Legacy records with no stored certainty behave exactly as before (i.e. as a genuine commitment).
-function getEffectiveCommitmentCertainty(commitment: { certainty?: string }): CommitmentCertainty {
-  return commitmentCertaintyOptions.includes(commitment.certainty as CommitmentCertainty)
-    ? (commitment.certainty as CommitmentCertainty)
-    : "Committed";
-}
-
-function hasPendingProcurementValidation(commitment: { pendingValidationReason?: string }): boolean {
-  return Boolean(commitment.pendingValidationReason?.trim());
-}
-
-function getEffectiveProcurementApprovalStatus(commitment: { approvalStatus?: string }): ProcurementApprovalStatus {
-  return procurementApprovalStatusOptions.includes(commitment.approvalStatus as ProcurementApprovalStatus)
-    ? (commitment.approvalStatus as ProcurementApprovalStatus)
-    : "Not reviewed";
-}
-
-function getProcurementQuoteState(commitment: {
-  targetPrice?: string;
-  quoteCheckedDate?: string;
-  quoteExpiryDate?: string;
-  quoteReference?: string;
-  quoteNotes?: string;
-}): ProcurementQuoteState | null {
-  const hasQuoteContext = Boolean(
-    commitment.targetPrice?.trim()
-    || commitment.quoteCheckedDate?.trim()
-    || commitment.quoteExpiryDate?.trim()
-    || commitment.quoteReference?.trim()
-    || commitment.quoteNotes?.trim(),
-  );
-  if (!hasQuoteContext) return null;
-  if (!commitment.quoteExpiryDate?.trim()) return "No expiry recorded";
-
-  const todayMs = new Date().setHours(0, 0, 0, 0);
-  const expiryMs = new Date(`${commitment.quoteExpiryDate.slice(0, 10)}T00:00:00`).getTime();
-  if (Number.isNaN(expiryMs)) return "No expiry recorded";
-  if (expiryMs < todayMs) return "Expired";
-  if (expiryMs <= todayMs + (7 * 24 * 60 * 60 * 1000)) return "Expiring soon";
-  return "Current";
-}
-
-function hasExecutableProcurementApproval(commitment: Parameters<typeof getProcurementQuoteState>[0] & { approvalStatus?: string; pendingValidationReason?: string }): boolean {
-  return getEffectiveProcurementApprovalStatus(commitment) === "Approved"
-    && !hasPendingProcurementValidation(commitment)
-    && getProcurementQuoteState(commitment) !== "Expired";
-}
 
 type CashPositionRecord = {
   currentCash: string;
@@ -1284,47 +1251,6 @@ type ExpenseRecord = {
   category: string;
   area: string;
   status: ExpenseStatus;
-  notes: string;
-  dateCreated: string;
-};
-
-type CommitmentRecord = {
-  id: string;
-  commitmentName: string;
-  amount: string;
-  dueDate: string;
-  type: string;
-  status: string;
-  certainty?: CommitmentCertainty;
-  relatedPillar: string;
-  procurementNeed?: string;
-  originalBudget?: string;
-  targetPrice?: string;
-  actualPurchasePrice?: string;
-  supplier?: string;
-  expectedPurchaseDate?: string;
-  actualPurchaseDate?: string;
-  quoteCheckedDate?: string;
-  quoteExpiryDate?: string;
-  quoteReference?: string;
-  quoteNotes?: string;
-  quoteRevalidationOutcome?: QuoteRevalidationOutcome;
-  quoteRevalidatedBy?: string;
-  quoteRevalidationDate?: string;
-  quotePreviousPrice?: string;
-  quoteConfirmedPrice?: string;
-  quoteRevalidationNotes?: string;
-  purchaseEvidenceReference?: string;
-  invoiceOrderReference?: string;
-  evidenceNotes?: string;
-  actualSupplier?: string;
-  pendingValidationReason?: string;
-  approvalStatus?: ProcurementApprovalStatus;
-  approvedRejectedBy?: string;
-  approvalDate?: string;
-  approvalRationale?: string;
-  capitalDecisionOutcome?: CapitalDecisionOutcome;
-  capitalDecisionDeferredUntil?: string;
   notes: string;
   dateCreated: string;
 };
@@ -4196,19 +4122,6 @@ function isValidPayPeriodInput(value: string) {
 
   const month = Number(match[2]);
   return month >= 1 && month <= 12;
-}
-
-// Zero is a valid entry, so emptiness is tested explicitly rather than by truthiness.
-function parseFinanceAmountInput(value: string) {
-  const normalised = value.replace(/[£$,\s]/g, "");
-
-  if (normalised === "" || !/^\+?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalised)) {
-    return null;
-  }
-
-  const parsed = Number(normalised);
-
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function FinanceDeleteControl({ canDelete, label, onDelete }: {
@@ -19601,55 +19514,34 @@ const isOwnershipGap =
     }
 
     const previousCommitment = commitmentRecords.find((record) => record.id === editorSnapshot.id);
-    const nextCommitment: CommitmentRecord = {
-      ...editorSnapshot,
-      id: editorSnapshot.id || generateFinanceRecordId("commitment"),
-      commitmentName: editorSnapshot.commitmentName.trim(),
-      amount: (editorSnapshot.actualPurchasePrice || editorSnapshot.amount).trim(),
-      dueDate: (editorSnapshot.actualPurchaseDate || editorSnapshot.expectedPurchaseDate || editorSnapshot.dueDate).trim(),
-      procurementNeed: (editorSnapshot.procurementNeed || "").trim(),
-      originalBudget: (editorSnapshot.originalBudget || "").trim(),
-      targetPrice: (editorSnapshot.targetPrice || "").trim(),
-      actualPurchasePrice: (editorSnapshot.actualPurchasePrice || "").trim(),
-      supplier: (editorSnapshot.supplier || "").trim(),
-      expectedPurchaseDate: (editorSnapshot.expectedPurchaseDate || "").trim(),
-      actualPurchaseDate: (editorSnapshot.actualPurchaseDate || "").trim(),
-      quoteCheckedDate: (editorSnapshot.quoteCheckedDate || "").trim(),
-      quoteExpiryDate: (editorSnapshot.quoteExpiryDate || "").trim(),
-      quoteReference: (editorSnapshot.quoteReference || "").trim(),
-      quoteNotes: (editorSnapshot.quoteNotes || "").trim(),
-      purchaseEvidenceReference: (editorSnapshot.purchaseEvidenceReference || "").trim(),
-      invoiceOrderReference: (editorSnapshot.invoiceOrderReference || "").trim(),
-      evidenceNotes: (editorSnapshot.evidenceNotes || "").trim(),
-      actualSupplier: (editorSnapshot.actualSupplier || "").trim(),
-      pendingValidationReason: (editorSnapshot.pendingValidationReason || "").trim(),
-      approvalStatus: getEffectiveProcurementApprovalStatus(editorSnapshot),
-      approvedRejectedBy: (editorSnapshot.approvedRejectedBy || "").trim(),
-      approvalDate: (editorSnapshot.approvalDate || "").trim(),
-      approvalRationale: (editorSnapshot.approvalRationale || "").trim(),
-      notes: editorSnapshot.notes.trim(),
-      dateCreated: editorSnapshot.dateCreated || new Date().toISOString(),
-    };
-    const wasCommitted = previousCommitment ? getEffectiveCommitmentCertainty(previousCommitment) === "Committed" : false;
-    const wasPurchased = previousCommitment
-      ? previousCommitment.status === "Paid" || Boolean(previousCommitment.actualPurchaseDate) || parseFinanceAmountInput(previousCommitment.actualPurchasePrice || "") !== null
-      : false;
-    const willBeCommitted = getEffectiveCommitmentCertainty(nextCommitment) === "Committed";
-    const willBePurchased = nextCommitment.status === "Paid" || Boolean(nextCommitment.actualPurchaseDate) || parseFinanceAmountInput(nextCommitment.actualPurchasePrice || "") !== null;
 
-    if (((!wasCommitted && willBeCommitted) || (!wasPurchased && willBePurchased)) && !hasExecutableProcurementApproval(nextCommitment)) {
-      setFeedback({ type: "error", message: getProcurementQuoteState(nextCommitment) === "Expired" ? "Revalidate or replace the expired quote before committing or purchasing." : hasPendingProcurementValidation(nextCommitment) ? "Clear Pending validation before committing or purchasing." : "Approve this purchase before committing or purchasing." });
+    const nextCommitment = sanitizeCommitmentFromEditor(editorSnapshot, {
+      generateId: () => generateFinanceRecordId("commitment"),
+      nowIso: () => new Date().toISOString(),
+    });
+
+    const validationBlock = validateCommitmentSave(previousCommitment, nextCommitment);
+
+    if (validationBlock) {
+      setFeedback({
+        type: "error",
+        message: validationBlock === "quote-expired"
+          ? "Revalidate or replace the expired quote before committing or purchasing."
+          : validationBlock === "pending-validation"
+            ? "Clear Pending validation before committing or purchasing."
+            : validationBlock === "approval-required"
+              ? "Approve this purchase before committing or purchasing."
+              : "Record both the actual purchase price and actual purchase date before marking purchased.",
+      });
       return false;
     }
-    if (!wasPurchased && willBePurchased && (parseFinanceAmountInput(nextCommitment.actualPurchasePrice || "") === null || !nextCommitment.actualPurchaseDate)) {
-      setFeedback({ type: "error", message: "Record both the actual purchase price and actual purchase date before marking purchased." });
-      return false;
-    }
+
     const isNew = !commitmentRecords.some((record) => record.id === nextCommitment.id);
 
     setCommitmentRecords((current) =>
       isNew ? [nextCommitment, ...current] : current.map((record) => record.id === nextCommitment.id ? nextCommitment : record),
     );
+
     setSelectedCommitmentId(nextCommitment.id);
     setCommitmentEditor(nextCommitment);
     setFeedback({ type: "success", message: isNew ? "Commitment created." : "Commitment saved." });
@@ -19680,18 +19572,21 @@ const isOwnershipGap =
   };
 
   const handleMarkCommitmentCommitted = (commitment: CommitmentRecord) => {
-    if (!hasExecutableProcurementApproval(commitment)) {
-      setFeedback({ type: "error", message: getProcurementQuoteState(commitment) === "Expired" ? "Revalidate or replace the expired quote before committing this purchase." : hasPendingProcurementValidation(commitment) ? "Clear Pending validation before committing this purchase." : "Approve this purchase before marking it committed." });
+    const result = markCommitmentCommitted(commitment, new Date().toISOString().slice(0, 10));
+
+    if (!result.ok) {
+      setFeedback({
+        type: "error",
+        message: result.block === "quote-expired"
+          ? "Revalidate or replace the expired quote before committing this purchase."
+          : result.block === "pending-validation"
+            ? "Clear Pending validation before committing this purchase."
+            : "Approve this purchase before marking it committed.",
+      });
       return;
     }
 
-    const nextCommitment: CommitmentRecord = {
-      ...commitment,
-      certainty: "Committed",
-      status: commitment.status === "Cancelled" || commitment.status === "Paid" ? commitment.status : "Upcoming",
-      amount: (commitment.actualPurchasePrice || commitment.targetPrice || commitment.amount || commitment.originalBudget || "").trim(),
-      dueDate: (commitment.expectedPurchaseDate || commitment.dueDate || new Date().toISOString().slice(0, 10)).trim(),
-    };
+    const nextCommitment = result.commitment;
 
     setCommitmentRecords((current) => current.map((record) => record.id === commitment.id ? nextCommitment : record));
     setCommitmentEditor((current) => current?.id === commitment.id ? nextCommitment : current);
@@ -19699,31 +19594,25 @@ const isOwnershipGap =
   };
 
   const handleMarkCommitmentPurchased = (commitment: CommitmentRecord) => {
-    if (!hasExecutableProcurementApproval(commitment)) {
-      setFeedback({ type: "error", message: getProcurementQuoteState(commitment) === "Expired" ? "Revalidate or replace the expired quote before marking this purchase purchased." : hasPendingProcurementValidation(commitment) ? "Clear Pending validation before marking this purchase purchased." : "Approve this purchase before marking it purchased." });
+    const result = markCommitmentPurchased(commitment);
+
+    if (!result.ok) {
+      setFeedback({
+        type: "error",
+        message: result.block === "quote-expired"
+          ? "Revalidate or replace the expired quote before marking this purchase purchased."
+          : result.block === "pending-validation"
+            ? "Clear Pending validation before marking this purchase purchased."
+            : result.block === "approval-required"
+              ? "Approve this purchase before marking it purchased."
+              : result.block === "missing-actual-purchase-price"
+                ? "Record an actual purchase price before marking purchased."
+                : "Record an actual purchase date before marking purchased.",
+      });
       return;
     }
 
-    const actualPurchasePrice = parseFinanceAmountInput(commitment.actualPurchasePrice || "");
-    if (actualPurchasePrice === null) {
-      setFeedback({ type: "error", message: "Record an actual purchase price before marking purchased." });
-      return;
-    }
-
-    if (!commitment.actualPurchaseDate) {
-      setFeedback({ type: "error", message: "Record an actual purchase date before marking purchased." });
-      return;
-    }
-
-    const actualPurchaseDate = commitment.actualPurchaseDate;
-    const nextCommitment: CommitmentRecord = {
-      ...commitment,
-      certainty: "Committed",
-      status: "Paid",
-      amount: String(actualPurchasePrice),
-      dueDate: actualPurchaseDate,
-      actualPurchaseDate,
-    };
+    const nextCommitment = result.commitment;
 
     setCommitmentRecords((current) => current.map((record) => record.id === commitment.id ? nextCommitment : record));
     setCommitmentEditor((current) => current?.id === commitment.id ? nextCommitment : current);
@@ -19740,31 +19629,16 @@ const isOwnershipGap =
     notes: string;
   }) => {
     if (!quoteRevalidationCommitmentId) return;
+
     const commitment = commitmentRecords.find((record) => record.id === quoteRevalidationCommitmentId);
+
     if (!commitment) {
       setQuoteRevalidationCommitmentId(null);
       setFeedback({ type: "error", message: "The commitment could not be found." });
       return;
     }
 
-    const quoteIsAvailable = result.outcome !== "Quote no longer available";
-    const nextCommitment: CommitmentRecord = {
-      ...commitment,
-      targetPrice: quoteIsAvailable ? result.confirmedPrice : commitment.targetPrice,
-      quoteCheckedDate: result.revalidationDate,
-      quoteExpiryDate: quoteIsAvailable ? result.quoteExpiryDate : "",
-      quoteReference: result.quoteReference,
-      quoteNotes: result.notes,
-      quoteRevalidationOutcome: result.outcome,
-      quoteRevalidatedBy: result.revalidatedBy,
-      quoteRevalidationDate: result.revalidationDate,
-      quotePreviousPrice: commitment.targetPrice || "",
-      quoteConfirmedPrice: quoteIsAvailable ? result.confirmedPrice : "",
-      quoteRevalidationNotes: result.notes,
-      pendingValidationReason: quoteIsAvailable
-        ? commitment.pendingValidationReason?.trim() === QUOTE_UNAVAILABLE_VALIDATION_REASON ? "" : commitment.pendingValidationReason
-        : commitment.pendingValidationReason?.trim() || QUOTE_UNAVAILABLE_VALIDATION_REASON,
-    };
+    const nextCommitment = applyQuoteRevalidation(commitment, result);
 
     setCommitmentRecords((current) => current.map((record) => record.id === commitment.id ? nextCommitment : record));
     setCommitmentEditor((current) => current?.id === commitment.id ? nextCommitment : current);
@@ -19781,23 +19655,16 @@ const isOwnershipGap =
     pendingValidationReason: string;
   }) => {
     if (!capitalDecisionReview) return;
+
     const commitment = commitmentRecords.find((record) => record.id === capitalDecisionReview.commitmentId);
+
     if (!commitment) {
       setCapitalDecisionReview(null);
       setFeedback({ type: "error", message: "The commitment could not be found." });
       return;
     }
 
-    const nextCommitment: CommitmentRecord = {
-      ...commitment,
-      approvalStatus: decision.outcome === "Approve" ? "Approved" : decision.outcome === "Reject" ? "Rejected" : getEffectiveProcurementApprovalStatus(commitment),
-      approvedRejectedBy: decision.decisionMaker,
-      approvalDate: decision.decisionDate,
-      approvalRationale: decision.rationale,
-      capitalDecisionOutcome: decision.outcome,
-      capitalDecisionDeferredUntil: decision.outcome === "Defer" ? decision.deferredUntil : "",
-      pendingValidationReason: decision.outcome === "Mark Pending validation" ? decision.pendingValidationReason : commitment.pendingValidationReason,
-    };
+    const nextCommitment = applyCapitalDecision(commitment, decision);
 
     setCommitmentRecords((current) => current.map((record) => record.id === commitment.id ? nextCommitment : record));
     setCommitmentEditor((current) => current?.id === commitment.id ? nextCommitment : current);
