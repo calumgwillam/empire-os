@@ -1,5 +1,10 @@
 "use client";
 
+import {
+  buildAcquisitionAnalytics,
+  getWonLeadValue,
+} from "./lib/acquisition-analytics";
+
 import { createContext, FormEvent, ReactNode, useContext, useEffect, useRef, useState } from "react";
 import {
   READY_FOR_INITIAL_OUTREACH_FILTER,
@@ -10518,79 +10523,20 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
   const activeOwnershipLeads = activeLeads.filter((lead) => !["Won", "Lost"].includes(lead.status));
   const activeOwnershipProblems = problemRecords.filter(isProblemUnresolved);
 
-  const metricsLeadsGenerated = activeLeads.length;
-  const metricsLeadsBySource = leadSourceOptions
-    .map((source) => ({ source, count: activeLeads.filter((lead) => lead.sourceChannel === source).length }))
-    .filter((entry) => entry.count > 0);
-  const metricsJobsWon = activeLeads.filter((lead) => lead.status === "Won").length;
-  const metricsQuotesSent = activeLeads.filter((lead) => lead.status === "Quote Sent" || lead.status === "Follow-Up" || lead.status === "Won" || Boolean(lead.quoteSentDate)).length;
-  const metricsLeadToJobConversion = metricsLeadsGenerated === 0 ? 0 : (metricsJobsWon / metricsLeadsGenerated) * 100;
-  const wonLeadsValue = (lead: LeadRecord) => parseFinanceAmount(lead.finalJobValue) || parseFinanceAmount(lead.quoteValue);
-  const metricsRevenueFromWonLeads = activeLeads
-    .filter((lead) => lead.status === "Won")
-    .reduce((total, lead) => total + wonLeadsValue(lead), 0);
-  const metricsAverageJobValue = metricsJobsWon === 0
-    ? 0
-    : activeLeads.filter((lead) => lead.status === "Won").reduce((total, lead) => total + wonLeadsValue(lead), 0) / metricsJobsWon;
+  const {
+    metricsLeadsGenerated,
+    metricsLeadsBySource,
+    metricsJobsWon,
+    metricsQuotesSent,
+    metricsLeadToJobConversion,
+    metricsRevenueFromWonLeads,
+    metricsAverageJobValue,
+    acquisitionChannelPerformance,
+    acquisitionSourceDetailPerformance,
+  } = buildAcquisitionAnalytics(activeLeads, parseFinanceAmount);
 
-  // Evidence indicator describes sample size only — it is not a quality or performance judgement.
-  const acquisitionEvidenceLabel = (leadCount: number) =>
-    leadCount >= 6 ? "Stronger evidence" : leadCount >= 3 ? "Emerging evidence" : leadCount >= 1 ? "Early signal" : "";
-  const isLeadQuoted = (lead: LeadRecord) =>
-    lead.status === "Quote Sent" || lead.status === "Follow-Up" || lead.status === "Won" || Boolean(lead.quoteSentDate);
-  const isLeadWon = (lead: LeadRecord) => lead.status === "Won";
-
-  const acquisitionChannelPerformance = leadSourceOptions
-    .map((channel) => {
-      const channelLeads = activeLeads.filter((lead) => lead.sourceChannel === channel);
-      const leadCount = channelLeads.length;
-      const wonLeads = channelLeads.filter(isLeadWon);
-      const jobsWon = wonLeads.length;
-      const revenue = wonLeads.reduce((total, lead) => total + wonLeadsValue(lead), 0);
-      return {
-        channel,
-        leadCount,
-        quotesSent: channelLeads.filter(isLeadQuoted).length,
-        jobsWon,
-        conversionRate: leadCount === 0 ? 0 : (jobsWon / leadCount) * 100,
-        revenue,
-        averageWonJobValue: jobsWon === 0 ? 0 : revenue / jobsWon,
-        evidenceLabel: acquisitionEvidenceLabel(leadCount),
-      };
-    })
-    .filter((entry) => entry.leadCount > 0);
-
-  // sourceDetail is grouped per sourceChannel so identical detail text under different channels stays distinct.
-  const acquisitionSourceDetailPerformance = Array.from(
-    activeLeads.reduce((groups, lead) => {
-      const detail = lead.sourceDetail.trim();
-      if (!detail) return groups;
-      const key = `${lead.sourceChannel}::${detail.toLowerCase()}`;
-      const existing = groups.get(key);
-      if (existing) {
-        existing.leads.push(lead);
-      } else {
-        groups.set(key, { sourceDetail: detail, sourceChannel: lead.sourceChannel, leads: [lead] });
-      }
-      return groups;
-    }, new Map<string, { sourceDetail: string; sourceChannel: LeadSource; leads: LeadRecord[] }>()).values(),
-  )
-    .map(({ sourceDetail, sourceChannel, leads: detailLeads }) => {
-      const leadCount = detailLeads.length;
-      const wonLeads = detailLeads.filter(isLeadWon);
-      const jobsWon = wonLeads.length;
-      const revenue = wonLeads.reduce((total, lead) => total + wonLeadsValue(lead), 0);
-      return {
-        sourceDetail,
-        sourceChannel,
-        leadCount,
-        jobsWon,
-        conversionRate: leadCount === 0 ? 0 : (jobsWon / leadCount) * 100,
-        revenue,
-        evidenceLabel: acquisitionEvidenceLabel(leadCount),
-      };
-    })
-    .sort((first, second) => second.leadCount - first.leadCount || first.sourceDetail.localeCompare(second.sourceDetail));
+  const wonLeadsValue = (lead: LeadRecord) =>
+    getWonLeadValue(lead, parseFinanceAmount);
 
   const metricsOpenActions = actionRecords.filter((action) => action.status === "Open").length;
   const metricsInProgressActions = actionRecords.filter((action) => action.status === "In Progress").length;
