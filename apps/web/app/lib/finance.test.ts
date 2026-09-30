@@ -299,3 +299,101 @@ describe("applyCapitalDecision", () => {
     }
   });
 });
+
+describe("sanitizeIncomeRecord", () => {
+  it("trims fields and applies deterministic defaults", async () => {
+    const { sanitizeIncomeRecord } = await import("./finance");
+
+    const result = sanitizeIncomeRecord(
+      {
+        id: "",
+        date: "2026-10-01",
+        description: "  Garden job  ",
+        customerSource: "  Referral  ",
+        amount: " 250 ",
+        area: "Garden Maintenance",
+        status: "Received",
+        notes: "  paid  ",
+        dateCreated: "",
+      },
+      {
+        generateId: () => "income-1",
+        nowIso: () => "2026-10-01T12:00:00.000Z",
+      },
+    );
+
+    expect(result.id).toBe("income-1");
+    expect(result.description).toBe("Garden job");
+    expect(result.customerSource).toBe("Referral");
+    expect(result.amount).toBe("250");
+    expect(result.status).toBe("Received");
+    expect(result.notes).toBe("paid");
+    expect(result.dateCreated).toBe("2026-10-01T12:00:00.000Z");
+  });
+});
+
+describe("sanitizeExpenseRecord", () => {
+  it("trims fields and applies deterministic defaults", async () => {
+    const { sanitizeExpenseRecord } = await import("./finance");
+
+    const result = sanitizeExpenseRecord(
+      {
+        id: "",
+        date: "2026-10-01",
+        description: "  Fuel  ",
+        supplier: "  Shell  ",
+        amount: " 80 ",
+        category: "Fuel",
+        area: "Garden Maintenance",
+        status: "Paid",
+        notes: "  van fuel  ",
+        dateCreated: "",
+      },
+      {
+        generateId: () => "expense-1",
+        nowIso: () => "2026-10-01T12:00:00.000Z",
+      },
+    );
+
+    expect(result.id).toBe("expense-1");
+    expect(result.description).toBe("Fuel");
+    expect(result.supplier).toBe("Shell");
+    expect(result.amount).toBe("80");
+    expect(result.status).toBe("Paid");
+    expect(result.notes).toBe("van fuel");
+    expect(result.dateCreated).toBe("2026-10-01T12:00:00.000Z");
+  });
+});
+
+describe("sanitizeTaxPaymentRecord", () => {
+  it("trims fields and applies deterministic defaults", async () => {
+    const { sanitizeTaxPaymentRecord } = await import("./finance");
+
+    const result = sanitizeTaxPaymentRecord(
+      {
+        id: "",
+        payPeriod: " 2026-09 ",
+        date: "2026-09-30",
+        description: "  September self-employed pay  ",
+        grossAmount: " 1605 ",
+        status: "Received",
+        reserveSetAside: false,
+        setAsideDate: "",
+        notes: "  received  ",
+        dateCreated: "",
+      },
+      {
+        generateId: () => "tax-payment-1",
+        nowIso: () => "2026-10-01T12:00:00.000Z",
+      },
+    );
+
+    expect(result.id).toBe("tax-payment-1");
+    expect(result.payPeriod).toBe("2026-09");
+    expect(result.description).toBe("September self-employed pay");
+    expect(result.grossAmount).toBe("1605");
+    expect(result.status).toBe("Received");
+    expect(result.notes).toBe("received");
+    expect(result.dateCreated).toBe("2026-10-01T12:00:00.000Z");
+  });
+});

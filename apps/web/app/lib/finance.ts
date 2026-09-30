@@ -274,3 +274,103 @@ export function applyCapitalDecision(commitment: CommitmentRecord, decision: Cap
     pendingValidationReason: decision.outcome === "Mark Pending validation" ? decision.pendingValidationReason : commitment.pendingValidationReason,
   };
 }
+
+export const incomeStatusOptions = ["Expected", "Received"] as const;
+export type IncomeStatus = (typeof incomeStatusOptions)[number];
+
+export type IncomeRecord = {
+  id: string;
+  date: string;
+  description: string;
+  customerSource: string;
+  amount: string;
+  area: string;
+  status: IncomeStatus;
+  notes: string;
+  dateCreated: string;
+};
+
+export const expenseStatusOptions = ["Planned", "Paid"] as const;
+export type ExpenseStatus = (typeof expenseStatusOptions)[number];
+
+export type ExpenseRecord = {
+  id: string;
+  date: string;
+  description: string;
+  supplier: string;
+  amount: string;
+  category: string;
+  area: string;
+  status: ExpenseStatus;
+  notes: string;
+  dateCreated: string;
+};
+
+export const taxPaymentStatusOptions = ["Expected", "Received"] as const;
+export type TaxPaymentStatus = (typeof taxPaymentStatusOptions)[number];
+
+export type TaxPaymentRecord = {
+  id: string;
+  payPeriod: string;
+  date: string;
+  description: string;
+  grossAmount: string;
+  status: TaxPaymentStatus;
+  reserveSetAside: boolean;
+  setAsideDate: string;
+  notes: string;
+  dateCreated: string;
+};
+
+type FinanceRecordSanitizerDeps = {
+  generateId: () => string;
+  nowIso: () => string;
+};
+
+export function sanitizeIncomeRecord(
+  record: IncomeRecord,
+  deps: FinanceRecordSanitizerDeps,
+): IncomeRecord {
+  return {
+    ...record,
+    id: record.id || deps.generateId(),
+    description: record.description.trim(),
+    customerSource: record.customerSource.trim(),
+    amount: record.amount.trim(),
+    status: incomeStatusOptions.includes(record.status as IncomeStatus) ? record.status : "Expected",
+    notes: record.notes.trim(),
+    dateCreated: record.dateCreated || deps.nowIso(),
+  };
+}
+
+export function sanitizeExpenseRecord(
+  record: ExpenseRecord,
+  deps: FinanceRecordSanitizerDeps,
+): ExpenseRecord {
+  return {
+    ...record,
+    id: record.id || deps.generateId(),
+    description: record.description.trim(),
+    supplier: record.supplier.trim(),
+    amount: record.amount.trim(),
+    status: expenseStatusOptions.includes(record.status as ExpenseStatus) ? record.status : "Planned",
+    notes: record.notes.trim(),
+    dateCreated: record.dateCreated || deps.nowIso(),
+  };
+}
+
+export function sanitizeTaxPaymentRecord(
+  record: TaxPaymentRecord,
+  deps: FinanceRecordSanitizerDeps,
+): TaxPaymentRecord {
+  return {
+    ...record,
+    id: record.id || deps.generateId(),
+    description: record.description.trim(),
+    payPeriod: record.payPeriod.trim(),
+    grossAmount: record.grossAmount.trim(),
+    status: taxPaymentStatusOptions.includes(record.status as TaxPaymentStatus) ? record.status : "Expected",
+    notes: record.notes.trim(),
+    dateCreated: record.dateCreated || deps.nowIso(),
+  };
+}

@@ -45,6 +45,8 @@ import { persistJsonArray, persistJsonValue } from "./lib/persistence";
 import {
   applyCapitalDecision,
   applyQuoteRevalidation,
+  expenseStatusOptions,
+  incomeStatusOptions,
   capitalDecisionOutcomeOptions,
   commitmentCertaintyOptions,
   getEffectiveCommitmentCertainty,
@@ -59,13 +61,23 @@ import {
   quoteRevalidationOutcomeOptions,
   QUOTE_UNAVAILABLE_VALIDATION_REASON,
   sanitizeCommitmentFromEditor,
+  sanitizeExpenseRecord,
+  sanitizeIncomeRecord,
+  sanitizeTaxPaymentRecord,
+  taxPaymentStatusOptions,
   validateCommitmentSave,
   type CapitalDecisionOutcome,
   type CommitmentCertainty,
   type CommitmentRecord,
+  type ExpenseRecord,
+  type ExpenseStatus,
+  type IncomeRecord,
+  type IncomeStatus,
   type ProcurementApprovalStatus,
   type ProcurementQuoteState,
   type QuoteRevalidationOutcome,
+  type TaxPaymentRecord,
+  type TaxPaymentStatus,
 } from "./lib/finance";
 
 const navigation = [
@@ -1193,12 +1205,6 @@ function isReadyForInitialOutreach(contact: OutreachRecord, startOfTodayMs: numb
   return true;
 }
 
-const incomeStatusOptions = ["Expected", "Received"] as const;
-type IncomeStatus = (typeof incomeStatusOptions)[number];
-
-const expenseStatusOptions = ["Planned", "Paid"] as const;
-type ExpenseStatus = (typeof expenseStatusOptions)[number];
-
 const expenseCategoryOptions = ["Materials", "Equipment", "Fuel", "Labour", "Subcontractor", "Insurance", "Marketing", "Software", "Vehicle", "Other"] as const;
 
 const commitmentTypeOptions = ["Loan", "Lease", "Subscription", "Tax", "Supplier", "Insurance", "Other"] as const;
@@ -1228,31 +1234,6 @@ type DailyPostureSnapshot = {
   avgOpenDecisionDays?: number | null;
   selfSufficiencyPct?: number | null;
   outstandingKeys?: Array<{ key: string; title: string; objectType: string; category: string }>;
-};
-
-type IncomeRecord = {
-  id: string;
-  date: string;
-  description: string;
-  customerSource: string;
-  amount: string;
-  area: string;
-  status: IncomeStatus;
-  notes: string;
-  dateCreated: string;
-};
-
-type ExpenseRecord = {
-  id: string;
-  date: string;
-  description: string;
-  supplier: string;
-  amount: string;
-  category: string;
-  area: string;
-  status: ExpenseStatus;
-  notes: string;
-  dateCreated: string;
 };
 
 type IntegrityIssue = {
@@ -1676,27 +1657,11 @@ function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
   };
 }
 
-const taxPaymentStatusOptions = ["Expected", "Received"] as const;
-type TaxPaymentStatus = (typeof taxPaymentStatusOptions)[number];
-
 // Personal tax planning context for Calum's current self-employed corporate job.
 const TAX_JOB_LABEL = "Self-employed corporate job (Calum)";
 const TAX_JOB_START_DATE = "2026-08-06";
 const TAX_JOB_GROSS_ANNUAL_REFERENCE_INCOME = 26000;
 const TAX_RESERVE_RATE = 0.3;
-
-type TaxPaymentRecord = {
-  id: string;
-  payPeriod: string;
-  date: string;
-  description: string;
-  grossAmount: string;
-  status: TaxPaymentStatus;
-  reserveSetAside: boolean;
-  setAsideDate: string;
-  notes: string;
-  dateCreated: string;
-};
 
 const defaultCashPosition: CashPositionRecord = {
   currentCash: "",
@@ -19395,16 +19360,10 @@ const isOwnershipGap =
       return;
     }
 
-    const nextIncome: IncomeRecord = {
-      ...incomeEditor,
-      id: incomeEditor.id || generateFinanceRecordId("income"),
-      description: incomeEditor.description.trim(),
-      customerSource: incomeEditor.customerSource.trim(),
-      amount: incomeEditor.amount.trim(),
-      status: incomeStatusOptions.includes(incomeEditor.status as IncomeStatus) ? incomeEditor.status : "Expected",
-      notes: incomeEditor.notes.trim(),
-      dateCreated: incomeEditor.dateCreated || new Date().toISOString(),
-    };
+    const nextIncome = sanitizeIncomeRecord(incomeEditor, {
+      generateId: () => generateFinanceRecordId("income"),
+      nowIso: () => new Date().toISOString(),
+    });
     const isNew = !incomeRecords.some((record) => record.id === nextIncome.id);
 
     setIncomeRecords((current) =>
@@ -19456,16 +19415,10 @@ const isOwnershipGap =
       return;
     }
 
-    const nextExpense: ExpenseRecord = {
-      ...expenseEditor,
-      id: expenseEditor.id || generateFinanceRecordId("expense"),
-      description: expenseEditor.description.trim(),
-      supplier: expenseEditor.supplier.trim(),
-      amount: expenseEditor.amount.trim(),
-      status: expenseStatusOptions.includes(expenseEditor.status as ExpenseStatus) ? expenseEditor.status : "Planned",
-      notes: expenseEditor.notes.trim(),
-      dateCreated: expenseEditor.dateCreated || new Date().toISOString(),
-    };
+    const nextExpense = sanitizeExpenseRecord(expenseEditor, {
+      generateId: () => generateFinanceRecordId("expense"),
+      nowIso: () => new Date().toISOString(),
+    });
     const isNew = !expenseRecords.some((record) => record.id === nextExpense.id);
 
     setExpenseRecords((current) =>
@@ -19690,16 +19643,10 @@ const isOwnershipGap =
       return;
     }
 
-    const nextPayment: TaxPaymentRecord = {
-      ...taxPaymentEditor,
-      id: taxPaymentEditor.id || generateFinanceRecordId("tax-payment"),
-      description: taxPaymentEditor.description.trim(),
-      payPeriod: taxPaymentEditor.payPeriod.trim(),
-      grossAmount: taxPaymentEditor.grossAmount.trim(),
-      status: taxPaymentStatusOptions.includes(taxPaymentEditor.status as TaxPaymentStatus) ? taxPaymentEditor.status : "Expected",
-      notes: taxPaymentEditor.notes.trim(),
-      dateCreated: taxPaymentEditor.dateCreated || new Date().toISOString(),
-    };
+    const nextPayment = sanitizeTaxPaymentRecord(taxPaymentEditor, {
+      generateId: () => generateFinanceRecordId("tax-payment"),
+      nowIso: () => new Date().toISOString(),
+    });
     const isNew = !taxPaymentRecords.some((record) => record.id === nextPayment.id);
 
     setTaxPaymentRecords((current) =>
