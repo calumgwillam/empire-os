@@ -8,6 +8,7 @@ import {
   projectHealthOptions,
   projectReviewOutcomeOptions,
   projectStatusOptions,
+  sanitizeProjectRecord,
   type ProjectConversionDraft,
   type ProjectExecutionAuthority,
   type ProjectHealth,
@@ -18627,54 +18628,21 @@ const isOwnershipGap =
       return false;
     }
 
-    const projectName = projectEditor.projectName.trim();
-    const normalizeProjectDate = (value: string) => {
-      const dateValue = value.trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
-        return "";
-      }
-
-      const parsedDate = new Date(`${dateValue}T00:00:00`);
-      const [year, month, day] = dateValue.split("-").map(Number);
-      return !Number.isNaN(parsedDate.getTime()) && parsedDate.getFullYear() === year && parsedDate.getMonth() === month - 1 && parsedDate.getDate() === day
-        ? dateValue
-        : "";
-    };
-    const startDate = normalizeProjectDate(projectEditor.startDate);
-    const targetCompletionDate = normalizeProjectDate(projectEditor.targetCompletionDate);
-    const nextReviewDate = normalizeProjectDate(projectEditor.nextReviewDate || "");
-
-    if (!projectName || (startDate && targetCompletionDate && targetCompletionDate < startDate)) {
-      return false;
-    }
-
     const selectedOwner = people.find((person) =>
       person.status === "Active" && person.name === projectEditor.owner.trim(),
     );
-    const selectedArea = projectEditor.area.trim();
-    const selectedStatus = projectEditor.status.trim();
 
-    const nextProject: ProjectRecord = {
-      ...projectEditor,
-      id: projectEditor.id || generateProjectId(),
-      projectName,
-      owner: selectedOwner ? selectedOwner.name : "",
-      area: sharedAreaOptions.includes(selectedArea as (typeof sharedAreaOptions)[number]) ? selectedArea : "Garden Maintenance",
-      startDate,
-      targetCompletionDate,
-      status: projectStatusOptions.includes(selectedStatus as (typeof projectStatusOptions)[number]) ? selectedStatus : "Open",
-      health: getEffectiveProjectHealth(projectEditor),
-      nextReviewDate,
-      lastReviewedDate: normalizeProjectDate(projectEditor.lastReviewedDate || ""),
-      reviewOwner: (projectEditor.reviewOwner || "").trim(),
-      reviewOwnerPersonId: (projectEditor.reviewOwnerPersonId || "").trim(),
-      reviewNote: (projectEditor.reviewNote || "").trim(),
-      lastReviewOutcome: projectReviewOutcomeOptions.includes(projectEditor.lastReviewOutcome as ProjectReviewOutcome) ? projectEditor.lastReviewOutcome : undefined,
-      relatedActionIds: projectEditor.relatedActionIds ?? [],
-      relatedDecisionIds: projectEditor.relatedDecisionIds ?? [],
-      relatedSystemIds: projectEditor.relatedSystemIds ?? [],
-      relatedSopIds: projectEditor.relatedSopIds ?? [],
-    };
+    const nextProject = sanitizeProjectRecord(projectEditor, {
+      generateId: generateProjectId,
+      resolvedOwnerName: selectedOwner ? selectedOwner.name : null,
+      isAllowedArea: (value) =>
+        sharedAreaOptions.includes(value as (typeof sharedAreaOptions)[number]),
+    });
+
+    if (!nextProject) {
+      return false;
+    }
+
     const isNewProject = !projects.some((project) => project.id === nextProject.id);
     const persistedProject = projects.find((project) => project.id === nextProject.id);
     const applySave = () => setProjects((currentProjects) =>
