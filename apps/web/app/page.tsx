@@ -53,6 +53,24 @@ import {
 } from "./lib/capture-conversions";
 import { isValidCalendarDateInput } from "./lib/dates";
 import {
+  assessDelegationReadiness,
+  buildExecutionReleasePlan,
+  deriveDelegationHandoffFollowThrough,
+  getActionDependencyBlocker as getActionDependencyBlockerRule,
+  getDelegationReadinessMissingFields,
+  getDelegationReadyPeopleForArea as getDelegationReadyPeopleForAreaRule,
+  getProjectExecutionReleaseStatus as getProjectExecutionReleaseStatusRule,
+  isFounderClassPerson,
+  isFounderOwned as isFounderOwnedRule,
+  rankDelegationPeopleForArea,
+  resolveActiveOwnerKey,
+  type HandoffSourceInput,
+  type ReleaseCandidateInput,
+  type ReleaseRecommendation,
+  type ReleaseSystemSummary,
+  type ProjectReleaseState as ProjectExecutionReleaseStatus,
+} from "./lib/execution-release";
+import {
   applyStrategicReviewTransition,
   founderAllocations,
   initialStrategicObjectives,
@@ -1988,15 +2006,8 @@ type ProjectLinkOption = { id: string; title: string };
 
 type ProjectLinkSectionKey = "relatedActionIds" | "relatedDecisionIds" | "relatedSystemIds" | "relatedSopIds";
 
-type ProjectExecutionReleaseStatus = "Not assessed" | "Blocked" | "In progress" | "Ready to delegate" | "Released";
-
 function getProjectExecutionReleaseStatus(releaseItem: ExecutionReleaseItem | null, latestHandoff: DelegationHandoffViewItem | null): ProjectExecutionReleaseStatus {
-  if (!releaseItem && latestHandoff && !["Returned to Founder", "Ownership changed", "Source missing"].includes(latestHandoff.state)) return "Released";
-  if (!releaseItem) return "Not assessed";
-  if (releaseItem.releaseAction === "Delegate Now") return "Ready to delegate";
-  if (releaseItem.releaseClosureState === "In progress") return "In progress";
-  if (releaseItem.releaseAction === "Prepare to Delegate" || releaseItem.releaseAction === "Unblock First" || releaseItem.releaseAction === "Retain — Founder Authority Required" || releaseItem.releaseClosureState === "Closure incomplete") return "Blocked";
-  return "Not assessed";
+  return getProjectExecutionReleaseStatusRule(releaseItem, latestHandoff);
 }
 
 function DelegationHandoffCard({ handoff, onUpdateHandoff, compact = false }: {
@@ -5295,52 +5306,10 @@ function DecisionExecutionControlLayer({
   );
 }
 
-type ReleaseAction =
-  | "Delegate Now"
-  | "Prepare to Delegate"
-  | "Complete Personally"
-  | "Retain — Founder Authority Required"
-  | "Unblock First"
-  | "Monitor / Retain Temporarily";
-
-type ReleaseSeverity = "Critical" | "Material" | "Low";
-type ReleaseClosureState = "Not started" | "In progress" | "Resolved" | "Closure incomplete" | "Cancelled";
-
-type ExecutionReleaseItem = {
-  id: string;
-  objectType: "Action" | "Project" | "Lead" | "Problem";
-  title: string;
-  area?: string;
-  owner: string;
-  status: string;
-  releaseAction: ReleaseAction;
-  severity: ReleaseSeverity;
-  urgencyText?: string;
-  why: string;
-  releasePath: string;
-  hasCapacity: boolean;
-  requiresAuthority: boolean;
-  priorityScore: number;
+type ExecutionReleaseItem = Omit<ReleaseRecommendation, "eligibleDelegationPeople"> & {
   onOpen: () => void;
   delegateAction?: (personId: string) => void;
   eligibleDelegationPeople: CapacityRankedDelegationPerson[];
-  releaseActionId?: string;
-  releaseClosureActionId?: string;
-  releaseClosureState: ReleaseClosureState;
-  releaseClosureReason: string;
-};
-
-type ReleaseSystemSummary = {
-  headline: string;
-  totalFounderOwned: number;
-  delegateNowCount: number;
-  prepareToDelegateCount: number;
-  retainAuthorityCount: number;
-  unblockFirstCount: number;
-  completePersonallyCount: number;
-  monitorCount: number;
-  releasableCount: number;
-  releasablePct: number;
 };
 
 function FounderExecutionReleaseSystem({
@@ -9377,78 +9346,29 @@ export default function Home() {
     return !Number.isNaN(reviewTime) && reviewTime <= Date.now();
   };
 
-  const isDecisionNotYetActionable = (decision: DecisionRecord) =>
-    ["Draft", "Under Review"].includes(decision.decisionStatus);
-
   const isOpportunityUnderEvaluation = (opportunity: OpportunityRecord) =>
     opportunity.status === "Evaluating" && ["High", "Exceptional"].includes(opportunity.strategicFit);
 
   const isProjectActive = (project: ProjectRecord) =>
     !["completed", "closed", "final", "cancelled", "canceled"].includes(project.status.trim().toLowerCase());
 
-  const getDelegationReadinessMissingFields = (person: PersonRecord) => {
-    const missing: string[] = [];
-    if (person.role.trim() === "") missing.push("role");
-    if (person.responsibilities.trim() === "") missing.push("responsibilities");
-    if (person.authority.trim() === "") missing.push("authority");
-    return missing;
-  };
+  const delegationReadiness = assessDelegationReadiness(orderedPeople);
+  const {
+    primaryFounder: founderPerson,
+    activeOperationalPeople: activeOperationalDelegationPeople,
+    readyPeople: delegationReadyPeople,
+    readinessGapPeople: delegationReadinessGapPeople,
+    teamReadinessGapPeople: teamDelegationReadinessGapPeople,
+    cofounderReadinessGapPeople,
+  } = delegationReadiness;
+  const getDelegationReadyPeopleForArea = (area: string) =>
+    getDelegationReadyPeopleForAreaRule(area, delegationReadyPeople);
 
-  // Founder-class covers the Founder access level and any Co-founder role, so Co-founders are never
-  // treated as ordinary non-founder team members in delegation/founder-dependency logic.
-  const isFounderClassPerson = (person: PersonRecord) =>
-    person.accessLevel === "Founder" || /\bco[- ]?founder\b/i.test(person.role);
-
-  // Among active Founder-access people, prefer the one whose role is exactly "Founder" so a
-  // Co-founder with the same access level is never mistaken for the primary Founder.
-  const activeFounderAccessPeople = orderedPeople.filter((person) => person.accessLevel === "Founder" && person.status === "Active");
-  const founderPerson = activeFounderAccessPeople.find((person) => person.role.trim().toLowerCase() === "founder")
-    || activeFounderAccessPeople[0]
-    || null;
-  const activeOperationalDelegationPeople = orderedPeople.filter(
-  (person) => person.status === "Active" && person.id !== founderPerson?.id,
-);
-
-const delegationReadyPeople = activeOperationalDelegationPeople.filter(
-  (person) => getDelegationReadinessMissingFields(person).length === 0,
-);
-
-const getDelegationReadyPeopleForArea = (area: string) => {
-  const normalisedArea = area.trim().toLowerCase();
-  if (!normalisedArea || normalisedArea === "unassigned") return [];
-  return delegationReadyPeople.filter((person) => person.pillar.trim().toLowerCase() === normalisedArea);
-};
-
-const delegationReadinessGapPeople = activeOperationalDelegationPeople.filter(
-  (person) => !delegationReadyPeople.some((readyPerson) => readyPerson.id === person.id),
-);
-
-const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
-  (person) => !isFounderClassPerson(person),
-);
-
-  // Active Co-founders (founder-class but not the primary Founder) keep their readiness gap visible,
-  // described accurately instead of being folded into the non-founder team-member pool.
-  const activeCofounderPeople = orderedPeople.filter(
-    (person) => person.status === "Active" && isFounderClassPerson(person) && person.id !== founderPerson?.id,
-  );
-  const cofounderReadinessGapPeople = activeCofounderPeople.filter(
-    (person) => getDelegationReadinessMissingFields(person).length > 0,
-  );
   const founderOwnerKey = founderPerson?.name.trim().toLowerCase() || null;
-  const getValidActiveOwnerKey = (ownerText: string | undefined, ownerPersonId?: string) => {
-    if (ownerPersonId) {
-      const owner = orderedPeople.find((person) => person.id === ownerPersonId && person.status === "Active");
-      if (owner) return owner.name.trim().toLowerCase();
-    }
-
-    const text = (ownerText || "").trim();
-    if (!text || text.toLowerCase() === "unassigned") return null;
-    const matched = orderedPeople.find((person) => person.status === "Active" && person.name.trim().toLowerCase() === text.toLowerCase());
-    return matched ? matched.name.trim().toLowerCase() : null;
-  };
+  const getValidActiveOwnerKey = (ownerText: string | undefined, ownerPersonId?: string) =>
+    resolveActiveOwnerKey(orderedPeople, ownerText, ownerPersonId);
   const isFounderOwned = (ownerText: string | undefined, ownerPersonId?: string) =>
-    founderOwnerKey !== null && getValidActiveOwnerKey(ownerText, ownerPersonId) === founderOwnerKey;
+    isFounderOwnedRule(founderPerson, orderedPeople, { owner: ownerText, ownerPersonId });
   const activeOwnershipActions = actionRecords.filter((action) => isActionActive(action) && !isReleaseInterventionAction(action));
   const activeOwnershipProjects = projects.filter(isProjectActive);
   const activeOwnershipLeads = activeLeads.filter((lead) => !["Won", "Lost"].includes(lead.status));
@@ -10274,165 +10194,45 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
 
   const personAccountabilitySummaries = orderedPeople.map((person) => ({ ...buildAccountabilitySnapshot(person), person }));
   const unassignedAccountability = buildAccountabilitySnapshot(null);
-  const delegationHandoffFollowThrough = (() => {
-    const nowMs = Date.now();
-    const todayStartMs = new Date(nowMs).setHours(0, 0, 0, 0);
-
-    const latestHandoffIdByObject = new Map<string, string>();
-    delegationHandoffs
-      .slice()
-      .sort((left, right) => new Date(right.transferredAt).getTime() - new Date(left.transferredAt).getTime())
-      .forEach((handoff) => {
-        const key = `${handoff.objectType}:${handoff.objectId}`;
-        if (!latestHandoffIdByObject.has(key)) latestHandoffIdByObject.set(key, handoff.id);
-      });
-    const items = delegationHandoffs
-      .map((handoff) => {
-        const handoffKey = `${handoff.objectType}:${handoff.objectId}`;
-        const isLatestHandoff = latestHandoffIdByObject.get(handoffKey) === handoff.id;
-        let currentOwner = "Unassigned";
-        let currentStatus = "Source missing";
-        let sourceExists = false;
-        let isCompleted = false;
-        let isAtRisk = false;
-        let isCurrentFounderOwned = false;
-        let sourceIsBlocked = false;
-        let sourceIsOverdue = false;
-
-        if (handoff.objectType === "Action") {
-          const action = actionRecords.find((record) => record.id === handoff.objectId);
-          if (action) {
-            sourceExists = true;
-            currentOwner = getActionOwnerDisplay(action, people);
-            currentStatus = action.status;
-            isCompleted = action.status === "Completed";
-            sourceIsBlocked = action.status === "Blocked";
-            sourceIsOverdue = !isActionWaiting(action) && action.status !== "Cancelled" && Boolean(action.dueDate) && new Date(action.dueDate).getTime() < todayStartMs;
-            isAtRisk = !isActionWaiting(action) && action.status !== "Cancelled"
-              && (action.status === "Blocked" || (Boolean(action.dueDate) && new Date(action.dueDate).getTime() < nowMs));
-            isCurrentFounderOwned = isFounderOwned(action.owner, action.ownerPersonId);
-          }
-        } else if (handoff.objectType === "Project") {
-          const project = projects.find((record) => record.id === handoff.objectId);
-          if (project) {
-            const normalisedStatus = project.status.trim().toLowerCase();
-            sourceExists = true;
-            currentOwner = project.owner || "Unassigned";
-            currentStatus = project.status || "No status";
-            isCompleted = ["completed", "closed", "final"].includes(normalisedStatus);
-            sourceIsBlocked = normalisedStatus === "blocked";
-            sourceIsOverdue = !["cancelled", "canceled"].includes(normalisedStatus) && Boolean(project.targetCompletionDate) && new Date(`${project.targetCompletionDate}T00:00:00`).getTime() < todayStartMs;
-            isAtRisk = !["cancelled", "canceled"].includes(normalisedStatus)
-              && (normalisedStatus === "blocked" || (Boolean(project.targetCompletionDate) && new Date(project.targetCompletionDate).getTime() < nowMs));
-            isCurrentFounderOwned = isFounderOwned(project.owner);
-          }
-        } else if (handoff.objectType === "Lead") {
-          const lead = leads.find((record) => record.id === handoff.objectId);
-          if (lead) {
-            sourceExists = true;
-            currentOwner = lead.owner || "Unassigned";
-            currentStatus = lead.status;
-            isCompleted = lead.status === "Won" || lead.status === "Lost";
-            sourceIsOverdue = Boolean(lead.followUpDate) && new Date(lead.followUpDate).getTime() < todayStartMs;
-            isAtRisk = (lead.status === "Quote Sent" && !lead.followUpDate)
-              || (Boolean(lead.followUpDate) && new Date(lead.followUpDate).getTime() < nowMs);
-            isCurrentFounderOwned = isFounderOwned(lead.owner);
-          }
-        } else {
-          const problem = problemRecords.find((record) => record.id === handoff.objectId);
-          if (problem) {
-            sourceExists = true;
-            currentOwner = problem.owner || "Unassigned";
-            currentStatus = problem.problemStatus;
-            isCompleted = problem.problemStatus === "Resolved" || problem.problemStatus === "Closed";
-            sourceIsBlocked = problem.problemStatus === "Action required";
-            isAtRisk = problem.severity === "High" || problem.severity === "Critical";
-            isCurrentFounderOwned = isFounderOwned(problem.owner);
-          }
-        }
-
-        let state: DelegationHandoffState = "Healthy";
-        if (!isLatestHandoff) {
-          state = "Ownership changed";
-        } else if (!sourceExists) {
-          state = "Source missing";
-        } else if (currentOwner.trim().toLowerCase() !== handoff.newOwner.trim().toLowerCase()) {
-          state = isCurrentFounderOwned ? "Returned to Founder" : "Ownership changed";
-        } else if (handoff.status === "Completed" || handoff.status === "Cancelled") {
-          state = handoff.status;
-        } else if (isCompleted) {
-          state = "Completed";
-        } else if (
-          (handoff.objectType === "Action" && currentStatus === "Cancelled")
-          || (handoff.objectType === "Project" && ["cancelled", "canceled"].includes(currentStatus.trim().toLowerCase()))
-        ) {
-          state = "Cancelled";
-        } else if (handoff.status === "At risk") {
-          state = "At risk";
-        } else if (handoff.status === "Healthy") {
-          state = "Healthy";
-        } else if (handoff.reviewDate && new Date(`${handoff.reviewDate.slice(0, 10)}T00:00:00`).getTime() < new Date().setHours(0, 0, 0, 0)) {
-          state = "At risk";
-        } else if (isAtRisk) {
-          state = "At risk";
-        } else {
-          state = "Healthy";
-        }
-
-        const recipient = orderedPeople.find((person) => person.id === handoff.newOwnerPersonId);
-        const recipientInactive = Boolean(recipient && recipient.status !== "Active");
-        const reviewDateMs = handoff.reviewDate ? new Date(`${handoff.reviewDate.slice(0, 10)}T00:00:00`).getTime() : 0;
-        const reviewDue = Boolean(reviewDateMs && !Number.isNaN(reviewDateMs) && reviewDateMs <= todayStartMs);
-        const ownerMismatch = sourceExists && currentOwner.trim().toLowerCase() !== handoff.newOwner.trim().toLowerCase();
-        const reviewReasons = [
-          !sourceExists ? "Linked work record is missing" : null,
-          ownerMismatch ? `Current owner is ${currentOwner}` : null,
-          recipientInactive ? `${handoff.newOwner} is inactive` : null,
-          handoff.lastReviewDecision === "Escalate" ? "Review decision escalated this handoff" : null,
-          sourceIsBlocked ? "Linked work is blocked" : null,
-          sourceIsOverdue ? "Linked work is overdue" : null,
-          handoff.status === "At risk" ? "Handoff is explicitly marked at risk" : null,
-          reviewDue && state !== "Completed" && state !== "Cancelled" ? `Review date reached (${handoff.reviewDate})` : null,
-        ].filter((reason): reason is string => Boolean(reason));
-
-        let reviewState: DelegationHandoffReviewState = "Healthy";
-        if (state === "Completed") {
-          reviewState = "Completed";
-        } else if (state === "Cancelled") {
-          reviewState = "Cancelled";
-        } else if (!sourceExists || ownerMismatch || recipientInactive || handoff.lastReviewDecision === "Escalate" || sourceIsBlocked) {
-          reviewState = "Intervention required";
-        } else if (sourceIsOverdue || handoff.status === "At risk") {
-          reviewState = "At risk";
-        } else if (reviewDue) {
-          reviewState = "Review due";
-        }
-
-        return {
-          ...handoff,
-          state,
-          reviewState,
-          reviewReasons,
-          needsFounderIntervention: reviewState === "Intervention required",
-          currentOwner,
-          currentStatus,
-        };
-      })
-      .sort((left, right) => new Date(right.transferredAt).getTime() - new Date(left.transferredAt).getTime());
-
-    return {
-      items,
-      healthy: items.filter((item) => item.state === "Healthy").length,
-      atRisk: items.filter((item) => item.state === "At risk").length,
-      completed: items.filter((item) => item.state === "Completed").length,
-      cancelled: items.filter((item) => item.state === "Cancelled").length,
-      reviewDue: items.filter((item) => item.reviewState === "Review due").length,
-      interventionRequired: items.filter((item) => item.reviewState === "Intervention required").length,
-      returnedToFounder: items.filter((item) => item.state === "Returned to Founder").length,
-      ownershipChanged: items.filter((item) => item.state === "Ownership changed").length,
-      sourceMissing: items.filter((item) => item.state === "Source missing").length,
-    };
-  })();
+  const handoffSourceFacts: HandoffSourceInput[] = [
+    ...actionRecords.map((action) => ({
+      objectType: "Action" as const,
+      id: action.id,
+      owner: action.owner,
+      ownerPersonId: action.ownerPersonId,
+      status: action.status,
+      dueDate: action.dueDate,
+    })),
+    ...projects.map((project) => ({
+      objectType: "Project" as const,
+      id: project.id,
+      owner: project.owner,
+      status: project.status,
+      targetCompletionDate: project.targetCompletionDate,
+    })),
+    ...leads.map((lead) => ({
+      objectType: "Lead" as const,
+      id: lead.id,
+      owner: lead.owner,
+      status: lead.status,
+      followUpDate: lead.followUpDate,
+    })),
+    ...problemRecords.map((problem) => ({
+      objectType: "Problem" as const,
+      id: problem.id,
+      owner: problem.owner,
+      problemStatus: problem.problemStatus,
+      severity: problem.severity,
+    })),
+  ];
+  const delegationHandoffFollowThrough = deriveDelegationHandoffFollowThrough(
+    delegationHandoffs,
+    handoffSourceFacts,
+    people,
+    founderPerson,
+    Date.now(),
+    orderedPeople,
+  );
   const delegationHandoffFactsByPerson = delegationHandoffFollowThrough.items.reduce((factsByPerson, handoff) => {
     const facts = factsByPerson.get(handoff.newOwnerPersonId) || {
       received: 0,
@@ -10470,21 +10270,19 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
     reviewDue: number;
     interventionRequired: number;
   }>());
-  const getCapacityRankedDelegationPeopleForArea = (area: string): CapacityRankedDelegationPerson[] =>
-    getDelegationReadyPeopleForArea(area)
-      .map((person) => {
-        const summary = personAccountabilitySummaries.find((entry) => entry.person.id === person.id);
-        return {
-          ...person,
-          carriedCount: summary?.carriedCount ?? 0,
-          attentionCount: summary?.attentionCount ?? 0,
-        };
-      })
-      .sort((left, right) =>
-        left.attentionCount - right.attentionCount
-        || left.carriedCount - right.carriedCount
-        || left.name.localeCompare(right.name),
-      );
+  const getCapacityRankedDelegationPeopleForArea = (area: string): CapacityRankedDelegationPerson[] => {
+    const capacityFacts = personAccountabilitySummaries.map((entry) => ({
+      personId: entry.person.id,
+      carriedCount: entry.carriedCount,
+      attentionCount: entry.attentionCount,
+    }));
+    return rankDelegationPeopleForArea(area, delegationReadyPeople, capacityFacts).flatMap((rankedPerson) => {
+      const person = delegationReadyPeople.find((entry) => entry.id === rankedPerson.id);
+      return person
+        ? [{ ...person, carriedCount: rankedPerson.carriedCount, attentionCount: rankedPerson.attentionCount }]
+        : [];
+    });
+  };
 
   const organisationalHealth = (() => {
     const activeActions = activeOwnershipActions;
@@ -11682,11 +11480,14 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
   };
 
   const getActionDependencyBlocker = (action: ActionRecord) => {
-    const relatedProblem = problemRecords.find((problem) => problem.id === action.relatedProblem);
-    if (relatedProblem && isProblemUnresolved(relatedProblem)) {
+    const blocker = getActionDependencyBlockerRule(action, problemRecords, decisionRecords);
+    if (!blocker) return null;
+
+    if (blocker.objectType === "Problem") {
+      const relatedProblem = problemRecords.find((problem) => problem.id === blocker.id);
+      if (!relatedProblem) return null;
       return {
-        reason: `BLOCKED BY PROBLEM: ${relatedProblem.problemStatement || relatedProblem.title}`,
-        label: "Open blocker",
+        ...blocker,
         onOpen: () => {
           setSelectedProblemId(relatedProblem.id);
           setProblemEditor(relatedProblem);
@@ -11694,19 +11495,15 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       };
     }
 
-    const relatedDecision = decisionRecords.find((decision) => decision.id === action.relatedDecision);
-    if (relatedDecision && isDecisionNotYetActionable(relatedDecision)) {
-      return {
-        reason: `WAITING ON DECISION: ${relatedDecision.decisionTitle || relatedDecision.title}`,
-        label: "Open decision",
-        onOpen: () => {
-          setSelectedDecisionId(relatedDecision.id);
-          setDecisionEditor(relatedDecision);
-        },
-      };
-    }
-
-    return null;
+    const relatedDecision = decisionRecords.find((decision) => decision.id === blocker.id);
+    if (!relatedDecision) return null;
+    return {
+      ...blocker,
+      onOpen: () => {
+        setSelectedDecisionId(relatedDecision.id);
+        setDecisionEditor(relatedDecision);
+      },
+    };
   };
 
   const executableAction = (action: ActionRecord) => isActionActive(action) && !isActionWaiting(action) && action.status !== "Blocked"
@@ -14367,8 +14164,14 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
   })();
 
   const founderExecutionReleaseSystem = (() => {
-    const rawItems: ExecutionReleaseItem[] = [];
-    const usedRecordKeys = new Set<string>();
+    const releaseCandidateInputs: ReleaseCandidateInput[] = [];
+    const releaseActionHistory = actionRecords.map((action) => ({
+      id: action.id,
+      releaseSourceType: action.releaseSourceType,
+      releaseSourceId: action.releaseSourceId,
+      releaseIntent: action.releaseIntent,
+      status: action.status,
+    }));
 
     const authorityKeys = new Set([
   ...empireDecisionQueue.founderReviewQueue.map((item) => `${item.kind}:${item.id}`),
@@ -14376,11 +14179,7 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
 ]);
 
 
-    const hasDelegationReadyPeople = delegationReadyPeople.length > 0;
     const nowMs = Date.now();
-    const dayMs = 1000 * 60 * 60 * 24;
-
-    const delegationReadinessGapNames = delegationReadinessGapPeople.map((person) => person.name);
 
     // Helper to add founder item safely with deduplication
     const processFounderItem = (
@@ -14399,212 +14198,41 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       isLegitimatelyWaiting = false,
     ) => {
       const recordKey = `${objectType}:${id}`;
-      if (usedRecordKeys.has(recordKey)) return;
-
-      // V1 retains founder strategic judgement at Project level; direct task execution is not separately classified yet.
       const founderAttentionObjective = objectType === "Project"
         ? getFounderAttentionObjectiveForProject(id)
         : undefined;
-      // Explicit Project-level authority is independent of blocked state and Strategic Objective linkage.
       const requiresExplicitProjectAuthority = objectType === "Project"
         && projects.find((project) => project.id === id)?.executionAuthority === "Founder Authority Required";
       const requiresAuthority = authorityKeys.has(recordKey) || Boolean(founderAttentionObjective) || requiresExplicitProjectAuthority;
       const areaDelegationReadyPeople = getDelegationReadyPeopleForArea(area);
       const capacityRankedDelegationPeople = getCapacityRankedDelegationPeopleForArea(area);
-
-      let releaseAction: ReleaseAction = "Monitor / Retain Temporarily";
-      let severity: ReleaseSeverity = "Low";
-      let why = "";
-      let releasePath = "";
-      let urgencyText = "";
-
-      // Compare calendar dates (local midnight) so time-of-day never mislabels tomorrow as today.
-      const dueTimestamp = dueDateValue ? new Date(`${dueDateValue.slice(0, 10)}T00:00:00`).getTime() : 0;
-      const isValidDate = dueTimestamp > 0 && !Number.isNaN(dueTimestamp);
-      const startOfTodayForItemMs = new Date().setHours(0, 0, 0, 0);
-      const daysUntilDue = isValidDate ? Math.round((dueTimestamp - startOfTodayForItemMs) / dayMs) : null;
-      const isOverdue = daysUntilDue !== null && daysUntilDue < 0;
-      const isDueSoon = daysUntilDue !== null && daysUntilDue >= 0 && daysUntilDue <= 7;
-
-      // A future earliest-executable date suppresses due-soon urgency for ranking, but never hides overdue/blocked/authority signals.
-      const earliestExecutableTimestamp = earliestExecutableDateValue ? new Date(`${earliestExecutableDateValue.slice(0, 10)}T00:00:00`).getTime() : 0;
-      const isNotYetExecutable = earliestExecutableTimestamp > 0 && !Number.isNaN(earliestExecutableTimestamp) && earliestExecutableTimestamp > startOfTodayForItemMs;
-      const isDueSoonForRanking = isDueSoon && !isNotYetExecutable;
-      const followUpTimestamp = followUpDateValue ? new Date(`${followUpDateValue.slice(0, 10)}T00:00:00`).getTime() : 0;
-      const isFollowUpFuture = followUpTimestamp > 0 && !Number.isNaN(followUpTimestamp) && followUpTimestamp > startOfTodayForItemMs;
-
-      if (isFollowUpFuture && (status === "Waiting" || isLegitimatelyWaiting) && !isOverdue && !isBlocked && priorityOrSeverity !== "Critical" && !requiresAuthority) {
-        return;
-      }
-
-      // Time-gated work with no genuine reason for founder attention now is excluded from release ranking entirely
-      // (it still surfaces in Watch, general monitoring, and delegation analysis via other, unaffected code paths).
-      if (isNotYetExecutable && !isBlocked && !dependencyBlockerReason && !requiresAuthority && !isOverdue && priorityOrSeverity !== "Critical") {
-        return;
-      }
-
-      if (isOverdue) {
-        urgencyText = `Overdue by ${Math.abs(daysUntilDue!)} day${Math.abs(daysUntilDue!) === 1 ? "" : "s"}`;
-      } else if (isDueSoon) {
-        urgencyText = daysUntilDue === 0 ? "Due today" : `Due in ${daysUntilDue} day${daysUntilDue === 1 ? "" : "s"}`;
-        if (isNotYetExecutable) {
-          urgencyText += ` (not executable until ${earliestExecutableDateValue!.slice(0, 10)})`;
-        }
-      } else if (isValidDate && daysUntilDue !== null && daysUntilDue <= 30) {
-        urgencyText = `Due in ${daysUntilDue} days`;
-      }
-
-      // 1. Check UNBLOCK FIRST
-      if ((isBlocked || dependencyBlockerReason) && !founderAttentionObjective) {
-        releaseAction = "Unblock First";
-        severity = "Critical";
-        why = dependencyBlockerReason
-          ? `Founder-owned ${objectType.toLowerCase()} '${title}' is blocked by an upstream dependency (${dependencyBlockerReason}). Releasing ownership now will not restore progress.`
-          : `Founder-owned ${objectType.toLowerCase()} '${title}' is blocked. Resolving the operational blocker is required before transferring ownership.`;
-        releasePath = dependencyBlockerReason
-          ? "Clear upstream dependency, then evaluate for delegation."
-          : "Resolve blocker or re-sequence work, then delegate.";
-      }
-      // 2. Check RETAIN — FOUNDER AUTHORITY REQUIRED
-      else if (requiresAuthority) {
-        releaseAction = "Retain — Founder Authority Required";
-        severity = "Critical";
-        why = founderAttentionObjective
-          ? `Founder-owned project '${title}' is linked to active Strategic Objective '${founderAttentionObjective.title}', explicitly allocated to founder attention.`
-          : `Founder-owned ${objectType.toLowerCase()} '${title}' requires founder judgement or strategic decision authority.`;
-        releasePath = founderAttentionObjective
-          ? "Retain under founder authority while this Strategic Objective requires founder attention; resolve any blockers before execution."
-          : "Retain under founder ownership and execute or issue formal decision.";
-      }
-      // 3. Check COMPLETE PERSONALLY
-      else if (isOverdue || (isDueSoonForRanking && (priorityOrSeverity === "Critical" || priorityOrSeverity === "High"))) {
-        releaseAction = "Complete Personally";
-        severity = isOverdue ? "Critical" : "Material";
-        why = isOverdue
-          ? `Founder-owned ${objectType.toLowerCase()} '${title}' is overdue (${urgencyText}). Reassignment now would create handover drag; finishing it is the fastest path.`
-          : `Founder-owned ${objectType.toLowerCase()} '${title}' is urgent (${urgencyText}) and high-priority. Finish directly to preserve momentum.`;
-        releasePath = "Complete execution directly to clear the immediate backlog item.";
-      }
-      // 4. Check DELEGATE NOW vs PREPARE TO DELEGATE
-      else {
-        if (areaDelegationReadyPeople.length > 0) {
-          releaseAction = "Delegate Now";
-          severity = "Material";
-          why = `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation and area-qualified capacity exists.`;
-          releasePath = `Transfer ownership to an active delegation-ready team member for ${area} (${capacityRankedDelegationPeople.map((person) => person.name).join(", ")}).`;
-        } else {
-          releaseAction = "Prepare to Delegate";
-          severity = "Material";
-          why = activeOperationalDelegationPeople.length === 0
-            ? `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but no active operational delegation person excluding the primary founder exists in People.`
-            : delegationReadyPeople.length > 0
-              ? `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but no delegation-ready person is assigned to ${area || "its area"}.`
-              : `Founder-owned routine ${objectType.toLowerCase()} '${title}' is suitable for delegation, but readiness gaps remain: ${delegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`;
-          releasePath = activeOperationalDelegationPeople.length === 0
-            ? "Onboard or activate operational delegation people excluding the primary founder in People to absorb operational load."
-            : delegationReadyPeople.length > 0
-              ? `Assign a delegation-ready Person to ${area || "the work item's area"}.`
-              : `Complete delegation readiness in People: ${delegationReadinessGapPeople.map((person) => `${person.name} — ${getDelegationReadinessMissingFields(person).join(", ")}`).join("; ")}.`;
-        }
-      }
-
-      const linkedReleaseAction =
-        releaseAction === "Prepare to Delegate" || releaseAction === "Unblock First"
-          ? actionRecords.find((action) =>
-              action.releaseSourceType === objectType
-              && action.releaseSourceId === id
-              && action.releaseIntent === releaseAction,
-            )
-          : undefined;
-
-      const latestHistoricalReleaseAction = actionRecords.find((action) =>
-        action.releaseSourceType === objectType
-        && action.releaseSourceId === id
-        && (action.releaseIntent === "Prepare to Delegate" || action.releaseIntent === "Unblock First"),
-      );
-
-      const closureReleaseAction =
-        linkedReleaseAction
-        ?? (
-          releaseAction !== "Prepare to Delegate" && releaseAction !== "Unblock First"
-            ? latestHistoricalReleaseAction
-            : undefined
-        );
-
-      // Calculate Release Priority Score
-      let priorityScore = 0;
-      if (releaseAction === "Delegate Now") priorityScore += 500;
-      else if (releaseAction === "Prepare to Delegate") priorityScore += 400;
-      else if (releaseAction === "Unblock First") priorityScore += 350;
-      else if (releaseAction === "Complete Personally") priorityScore += 300;
-      else if (releaseAction === "Retain — Founder Authority Required") priorityScore += 200;
-      else priorityScore += 100;
-
-      if (isOverdue) priorityScore += 150;
-      if (isDueSoonForRanking) priorityScore += 80;
-      if (priorityOrSeverity === "Critical") priorityScore += 100;
-      if (priorityOrSeverity === "High") priorityScore += 50;
-
-      let releaseClosureState: ReleaseClosureState = "Not started";
-      let releaseClosureReason = "No linked release Action exists.";
-      if (closureReleaseAction) {
-        if (closureReleaseAction.status === "Cancelled") {
-          releaseClosureState = "Cancelled";
-          releaseClosureReason = "The linked release Action was cancelled.";
-        } else if (closureReleaseAction.status !== "Completed") {
-          releaseClosureState = "In progress";
-          releaseClosureReason = `The linked release Action is ${closureReleaseAction.status.toLowerCase()}.`;
-        } else if (closureReleaseAction.releaseIntent === "Prepare to Delegate") {
-          if (areaDelegationReadyPeople.length > 0) {
-            releaseClosureState = "Resolved";
-            releaseClosureReason = `Area-qualified delegation capacity now exists through ${areaDelegationReadyPeople.map((person) => person.name).join(", ")}.`;
-          } else {
-            releaseClosureState = "Closure incomplete";
-            releaseClosureReason = activeOperationalDelegationPeople.length === 0
-              ? "No active operational delegation person is available yet."
-              : delegationReadyPeople.length > 0
-                ? `Delegation-ready people exist, but none are assigned to ${area || "the source item's area"}.`
-                : `Readiness gaps remain: ${delegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`;
-          }
-        } else {
-          const sourceStillRequiresIntervention = isBlocked || Boolean(dependencyBlockerReason) || requiresAuthority;
-          if (sourceStillRequiresIntervention) {
-            releaseClosureState = "Closure incomplete";
-            releaseClosureReason = requiresAuthority
-              ? "The source item still requires Founder authority or intervention."
-              : "The source item is still blocked or waiting on an unresolved dependency.";
-          } else {
-            releaseClosureState = "Resolved";
-            releaseClosureReason = "The source item is no longer blocked and no longer carries a Founder-authority signal.";
-          }
-        }
-      }
-
-      rawItems.push({
+      releaseCandidateInputs.push({
         id,
         objectType,
         title,
         area,
         owner,
         status,
-        releaseAction,
-        severity,
-        urgencyText,
-        why,
-        releasePath,
-        hasCapacity: areaDelegationReadyPeople.length > 0,
+        dueDate: dueDateValue,
+        priorityOrSeverity,
+        isBlocked,
+        dependencyBlockerReason,
+        earliestExecutableDate: earliestExecutableDateValue,
+        followUpDate: followUpDateValue,
+        isLegitimatelyWaiting,
         requiresAuthority,
-        priorityScore,
-        onOpen: () => handleOpenAttentionRecord(objectType, id),
-        delegateAction: (personId: string) => handleDelegateItem(objectType, id, personId),
-        eligibleDelegationPeople: capacityRankedDelegationPeople,
-        releaseActionId: linkedReleaseAction?.id,
-        releaseClosureActionId: closureReleaseAction?.id,
-        releaseClosureState,
-        releaseClosureReason,
+        hasFounderAttentionObjective: Boolean(founderAttentionObjective),
+        founderAttentionObjectiveTitle: founderAttentionObjective?.title,
+        areaDelegationReadyPeople: areaDelegationReadyPeople.map(({ id: personId, name, pillar }) => ({ id: personId, name, pillar })),
+        capacityRankedDelegationPeople: capacityRankedDelegationPeople.map(({ id: personId, name, pillar }) => ({ id: personId, name, pillar })),
+        activeOperationalDelegationPeopleCount: activeOperationalDelegationPeople.length,
+        delegationReadyPeopleCount: delegationReadyPeople.length,
+        delegationReadinessGapPeople: delegationReadinessGapPeople.map((person) => ({
+          name: person.name,
+          missingFields: getDelegationReadinessMissingFields(person),
+        })),
+        releaseActions: releaseActionHistory,
       });
-
-      usedRecordKeys.add(recordKey);
     };
 
     // Scan Founder-owned Actions
@@ -14688,50 +14316,25 @@ const teamDelegationReadinessGapPeople = delegationReadinessGapPeople.filter(
       }
     });
 
-    const sortedItems = [...rawItems].sort((left, right) =>
-      right.priorityScore - left.priorityScore || left.title.localeCompare(right.title)
-    );
-
-    const totalFounderOwned = sortedItems.length;
-    const delegateNowCount = sortedItems.filter((i) => i.releaseAction === "Delegate Now").length;
-    const prepareToDelegateCount = sortedItems.filter((i) => i.releaseAction === "Prepare to Delegate").length;
-    const retainAuthorityCount = sortedItems.filter((i) => i.releaseAction === "Retain — Founder Authority Required").length;
-    const unblockFirstCount = sortedItems.filter((i) => i.releaseAction === "Unblock First").length;
-    const completePersonallyCount = sortedItems.filter((i) => i.releaseAction === "Complete Personally").length;
-    const monitorCount = sortedItems.filter((i) => i.releaseAction === "Monitor / Retain Temporarily").length;
-
-    const releasableCount = delegateNowCount + prepareToDelegateCount;
-    const releasablePct = totalFounderOwned > 0 ? Math.round((releasableCount / totalFounderOwned) * 100) : 0;
-
-    let headline = "";
-    if (totalFounderOwned === 0) {
-      headline = "Founder execution load is fully distributed — no active founder-owned execution items.";
-    } else if (retainAuthorityCount > 0) {
-      headline = `${retainAuthorityCount} founder-owned item${retainAuthorityCount === 1 ? " is" : "s are"} intentionally retained for founder authority${prepareToDelegateCount > 0 ? `; ${prepareToDelegateCount} await${prepareToDelegateCount === 1 ? "s" : ""} delegation readiness` : ""}.`;
-    } else if (releasableCount === totalFounderOwned) {
-      headline = "Founder execution load is broadly releasable.";
-    } else if (delegateNowCount > 0) {
-      headline = `${releasableCount} of ${totalFounderOwned} founder-owned execution items are structurally releasable.`;
-    } else if (prepareToDelegateCount > 0 && !hasDelegationReadyPeople) {
-      headline = `${prepareToDelegateCount} founder-owned item${prepareToDelegateCount === 1 ? " awaits" : "s await"} delegation readiness.`;
-    } else {
-      headline = `${releasableCount} of ${totalFounderOwned} founder-owned execution items can be released.`;
-    }
-
+    const releasePlan = buildExecutionReleasePlan(releaseCandidateInputs, nowMs);
+    const items: ExecutionReleaseItem[] = releasePlan.items.map((recommendation) => ({
+      ...recommendation,
+      eligibleDelegationPeople: recommendation.eligibleDelegationPeople.flatMap((rankedPerson) => {
+        const person = delegationReadyPeople.find((entry) => entry.id === rankedPerson.id);
+        if (!person) return [];
+        const summary = personAccountabilitySummaries.find((entry) => entry.person.id === person.id);
+        return [{
+          ...person,
+          carriedCount: summary?.carriedCount ?? 0,
+          attentionCount: summary?.attentionCount ?? 0,
+        }];
+      }),
+      onOpen: () => handleOpenAttentionRecord(recommendation.objectType, recommendation.id),
+      delegateAction: (personId: string) => handleDelegateItem(recommendation.objectType, recommendation.id, personId),
+    }));
     return {
-      summary: {
-        headline,
-        totalFounderOwned,
-        delegateNowCount,
-        prepareToDelegateCount,
-        retainAuthorityCount,
-        unblockFirstCount,
-        completePersonallyCount,
-        monitorCount,
-        releasableCount,
-        releasablePct,
-      },
-      items: sortedItems,
+      summary: releasePlan.summary,
+      items,
     };
   })();
 
