@@ -70,6 +70,7 @@ import {
   type ReleaseSystemSummary,
   type ProjectReleaseState as ProjectExecutionReleaseStatus,
 } from "./lib/execution-release";
+import { buildEmpireDecisionQueue, type EmpireDecisionQueueResult } from "./lib/empire-decision-queue";
 import {
   applyStrategicReviewTransition,
   founderAllocations,
@@ -9429,324 +9430,30 @@ export default function Home() {
     };
   });
 
-  const empireDecisionQueue = (() => {
-    const founderReviewCandidates = [
-      ...decisionRecords
-        .filter((decision) => isDecisionActive(decision) && (
-          isDecisionReviewDue(decision) ||
-          decision.decisionStatus === "Under Review" ||
-          decision.riskLevel === "High" ||
-          decision.riskLevel === "Critical"
-        ))
-        .map((decision) => {
-          const reasonCategory = decision.riskLevel === "Critical"
-            ? "Critical escalation"
-            : isDecisionReviewDue(decision)
-              ? "Review due"
-              : decision.decisionStatus === "Under Review"
-                ? "Under review"
-                : "High-risk judgement";
-          return {
-            id: decision.id,
-            objectType: "Decision" as const,
-            kind: "Decision" as const,
-            title: decision.decisionTitle,
-            pillar: getAreaText(decision) || "Unassigned",
-            owner: decision.decisionMaker || "Unassigned",
-            reasonCategory,
-            whatIsChanging: decision.decisionStatement || "No decision statement recorded.",
-            whyItMatters: reasonCategory === "Review due"
-              ? "This decision is due or overdue for explicit review, so its assumptions and current path need founder judgement."
-              : reasonCategory === "Under review"
-                ? "This decision is explicitly under review and needs a clear conclusion."
-                : `This decision carries ${decision.riskLevel.toLowerCase()} risk and needs founder judgement.`,
-            founderIntervention: "Yes",
-            delegationAction: "Founder review required",
-          };
-        }),
-      ...problemRecords
-        .filter((problem) => isProblemUnresolved(problem) && problem.severity === "Critical")
-        .map((problem) => ({
-          id: problem.id,
-          objectType: "Problem" as const,
-          kind: "Problem" as const,
-          title: problem.problemStatement,
-          pillar: getAreaText(problem) || "Unassigned",
-          owner: problem.owner || "Unassigned",
-          reasonCategory: "Critical escalation",
-          whatIsChanging: `${problem.severity} severity problem still requiring action.`,
-          whyItMatters: `This critical issue remains ${problem.problemStatus.toLowerCase()} and requires founder-level escalation.`,
-          founderIntervention: "Yes",
-          delegationAction: "Escalate to founder and accountable owner",
-        })),
-      ...actionRecords
-        .filter((action) => isActionActive(action) && !isActionWaiting(action) && !isReleaseInterventionAction(action) && action.priority === "Critical")
-        .map((action) => ({
-          id: action.id,
-          objectType: "Action" as const,
-          kind: "Action" as const,
-          title: action.actionTitle,
-          pillar: action.relatedPillar || "Unassigned",
-          owner: action.owner || "Unassigned",
-          reasonCategory: "Critical escalation",
-          whatIsChanging: action.status === "Blocked" ? "This dependency is blocked and preventing progress." : "This critical action is still open and needs immediate movement.",
-          whyItMatters: action.dueDate && new Date(action.dueDate).getTime() <= Date.now()
-            ? `The due date of ${action.dueDate} has passed, so momentum is slipping and downstream work is delayed.`
-            : "This item is critical to the current operating plan and should not sit unresolved.",
-          founderIntervention: "Yes",
-          delegationAction: action.status === "Blocked" ? "Escalate and remove dependency" : "Delegate with clear owner follow-up",
-        })),
-    ];
-
-    const distinctAreas = (areas: Array<string | undefined>) =>
-      Array.from(new Set(areas.map((area) => area?.trim()).filter((area): area is string => Boolean(area))));
-    const crossPillarCandidates = [
-      ...problemRecords
-        .filter(isProblemUnresolved)
-        .map((problem) => ({
-          item: problem,
-          areas: distinctAreas([
-            getAreaText(problem),
-            ...actionRecords.filter((action) => action.relatedProblem === problem.id && isActionActive(action)).map((action) => action.relatedPillar),
-          ]),
-        })),
-      ...actionRecords
-        .filter(isActionActive)
-        .map((action) => ({
-          item: action,
-          areas: distinctAreas([
-            action.relatedPillar,
-            problemRecords.find((problem) => problem.id === action.relatedProblem && isProblemUnresolved(problem)) ? getAreaText(problemRecords.find((problem) => problem.id === action.relatedProblem)!) : undefined,
-            decisionRecords.find((decision) => decision.id === action.relatedDecision && isDecisionActive(decision)) ? getAreaText(decisionRecords.find((decision) => decision.id === action.relatedDecision)!) : undefined,
-            opportunityRecords.find((opportunity) => opportunity.id === action.relatedOpportunity)?.relatedPillar,
-            ...projects.filter((project) => (project.relatedActionIds || []).includes(action.id) && isProjectActive(project)).map((project) => project.area),
-          ]),
-        })),
-      ...projects
-        .filter(isProjectActive)
-        .map((project) => ({
-          item: project,
-          areas: distinctAreas([
-            project.area,
-            ...actionRecords.filter((action) => (project.relatedActionIds || []).includes(action.id) && isActionActive(action)).map((action) => action.relatedPillar),
-            ...decisionRecords.filter((decision) => (project.relatedDecisionIds || []).includes(decision.id) && isDecisionActive(decision)).map(getAreaText),
-            ...systemRecords.filter((system) => (project.relatedSystemIds || []).includes(system.id)).map((system) => system.area),
-          ]),
-        })),
-    ];
-    const crossPillarIssues = crossPillarCandidates
-      .filter(({ areas }) => areas.length > 1)
-      .slice(0, 8)
-      .map(({ item, areas }) => {
-      const owner = "owner" in item ? item.owner || "Unassigned" : "Unassigned";
-      const area = "relatedPillar" in item ? (item.relatedPillar || "General") : "area" in item ? item.area : "General";
-
-      return {
-        id: item.id,
-        objectType: "problemStatement" in item ? "Problem" : "actionTitle" in item ? "Action" : "Project",
-        title: "problemStatement" in item ? item.problemStatement : "actionTitle" in item ? item.actionTitle : item.projectName,
-        kind: "problemStatement" in item ? "Cross-pillar problem" : "actionTitle" in item ? "Cross-pillar action" : "Cross-pillar project",
-        owner,
-        area,
-        why: `Linked active work connects this record across ${areas.join(" and ")}.`,
-        founderIntervention: "Maybe",
-        delegationAction: "Delegate to the accountable lead with founder review if it becomes material",
-      };
-    });
-
-    const nowMs = Date.now();
-    const daysUntil = (dateValue?: string) => {
-      const timestamp = dateValue ? new Date(dateValue).getTime() : 0;
-      return timestamp && !Number.isNaN(timestamp) ? (timestamp - nowMs) / (1000 * 60 * 60 * 24) : null;
-    };
-    const delegateItems = [
-      ...activeOwnershipActions
-        .filter((action) => isFounderOwned(action.owner, action.ownerPersonId) && !isActionWaiting(action) && action.status !== "Blocked" && action.priority !== "Critical")
-        .map((action) => {
-          const dueInDays = daysUntil(action.dueDate);
-          const suitability = (action.priority === "Low" ? 0 : action.priority === "Medium" ? 15 : 35)
-            + (action.status === "In Progress" ? 10 : 0)
-            + (dueInDays === null ? 0 : dueInDays < 0 ? 80 : dueInDays <= 7 ? 55 : dueInDays <= 30 ? 30 : 0);
-          return {
-            id: action.id,
-            objectType: "Action" as const,
-            title: action.actionTitle,
-            pillar: action.relatedPillar || "Unassigned",
-            owner: action.owner || founderPerson?.name || "Founder",
-            whatIsChanging: "This active action is still carried by the founder but does not have a critical or blocked authority signal.",
-            whyItMatters: "Transferring routine execution creates founder capacity while preserving accountability through a named owner.",
-            founderIntervention: "No",
-            delegationAction: "Transfer to an active operational owner with a clear outcome and follow-up",
-            suitability,
-          };
-        }),
-      ...activeOwnershipProjects
-        .filter((project) => isFounderOwned(project.owner) && project.status.trim().toLowerCase() !== "blocked")
-        .map((project) => {
-          const dueInDays = daysUntil(project.targetCompletionDate);
-          const suitability = (project.status.trim().toLowerCase() === "in progress" ? 15 : 0)
-            + (dueInDays === null ? 0 : dueInDays < 0 ? 80 : dueInDays <= 14 ? 50 : dueInDays <= 30 ? 25 : 0);
-          return {
-            id: project.id,
-            objectType: "Project" as const,
-            title: project.projectName,
-            pillar: project.area || "Unassigned",
-            owner: project.owner || founderPerson?.name || "Founder",
-            whatIsChanging: "This active, unblocked project is currently carried by the founder.",
-            whyItMatters: "Moving delivery ownership away from the founder improves operating leverage and tests whether the project can run autonomously.",
-            founderIntervention: "No",
-            delegationAction: "Transfer delivery ownership to an active operational owner",
-            suitability,
-          };
-        }),
-      ...activeOwnershipLeads
-        .filter((lead) => isFounderOwned(lead.owner))
-        .map((lead) => {
-          const followUpInDays = daysUntil(lead.followUpDate);
-          const suitability = (lead.status === "Follow-Up" ? 25 : 0)
-            + (followUpInDays === null ? 0 : followUpInDays < 0 ? 60 : followUpInDays <= 7 ? 35 : 0);
-          return {
-            id: lead.id,
-            objectType: "Lead" as const,
-            title: lead.leadName,
-            pillar: lead.relatedPillar || "Unassigned",
-            owner: lead.owner || founderPerson?.name || "Founder",
-            whatIsChanging: "This live lead is currently carried by the founder.",
-            whyItMatters: "Delegating routine pipeline ownership reduces founder dependency while keeping commercial follow-up accountable.",
-            founderIntervention: "No",
-            delegationAction: "Transfer pipeline ownership to an active operational owner",
-            suitability,
-          };
-        }),
-      ...activeOwnershipProblems
-        .filter((problem) => isFounderOwned(problem.owner) && problem.severity !== "Critical" && problem.problemStatus !== "Action required")
-        .map((problem) => ({
-          id: problem.id,
-          objectType: "Problem" as const,
-          title: problem.problemStatement,
-          pillar: getAreaText(problem) || "Unassigned",
-          owner: problem.owner || founderPerson?.name || "Founder",
-          whatIsChanging: "This unresolved, non-critical problem is currently carried by the founder.",
-          whyItMatters: "Assigning investigation and resolution to an operational owner reduces founder dependency without delegating an explicit authority decision.",
-          founderIntervention: "No",
-          delegationAction: "Transfer investigation and resolution to an active operational owner",
-          suitability: problem.severity === "Low" ? 5 : problem.severity === "Medium" ? 20 : 40,
-        })),
-    ]
-      .sort((left, right) => left.suitability - right.suitability || left.title.localeCompare(right.title))
-      .slice(0, 6)
-      .map(({ suitability: _suitability, ...item }) => item);
-
-    const founderReviewDecisionById = new Map(
-      founderReviewCandidates
-        .filter((item) => item.objectType === "Decision")
-        .map((item) => [item.id, item]),
-    );
-    const founderAuthorityCandidates = [
-      ...projects
-        .filter((project) => isProjectActive(project) && project.status.trim().toLowerCase() === "blocked" && project.area.trim() !== "")
-        .map((project) => {
-          const linkedFounderReviewDecisions = (project.relatedDecisionIds || [])
-            .map((decisionId) => founderReviewDecisionById.get(decisionId))
-            .filter((decision): decision is NonNullable<typeof decision> => Boolean(decision));
-          const targetTime = project.targetCompletionDate ? new Date(`${project.targetCompletionDate}T00:00:00`).getTime() : 0;
-          const targetUrgency = targetTime && !Number.isNaN(targetTime)
-            ? targetTime < Date.now() ? 30 : targetTime <= Date.now() + 7 * 24 * 60 * 60 * 1000 ? 15 : 0
-            : 0;
-          const linkedDecisionStrength = linkedFounderReviewDecisions.some((decision) => decision.reasonCategory === "Critical escalation")
-            ? 40
-            : linkedFounderReviewDecisions.length > 0 ? 20 : 0;
-          return {
-            id: project.id,
-            objectType: "Project" as const,
-            title: project.projectName,
-            pillar: project.area,
-            owner: project.owner || "Unassigned",
-            reasonCategory: "Blocked project decision",
-            whatIsChanging: "This active project is blocked and needs a decision on sequencing, resourcing or scope.",
-            whyItMatters: linkedFounderReviewDecisions.length > 0
-              ? `The blocked project is preventing delivery and is linked to ${linkedFounderReviewDecisions.length} Decision${linkedFounderReviewDecisions.length === 1 ? "" : "s"} that already meet founder-review criteria.`
-              : "The blocked project is preventing delivery, revenue timing or plan confidence in its area.",
-            founderIntervention: "Yes",
-            delegationAction: "Escalate to founder or executive decision on how to unblock",
-            authorityScore: 80 + linkedDecisionStrength + targetUrgency,
-          };
-        }),
-      ...opportunityRecords
-        .filter((opportunity) => {
-          const hasSettledDecision = decisionRecords.some((decision) =>
-            decision.relatedOpportunity === opportunity.id && ["Completed", "Reversed"].includes(decision.decisionStatus),
-          );
-
-          return ["Evaluating", "Approved"].includes(opportunity.status)
-            && ["High", "Exceptional"].includes(opportunity.strategicFit)
-            && !hasSettledDecision;
-        })
-        .map((opportunity) => {
-          const linkedFounderReviewDecision = founderReviewCandidates.find((item) =>
-            item.objectType === "Decision" && decisionRecords.some((decision) => decision.id === item.id && decision.relatedOpportunity === opportunity.id),
-          );
-          return {
-            id: opportunity.id,
-            objectType: "Opportunity" as const,
-            title: opportunity.opportunityTitle,
-            pillar: opportunity.relatedPillar || opportunity.relatedArea || "Unassigned",
-            owner: opportunity.owner || "Unassigned",
-            reasonCategory: "Strategic opportunity approval",
-            whatIsChanging: `This ${opportunity.strategicFit.toLowerCase()}-fit opportunity remains ${opportunity.status.toLowerCase()} without a settled linked Decision.`,
-            whyItMatters: linkedFounderReviewDecision
-              ? `The opportunity needs deliberate approval and its linked Decision already meets founder-review criteria: ${linkedFounderReviewDecision.reasonCategory.toLowerCase()}.`
-              : "This opportunity could materially change revenue or allocation, so it needs a deliberate strategic decision rather than casual drift.",
-            founderIntervention: "Yes",
-            delegationAction: "Escalate to founder approval or strategic decision",
-            authorityScore: (opportunity.strategicFit === "Exceptional" ? 70 : 50) + (linkedFounderReviewDecision ? 20 : 0),
-          };
-        }),
-    ];
-    const founderAuthorityItems = Array.from(
-      founderAuthorityCandidates.reduce((items, item) => {
-        const key = `${item.objectType}:${item.id}`;
-        const existing = items.get(key);
-        if (!existing || item.authorityScore > existing.authorityScore) items.set(key, item);
-        return items;
-      }, new Map<string, (typeof founderAuthorityCandidates)[number]>()),
-    )
-      .map(([, item]) => item)
-      .sort((left, right) => right.authorityScore - left.authorityScore || `${left.objectType}:${left.id}`.localeCompare(`${right.objectType}:${right.id}`));
-    const founderAuthorityDisplayItems = founderAuthorityItems.slice(0, 8);
-
-    const reasonPriority: Record<string, number> = {
-      "Authority required": 5,
-      "Critical escalation": 4,
-      "Review due": 3,
-      "Under review": 2,
-      "High-risk judgement": 1,
-    };
-    const founderReviewQueue = Array.from(
-      [...founderReviewCandidates, ...founderAuthorityItems.map((item) => ({
-        ...item,
-        kind: item.objectType,
-        reasonCategory: "Authority required",
-      }))].reduce((items, item) => {
-        const key = `${item.objectType}:${item.id}`;
-        const existing = items.get(key);
-        if (!existing || reasonPriority[item.reasonCategory] > reasonPriority[existing.reasonCategory]) {
-          items.set(key, item);
-        }
-        return items;
-      }, new Map<string, (typeof founderReviewCandidates)[number] | ((typeof founderAuthorityItems)[number] & { kind: string; reasonCategory: string })>()),
-    ).map(([, item]) => item);
-
-    return {
-      founderReviewQueue,
-      crossPillarIssues,
-      delegateItems,
-      delegationCapacityNames: delegationReadyPeople.map((person) => person.name),
-      delegationReadinessGapNames: delegationReadinessGapPeople.map((person) => person.name),
-      founderAuthorityItems,
-      founderAuthorityDisplayItems,
-    };
-  })();
+  const empireDecisionQueue: EmpireDecisionQueueResult = buildEmpireDecisionQueue({
+    decisions: decisionRecords,
+    problems: problemRecords,
+    actions: actionRecords,
+    projects,
+    opportunities: opportunityRecords,
+    leads: activeLeads,
+    activeOwnershipActions,
+    activeOwnershipProjects,
+    activeOwnershipLeads,
+    activeOwnershipProblems,
+    systems: systemRecords,
+    orderedPeople: orderedPeople.map(({ id, name, role, accessLevel, status, responsibilities, authority, pillar }) => ({
+      id,
+      name,
+      role,
+      accessLevel,
+      status,
+      responsibilities,
+      authority,
+      pillar,
+    })),
+    nowMs: Date.now(),
+  });
 
   const operationalIndependence = (() => {
     type OperationalIndependenceState = "Independent" | "Ready to delegate" | "Guardrail gap" | "Ownership gap" | "Founder-only";
