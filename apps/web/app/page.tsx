@@ -239,6 +239,7 @@ const navigation = [
 ];
 
 const LAST_BACKUP_AT_STORAGE_KEY = "empire-os-last-backup-at";
+  import { buildCommandAttention } from "./lib/command-attention";
 const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
 
 const INTEGRITY_MATERIAL_ATTENTION_THRESHOLD = 3;
@@ -346,18 +347,6 @@ type CaptureRecord = CaptureFormValues & {
 
 function isActionWaiting(action: Pick<ActionRecord, "status">): boolean {
   return action.status === "Waiting";
-}
-
-function isActionFollowUpFuture(action: Pick<ActionRecord, "followUpDate">, nowMs = Date.now()): boolean {
-  if (!action.followUpDate) return false;
-  const followUpMs = new Date(`${action.followUpDate.slice(0, 10)}T00:00:00`).getTime();
-  return !Number.isNaN(followUpMs) && followUpMs > new Date(nowMs).setHours(0, 0, 0, 0);
-}
-
-function isActionFollowUpDue(action: Pick<ActionRecord, "followUpDate">, nowMs = Date.now()): boolean {
-  if (!action.followUpDate) return false;
-  const followUpMs = new Date(`${action.followUpDate.slice(0, 10)}T00:00:00`).getTime();
-  return !Number.isNaN(followUpMs) && followUpMs <= new Date(nowMs).setHours(0, 0, 0, 0);
 }
 
 const personStatusOptions = ["Active", "Inactive", "Candidate", "Former"] as const;
@@ -9278,57 +9267,6 @@ export default function Home() {
     return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
   };
 
-  const getProblemPriorityScore = (problem: ProblemRecord) => {
-    let score = 0;
-
-    if (problem.severity === "Critical") {
-      score += 150;
-    } else if (problem.severity === "High") {
-      score += 110;
-    }
-
-    if (problem.problemStatus === "Open") {
-      score += 35;
-    } else if (problem.problemStatus === "Action required") {
-      score += 30;
-    } else if (problem.problemStatus === "Investigating") {
-      score += 20;
-    }
-
-    return score;
-  };
-
-  const getActionPriorityScore = (action: ActionRecord) => {
-    let score = 0;
-
-    if (action.status === "Blocked") {
-      score += 140;
-    }
-
-    if (action.priority === "Critical") {
-      score += 120;
-    } else if (action.priority === "High") {
-      score += 90;
-    }
-
-    if (action.dueDate) {
-      const dueDate = getDateValue(action.dueDate);
-      const daysUntilDue = (dueDate - Date.now()) / (1000 * 60 * 60 * 24);
-
-      if (dueDate && daysUntilDue < 0) {
-        score += 180;
-      } else if (daysUntilDue <= 7) {
-        score += 60;
-      }
-    }
-
-    if (action.status === "In Progress") {
-      score += 20;
-    }
-
-    return score;
-  };
-
   const isActionActive = (action: ActionRecord) =>
     ["Open", "In Progress", "Blocked"].includes(action.status) || isActionWaiting(action);
 
@@ -10945,110 +10883,6 @@ export default function Home() {
 
   const formatMetricPercent = (value: number) => `${value.toFixed(0)}%`;
 
-  const getDaysOverdue = (dateValue: string) => {
-    const dueDate = getDateValue(dateValue);
-
-    if (!dueDate || dueDate >= Date.now()) {
-      return 0;
-    }
-
-    return Math.max(1, Math.ceil((Date.now() - dueDate) / (1000 * 60 * 60 * 24)));
-  };
-
-  const getDecisionPriorityScore = (decision: DecisionRecord) => {
-    let score = 0;
-
-    if (decision.decisionStatus === "Under Review") {
-      score += 40;
-    }
-
-    if (decision.reviewDate) {
-      const reviewDate = getDateValue(decision.reviewDate);
-      if (reviewDate && reviewDate <= Date.now()) {
-        score += 150;
-      } else {
-        score += 60;
-      }
-    }
-
-    return score;
-  };
-
-  const getOpportunityPriorityScore = (opportunity: OpportunityRecord) => {
-    let score = 0;
-
-    if (opportunity.status === "Evaluating") {
-      score += 35;
-    }
-
-    if (opportunity.strategicFit === "Exceptional") {
-      score += 110;
-    } else if (opportunity.strategicFit === "High") {
-      score += 90;
-    }
-
-    return score;
-  };
-
-  const getLessonPriorityScore = (lesson: LessonRecord) => {
-    return lesson.status === "Change Required" ? 80 : 0;
-  };
-
-  const getSystemPriorityScore = (system: SystemRecord) => {
-    return system.status === "Reviewing" ? 65 : 0;
-  };
-
-  const getSopPriorityScore = (sop: SopRecord) => {
-    if (!sop.reviewDate) {
-      return 0;
-    }
-
-    const reviewDate = getDateValue(sop.reviewDate);
-    return reviewDate <= Date.now() ? 150 : 60;
-  };
-
-  const compareAttentionItems = (left: AttentionItem, right: AttentionItem) => {
-    if (left.attentionRank !== right.attentionRank) {
-      return left.attentionRank - right.attentionRank;
-    }
-
-    if (left.tieWeight !== right.tieWeight) {
-      return right.tieWeight - left.tieWeight;
-    }
-
-    if (left.sortDate !== right.sortDate) {
-      return left.sortDateAscending
-        ? left.sortDate - right.sortDate
-        : right.sortDate - left.sortDate;
-    }
-
-    const titleOrder = left.title.localeCompare(right.title);
-    if (titleOrder !== 0) {
-      return titleOrder;
-    }
-
-    return left.id.localeCompare(right.id);
-  };
-
-  const orderAttentionReasons = (reasons: string[]) => {
-    const getReasonRank = (reason: string) => {
-      if (reason === "BLOCKED") return 1;
-      if (reason.startsWith("PROCUREMENT BLOCKED")) return 1;
-      if (reason.startsWith("OVERDUE BY ")) return 2;
-      if (reason.includes("SEVERITY")) return 3;
-      if (reason.startsWith("REVIEW ")) return 4;
-      if (reason.startsWith("PROCUREMENT READY")) return 4;
-      if (reason === "CRITICAL PRIORITY" || reason === "HIGH PRIORITY") return 5;
-      if (reason.startsWith("STRATEGIC FIT:")) return 6;
-      return 7;
-    };
-
-    return [...reasons].sort((left, right) => {
-      const rankDifference = getReasonRank(left) - getReasonRank(right);
-      return rankDifference || left.localeCompare(right);
-    });
-  };
-
   const getAttentionSummary = (item: AttentionItem) => {
     const delegationInterventionReason = item.reasons.find((reason) => reason.startsWith("DELEGATION INTERVENTION REQUIRED"));
     if (delegationInterventionReason) {
@@ -11238,532 +11072,104 @@ export default function Home() {
   });
   const unlinkedStrategicProjects = projects.filter((project) => isProjectActive(project) && !strategicObjectives.some((objective) => objective.linkedProjectIds.includes(project.id)));
 
-  const buildCommandAttention = (): Record<string, AttentionItem[]> => {
-    const groups: Record<string, AttentionItem[]> = {};
-    const uniqueByKey = new Map<string, AttentionItem>();
-
-    const addAttentionItem = (groupName: string, item: AttentionItem) => {
-      const key = `${item.objectType}:${item.id}`;
-      const existing = uniqueByKey.get(key);
-
-      if (existing) {
-        const mergedReasons = orderAttentionReasons(Array.from(new Set([...existing.reasons, ...item.reasons])));
-        existing.reasons = mergedReasons;
-        existing.reason = mergedReasons.join(" • ");
-
-        if (!groups[groupName]) {
-          groups[groupName] = [];
-        }
-
-        const currentIndex = groups[groupName].findIndex((entry) => entry.id === item.id && entry.objectType === item.objectType);
-        if (currentIndex === -1) {
-          groups[groupName].push(existing);
-        }
-
-        return;
-      }
-
-      item.reasons = orderAttentionReasons(item.reasons);
-      item.reason = item.reasons.join(" • ");
-      uniqueByKey.set(key, item);
-      if (!groups[groupName]) {
-        groups[groupName] = [];
-      }
-      groups[groupName].push(item);
-    };
-
-    const now = Date.now();
-
-    problemRecords.forEach((problem) => {
-      const reasons: string[] = [];
-
-      const isUnresolved = isProblemUnresolved(problem);
-      const isRecurring = problem.frequency === "Recurring" || problem.frequency === "Persistent";
-
-      if (isUnresolved && isRecurring) {
-        reasons.push("RECURRING PROBLEM");
-        reasons.push(problem.frequency.toUpperCase());
-      }
-
-      if (isUnresolved && ["Critical", "High"].includes(problem.severity)) {
-        reasons.push(`${problem.severity.toUpperCase()} SEVERITY`);
-        reasons.push(problem.problemStatus.toUpperCase());
-      }
-
-      if (reasons.length > 0) {
-        addAttentionItem(reasons[0], {
-          id: problem.id,
-          objectType: "Problem",
-          title: problem.problemStatement || problem.title,
-          reason: reasons.join(" • "),
-          reasons,
-          statusText: `${problem.severity} / ${problem.frequency} / ${problem.problemStatus}`,
-          area: getAreaText(problem),
-          attentionRank: isRecurring ? 2 : problem.severity === "Critical" ? 3 : 4,
-          tieWeight: isRecurring ? 3 : problem.severity === "Critical" ? 2 : 1,
-          priorityScore: getProblemPriorityScore(problem) + (isRecurring ? 120 : 0),
-          sortDate: getDateValue(problem.createdAt),
-          sortDateAscending: false,
-          onOpen: () => {
-            setSelectedProblemId(problem.id);
-            setProblemEditor(problem);
-          },
-        });
-      }
-    });
-
-    actionRecords.forEach((action) => {
-      const reasons: string[] = [];
-      const dependencyBlocker = getActionDependencyBlocker(action);
-
-      if (!isActionActive(action)) {
-        return;
-      }
-
-      const dueDateValue = getDateValue(action.dueDate);
-      const isOverdue = dueDateValue > 0 && dueDateValue < now;
-      const followUpIsFuture = isActionFollowUpFuture(action, now);
-      const followUpIsDue = isActionFollowUpDue(action, now);
-      const suppressUntilFollowUp = followUpIsFuture && !isOverdue && action.priority !== "Critical";
-
-      if (suppressUntilFollowUp) return;
-
-      if (followUpIsDue) {
-        reasons.push(isActionWaiting(action) ? "WAITING FOLLOW-UP DUE" : "FOLLOW-UP REVIEW DUE");
-      }
-
-      if (["Critical", "High"].includes(action.priority)) {
-        reasons.push(`${action.priority.toUpperCase()} PRIORITY`);
-        reasons.push(action.status.toUpperCase());
-      }
-
-      if (action.status === "Blocked" && (followUpIsDue || !action.followUpDate || ["High", "Critical"].includes(action.priority))) {
-        if (!reasons.includes("BLOCKED")) {
-          reasons.push("BLOCKED");
-        }
-        if (action.followUpNote?.trim()) reasons.push(`BLOCKER: ${action.followUpNote.trim()}`);
-      }
-
-      if (dependencyBlocker && (!isActionWaiting(action) || followUpIsDue || isOverdue || action.priority === "Critical")) {
-        reasons.push(dependencyBlocker.reason);
-      }
-
-      if (action.dueDate) {
-        const dueDate = new Date(action.dueDate);
-
-        if (!Number.isNaN(dueDate.getTime())) {
-          const msUntilDue = dueDate.getTime() - now;
-          const daysUntilDue = msUntilDue / (1000 * 60 * 60 * 24);
-
-          if (daysUntilDue < 0) {
-            reasons.push(`OVERDUE BY ${getDaysOverdue(action.dueDate)} DAY${getDaysOverdue(action.dueDate) === 1 ? "" : "S"}`);
-          } else if (daysUntilDue <= 7) {
-            reasons.push("DUE WITHIN 7 DAYS");
+  const commandAttentionPolicy = buildCommandAttention({
+    problems: problemRecords,
+    actions: actionRecords,
+    outreach: outreachContacts,
+    projects,
+    decisions: decisionRecords,
+    opportunities: opportunityRecords,
+    lessons: lessonRecords,
+    systems: systemRecords,
+    sops: sopRecords,
+    handoffs: delegationHandoffFollowThrough.items.map((handoff) => ({
+      objectType: handoff.objectType,
+      objectId: handoff.objectId,
+      title: handoff.title,
+      newOwner: handoff.newOwner,
+      newOwnerPersonId: handoff.newOwnerPersonId,
+      transferredAt: handoff.transferredAt,
+      reviewDate: handoff.reviewDate,
+      reviewState: handoff.reviewState,
+      reviewReasons: handoff.reviewReasons,
+      area: handoff.area,
+      targetCompletionDate: handoff.objectType === "Project"
+        ? projects.find((project) => project.id === handoff.objectId)?.targetCompletionDate
+        : undefined,
+    })),
+    procurementQueue: capitalAllocation.procurementQueue,
+    nowMs: Date.now(),
+  });
+  const commandAttentionItemList: AttentionItem[] = commandAttentionPolicy.items.map((item) => {
+    const dependencyAction = item.dependencyAction;
+    return {
+      ...item,
+      onOpen: () => {
+        if (item.navigationMode === "record-handler") {
+          handleOpenAttentionRecord(item.objectType, item.id);
+        } else if (item.objectType === "Problem") {
+          const record = problemRecords[item.sourceIndex ?? -1];
+          if (record?.id === item.id) {
+            setSelectedProblemId(record.id);
+            setProblemEditor(record);
           }
-        }
-      }
-
-      const isAlreadyFlagged = reasons.length > 0;
-      if (!isAlreadyFlagged && action.status === "In Progress" && !followUpIsFuture) {
-        const referenceTime = getDateValue(action.dueDate) || getDateValue(action.createdDate || action.createdAt);
-        if (referenceTime > 0) {
-          const daysSinceReference = Math.floor((now - referenceTime) / (1000 * 60 * 60 * 24));
-          if (daysSinceReference >= 14) {
-            reasons.push("STALE IN-PROGRESS ACTION");
+        } else if (item.objectType === "Action") {
+          const record = actionRecords[item.sourceIndex ?? -1];
+          if (record?.id === item.id) {
+            setSelectedActionId(record.id);
+            setActionEditor(record);
           }
+        } else if (item.objectType === "Project") {
+          const record = projects[item.sourceIndex ?? -1];
+          if (record?.id === item.id) handleProjectEditOpen(record);
+        } else if (item.objectType === "Decision") {
+          const record = decisionRecords[item.sourceIndex ?? -1];
+          if (record?.id === item.id) {
+            setSelectedDecisionId(record.id);
+            setDecisionEditor(record);
+          }
+        } else if (item.objectType === "Opportunity") {
+          const record = opportunityRecords[item.sourceIndex ?? -1];
+          if (record?.id === item.id) {
+            setSelectedOpportunityId(record.id);
+            setOpportunityEditor(record);
+          }
+        } else if (item.objectType === "Lesson") {
+          const record = lessonRecords[item.sourceIndex ?? -1];
+          if (record?.id === item.id) {
+            setSelectedLessonId(record.id);
+            setLessonEditor(record);
+          }
+        } else if (item.objectType === "System") {
+          const record = systemRecords[item.sourceIndex ?? -1];
+          if (record?.id === item.id) {
+            setSelectedSystemId(record.id);
+            setSystemEditor(record);
+          }
+        } else if (item.objectType === "SOP") {
+          const record = sopRecords[item.sourceIndex ?? -1];
+          if (record?.id === item.id) {
+            setSelectedSopId(record.id);
+            setSopEditor(record);
+          }
+        } else {
+          handleOpenAttentionRecord(item.objectType, item.id);
         }
-      }
-
-      if (reasons.length > 0) {
-        addAttentionItem(reasons[0], {
-          id: action.id,
-          objectType: "Action",
-          title: action.actionTitle || action.title,
-          reason: reasons.join(" • "),
-          reasons,
-          statusText: `${action.status} / ${action.priority} / ${action.dueDate ? formatCapturedAt(action.dueDate) : "No due date"}${action.followUpDate ? ` / Follow-up ${action.followUpDate}` : ""}`,
-          area: getAreaText(action),
-          attentionRank: action.status === "Blocked" || Boolean(dependencyBlocker) ? 1 : action.dueDate && getDateValue(action.dueDate) < now ? 2 : ["Critical", "High"].includes(action.priority) ? 6 : reasons[0] === "STALE IN-PROGRESS ACTION" ? 7 : 8,
-          tieWeight: action.priority === "Critical" ? 2 : action.priority === "High" ? 1 : 0,
-          priorityScore: reasons[0] === "STALE IN-PROGRESS ACTION" ? 65 : getActionPriorityScore(action),
-          sortDate: getDateValue(action.dueDate || action.createdAt),
-          sortDateAscending: Boolean(action.dueDate),
-          onOpen: () => {
-            setSelectedActionId(action.id);
-            setActionEditor(action);
-          },
-          dependencyAction: dependencyBlocker
-            ? { label: dependencyBlocker.label, onOpen: dependencyBlocker.onOpen }
-            : undefined,
-        });
-      }
-    });
-
-    const startOfToday = new Date(now);
-    startOfToday.setHours(0, 0, 0, 0);
-    const startOfEightDaysFromNow = new Date(startOfToday);
-    startOfEightDaysFromNow.setDate(startOfEightDaysFromNow.getDate() + 8);
-
-    // Outreach only reaches Command attention when a follow-up is due today or overdue; upcoming/no-date contacts stay in Outreach only.
-    outreachContacts.forEach((contact) => {
-      const classification = classifyOutreachFollowUp(contact, startOfToday.getTime());
-      if (classification !== "Overdue" && classification !== "Due today") {
-        return;
-      }
-
-      const reasons: string[] = [];
-      if (classification === "Overdue") {
-        const days = getDaysOverdue(contact.nextFollowUpDate);
-        reasons.push(`OVERDUE BY ${days} DAY${days === 1 ? "" : "S"}`);
-      } else {
-        reasons.push("OUTREACH FOLLOW-UP DUE TODAY");
-      }
-
-      addAttentionItem(reasons[0], {
-        id: contact.id,
-        objectType: "Outreach",
-        title: contact.businessName,
-        reason: reasons.join(" • "),
-        reasons,
-        statusText: `${contact.status} / Follow-up ${contact.nextFollowUpDate ? formatCapturedAt(contact.nextFollowUpDate) : "not set"}`,
-        area: "Marketing / Growth",
-        attentionRank: classification === "Overdue" ? 2 : 6,
-        tieWeight: classification === "Overdue" ? 1 : 0,
-        priorityScore: classification === "Overdue" ? 150 : 90,
-        sortDate: getDateValue(contact.nextFollowUpDate),
-        sortDateAscending: true,
-        onOpen: () => handleOpenAttentionRecord("Outreach", contact.id),
-      });
-    });
-
-    projects.forEach((project) => {
-      if (!isProjectActive(project)) {
-        return;
-      }
-
-      const status = project.status.trim().toLowerCase();
-      const health = getEffectiveProjectHealth(project);
-      const reviewIsFuture = isProjectReviewFuture(project, now);
-      const reviewIsDue = isProjectReviewDue(project, now);
-      const isBlocked = status === "blocked" || health === "Blocked";
-      const isInProgress = status === "in progress";
-      const isOpen = status === "open";
-
-      const reasons: string[] = [];
-      const targetCompletionDate = project.targetCompletionDate ? new Date(`${project.targetCompletionDate}T00:00:00`) : null;
-      const hasTargetCompletionDate = targetCompletionDate && !Number.isNaN(targetCompletionDate.getTime());
-      const startDate = project.startDate ? new Date(`${project.startDate}T00:00:00`) : null;
-      const hasStartDate = startDate && !Number.isNaN(startDate.getTime());
-      const isOverdue = Boolean(isInProgress && hasTargetCompletionDate && targetCompletionDate < startOfToday);
-      const isDueSoon = Boolean(isInProgress && hasTargetCompletionDate && targetCompletionDate >= startOfToday && targetCompletionDate < startOfEightDaysFromNow);
-      const isPastStartNotStarted = Boolean(isOpen && hasStartDate && startDate < startOfToday);
-      const daysOverdue = isOverdue && targetCompletionDate
-        ? Math.max(1, Math.floor((startOfToday.getTime() - targetCompletionDate.getTime()) / (1000 * 60 * 60 * 24)))
-        : 0;
-
-      const referenceDate = getDateValue(project.targetCompletionDate || project.startDate);
-      const daysSinceReference = referenceDate ? Math.floor((now - referenceDate) / (1000 * 60 * 60 * 24)) : 0;
-      const isStaleActive = Boolean(
-        (isOpen || isInProgress) &&
-        !isBlocked &&
-        !isOverdue &&
-        referenceDate > 0 &&
-        daysSinceReference >= 21,
-      );
-      const isStaleApproaching = Boolean(
-        isStaleActive &&
-        isInProgress &&
-        hasTargetCompletionDate &&
-        targetCompletionDate &&
-        targetCompletionDate >= startOfToday &&
-        (targetCompletionDate.getTime() - startOfToday.getTime()) / (1000 * 60 * 60 * 24) <= 14,
-      );
-      const suppressRoutineAttention = reviewIsFuture && (health === "On track" || health === "Waiting") && !isOverdue && !isBlocked;
-
-      if (isBlocked) {
-        reasons.push("BLOCKED PROJECT");
-        if (project.reviewNote?.trim()) reasons.push(`BLOCKER: ${project.reviewNote.trim()}`);
-      }
-      if (isOverdue) {
-        reasons.push("OVERDUE PROJECT");
-        reasons.push(`${daysOverdue} DAY${daysOverdue === 1 ? "" : "S"} OVERDUE`);
-      }
-      if (reviewIsDue) {
-        reasons.push(health === "At risk" ? "AT-RISK PROJECT REVIEW DUE" : health === "Waiting" ? "WAITING PROJECT REVIEW DUE" : "PROJECT REVIEW DUE");
-      }
-      if (isDueSoon && !suppressRoutineAttention) {
-        reasons.push("DUE WITHIN 7 DAYS");
-      }
-      if (isPastStartNotStarted && !suppressRoutineAttention) {
-        reasons.push("PAST START DATE • NOT STARTED");
-      }
-      if (isStaleActive && !suppressRoutineAttention) {
-        reasons.push(isStaleApproaching ? "STALE PROJECT • TARGET APPROACHING" : "STALE PROJECT");
-      }
-
-      if (reasons.length > 0) {
-        addAttentionItem(reasons[0], {
-          id: project.id,
-          objectType: "Project",
-          title: project.projectName,
-          reason: reasons.join(" • "),
-          reasons,
-          statusText: `${project.status || "No status"} / ${health}${project.nextReviewDate ? ` / Review ${project.nextReviewDate}` : ""} / ${project.targetCompletionDate ? formatCapturedAt(project.targetCompletionDate) : "No target completion date"}`,
-          area: project.area,
-          attentionRank: isBlocked ? 1 : isOverdue ? 2 : isDueSoon ? 3 : isStaleActive ? 5 : 4,
-          tieWeight: 0,
-          priorityScore: isOverdue ? 180 : isDueSoon ? 120 : isStaleActive ? 70 : 60,
-          sortDate: getDateValue(project.targetCompletionDate || project.startDate),
-          sortDateAscending: Boolean(project.targetCompletionDate),
-          targetCompletionDate: project.targetCompletionDate,
-          onOpen: () => handleProjectEditOpen(project),
-        });
-      }
-    });
-
-    decisionRecords.forEach((decision) => {
-      const reasons: string[] = [];
-
-      if (isDecisionActive(decision) && decision.decisionStatus === "Under Review") {
-        reasons.push("Under review");
-      }
-
-      if (isDecisionActive(decision) && decision.reviewDate) {
-        const reviewDate = new Date(decision.reviewDate);
-
-        if (!Number.isNaN(reviewDate.getTime()) && reviewDate.getTime() <= now) {
-          reasons.push("REVIEW DUE");
-        }
-      }
-
-      if (reasons.length > 0) {
-        addAttentionItem(reasons[0], {
-          id: decision.id,
-          objectType: "Decision",
-          title: decision.decisionTitle || decision.title,
-          reason: reasons.join(" • "),
-          reasons,
-          statusText: `${decision.decisionStatus} / ${decision.reviewDate ? formatCapturedAt(decision.reviewDate) : "No review date"}`,
-          area: getAreaText(decision),
-          attentionRank: 5,
-          tieWeight: decision.decisionStatus === "Under Review" ? 1 : 0,
-          priorityScore: getDecisionPriorityScore(decision),
-          sortDate: getDateValue(decision.reviewDate || decision.createdAt),
-          sortDateAscending: Boolean(decision.reviewDate),
-          onOpen: () => {
-            setSelectedDecisionId(decision.id);
-            setDecisionEditor(decision);
-          },
-        });
-      }
-    });
-
-    opportunityRecords.forEach((opportunity) => {
-      const reasons: string[] = [];
-
-      if (isOpportunityUnderEvaluation(opportunity)) {
-        reasons.push(`STRATEGIC FIT: ${opportunity.strategicFit.toUpperCase()}`);
-        reasons.push("EVALUATING");
-      }
-
-      if (reasons.length > 0) {
-        addAttentionItem(reasons[0], {
-          id: opportunity.id,
-          objectType: "Opportunity",
-          title: opportunity.opportunityTitle || opportunity.title,
-          reason: reasons.join(" • "),
-          reasons,
-          statusText: `${opportunity.status} / ${opportunity.strategicFit}`,
-          area: getAreaText(opportunity),
-          attentionRank: 7,
-          tieWeight: opportunity.strategicFit === "Exceptional" ? 2 : 1,
-          priorityScore: getOpportunityPriorityScore(opportunity),
-          sortDate: getDateValue(opportunity.dateIdentified || opportunity.createdAt),
-          sortDateAscending: false,
-          onOpen: () => {
-            setSelectedOpportunityId(opportunity.id);
-            setOpportunityEditor(opportunity);
-          },
-        });
-      }
-    });
-
-    lessonRecords.forEach((lesson) => {
-      if (lesson.status === "Change Required") {
-        addAttentionItem("Status: Change required", {
-          id: lesson.id,
-          objectType: "Lesson",
-          title: lesson.lessonTitle || lesson.title,
-          reason: "Status: Change required",
-          reasons: ["Status: Change required"],
-          statusText: lesson.status,
-          area: getAreaText(lesson),
-          attentionRank: 8,
-          tieWeight: 0,
-          priorityScore: getLessonPriorityScore(lesson),
-          sortDate: getDateValue(lesson.dateLearned || lesson.createdAt),
-          sortDateAscending: false,
-          onOpen: () => {
-            setSelectedLessonId(lesson.id);
-            setLessonEditor(lesson);
-          },
-        });
-      }
-    });
-
-    systemRecords.forEach((system) => {
-      if (system.status === "Reviewing") {
-        addAttentionItem("Status: Reviewing", {
-          id: system.id,
-          objectType: "System",
-          title: system.systemName || system.title,
-          reason: "Status: Reviewing",
-          reasons: ["Status: Reviewing"],
-          statusText: system.status,
-          area: getAreaText(system),
-          attentionRank: 8,
-          tieWeight: 0,
-          priorityScore: getSystemPriorityScore(system),
-          sortDate: getDateValue(system.lastReviewed || system.createdAt),
-          sortDateAscending: false,
-          onOpen: () => {
-            setSelectedSystemId(system.id);
-            setSystemEditor(system);
-          },
-        });
-      }
-    });
-
-    sopRecords.forEach((sop) => {
-      if (sop.reviewDate) {
-        const reviewDate = new Date(sop.reviewDate);
-
-        if (!Number.isNaN(reviewDate.getTime()) && reviewDate.getTime() <= now) {
-          addAttentionItem("Review date due or overdue", {
-            id: sop.id,
-            objectType: "SOP",
-            title: sop.sopTitle || sop.title,
-            reason: "Review date due or overdue",
-            reasons: ["Review date due or overdue"],
-            statusText: `${sop.status} / ${formatCapturedAt(sop.reviewDate)}`,
-            area: getAreaText(sop),
-            attentionRank: 8,
-            tieWeight: 0,
-            priorityScore: getSopPriorityScore(sop),
-            sortDate: getDateValue(sop.reviewDate || sop.createdAt),
-            sortDateAscending: Boolean(sop.reviewDate),
-            onOpen: () => {
-              setSelectedSopId(sop.id);
-              setSopEditor(sop);
-            },
-          });
-        }
-      }
-    });
-
-    delegationHandoffFollowThrough.items.forEach((handoff) => {
-      if (handoff.reviewState === "Healthy" || handoff.reviewState === "Completed" || handoff.reviewState === "Cancelled") {
-        return;
-      }
-
-      const primaryReason = handoff.reviewState === "Intervention required"
-        ? `DELEGATION INTERVENTION REQUIRED: ${handoff.reviewReasons[0] || "Delegated delivery needs founder escalation."}`
-        : handoff.reviewState === "At risk"
-          ? `DELEGATION AT RISK: ${handoff.reviewReasons[0] || "Delegated delivery needs review."}`
-          : `DELEGATION REVIEW DUE: ${handoff.reviewReasons[0] || "Scheduled handoff review is due."}`;
-      const reasons = [primaryReason, ...handoff.reviewReasons.filter((reason) => reason !== handoff.reviewReasons[0])];
-      const attentionObjectType = handoff.objectType;
-      const reviewDateValue = getDateValue(handoff.reviewDate || handoff.transferredAt);
-
-      addAttentionItem(primaryReason, {
-        id: handoff.objectId,
-        objectType: attentionObjectType,
-        title: handoff.title,
-        reason: reasons.join(" • "),
-        reasons,
-        statusText: `${handoff.reviewState} / ${handoff.newOwner}${handoff.reviewDate ? ` / Review ${handoff.reviewDate}` : ""}`,
-        area: handoff.area,
-        attentionRank: handoff.reviewState === "Intervention required" ? 1 : handoff.reviewState === "At risk" ? 4 : 5,
-        tieWeight: handoff.reviewState === "Intervention required" ? 3 : handoff.reviewState === "At risk" ? 1 : 0,
-        priorityScore: handoff.reviewState === "Intervention required" ? 190 : handoff.reviewState === "At risk" ? 120 : 90,
-        sortDate: reviewDateValue || getDateValue(handoff.transferredAt),
-        sortDateAscending: true,
-        targetCompletionDate: handoff.objectType === "Project" ? projects.find((project) => project.id === handoff.objectId)?.targetCompletionDate : undefined,
-        onOpen: () => handleOpenAttentionRecord(handoff.objectType, handoff.objectId),
-        dependencyAction: {
-          label: "Review handoff",
-          onOpen: () => {
+      },
+      dependencyAction: dependencyAction ? {
+        label: dependencyAction.label,
+        onOpen: () => {
+          const target = dependencyAction.target;
+          if (target.kind === "accountability") {
             setActiveView("People");
-            setSelectedAccountabilityKey(handoff.newOwnerPersonId);
-          },
+            setSelectedAccountabilityKey(target.personId);
+          } else {
+            handleOpenAttentionRecord(target.objectType, target.id);
+          }
         },
-      });
-    });
-
-    capitalAllocation.procurementQueue.forEach((item) => {
-      const purchaseDateValue = getDateValue(item.commitment.expectedPurchaseDate || item.commitment.dueDate);
-      const isTimeSensitive = purchaseDateValue > 0 && purchaseDateValue <= Date.now() + (7 * 24 * 60 * 60 * 1000);
-      const isImportant = item.effectiveCertainty === "Committed";
-      const isApprovedDependency = item.approvalStatus === "Approved"
-        && (item.readinessState === "Blocked" || item.readinessState === "Pending validation")
-        && (isTimeSensitive || isImportant);
-      const isUnreviewedReadyPurchase = item.approvalStatus === "Not reviewed"
-        && item.readinessState === "Ready to buy"
-        && (isTimeSensitive || isImportant);
-      const isApprovedReadyPurchase = item.approvalStatus === "Approved"
-        && item.readinessState === "Ready to buy"
-        && !item.isCommitted;
-
-      if (item.isRejected || (!isApprovedDependency && !isUnreviewedReadyPurchase && !isApprovedReadyPurchase)) {
-        return;
-      }
-
-      if (item.readinessState === "Ready to buy" && item.isCommitted && item.approvalStatus === "Approved") {
-        return;
-      }
-
-      const reason = isUnreviewedReadyPurchase
-        ? `PROCUREMENT APPROVAL REQUIRED: ${item.commitment.commitmentName} is operationally ready but has not been reviewed.`
-        : item.readinessState === "Blocked"
-          ? `APPROVED PROCUREMENT BLOCKED: ${item.readinessReason}`
-          : item.readinessState === "Pending validation"
-            ? `APPROVED PROCUREMENT VALIDATION REQUIRED: ${item.readinessReason}`
-            : `APPROVED PROCUREMENT READY: ${item.commitment.commitmentName} can be committed without consuming protected cash.`;
-
-      addAttentionItem(reason, {
-        id: `commitment:${item.commitment.id}`,
-        objectType: "Finance",
-        title: item.commitment.commitmentName,
-        reason,
-        reasons: [reason],
-        statusText: `${item.readinessState} / ${item.approvalStatus} / ${item.effectiveCertainty} / ${item.commitment.expectedPurchaseDate || item.commitment.dueDate || "No date"}`,
-        area: item.commitment.relatedPillar,
-        attentionRank: item.readinessState === "Blocked" ? 1 : item.readinessState === "Pending validation" ? 4 : 5,
-        tieWeight: item.readinessState === "Blocked" ? 2 : 1,
-        priorityScore: item.readinessState === "Blocked" ? 170 : item.readinessState === "Pending validation" ? 125 : 110,
-        sortDate: getDateValue(item.commitment.expectedPurchaseDate || item.commitment.dueDate || item.commitment.dateCreated),
-        sortDateAscending: true,
-        onOpen: () => handleOpenAttentionRecord("Finance", `commitment:${item.commitment.id}`),
-      });
-    });
-
-    return groups;
-  };
-
-  const commandAttention = buildCommandAttention();
-  const sortedCommandAttention = Object.fromEntries(
-    Object.entries(commandAttention).map(([reason, items]) => [
-      reason,
-      [...items].sort(compareAttentionItems),
-    ]),
-  ) as Record<string, AttentionItem[]>;
-  const commandAttentionItemList = Array.from(
-    new Map(
-      Object.values(sortedCommandAttention)
-        .flat()
-        .map((item) => [`${item.objectType}:${item.id}`, item]),
-    ).values(),
-  ).sort(compareAttentionItems);
+      } : undefined,
+    };
+  });
 
   type FounderCapitalAttentionItem = {
     key: string;
