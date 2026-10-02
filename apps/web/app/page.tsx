@@ -65,6 +65,10 @@ import { buildOrganisationalHealth } from "./lib/organisational-health";
 import { buildOperationalIndependence } from "./lib/operational-independence";
 import { buildFounderFocus, type FounderFocusRecordFact } from "./lib/founder-focus";
 import {
+  buildAccountabilitySnapshot as buildAccountabilitySnapshotPolicy,
+  type AccountabilityRiskInput,
+} from "./lib/accountability-snapshot";
+import {
   assessDelegationReadiness,
   buildExecutionReleasePlan,
   deriveDelegationHandoffFollowThrough,
@@ -9603,106 +9607,63 @@ export default function Home() {
     };
   })() : null;
 
+  const toAccountabilityRiskInput = (record: AccountabilityRiskInput): AccountabilityRiskInput => ({
+    dueDate: record.dueDate,
+    targetCompletionDate: record.targetCompletionDate,
+    createdAt: record.createdAt,
+    priority: record.priority,
+    severity: record.severity,
+  });
+  const accountabilityPolicyInput = {
+    orderedPeople: orderedPeople.map(({ id, name, status }) => ({ id, name, status })),
+    actions: actionRecords.map((action) => ({
+      ...toAccountabilityRiskInput(action),
+      owner: action.owner,
+      ownerPersonId: action.ownerPersonId,
+      status: action.status,
+      isActive: isActionActive(action),
+      isWaiting: isActionWaiting(action),
+    })),
+    projects: projects.map((project) => ({
+      ...toAccountabilityRiskInput(project),
+      owner: project.owner,
+      status: project.status,
+      isActive: isProjectActive(project),
+    })),
+    activeLeads: activeLeads.map(({ owner, status, followUpDate }) => ({ owner, status, followUpDate })),
+    decisions: decisionRecords.map(({ decisionMaker, decisionStatus, reviewDate }) => ({
+      decisionMaker, decisionStatus, reviewDate,
+    })),
+    problems: problemRecords.map((problem) => ({
+      ...toAccountabilityRiskInput(problem),
+      owner: problem.owner,
+      isUnresolved: isProblemUnresolved(problem),
+    })),
+  };
   const buildAccountabilitySnapshot = (person: PersonRecord | null) => {
-    const personName = person?.name ?? "";
-    const isBlankOwner = (ownerValue?: string) => {
-      const text = (ownerValue || "").trim();
-      return text === "" || text.toLowerCase() === "unassigned";
-    };
-    const matchesActivePerson = (ownerValue?: string) => {
-      const text = (ownerValue || "").trim();
-      if (text === "") {
-        return false;
-      }
-      return orderedPeople.some((entry) => entry.status === "Active" && entry.name.trim().toLowerCase() === text.toLowerCase());
-    };
-    const ownsByName = (ownerValue?: string) =>
-      person !== null && personName.trim() !== "" && !isBlankOwner(ownerValue) && (ownerValue || "").trim().toLowerCase() === personName.trim().toLowerCase();
-
-    const isOwnedAction = (action: ActionRecord) => {
-      if (person === null) {
-        if (action.ownerPersonId) {
-          const activeOwner = orderedPeople.find((entry) => entry.id === action.ownerPersonId && entry.status === "Active");
-          if (activeOwner) {
-            return false;
-          }
-        }
-        return isBlankOwner(action.owner) || !matchesActivePerson(action.owner);
-      }
-
-      if (action.ownerPersonId) {
-        return action.ownerPersonId === person.id;
-      }
-
-      return ownsByName(action.owner);
-    };
-    const isOwnedProject = (project: ProjectRecord) => (person === null ? (isBlankOwner(project.owner) || !matchesActivePerson(project.owner)) : ownsByName(project.owner));
-    const isOwnedLead = (lead: LeadRecord) => (person === null ? (isBlankOwner(lead.owner) || !matchesActivePerson(lead.owner)) : ownsByName(lead.owner));
-    const isOwnedProblem = (problem: ProblemRecord) => (person === null ? (isBlankOwner(problem.owner) || !matchesActivePerson(problem.owner)) : ownsByName(problem.owner));
-    const isOwnedDecision = (decision: DecisionRecord) => (person === null ? isBlankOwner(decision.decisionMaker) : ownsByName(decision.decisionMaker));
-
-    const ownedActions = actionRecords.filter((action) => isActionActive(action) && isOwnedAction(action));
-    const overdueActions = ownedActions.filter((action) => !isActionWaiting(action) && Boolean(action.dueDate) && new Date(action.dueDate).getTime() <= Date.now());
-    const blockedActions = ownedActions.filter((action) => action.status === "Blocked");
-    const otherOpenActions = ownedActions.filter((action) => !overdueActions.includes(action) && !blockedActions.includes(action));
-    const ownedActiveProjects = projects.filter((project) => isProjectActive(project) && isOwnedProject(project));
-    const ownedBlockedProjects = ownedActiveProjects.filter((project) => project.status.trim().toLowerCase() === "blocked");
-    const ownedOtherProjects = ownedActiveProjects.filter((project) => project.status.trim().toLowerCase() !== "blocked");
-    const pipelineLeads = activeLeads.filter((lead) => isOwnedLead(lead) && !["Won", "Lost"].includes(lead.status));
-    const followUpLeads = pipelineLeads.filter((lead) =>
-      lead.status === "Follow-Up" || (Boolean(lead.followUpDate) && new Date(lead.followUpDate).getTime() <= Date.now()),
-    );
-    const otherPipelineLeads = pipelineLeads.filter((lead) => !followUpLeads.includes(lead));
-    const waitingDecisions = decisionRecords.filter((decision) =>
-      isOwnedDecision(decision) && (
-        ["Draft", "Under Review"].includes(decision.decisionStatus) ||
-        (decision.decisionStatus === "Active" && Boolean(decision.reviewDate) && new Date(decision.reviewDate).getTime() <= Date.now())
-      ),
-    );
-    const ownedUnresolvedProblems = problemRecords.filter((problem) => isProblemUnresolved(problem) && isOwnedProblem(problem));
-
-    const blockedCount = blockedActions.length + ownedBlockedProjects.length;
-    const carriedCount = ownedActions.length + ownedActiveProjects.length + pipelineLeads.length + waitingDecisions.length + ownedUnresolvedProblems.length;
-    const attentionCount = overdueActions.length + blockedCount + followUpLeads.length + waitingDecisions.length;
-
-    const sortByRiskThenAge = <T extends { dueDate?: string; createdAt?: string; priority?: string; severity?: string; targetCompletionDate?: string }>(items: T[]): T[] => {
-      const riskWeight = (item: T) => {
-        const level = (item.priority || item.severity || "").toLowerCase();
-        if (level === "critical") return 4;
-        if (level === "high") return 3;
-        if (level === "medium") return 2;
-        return 1;
-      };
-      const ageValue = (item: T) => {
-        const dateText = item.dueDate || item.targetCompletionDate || item.createdAt || "";
-        const parsed = dateText ? new Date(dateText).getTime() : 0;
-        return Number.isNaN(parsed) ? 0 : parsed;
-      };
-      return [...items].sort((a, b) => {
-        const riskDiff = riskWeight(b) - riskWeight(a);
-        if (riskDiff !== 0) return riskDiff;
-        return ageValue(a) - ageValue(b);
-      });
-    };
-
+    const snapshot = buildAccountabilitySnapshotPolicy({
+      ...accountabilityPolicyInput,
+      person: person ? { id: person.id, name: person.name } : null,
+      nowMs: Date.now(),
+    });
     return {
       person,
-      ownerLabel: person ? person.name : "Unassigned",
-      ownedActions: sortByRiskThenAge(ownedActions),
-      overdueActions: sortByRiskThenAge(overdueActions),
-      blockedActions: sortByRiskThenAge(blockedActions),
-      otherOpenActions: sortByRiskThenAge(otherOpenActions),
-      activeProjects: sortByRiskThenAge(ownedActiveProjects),
-      blockedProjects: sortByRiskThenAge(ownedBlockedProjects),
-      otherActiveProjects: sortByRiskThenAge(ownedOtherProjects),
-      pipelineLeads,
-      followUpLeads,
-      otherPipelineLeads,
-      waitingDecisions,
-      unresolvedProblems: sortByRiskThenAge(ownedUnresolvedProblems),
-      blockedCount,
-      carriedCount,
-      attentionCount,
+      ownerLabel: snapshot.ownerLabel,
+      ownedActions: snapshot.ownedActions.map((index) => actionRecords[index]),
+      overdueActions: snapshot.overdueActions.map((index) => actionRecords[index]),
+      blockedActions: snapshot.blockedActions.map((index) => actionRecords[index]),
+      otherOpenActions: snapshot.otherOpenActions.map((index) => actionRecords[index]),
+      activeProjects: snapshot.activeProjects.map((index) => projects[index]),
+      blockedProjects: snapshot.blockedProjects.map((index) => projects[index]),
+      otherActiveProjects: snapshot.otherActiveProjects.map((index) => projects[index]),
+      pipelineLeads: snapshot.pipelineLeads.map((index) => activeLeads[index]),
+      followUpLeads: snapshot.followUpLeads.map((index) => activeLeads[index]),
+      otherPipelineLeads: snapshot.otherPipelineLeads.map((index) => activeLeads[index]),
+      waitingDecisions: snapshot.waitingDecisions.map((index) => decisionRecords[index]),
+      unresolvedProblems: snapshot.unresolvedProblems.map((index) => problemRecords[index]),
+      blockedCount: snapshot.blockedCount,
+      carriedCount: snapshot.carriedCount,
+      attentionCount: snapshot.attentionCount,
     };
   };
 
