@@ -52,6 +52,7 @@ import {
   type SystemRecord,
 } from "./lib/capture-conversions";
 import { isValidCalendarDateInput } from "./lib/dates";
+import { buildCapitalAllocation, type CashSnapshotFreshness, type ProcurementReadinessState } from "./lib/capital-allocation";
 import {
   assessDelegationReadiness,
   buildExecutionReleasePlan,
@@ -614,7 +615,6 @@ const expenseCategoryOptions = ["Materials", "Equipment", "Fuel", "Labour", "Sub
 
 const commitmentTypeOptions = ["Loan", "Lease", "Subscription", "Tax", "Supplier", "Insurance", "Other"] as const;
 const commitmentStatusOptions = ["Upcoming", "Due", "Paid", "Overdue", "Cancelled"] as const;
-type ProcurementReadinessState = "Researching" | "Price found" | "Ready to buy" | "Pending validation" | "Wait" | "Blocked" | "Purchased";
 
 type DailyPostureSnapshot = {
   date: string;
@@ -9116,7 +9116,7 @@ export default function Home() {
   const cashSnapshotAgeDays = cashSnapshotDate && cashSnapshotDate <= todayForCashSnapshot
     ? Math.floor((todayForCashSnapshot.getTime() - cashSnapshotDate.getTime()) / (1000 * 60 * 60 * 24))
     : null;
-  const cashSnapshotFreshness = cashSnapshotAgeDays === null
+  const cashSnapshotFreshness: CashSnapshotFreshness = cashSnapshotAgeDays === null
     ? { label: "Missing / invalid date", tone: "warn" as const }
     : cashSnapshotAgeDays <= 7
       ? { label: "Current", tone: "clear" as const }
@@ -10042,296 +10042,34 @@ export default function Home() {
     };
   })();
 
-  const capitalAllocation = (() => {
-    const liveStatuses = ["New", "Evaluating", "On Hold", "Approved"];
-
-    const liveOpportunities = opportunityRecords
-      .filter((opportunity) => liveStatuses.includes(opportunity.status))
-      .map((opportunity) => {
-        const upside = parseFinanceAmount(opportunity.estimatedUpside);
-        const rawCapital = opportunity.requiredCapital.trim();
-        const parsedCapital = parseOptionalFinanceAmount(rawCapital);
-        const capitalState = !rawCapital
-          ? "missing" as const
-          : parsedCapital === null
-            ? "qualitative" as const
-            : parsedCapital < 0
-              ? "missing" as const
-              : parsedCapital === 0
-                ? "zero" as const
-                : "stated" as const;
-        const capital = capitalState === "stated" ? parsedCapital : null;
-        const hasUpside = upside > 0;
-        const efficiency = hasUpside && capital !== null ? upside / capital : null;
-        const fitRank = opportunity.strategicFit === "Exceptional" ? 4 : opportunity.strategicFit === "High" ? 3 : opportunity.strategicFit === "Medium" ? 2 : 1;
-
-        return {
-          id: opportunity.id,
-          title: opportunity.opportunityTitle || opportunity.title,
-          status: opportunity.status,
-          strategicFit: opportunity.strategicFit,
-          fitRank,
-          area: opportunity.relatedPillar || opportunity.relatedArea || "Unassigned",
-          upside: hasUpside ? upside : null,
-          capital,
-          capitalState,
-          capitalLabel: rawCapital,
-          requiredTime: opportunity.requiredTime?.trim() || "",
-          efficiency,
-        };
-      })
-      .sort((a, b) =>
-        b.fitRank - a.fitRank ||
-        (b.efficiency ?? -1) - (a.efficiency ?? -1) ||
-        (b.upside ?? 0) - (a.upside ?? 0),
-      );
-
-    const currentCash = currentCashAmount !== null && currentCashAmount >= 0 ? currentCashAmount : null;
-    const cashConfigured = cashAmountsValid;
-    const protectedCash = cashAmountsValid ? reservedTaxAmount + safetyBufferAmount : null;
-    const activeCommitmentStatuses = new Set(["upcoming", "due", "overdue"]);
-    const finalCommitmentStatuses = new Set(["paid", "cancelled", "canceled", "completed"]);
-    const commitmentReadModel = commitmentRecords.map((commitment) => {
-      const status = commitment.status.trim().toLowerCase();
-      const amount = parseOptionalFinanceAmount(commitment.amount);
-      const hasSupportedActiveStatus = activeCommitmentStatuses.has(status);
-      const isFinal = finalCommitmentStatuses.has(status);
-      const hasValidPositiveAmount = amount !== null && amount > 0;
-      const effectiveCertainty = getEffectiveCommitmentCertainty(commitment);
-      const pendingValidation = hasPendingProcurementValidation(commitment);
-      const approvalStatus = getEffectiveProcurementApprovalStatus(commitment);
-      const isRejected = approvalStatus === "Rejected";
-      const needsAttention = !isRejected && !isFinal && (!hasSupportedActiveStatus || !hasValidPositiveAmount);
-      return {
-        commitment,
-        amount,
-        isFinal,
-        isValidActive: hasSupportedActiveStatus && hasValidPositiveAmount && !isRejected,
-        needsAttention,
-        missingOrInvalidDueDate: hasSupportedActiveStatus && !parseCashSnapshotDate(commitment.dueDate),
-        effectiveCertainty,
-        pendingValidation,
-        approvalStatus,
-        isRejected,
-      };
-    });
-    const validActiveCommitments = commitmentReadModel.filter((item) => item.isValidActive);
-    const commitmentsNeedingAttention = commitmentReadModel.filter((item) => item.needsAttention);
-    const commitmentsMissingDueDate = commitmentReadModel.filter((item) => item.isValidActive && item.missingOrInvalidDueDate);
-    // Pending validation remains planning exposure even if its prior certainty was Committed.
-    const validActiveCommittedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty === "Committed" && !item.pendingValidation && !item.isRejected);
-    const validActivePlannedOrQuotedCommitments = validActiveCommitments.filter((item) => item.effectiveCertainty !== "Committed" || item.pendingValidation);
-    const committedCash = validActiveCommittedCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
-    const plannedOrQuotedExposure = validActivePlannedOrQuotedCommitments.reduce((sum, item) => sum + (item.amount ?? 0), 0);
-    const grossDeployableCash = cashConfigured && currentCash !== null && protectedCash !== null ? currentCash - protectedCash : null;
-    const uncommittedDeployableCash = grossDeployableCash === null ? null : grossDeployableCash - committedCash;
-    const startOfTodayMs = new Date().setHours(0, 0, 0, 0);
-    const procurementItems = commitmentReadModel
-      .filter((item) => item.commitment.type === "Supplier" || Boolean(item.commitment.procurementNeed?.trim()) || Boolean(item.commitment.originalBudget?.trim()) || Boolean(item.commitment.targetPrice?.trim()) || Boolean(item.commitment.actualPurchasePrice?.trim()) || Boolean(item.commitment.supplier?.trim()) || Boolean(item.commitment.quoteCheckedDate?.trim()) || Boolean(item.commitment.quoteExpiryDate?.trim()) || Boolean(item.commitment.quoteReference?.trim()) || Boolean(item.commitment.quoteNotes?.trim()) || Boolean(item.commitment.purchaseEvidenceReference?.trim()) || Boolean(item.commitment.invoiceOrderReference?.trim()) || Boolean(item.commitment.evidenceNotes?.trim()) || Boolean(item.commitment.actualSupplier?.trim()) || item.pendingValidation)
-      .map((item) => {
-        const originalBudget = parseOptionalFinanceAmount(item.commitment.originalBudget || "");
-        const targetPrice = parseOptionalFinanceAmount(item.commitment.targetPrice || "");
-        const actualPurchasePrice = parseOptionalFinanceAmount(item.commitment.actualPurchasePrice || "");
-        const amountRequired = targetPrice ?? item.amount ?? originalBudget ?? 0;
-        const effectivePrice = actualPurchasePrice ?? item.amount ?? targetPrice ?? originalBudget ?? 0;
-        const savedAgainstBudget = originalBudget !== null && actualPurchasePrice !== null ? Math.max(0, originalBudget - actualPurchasePrice) : 0;
-        const potentialSaving = originalBudget !== null && targetPrice !== null ? Math.max(0, originalBudget - targetPrice) : 0;
-        const expectedPurchaseDate = item.commitment.expectedPurchaseDate || item.commitment.dueDate;
-        const expectedPurchaseTime = expectedPurchaseDate ? new Date(`${expectedPurchaseDate.slice(0, 10)}T00:00:00`).getTime() : 0;
-        const isFuturePurchase = expectedPurchaseTime > startOfTodayMs;
-        const isPurchased = item.commitment.status === "Paid" || Boolean(item.commitment.actualPurchaseDate) || actualPurchasePrice !== null;
-        const isCommitted = item.isValidActive && item.effectiveCertainty === "Committed" && !item.pendingValidation;
-        const projectedDeployableCashAfterPurchase = uncommittedDeployableCash === null
-          ? null
-          : isPurchased || isCommitted || item.isRejected
-            ? uncommittedDeployableCash
-            : uncommittedDeployableCash - amountRequired;
-        const hasSupplier = Boolean(item.commitment.supplier?.trim());
-        const hasNeed = Boolean(item.commitment.procurementNeed?.trim());
-        const hasTargetPrice = targetPrice !== null && targetPrice > 0;
-        const hasRequiredInfo = hasSupplier && hasNeed && hasTargetPrice;
-        const quoteState = getProcurementQuoteState(item.commitment);
-        const cashAvailable = projectedDeployableCashAfterPurchase !== null && projectedDeployableCashAfterPurchase >= 0;
-        let readinessState: ProcurementReadinessState = "Researching";
-        let readinessReason = "Supplier, need or target price is still incomplete.";
-
-        if (isPurchased) {
-          readinessState = "Purchased";
-          readinessReason = "Actual purchase details have been recorded.";
-        } else if (item.pendingValidation) {
-          readinessState = "Pending validation";
-          readinessReason = item.commitment.pendingValidationReason?.trim() || "External validation is still required.";
-        } else if (quoteState === "Expired") {
-          readinessState = "Pending validation";
-          readinessReason = `Quoted pricing expired on ${item.commitment.quoteExpiryDate}; revalidate or replace the price before committing or purchasing.`;
-        } else if (!hasRequiredInfo) {
-          readinessState = "Researching";
-          readinessReason = [
-            hasNeed ? null : "need",
-            hasSupplier ? null : "supplier",
-            hasTargetPrice ? null : "target price",
-          ].filter(Boolean).join(", ") + " missing.";
-        } else if (uncommittedDeployableCash === null) {
-          readinessState = "Blocked";
-          readinessReason = "Cash snapshot is incomplete, so deployable cash cannot be verified.";
-        } else if (!cashAvailable) {
-          readinessState = "Blocked";
-          readinessReason = "Buying now would consume protected cash or leave deployable cash negative.";
-        } else if (isFuturePurchase) {
-          readinessState = "Wait";
-          readinessReason = `Expected purchase date is ${expectedPurchaseDate}.`;
-        } else if (item.effectiveCertainty === "Quoted") {
-          readinessState = "Price found";
-          readinessReason = "Supplier and target price are known; founder commitment has not been made.";
-        } else {
-          readinessState = "Ready to buy";
-          readinessReason = isCommitted
-            ? "Committed funding is already reserved and deployable cash remains non-negative."
-            : "Supplier, target price and timing are ready, and deployable cash remains non-negative after purchase.";
-        }
-
-        return {
-          commitment: item.commitment,
-          amount: item.amount,
-          originalBudget,
-          targetPrice,
-          actualPurchasePrice,
-          amountRequired,
-          effectivePrice,
-          savedAgainstBudget,
-          potentialSaving,
-          projectedDeployableCashAfterPurchase,
-          readinessState,
-          readinessReason,
-          isPurchased,
-          isCommitted,
-          effectiveCertainty: item.effectiveCertainty,
-          approvalStatus: item.approvalStatus,
-          isRejected: item.isRejected,
-          quoteState,
-        };
-      });
-    const procurementReadinessRank: Record<ProcurementReadinessState, number> = {
-      "Ready to buy": 1,
-      Blocked: 2,
-      "Pending validation": 3,
-      "Price found": 4,
-      Wait: 5,
-      Researching: 6,
-      Purchased: 7,
-    };
-    const procurementQueue = [...procurementItems].sort((left, right) =>
-      Number(left.isRejected) - Number(right.isRejected)
-      || procurementReadinessRank[left.readinessState] - procurementReadinessRank[right.readinessState]
-      || (left.commitment.expectedPurchaseDate || left.commitment.dueDate || left.commitment.dateCreated).localeCompare(right.commitment.expectedPurchaseDate || right.commitment.dueDate || right.commitment.dateCreated)
-      || left.commitment.commitmentName.localeCompare(right.commitment.commitmentName),
-    );
-    const procurementCommittedCash = procurementItems.filter((item) => item.isCommitted).reduce((sum, item) => sum + (item.amount ?? item.effectivePrice), 0);
-    const procurementPlannedExposure = procurementItems.filter((item) => !item.isCommitted && !item.isPurchased && !item.isRejected).reduce((sum, item) => sum + item.amountRequired, 0);
-    const procurementActualSpend = procurementItems.filter((item) => item.isPurchased).reduce((sum, item) => sum + item.effectivePrice, 0);
-    const procurementOriginalBudgetTotal = procurementItems.reduce((sum, item) => sum + (item.originalBudget ?? 0), 0);
-    const procurementTargetPriceTotal = procurementItems.reduce((sum, item) => sum + (item.targetPrice ?? 0), 0);
-    const procurementExpectedSavings = procurementItems.reduce((sum, item) => sum + item.potentialSaving, 0);
-    const procurementSavedAgainstBudget = procurementItems.reduce((sum, item) => sum + item.savedAgainstBudget, 0);
-    const procurementPotentialSaving = procurementExpectedSavings;
-    const procurementSavingsPct = procurementOriginalBudgetTotal > 0 ? Math.round((procurementExpectedSavings / procurementOriginalBudgetTotal) * 100) : null;
-    const highFitWithCapital = liveOpportunities.filter((opp) => opp.fitRank >= 3 && opp.capital !== null);
-    const highFitOpportunities = liveOpportunities.filter((opp) => opp.fitRank >= 3);
-    const highFitOpportunityCount = highFitOpportunities.length;
-    const highFitMissingCapitalCount = highFitOpportunities.filter((opp) => opp.capitalState === "missing").length;
-    const highFitQualitativeCapitalCount = highFitOpportunities.filter((opp) => opp.capitalState === "qualitative").length;
-    const highFitZeroCapitalCount = highFitOpportunities.filter((opp) => opp.capitalState === "zero").length;
-    const highFitKnownCapitalRequired =
-      highFitOpportunityCount === 0 ||
-      highFitMissingCapitalCount > 0 ||
-      highFitQualitativeCapitalCount > 0
-        ? null
-        : highFitWithCapital.reduce((sum, opp) => sum + (opp.capital ?? 0), 0);
-
-    const wonLeads = leads.filter((lead) => lead.status === "Won");
-    const wonValueByAreaMap = new Map<string, {
-      area: string;
-      wonLeadCount: number;
-      knownFinalValueCount: number;
-      missingFinalValueCount: number;
-      knownFinalWonValue: number;
-      quotedValueCount: number;
-      knownQuotedValue: number;
-    }>();
-
-    wonLeads.forEach((lead) => {
-      const area = lead.relatedPillar.trim() || "Unassigned";
-      const current = wonValueByAreaMap.get(area) || {
-        area,
-        wonLeadCount: 0,
-        knownFinalValueCount: 0,
-        missingFinalValueCount: 0,
-        knownFinalWonValue: 0,
-        quotedValueCount: 0,
-        knownQuotedValue: 0,
-      };
-      const finalValue = parseOptionalFinanceAmount(lead.finalJobValue);
-      const quoteValue = parseOptionalFinanceAmount(lead.quoteValue);
-
-      current.wonLeadCount += 1;
-      if (finalValue !== null && finalValue > 0) {
-        current.knownFinalValueCount += 1;
-        current.knownFinalWonValue += finalValue;
-      } else {
-        current.missingFinalValueCount += 1;
-      }
-      if (quoteValue !== null && quoteValue > 0) {
-        current.quotedValueCount += 1;
-        current.knownQuotedValue += quoteValue;
-      }
-      wonValueByAreaMap.set(area, current);
-    });
-
-    const wonValueByArea = [...wonValueByAreaMap.values()]
-      .sort((left, right) => right.knownFinalWonValue - left.knownFinalWonValue || left.area.localeCompare(right.area));
-    const wonCommercialEvidence = {
-      byArea: wonValueByArea,
-      totalWonLeads: wonLeads.length,
-      totalKnownFinalValues: wonValueByArea.reduce((sum, area) => sum + area.knownFinalValueCount, 0),
-      totalMissingFinalValues: wonValueByArea.reduce((sum, area) => sum + area.missingFinalValueCount, 0),
-      totalKnownFinalWonValue: wonValueByArea.reduce((sum, area) => sum + area.knownFinalWonValue, 0),
-      archivedWonLeadCount: wonLeads.filter((lead) => lead.archived).length,
-    };
-
-    return {
-      liveOpportunities,
-      currentCash,
-      protectedCash,
-      validActiveCommitments,
-      commitmentsNeedingAttention,
-      commitmentsMissingDueDate,
-      committedCash,
-      plannedOrQuotedExposure,
-      validActivePlannedOrQuotedCommitments,
-      procurementItems,
-      procurementQueue,
-      procurementCommittedCash,
-      procurementPlannedExposure,
-      procurementActualSpend,
-      procurementOriginalBudgetTotal,
-      procurementTargetPriceTotal,
-      procurementExpectedSavings,
-      procurementSavedAgainstBudget,
-      procurementPotentialSaving,
-      procurementSavingsPct,
-      grossDeployableCash,
-      uncommittedDeployableCash,
-      cashConfigured,
-      cashSnapshotFreshness,
-      cashSnapshotAgeDays,
-      highFitKnownCapitalRequired,
-      highFitOpportunityCount,
-      highFitMissingCapitalCount,
-      highFitQualitativeCapitalCount,
-      highFitZeroCapitalCount,
-      wonCommercialEvidence,
-    };
-  })();
+  const capitalAllocation = buildCapitalAllocation({
+    opportunities: opportunityRecords.filter((opportunity) => ["New", "Evaluating", "On Hold", "Approved"].includes(opportunity.status)).map((opportunity) => ({
+      opportunity,
+      upside: parseFinanceAmount(opportunity.estimatedUpside),
+      parsedCapital: parseOptionalFinanceAmount(opportunity.requiredCapital.trim()),
+    })),
+    commitments: commitmentRecords.map((commitment) => ({
+      commitment,
+      amount: parseOptionalFinanceAmount(commitment.amount),
+      originalBudget: parseOptionalFinanceAmount(commitment.originalBudget || ""),
+      targetPrice: parseOptionalFinanceAmount(commitment.targetPrice || ""),
+      actualPurchasePrice: parseOptionalFinanceAmount(commitment.actualPurchasePrice || ""),
+      dueDateValid: Boolean(parseCashSnapshotDate(commitment.dueDate)),
+      quoteState: getProcurementQuoteState(commitment),
+    })),
+    leads: leads.filter((lead) => lead.status === "Won").map((lead) => ({
+      lead,
+      finalValue: parseOptionalFinanceAmount(lead.finalJobValue),
+      quoteValue: parseOptionalFinanceAmount(lead.quoteValue),
+    })),
+    currentCashAmount,
+    cashAmountsValid,
+    reservedTaxAmount,
+    safetyBufferAmount,
+    cashSnapshotFreshness,
+    cashSnapshotAgeDays,
+    nowMs: Date.now(),
+  });
 
   const strategicDataConfidence = (() => {
     type LimitationSeverity = "Blocker" | "Material" | "Warning";
