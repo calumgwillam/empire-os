@@ -62,6 +62,7 @@ import {
 import { buildStrategicDataConfidence } from "./lib/strategic-data-confidence";
 import { buildRecurringProblemLearning } from "./lib/recurring-problem-learning";
 import { buildOrganisationalHealth } from "./lib/organisational-health";
+import { buildOperationalIndependence } from "./lib/operational-independence";
 import {
   assessDelegationReadiness,
   buildExecutionReleasePlan,
@@ -9337,119 +9338,80 @@ export default function Home() {
     nowMs: Date.now(),
   });
 
-  const operationalIndependence = (() => {
-    type OperationalIndependenceState = "Independent" | "Ready to delegate" | "Guardrail gap" | "Ownership gap" | "Founder-only";
-    type ActiveOperationalWorkItem = {
+  const toOperationalIndependenceWorkItem = (
+    item: {
       id: string;
       objectType: "Action" | "Project" | "Lead" | "Problem";
       title: string;
       owner: string;
       ownerPersonId?: string;
       pillar: string;
-      requiresFounderIntervention: boolean;
-    };
-
-    const founderAuthorityKeys = new Set([
-      ...empireDecisionQueue.founderReviewQueue.map((item) => `${item.kind}:${item.id}`),
-      ...empireDecisionQueue.founderAuthorityItems.map((item) => `${item.objectType}:${item.id}`),
-    ]);
-    const activeWork: ActiveOperationalWorkItem[] = [
-      ...activeOwnershipActions.map((action) => ({
-        id: action.id,
-        objectType: "Action" as const,
-        title: action.actionTitle,
-        owner: getActionOwnerDisplay(action, people),
-        ownerPersonId: action.ownerPersonId,
-        pillar: action.relatedPillar || "Unassigned",
-        requiresFounderIntervention: action.status === "Blocked" || founderAuthorityKeys.has(`Action:${action.id}`),
-      })),
-      ...activeOwnershipProjects.map((project) => ({
-        id: project.id,
-        objectType: "Project" as const,
-        title: project.projectName,
-        owner: project.owner || "Unassigned",
-        pillar: project.area || "Unassigned",
-        requiresFounderIntervention: founderAuthorityKeys.has(`Project:${project.id}`),
-      })),
-      ...activeOwnershipLeads.map((lead) => ({
-        id: lead.id,
-        objectType: "Lead" as const,
-        title: lead.leadName,
-        owner: lead.owner || "Unassigned",
-        pillar: lead.relatedPillar || "Unassigned",
-        requiresFounderIntervention: founderAuthorityKeys.has(`Lead:${lead.id}`),
-      })),
-      ...activeOwnershipProblems.map((problem) => ({
-        id: problem.id,
-        objectType: "Problem" as const,
-        title: problem.problemStatement,
-        owner: problem.owner || "Unassigned",
-        pillar: getAreaText(problem) || "Unassigned",
-        requiresFounderIntervention: problem.problemStatus === "Action required" || founderAuthorityKeys.has(`Problem:${problem.id}`),
-      })),
-    ];
-
-    const classifiedItems = activeWork.map((item) => {
-      const ownerKey = getValidActiveOwnerKey(item.owner, item.ownerPersonId);
-      const ownerPerson = ownerKey
-        ? orderedPeople.find((person) => person.status === "Active" && person.name.trim().toLowerCase() === ownerKey) || null
-        : null;
-      let state: OperationalIndependenceState;
-      let reason: string;
-
-      if (item.requiresFounderIntervention) {
-        state = "Founder-only";
-        reason = "The current risk, blocked, or authority state requires Founder judgement or intervention.";
-      } else if (!ownerPerson) {
-        state = "Ownership gap";
-        reason = "The item does not resolve to a valid active owner, so independent progress cannot be evidenced.";
-      } else if (isFounderOwned(item.owner, item.ownerPersonId)) {
-        const areaDelegationReadyPeople = getDelegationReadyPeopleForArea(item.pillar);
-        if (areaDelegationReadyPeople.length > 0) {
-          state = "Ready to delegate";
-          reason = `This routine Founder-owned work has an active delegation-ready person assigned to ${item.pillar}.`;
-        } else if (delegationReadyPeople.length > 0) {
-          state = "Guardrail gap";
-          reason = `Delegation-ready people exist, but none are assigned to ${item.pillar}.`;
-        } else if (delegationReadinessGapPeople.length > 0) {
-          state = "Guardrail gap";
-          reason = "Operational delegation is plausible, but available people lack a complete role, responsibilities, or authority definition.";
-        } else {
-          state = "Ownership gap";
-          reason = "This routine Founder-owned work has no active non-founder operational person available.";
-        }
-      } else {
-        const missingFields = getDelegationReadinessMissingFields(ownerPerson);
-        if (missingFields.length === 0) {
-          state = "Independent";
-          reason = "The active non-founder owner has role, responsibilities, and authority defined, with no current Founder-intervention signal.";
-        } else {
-          state = "Guardrail gap";
-          reason = `The assigned active non-founder owner is missing ${missingFields.join(", ")}.`;
-        }
-      }
-
-      return { ...item, state, reason };
-    });
-    const countState = (state: OperationalIndependenceState) => classifiedItems.filter((item) => item.state === state).length;
-    const totalActiveWork = classifiedItems.length;
-    const independentCount = countState("Independent");
-    const readyToDelegateCount = countState("Ready to delegate");
-    const guardrailGapCount = countState("Guardrail gap");
-    const ownershipGapCount = countState("Ownership gap");
-    const founderOnlyCount = countState("Founder-only");
+      hasImmediateFounderIntervention: boolean;
+    },
+  ) => {
+    const ownerKey = getValidActiveOwnerKey(item.owner, item.ownerPersonId);
+    const ownerPerson = ownerKey
+      ? orderedPeople.find((person) => person.status === "Active" && person.name.trim().toLowerCase() === ownerKey) || null
+      : null;
+    const founderOwned = isFounderOwned(item.owner, item.ownerPersonId);
 
     return {
-      totalActiveWork,
-      independentCount,
-      readyToDelegateCount,
-      guardrailGapCount,
-      ownershipGapCount,
-      founderOnlyCount,
-      operationalIndependencePct: totalActiveWork === 0 ? null : Math.round((independentCount / totalActiveWork) * 100),
-      classifiedItems,
+      id: item.id,
+      objectType: item.objectType,
+      title: item.title,
+      owner: item.owner,
+      ...(item.objectType === "Action" ? { ownerPersonId: item.ownerPersonId } : {}),
+      pillar: item.pillar,
+      hasImmediateFounderIntervention: item.hasImmediateFounderIntervention,
+      hasValidActiveOwner: ownerPerson !== null,
+      isFounderOwned: founderOwned,
+      areaHasDelegationReadyPerson: ownerPerson && founderOwned
+        ? getDelegationReadyPeopleForArea(item.pillar).length > 0
+        : false,
+      ownerReadinessMissingFields: ownerPerson && !founderOwned
+        ? getDelegationReadinessMissingFields(ownerPerson)
+        : [],
     };
-  })();
+  };
+  const operationalIndependence = buildOperationalIndependence({
+    actions: activeOwnershipActions.map((action) => toOperationalIndependenceWorkItem({
+      id: action.id,
+      objectType: "Action",
+      title: action.actionTitle,
+      owner: getActionOwnerDisplay(action, people),
+      ownerPersonId: action.ownerPersonId,
+      pillar: action.relatedPillar || "Unassigned",
+      hasImmediateFounderIntervention: action.status === "Blocked",
+    })),
+    projects: activeOwnershipProjects.map((project) => toOperationalIndependenceWorkItem({
+      id: project.id,
+      objectType: "Project",
+      title: project.projectName,
+      owner: project.owner || "Unassigned",
+      pillar: project.area || "Unassigned",
+      hasImmediateFounderIntervention: false,
+    })),
+    leads: activeOwnershipLeads.map((lead) => toOperationalIndependenceWorkItem({
+      id: lead.id,
+      objectType: "Lead",
+      title: lead.leadName,
+      owner: lead.owner || "Unassigned",
+      pillar: lead.relatedPillar || "Unassigned",
+      hasImmediateFounderIntervention: false,
+    })),
+    problems: activeOwnershipProblems.map((problem) => toOperationalIndependenceWorkItem({
+      id: problem.id,
+      objectType: "Problem",
+      title: problem.problemStatement,
+      owner: problem.owner || "Unassigned",
+      pillar: getAreaText(problem) || "Unassigned",
+      hasImmediateFounderIntervention: problem.problemStatus === "Action required",
+    })),
+    founderReviewItems: empireDecisionQueue.founderReviewQueue.map(({ kind, id }) => ({ kind, id })),
+    founderAuthorityItems: empireDecisionQueue.founderAuthorityItems.map(({ objectType, id }) => ({ objectType, id })),
+    delegationReadyPeopleCount: delegationReadyPeople.length,
+    delegationReadinessGapPeopleCount: delegationReadinessGapPeople.length,
+  });
 
   const decisionTrackRecord = (() => {
     const validOutcomeRatings = new Set(["Worked", "Partially worked", "Failed"]);
@@ -20834,4 +20796,3 @@ export default function Home() {
     </ChangeHistoryContext.Provider>
   );
 }
-
