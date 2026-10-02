@@ -64,6 +64,7 @@ import { buildRecurringProblemLearning } from "./lib/recurring-problem-learning"
 import { buildOrganisationalHealth } from "./lib/organisational-health";
 import { buildOperationalIndependence } from "./lib/operational-independence";
 import { buildFounderFocus, type FounderFocusRecordFact } from "./lib/founder-focus";
+import { buildFounderOperatingBrief, type OperatingBriefDomainItem } from "./lib/founder-operating-brief";
 import {
   buildAccountabilitySnapshot as buildAccountabilitySnapshotPolicy,
   type AccountabilityRiskInput,
@@ -10853,205 +10854,71 @@ export default function Home() {
   const founderFocusList = founderFocusCandidates.slice(0, 3);
 
   const founderOperatingBrief = (() => {
-    const usedRecordKeys = new Set<string>();
-
-    // 1. DO NOW (top 3)
-    const doNowItems: OperatingBriefItem[] = [];
-    for (const candidate of founderFocusCandidates) {
-      if (doNowItems.length >= 3) break;
-      const candidateKey = candidate.key;
-      const recordKey = `${candidate.objectType}:${candidate.id}`;
-      if (usedRecordKeys.has(candidateKey) || usedRecordKeys.has(recordKey)) continue;
-
-      doNowItems.push({
-        id: candidate.id,
-        objectType: candidate.objectType,
-        title: candidate.title,
-        area: candidate.area,
-        why: candidate.reason,
-        onOpen: () => handleOpenAttentionRecord(candidate.objectType, candidate.id),
-      });
-      usedRecordKeys.add(candidateKey);
-      usedRecordKeys.add(recordKey);
-    }
-
-    // 2. DELEGATE (top 3)
-    const delegateItemsList: OperatingBriefItem[] = [];
-    for (const item of empireDecisionQueue.delegateItems) {
-      if (delegateItemsList.length >= 3) break;
-      const key = `${item.objectType}:${item.id}`;
-      if (usedRecordKeys.has(key)) continue;
-
-      delegateItemsList.push({
-        id: item.id,
-        objectType: item.objectType,
-        title: item.title,
-        area: item.pillar,
-        owner: item.owner,
-        why: item.whatIsChanging || item.whyItMatters,
-        onOpen: () => handleOpenAttentionRecord(item.objectType, item.id),
-        delegateAction: (personId: string) => handleDelegateItem(item.objectType as "Action" | "Project" | "Lead" | "Problem", item.id, personId),
-        eligibleDelegationPeople: getCapacityRankedDelegationPeopleForArea(item.pillar),
-      });
-      usedRecordKeys.add(key);
-    }
-
-    // 3. DECIDE (top 3)
-    const decideItemsList: OperatingBriefItem[] = [];
-    for (const item of empireDecisionQueue.founderReviewQueue) {
-      if (decideItemsList.length >= 3) break;
-      const key = `${item.kind}:${item.id}`;
-      if (usedRecordKeys.has(key)) continue;
-
-      decideItemsList.push({
-        id: item.id,
-        objectType: item.kind,
-        title: item.title,
-        area: item.pillar,
-        owner: item.owner,
-        why: `${item.reasonCategory}: ${item.whyItMatters}`,
-        onOpen: () => handleOpenAttentionRecord(item.kind, item.id),
-      });
-      usedRecordKeys.add(key);
-    }
-
-    // 4. WATCH (top 3)
-    const watchCandidates: Array<{ item: OperatingBriefItem; urgencyDays: number }> = [];
     const nowMs = Date.now();
-    const dayMs = 1000 * 60 * 60 * 24;
     const startOfTodayMs = new Date().setHours(0, 0, 0, 0);
-
-    // Actions with due date coming up. Not gated by usedRecordKeys: due-soon items must
-    // still surface here even if already claimed by Do Now/Delegate/Decide.
-    actionRecords.filter((action) => isActionActive(action) && !isActionWaiting(action)).forEach((action) => {
-      if (action.dueDate) {
-        // Compare calendar dates (local midnight) so time-of-day never shifts the day count.
-        const dueMs = new Date(`${action.dueDate.slice(0, 10)}T00:00:00`).getTime();
-        if (!Number.isNaN(dueMs)) {
-          const days = Math.round((dueMs - startOfTodayMs) / dayMs);
-          if (days >= 0 && days <= 14) {
-            watchCandidates.push({
-              item: {
-                id: action.id,
-                objectType: "Action",
-                title: action.actionTitle || action.title,
-                area: getAreaText(action),
-                owner: getActionOwnerDisplay(action, people),
-                why: days === 0 ? "Due today — review execution momentum" : `Due in ${days} day${days === 1 ? "" : "s"} (${action.dueDate.slice(0, 10)})`,
-                onOpen: () => handleOpenAttentionRecord("Action", action.id),
-              },
-              urgencyDays: days,
-            });
-          }
-        }
-      }
+    const brief = buildFounderOperatingBrief({
+      focusCandidates: founderFocusCandidates.map(({ key, objectType, id, title, area, reason }) => ({
+        key, objectType, id, title, area, reason,
+      })),
+      delegateItems: empireDecisionQueue.delegateItems.map(({ id, objectType, title, pillar, owner, whatIsChanging, whyItMatters }) => ({
+        id, objectType, title, pillar, owner, whatIsChanging, whyItMatters,
+      })),
+      reviewItems: empireDecisionQueue.founderReviewQueue.map(({ kind, id, title, pillar, owner, reasonCategory, whyItMatters }) => ({
+        kind, id, title, pillar, owner, reasonCategory, whyItMatters,
+      })),
+      actions: actionRecords.map((action) => ({
+        id: action.id,
+        title: action.actionTitle || action.title,
+        area: getAreaText(action),
+        owner: getActionOwnerDisplay(action, people),
+        isActive: isActionActive(action),
+        isWaiting: isActionWaiting(action),
+        dueDate: action.dueDate,
+      })),
+      projects: projects.map((project) => ({
+        id: project.id,
+        title: project.projectName,
+        area: project.area,
+        owner: project.owner,
+        isActive: isProjectActive(project),
+        status: project.status,
+        targetCompletionDate: project.targetCompletionDate,
+      })),
+      activeLeads: activeLeads.map(({ id, leadName, relatedPillar, owner, status, followUpDate }) => ({
+        id, title: leadName, area: relatedPillar, owner, status, followUpDate,
+      })),
+      decisions: decisionRecords.map((decision) => ({
+        id: decision.id,
+        title: decision.decisionTitle || decision.title,
+        area: getAreaText(decision),
+        owner: decision.decisionMaker,
+        isActive: isDecisionActive(decision),
+        reviewDate: decision.reviewDate,
+      })),
+      opportunities: opportunityRecords.map((opportunity) => ({
+        id: opportunity.id,
+        title: opportunity.opportunityTitle || opportunity.title,
+        area: getAreaText(opportunity),
+        owner: opportunity.owner,
+        status: opportunity.status,
+        strategicFit: opportunity.strategicFit,
+      })),
+      nowMs,
+      startOfTodayMs,
     });
-
-    // Active projects with target completion date in next 21 days
-    projects.filter(isProjectActive).forEach((project) => {
-      const key = `Project:${project.id}`;
-      if (usedRecordKeys.has(key)) return;
-      if (project.targetCompletionDate && project.status.trim().toLowerCase() !== "blocked") {
-        const targetMs = new Date(`${project.targetCompletionDate}T00:00:00`).getTime();
-        if (!Number.isNaN(targetMs)) {
-          const days = Math.round((targetMs - nowMs) / dayMs);
-          if (days >= 0 && days <= 21) {
-            watchCandidates.push({
-              item: {
-                id: project.id,
-                objectType: "Project",
-                title: project.projectName,
-                area: project.area,
-                owner: project.owner || "Unassigned",
-                why: days === 0 ? "Target completion date is today" : `Target completion in ${days} day${days === 1 ? "" : "s"} (${project.targetCompletionDate})`,
-                onOpen: () => handleOpenAttentionRecord("Project", project.id),
-              },
-              urgencyDays: days,
-            });
-          }
-        }
-      }
+    const attachOpen = (item: OperatingBriefDomainItem): OperatingBriefItem => ({
+      ...item,
+      onOpen: () => handleOpenAttentionRecord(item.objectType, item.id),
     });
-
-    // Active leads with upcoming follow-up
-    activeLeads.filter((lead) => !["Won", "Lost"].includes(lead.status)).forEach((lead) => {
-      const key = `Lead:${lead.id}`;
-      if (usedRecordKeys.has(key)) return;
-      if (lead.followUpDate) {
-        const followMs = new Date(lead.followUpDate).getTime();
-        if (!Number.isNaN(followMs)) {
-          const days = Math.round((followMs - nowMs) / dayMs);
-          if (days >= 0 && days <= 14) {
-            watchCandidates.push({
-              item: {
-                id: lead.id,
-                objectType: "Lead",
-                title: lead.leadName,
-                area: lead.relatedPillar,
-                owner: lead.owner || "Unassigned",
-                why: days === 0 ? "Commercial follow-up date is today" : `Commercial follow-up in ${days} day${days === 1 ? "" : "s"} (${lead.followUpDate})`,
-                onOpen: () => handleOpenAttentionRecord("Lead", lead.id),
-              },
-              urgencyDays: days,
-            });
-          }
-        }
-      }
-    });
-
-    // Decisions with review date approaching
-    decisionRecords.filter(isDecisionActive).forEach((decision) => {
-      const key = `Decision:${decision.id}`;
-      if (usedRecordKeys.has(key)) return;
-      if (decision.reviewDate) {
-        const reviewMs = new Date(decision.reviewDate).getTime();
-        if (!Number.isNaN(reviewMs)) {
-          const days = Math.round((reviewMs - nowMs) / dayMs);
-          if (days > 0 && days <= 21) {
-            watchCandidates.push({
-              item: {
-                id: decision.id,
-                objectType: "Decision",
-                title: decision.decisionTitle || decision.title,
-                area: getAreaText(decision),
-                owner: decision.decisionMaker || "Unassigned",
-                why: `Review date approaching in ${days} day${days === 1 ? "" : "s"} (${decision.reviewDate.slice(0, 10)})`,
-                onOpen: () => handleOpenAttentionRecord("Decision", decision.id),
-              },
-              urgencyDays: days,
-            });
-          }
-        }
-      }
-    });
-
-    // High/Exceptional fit evaluating opportunities
-    opportunityRecords.filter((opp) => ["Evaluating", "On Hold"].includes(opp.status) && ["High", "Exceptional"].includes(opp.strategicFit)).forEach((opp) => {
-      const key = `Opportunity:${opp.id}`;
-      if (usedRecordKeys.has(key)) return;
-      watchCandidates.push({
-        item: {
-          id: opp.id,
-          objectType: "Opportunity",
-          title: opp.opportunityTitle || opp.title,
-          area: getAreaText(opp),
-          owner: opp.owner || "Unassigned",
-          why: `${opp.strategicFit} strategic-fit opportunity currently ${opp.status.toLowerCase()} — watch for timing trigger`,
-          onOpen: () => handleOpenAttentionRecord("Opportunity", opp.id),
-        },
-        urgencyDays: opp.strategicFit === "Exceptional" ? 5 : 10,
-      });
-    });
-
-    watchCandidates.sort((a, b) => a.urgencyDays - b.urgencyDays || a.item.title.localeCompare(b.item.title));
-
-    const watchItemsList = watchCandidates.slice(0, 3).map((candidate) => candidate.item);
-
     return {
-      doNow: doNowItems,
-      delegate: delegateItemsList,
-      decide: decideItemsList,
-      watch: watchItemsList,
+      doNow: brief.doNow.map(attachOpen),
+      delegate: brief.delegate.map((item): OperatingBriefItem => ({
+        ...attachOpen(item),
+        delegateAction: (personId: string) => handleDelegateItem(item.objectType, item.id, personId),
+        eligibleDelegationPeople: getCapacityRankedDelegationPeopleForArea(item.area),
+      })),
+      decide: brief.decide.map(attachOpen),
+      watch: brief.watch.map(attachOpen),
     };
   })();
 
