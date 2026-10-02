@@ -61,6 +61,7 @@ import {
 } from "./lib/decision-execution-control";
 import { buildStrategicDataConfidence } from "./lib/strategic-data-confidence";
 import { buildRecurringProblemLearning } from "./lib/recurring-problem-learning";
+import { buildOrganisationalHealth } from "./lib/organisational-health";
 import {
   assessDelegationReadiness,
   buildExecutionReleasePlan,
@@ -9834,118 +9835,26 @@ export default function Home() {
     });
   };
 
-  const organisationalHealth = (() => {
-    const activeActions = activeOwnershipActions;
-    const activeProjects = projects.filter((project) => ["open", "in progress", "blocked"].includes(project.status.trim().toLowerCase()));
-    const pipelineLeadsAll = activeOwnershipLeads;
-    const unresolvedProblems = activeOwnershipProblems;
-
-    const totalWork = activeActions.length + activeProjects.length + pipelineLeadsAll.length + unresolvedProblems.length;
-
-    let validOwned = 0;
-    let founderOwned = 0;
-    const ownerLoad = new Map<string, number>();
-
-    const tallyWork = (ownerText: string | undefined, ownerPersonId?: string) => {
-      const ownerKey = getValidActiveOwnerKey(ownerText, ownerPersonId);
-      if (!ownerKey) return;
-      validOwned += 1;
-      ownerLoad.set(ownerKey, (ownerLoad.get(ownerKey) || 0) + 1);
-      if (founderOwnerKey !== null && ownerKey === founderOwnerKey) {
-        founderOwned += 1;
-      }
-    };
-
-    activeActions.forEach((action) => {
-      tallyWork(action.owner, action.ownerPersonId);
-    });
-
-    activeProjects.forEach((project) => {
-      tallyWork(project.owner);
-    });
-
-    pipelineLeadsAll.forEach((lead) => {
-      tallyWork(lead.owner);
-    });
-
-    unresolvedProblems.forEach((problem) => {
-      tallyWork(problem.owner);
-    });
-
-    const pctValidOwner = totalWork === 0 ? null : Math.round((validOwned / totalWork) * 100);
-    const pctNonFounder = validOwned === 0 ? null : Math.round(((validOwned - founderOwned) / validOwned) * 100);
-    const nonFounderOwned = validOwned - founderOwned;
-    const delegatedCount = delegationHandoffFollowThrough.healthy + delegationHandoffFollowThrough.atRisk;
-    const stalledOrRiskyDelegated = delegationHandoffFollowThrough.atRisk;
-    const pctDelegatedStalled = delegatedCount === 0 ? null : Math.round((stalledOrRiskyDelegated / delegatedCount) * 100);
-
-    let topOwnerShare: number | null = null;
-    if (validOwned > 0 && ownerLoad.size > 0) {
-      const maxLoad = Math.max(...ownerLoad.values());
-      topOwnerShare = Math.round((maxLoad / validOwned) * 100);
-    }
-
-    const delegationScore = totalWork === 0
-      ? null
-      : validOwned === 0
-        ? 0
-        : (() => {
-            const ownershipScore = (pctValidOwner ?? 0) * 0.30;
-            const nonFounderScore = (pctNonFounder ?? 0) * 0.35;
-            const concentrationScore = (100 - (topOwnerShare ?? 100)) * 0.25;
-            const delegatedExecutionScore = pctDelegatedStalled === null ? 0 : (100 - pctDelegatedStalled) * 0.10;
-            const availableWeight = pctDelegatedStalled === null ? 0.90 : 1;
-            return Math.round((ownershipScore + nonFounderScore + concentrationScore + delegatedExecutionScore) / availableWeight);
-          })();
-    const delegationQuality = (() => {
-      if (totalWork === 0) return { label: "No active work", tone: "clear" as const };
-      const score = delegationScore ?? 0;
-      if (score >= 80) return { label: "Strong", tone: "clear" as const };
-      if (score >= 60) return { label: "Adequate", tone: "neutral" as const };
-      return { label: "Needs attention", tone: "warn" as const };
-    })();
-
-    const nowMs = Date.now();
-
-    const openDecisions = decisionRecords.filter((decision) => ["Active", "Under Review"].includes(decision.decisionStatus));
-    const openDecisionAges = openDecisions
-      .map((decision) => {
-        const start = getDateValue(decision.decisionDate || decision.createdAt);
-        const ageDays = start > 0 ? Math.floor((nowMs - start) / (1000 * 60 * 60 * 24)) : null;
-        return ageDays !== null && ageDays >= 0 ? ageDays : null;
-      })
-      .filter((days): days is number => days !== null)
-      .sort((first, second) => first - second);
-    const avgOpenDecisionDays = openDecisionAges.length === 0 ? null : Math.round(openDecisionAges.reduce((a, b) => a + b, 0) / openDecisionAges.length);
-    const medianOpenDecisionDays = openDecisionAges.length === 0
-      ? null
-      : openDecisionAges.length % 2 === 1
-        ? openDecisionAges[Math.floor(openDecisionAges.length / 2)]
-        : Math.round((openDecisionAges[openDecisionAges.length / 2 - 1] + openDecisionAges[openDecisionAges.length / 2]) / 2);
-    const oldestOpenDecisionDays = openDecisionAges.length === 0 ? null : openDecisionAges[openDecisionAges.length - 1];
-
-    const selfSufficiencyPct = totalWork === 0 ? null : pctNonFounder;
-
-    return {
-      totalWork,
-      validOwned,
-      nonFounderOwned,
-      pctValidOwner,
-      pctNonFounder,
-      pctDelegatedStalled,
-      topOwnerShare,
-      delegationQuality,
-      delegationScore,
-      openDecisionCount: openDecisions.length,
-      activeDecisionCount: openDecisions.filter((decision) => decision.decisionStatus === "Active").length,
-      underReviewDecisionCount: openDecisions.filter((decision) => decision.decisionStatus === "Under Review").length,
-      openDecisionAgeSampleCount: openDecisionAges.length,
-      avgOpenDecisionDays,
-      medianOpenDecisionDays,
-      oldestOpenDecisionDays,
-      selfSufficiencyPct,
-    };
-  })();
+  const organisationalHealthWorkItems = [
+    ...activeOwnershipActions.map((action) => ({ ownerKey: getValidActiveOwnerKey(action.owner, action.ownerPersonId) })),
+    ...projects
+      .filter((project) => ["open", "in progress", "blocked"].includes(project.status.trim().toLowerCase()))
+      .map((project) => ({ ownerKey: getValidActiveOwnerKey(project.owner) })),
+    ...activeOwnershipLeads.map((lead) => ({ ownerKey: getValidActiveOwnerKey(lead.owner) })),
+    ...activeOwnershipProblems.map((problem) => ({ ownerKey: getValidActiveOwnerKey(problem.owner) })),
+  ];
+  const organisationalHealthNowMs = Date.now();
+  const organisationalHealth = buildOrganisationalHealth({
+    workItems: organisationalHealthWorkItems,
+    founderOwnerKey,
+    healthyHandoffCount: delegationHandoffFollowThrough.healthy,
+    atRiskHandoffCount: delegationHandoffFollowThrough.atRisk,
+    decisions: decisionRecords.map((decision) => ({
+      status: decision.decisionStatus,
+      startDate: decision.decisionDate || decision.createdAt,
+    })),
+    nowMs: organisationalHealthNowMs,
+  });
 
   const capitalAllocation = buildCapitalAllocation({
     opportunities: opportunityRecords.filter((opportunity) => ["New", "Evaluating", "On Hold", "Approved"].includes(opportunity.status)).map((opportunity) => ({
