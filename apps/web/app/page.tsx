@@ -65,7 +65,13 @@ import { buildOrganisationalHealth } from "./lib/organisational-health";
 import { buildOperationalIndependence } from "./lib/operational-independence";
 import { buildFounderFocus, type FounderFocusRecordFact } from "./lib/founder-focus";
 import { buildFounderOperatingBrief, type OperatingBriefDomainItem } from "./lib/founder-operating-brief";
+import { buildFounderOperatingReview } from "./lib/founder-operating-review";
 import { buildOperatingPosture } from "./lib/operating-posture";
+import {
+  buildFounderBottleneckMap,
+  isFounderBottleneckBlockedAction,
+  isFounderBottleneckExecutionProject,
+} from "./lib/founder-bottleneck-map";
 import {
   buildAccountabilitySnapshot as buildAccountabilitySnapshotPolicy,
   type AccountabilityRiskInput,
@@ -11318,724 +11324,213 @@ export default function Home() {
     return recent.map((entry) => entry.outstandingCount).join(" → ");
   })();
 
-  const founderOperatingReview = (() => {
-    const earlierSnapshots = dailyPostureSnapshots
-      .filter((entry) => entry.date < todaySnapshotDate)
-      .sort((a, b) => a.date.localeCompare(b.date));
-
-    const hasSufficientHistory = earlierSnapshots.length >= 1;
-    const baselineSnapshot = earlierSnapshots.slice(-7)[0] || null;
-    const baselineDateLabel = baselineSnapshot ? baselineSnapshot.date : todaySnapshotDate;
-
-    const improved: ReviewItem[] = [];
-    const deteriorated: ReviewItem[] = [];
-
-    if (baselineSnapshot) {
-      const compareLowerIsBetter = (
-        metric: string,
-        currentVal: number,
-        baseVal: number,
-        improvedExplanation: string,
-        deterioratedExplanation: string,
-      ) => {
-        if (currentVal < baseVal) {
-          const diff = baseVal - currentVal;
-          improved.push({
-            metric,
-            changeText: `${baseVal} → ${currentVal} (-${diff})`,
-            explanation: improvedExplanation,
-          });
-        } else if (currentVal > baseVal) {
-          const diff = currentVal - baseVal;
-          deteriorated.push({
-            metric,
-            changeText: `${baseVal} → ${currentVal} (+${diff})`,
-            explanation: deterioratedExplanation,
-          });
-        }
-      };
-
-      const compareHigherIsBetter = (
-        metric: string,
-        currentVal: number | null | undefined,
-        baseVal: number | null | undefined,
-        improvedExplanation: string,
-        deterioratedExplanation: string,
-        unit = "",
-      ) => {
-        if (currentVal == null || baseVal == null) return;
-        if (currentVal > baseVal) {
-          const diff = currentVal - baseVal;
-          improved.push({
-            metric,
-            changeText: `${baseVal}${unit} → ${currentVal}${unit} (+${diff}${unit})`,
-            explanation: improvedExplanation,
-          });
-        } else if (currentVal < baseVal) {
-          const diff = baseVal - currentVal;
-          deteriorated.push({
-            metric,
-            changeText: `${baseVal}${unit} → ${currentVal}${unit} (-${diff}${unit})`,
-            explanation: deterioratedExplanation,
-          });
-        }
-      };
-
-      compareLowerIsBetter(
-        "Ownership gaps",
-        todayBrief.ownershipGapCount,
-        baselineSnapshot.ownershipGapCount,
-        "Fewer unassigned or ghost-owned active work items require founder triage.",
-        "More active items now lack a valid active owner.",
-      );
-
-      compareLowerIsBetter(
-        "Decision reviews due",
-        todayBrief.reviewDueCount,
-        baselineSnapshot.decisionReviewsDue,
-        "Pending decision reviews were completed or updated.",
-        "More decisions have reached or passed their scheduled review date without closure.",
-      );
-
-      compareLowerIsBetter(
-        "Execution gaps",
-        todayBrief.executionGapCount,
-        baselineSnapshot.executionGapCount,
-        "Active decisions were connected to open actions or projects.",
-        "More active decisions currently lack an execution path.",
-      );
-
-      compareLowerIsBetter(
-        "Learning gaps",
-        todayBrief.learningGapCount,
-        baselineSnapshot.learningGapCount,
-        "Recurring problems were converted into lessons, systems or SOPs.",
-        "Recurring problems remain uncaptured as learning.",
-      );
-
-      compareLowerIsBetter(
-        "Stale records",
-        todayBrief.staleCount,
-        baselineSnapshot.staleRecordCount,
-        "Active records received status movement or review.",
-        "More active records have gone without movement or review.",
-      );
-
-      compareLowerIsBetter(
-        "Finance attention",
-        todayBrief.financeCount,
-        baselineSnapshot.financeAttentionCount,
-        "Finance attention items were resolved.",
-        "More finance attention items (buffer pressure / overdue commitments / income) emerged.",
-      );
-
-      compareLowerIsBetter(
-        "Growth stalls",
-        todayBrief.growthStallCount,
-        baselineSnapshot.growthStallCount,
-        "Commercial leads or high-fit opportunities were progressed.",
-        "More high-fit opportunities or commercial leads have gone idle.",
-      );
-
-      compareHigherIsBetter(
-        "Ownership outside primary Founder",
-        organisationalHealth.selfSufficiencyPct,
-        baselineSnapshot.selfSufficiencyPct,
-        "Non-founder owners are carrying a larger share of active operational work.",
-        "Founder is carrying a larger share of active operational work.",
-        "%",
-      );
-
-      compareHigherIsBetter(
-        "Delegation quality",
-        organisationalHealth.delegationScore,
-        baselineSnapshot.delegationQualityPct,
-        "Work distribution and delegation structure across active owners improved.",
-        "Delegation structure or workload concentration worsened.",
-        "%",
-      );
-
-      compareHigherIsBetter(
-        "Operating cash",
-        cashIsConfigured ? availableOperatingCash : null,
-        baselineSnapshot.availableOperatingCash,
-        "Available operating cash balance increased.",
-        "Available operating cash balance decreased.",
-      );
-    }
-
-    const recurringItems: RecurringReviewItem[] = [];
-    const usedRecurringKeys = new Set<string>();
-
-    recurringProblemLearning.unresolvedRecurring.forEach((problem) => {
-      const key = `Problem:${problem.id}`;
-      if (usedRecurringKeys.has(key)) return;
-      recurringItems.push({
-        id: problem.id,
-        objectType: "Problem",
-        title: problem.problemStatement || problem.title,
-        area: getAreaText(problem),
-        why: `${problem.frequency} problem (${problem.severity.toLowerCase()} severity) — needs captured learning or SOP`,
-        onOpen: () => handleOpenAttentionRecord("Problem", problem.id),
-      });
-      usedRecurringKeys.add(key);
-    });
-
-    correlationLayer.convergentRisks.forEach((cluster) => {
-      if (recurringItems.length >= 3) return;
-      const key = cluster.clusterKey;
-      if (usedRecurringKeys.has(key)) return;
-      const root = cluster.records[0];
-      recurringItems.push({
-        id: root.id,
-        objectType: root.objectType,
-        title: cluster.title,
-        area: root.area,
-        why: `Convergent risk generating ${cluster.categories.size} signal categories across ${cluster.recordCount} linked records`,
-        onOpen: () => handleOpenAttentionRecord(root.objectType, root.id),
-      });
-      usedRecurringKeys.add(key);
-    });
-
-    if (baselineSnapshot?.outstandingKeys) {
-      const baselineKeysSet = new Set(baselineSnapshot.outstandingKeys.map((k) => k.key));
-      todayBrief.outstandingKeys.forEach((item) => {
-        if (recurringItems.length >= 3) return;
-        if (baselineKeysSet.has(item.key) && !usedRecurringKeys.has(item.key)) {
-          const keyParts = item.key.split(":");
-          const objectType = item.objectType || keyParts[0] || "Record";
-          const recordId = keyParts.slice(1).join(":");
-          recurringItems.push({
-            id: recordId || item.key,
-            objectType,
-            title: item.title,
-            why: `Unresolved attention item persisting across posture snapshots (${item.category})`,
-            onOpen: () => handleOpenAttentionRecord(objectType, recordId || item.key),
-          });
-          usedRecurringKeys.add(item.key);
-        }
-      });
-    }
-
-    const currentSelfSufficiency = organisationalHealth.selfSufficiencyPct;
-    const baseSelfSufficiency = baselineSnapshot?.selfSufficiencyPct ?? null;
-
-    let dependencyStatus = "Flat";
-    let dependencySummary = "";
-    let dependencyDetail = "";
-
-    if (!hasSufficientHistory) {
-      dependencyStatus = "Baseline established";
-      dependencySummary = currentSelfSufficiency !== null
-        ? `${currentSelfSufficiency}% of active work is non-founder owned.`
-        : "Current founder dependency baseline established.";
-      dependencyDetail = "At least 2 daily posture snapshots are required to establish a historical 7-day trend.";
-    } else if (currentSelfSufficiency !== null && baseSelfSufficiency !== null) {
-      const diff = currentSelfSufficiency - baseSelfSufficiency;
-      if (diff > 2) {
-        dependencyStatus = "Improving";
-        dependencySummary = `Ownership outside the primary Founder increased by +${diff}% (from ${baseSelfSufficiency}% to ${currentSelfSufficiency}%).`;
-      } else if (diff < -2) {
-        dependencyStatus = "Worsening";
-        dependencySummary = `Founder dependency increased; non-founder share fell by ${Math.abs(diff)}% (from ${baseSelfSufficiency}% to ${currentSelfSufficiency}%).`;
-      } else {
-        dependencyStatus = "Flat";
-        dependencySummary = `Ownership outside the primary Founder remains stable at ${currentSelfSufficiency}% (baseline: ${baseSelfSufficiency}%).`;
-      }
-      dependencyDetail = `Top owner carries ${organisationalHealth.topOwnerShare ?? 0}% of active work. ${empireDecisionQueue.delegateItems.length > 0 ? `${empireDecisionQueue.delegateItems.length} founder-owned item${empireDecisionQueue.delegateItems.length === 1 ? " is" : "s are"} ready for delegation.` : "No routine founder-owned items currently flagged for delegation."}`;
-    } else {
-      dependencyStatus = "Stable";
-      dependencySummary = "Current non-founder ownership baseline tracked.";
-      dependencyDetail = "Ownership metrics are derived from active Actions, Projects, Leads and Problems.";
-    }
-
-    const next7Days: Next7DaysPriority[] = [];
-    const usedNext7Keys = new Set<string>();
-
-    if (founderFocusCandidates.length > 0) {
-      const topFocus = founderFocusCandidates[0];
-      const key = `${topFocus.objectType}:${topFocus.id}`;
-      next7Days.push({
-        id: topFocus.id,
-        objectType: topFocus.objectType,
-        title: topFocus.title,
-        area: topFocus.area,
-        why: `Top immediate execution priority: ${topFocus.reason}`,
-        onOpen: () => handleOpenAttentionRecord(topFocus.objectType, topFocus.id),
-      });
-      usedNext7Keys.add(key);
-      usedNext7Keys.add(topFocus.key);
-    }
-
-    if (unassignedAccountability.carriedCount > 0 && !usedNext7Keys.has("People:unassigned")) {
-      next7Days.push({
-        id: "unassigned",
-        objectType: "People",
-        title: `${unassignedAccountability.carriedCount} unassigned active item${unassignedAccountability.carriedCount === 1 ? "" : "s"} requiring owner triage`,
-        area: "People",
-        why: "Assigning clear active owners prevents dropped execution and founder bottlenecking.",
+  const founderOperatingReviewPolicy = buildFounderOperatingReview({
+    todaySnapshotDate,
+    snapshots: dailyPostureSnapshots,
+    todayBrief: {
+      ownershipGapCount: todayBrief.ownershipGapCount,
+      reviewDueCount: todayBrief.reviewDueCount,
+      executionGapCount: todayBrief.executionGapCount,
+      learningGapCount: todayBrief.learningGapCount,
+      staleCount: todayBrief.staleCount,
+      financeCount: todayBrief.financeCount,
+      growthStallCount: todayBrief.growthStallCount,
+      outstandingKeys: todayBrief.outstandingKeys,
+    },
+    selfSufficiencyPct: organisationalHealth.selfSufficiencyPct,
+    delegationQualityPct: organisationalHealth.delegationScore,
+    cashIsConfigured,
+    availableOperatingCash,
+    topOwnerShare: organisationalHealth.topOwnerShare,
+    delegateItemCount: empireDecisionQueue.delegateItems.length,
+    unresolvedRecurring: recurringProblemLearning.unresolvedRecurring.map((problem) => ({
+      id: problem.id,
+      problemStatement: problem.problemStatement,
+      title: problem.title,
+      area: getAreaText(problem),
+      frequency: problem.frequency,
+      severity: problem.severity,
+    })),
+    convergentRisks: correlationLayer.convergentRisks.map((cluster) => ({
+      clusterKey: cluster.clusterKey,
+      title: cluster.title,
+      categoryCount: cluster.categories.size,
+      recordCount: cluster.recordCount,
+      root: {
+        id: cluster.records[0].id,
+        objectType: cluster.records[0].objectType,
+        area: cluster.records[0].area,
+      },
+    })),
+    focusCandidates: founderFocusCandidates.map(({ key, objectType, id, title, area, reason }) => ({
+      key, objectType, id, title, area, reason,
+    })),
+    unassignedCarriedCount: unassignedAccountability.carriedCount,
+    founderReviewQueue: empireDecisionQueue.founderReviewQueue.map((item) => ({
+      kind: item.kind,
+      id: item.id,
+      title: item.title,
+      pillar: item.pillar,
+      reasonCategory: item.reasonCategory,
+      whyItMatters: item.whyItMatters,
+    })),
+    watch: founderOperatingBrief.watch.map((item, sourceIndex) => ({
+      id: item.id,
+      objectType: item.objectType,
+      title: item.title,
+      area: item.area,
+      why: item.why,
+      sourceIndex,
+    })),
+  });
+  const attachFounderOperatingReviewNavigation = (
+    item: (typeof founderOperatingReviewPolicy.recurring)[number],
+  ): RecurringReviewItem => {
+    const { navigation, ...reviewItem } = item;
+    if (navigation.type === "unassigned") {
+      return {
+        ...reviewItem,
         onOpen: () => {
           setActiveView("People");
           setSelectedAccountabilityKey("unassigned");
         },
-      });
-      usedNext7Keys.add("People:unassigned");
-    } else {
-      for (const reviewItem of empireDecisionQueue.founderReviewQueue) {
-        const key = `${reviewItem.kind}:${reviewItem.id}`;
-        if (!usedNext7Keys.has(key)) {
-          next7Days.push({
-            id: reviewItem.id,
-            objectType: reviewItem.kind,
-            title: reviewItem.title,
-            area: reviewItem.pillar,
-            why: `${reviewItem.reasonCategory}: ${reviewItem.whyItMatters}`,
-            onOpen: () => handleOpenAttentionRecord(reviewItem.kind, reviewItem.id),
-          });
-          usedNext7Keys.add(key);
-          break;
-        }
-      }
+      };
     }
-
-    for (const watchItem of founderOperatingBrief.watch) {
-      const key = `${watchItem.objectType}:${watchItem.id}`;
-      if (!usedNext7Keys.has(key)) {
-        next7Days.push({
-          id: watchItem.id,
-          objectType: watchItem.objectType,
-          title: watchItem.title,
-          area: watchItem.area,
-          why: `Near-term focus: ${watchItem.why}`,
-          onOpen: watchItem.onOpen,
-        });
-        usedNext7Keys.add(key);
-        break;
-      }
+    if (navigation.type === "watch") {
+      return { ...reviewItem, onOpen: founderOperatingBrief.watch[navigation.index].onOpen };
     }
-
-    if (next7Days.length < 3) {
-      for (const candidate of founderFocusCandidates) {
-        if (next7Days.length >= 3) break;
-        const key = `${candidate.objectType}:${candidate.id}`;
-        if (!usedNext7Keys.has(key)) {
-          next7Days.push({
-            id: candidate.id,
-            objectType: candidate.objectType,
-            title: candidate.title,
-            area: candidate.area,
-            why: candidate.reason,
-            onOpen: () => handleOpenAttentionRecord(candidate.objectType, candidate.id),
-          });
-          usedNext7Keys.add(key);
-        }
-      }
-    }
-
-    let headline = "";
-    if (!hasSufficientHistory) {
-      headline = "7-Day Operating Trajectory: Baseline established for today — gathering 7-day posture history";
-    } else if (improved.length > 0 && deteriorated.length === 0) {
-      headline = `7-Day Operating Trajectory: Positive momentum — ${improved.length} area${improved.length === 1 ? "" : "s"} improved`;
-    } else if (deteriorated.length > 0 && improved.length === 0) {
-      headline = `7-Day Operating Trajectory: Operating load increased — ${deteriorated.length} area${deteriorated.length === 1 ? "" : "s"} deteriorated`;
-    } else if (improved.length > 0 && deteriorated.length > 0) {
-      headline = `7-Day Operating Trajectory: Mixed trajectory — ${improved.length} improved, ${deteriorated.length} deteriorated`;
-    } else {
-      headline = "7-Day Operating Trajectory: Stable posture across recent posture snapshots";
-    }
-
     return {
-      headline,
-      hasSufficientHistory,
-      snapshotCount: dailyPostureSnapshots.length,
-      baselineDateLabel,
-      improved,
-      deteriorated,
-      recurring: recurringItems,
-      founderDependency: {
-        status: dependencyStatus,
-        summary: dependencySummary,
-        detail: dependencyDetail,
-      },
-      next7Days,
+      ...reviewItem,
+      onOpen: () => handleOpenAttentionRecord(navigation.objectType, navigation.id),
     };
-  })();
+  };
+  const founderOperatingReview = {
+    ...founderOperatingReviewPolicy,
+    recurring: founderOperatingReviewPolicy.recurring.map(attachFounderOperatingReviewNavigation),
+    next7Days: founderOperatingReviewPolicy.next7Days.map(attachFounderOperatingReviewNavigation),
+  };
 
   const getFounderAttentionObjectiveForProject = (projectId: string) => strategicObjectives.find((objective) =>
     objective.status === "Active" && objective.founderAllocation === "Founder attention now" && objective.linkedProjectIds.includes(projectId));
 
   const founderBottleneckMap = (() => {
-    const rawBottlenecks: BottleneckItem[] = [];
-    const usedKeys = new Set<string>();
     const routineDelegateItems = empireDecisionQueue.delegateItems.filter((item) => item.objectType !== "Project" || !getFounderAttentionObjectiveForProject(item.id));
-
-    // 1. AUTHORITY BOTTLENECK
-    for (const item of empireDecisionQueue.founderReviewQueue) {
-      const key = `${item.kind}:${item.id}`;
-      if (usedKeys.has(key)) continue;
-
-      const isCritical = item.reasonCategory === "Critical escalation" ||
-        item.reasonCategory === "Authority required" ||
-        item.reasonCategory === "Blocked project decision";
-
-      const severity: BottleneckSeverity = isCritical ? "Critical" : "Material";
-      const why = `${item.reasonCategory}: ${item.whyItMatters}`;
-      const releasePath = item.reasonCategory === "Blocked project decision"
-        ? "Provide explicit founder decision or scope approval to unblock project delivery."
-        : item.reasonCategory === "Review due"
-          ? "Complete formal decision review, record actual outcome and rating."
-          : "Issue formal founder decision or strategic approval to establish baseline.";
-
-      rawBottlenecks.push({
-        id: item.id,
-        category: "Authority",
-        title: item.title,
-        objectType: item.kind,
-        area: item.pillar,
-        owner: item.owner,
-        severity,
-        why,
-        releasePath,
-        onOpen: () => handleOpenAttentionRecord(item.kind, item.id),
-      });
-      usedKeys.add(key);
-    }
-
-    projects.filter(isProjectActive).forEach((project) => {
-      if (!isFounderOwned(project.owner)) return;
+    // Track claims while projecting helper facts, preserving duplicate-record lookup
+    // order and the original per-eligible-action overdue clock samples.
+    const usedKeys = new Set(empireDecisionQueue.founderReviewQueue.map((item) => `${item.kind}:${item.id}`));
+    const retainedProjects = projects.filter(isProjectActive).flatMap((project) => {
+      if (!isFounderOwned(project.owner)) return [];
       const objective = getFounderAttentionObjectiveForProject(project.id);
       const key = `Project:${project.id}`;
-      if (!objective || usedKeys.has(key)) return;
-      rawBottlenecks.push({
-        id: project.id,
-        category: "Authority",
-        title: `Founder-retained project: ${project.projectName}`,
-        objectType: "Project",
-        area: project.area,
-        owner: project.owner,
-        severity: "Material",
-        why: `Linked to active Strategic Objective '${objective.title}', explicitly allocated to founder attention.`,
-        releasePath: "Retain under founder authority while this Strategic Objective requires founder attention.",
-        onOpen: () => handleOpenAttentionRecord("Project", project.id),
-      });
+      if (!objective || usedKeys.has(key)) return [];
       usedKeys.add(key);
+      return [{ id: project.id, title: project.projectName, area: project.area, owner: project.owner, founderObjectiveTitle: objective.title }];
     });
-
-    // High/Exceptional fit evaluating opportunities needing approval
-    opportunityRecords
+    const opportunities = opportunityRecords
       .filter((opp) => opp.status === "Evaluating" && ["High", "Exceptional"].includes(opp.strategicFit))
-      .forEach((opp) => {
+      .flatMap((opp) => {
         const key = `Opportunity:${opp.id}`;
-        if (usedKeys.has(key)) return;
-
-        const hasDecision = decisionRecords.some((d) => d.relatedOpportunity === opp.id && ["Completed", "Reversed"].includes(d.decisionStatus));
-        if (hasDecision) return;
-
-        rawBottlenecks.push({
-          id: opp.id,
-          category: "Authority",
-          title: opp.opportunityTitle || opp.title,
-          objectType: "Opportunity",
-          area: getAreaText(opp),
-          owner: opp.owner || "Unassigned",
-          severity: opp.strategicFit === "Exceptional" ? "Critical" : "Material",
-          why: `High strategic-fit opportunity ('${opp.opportunityTitle || opp.title}') remains ${opp.status.toLowerCase()} without a settled founder decision.`,
-          releasePath: "Review strategic alignment and issue formal founder approval decision.",
-          onOpen: () => handleOpenAttentionRecord("Opportunity", opp.id),
-        });
+        if (usedKeys.has(key)) return [];
+        const hasSettledDecision = decisionRecords.some((d) => d.relatedOpportunity === opp.id && ["Completed", "Reversed"].includes(d.decisionStatus));
+        if (hasSettledDecision) return [];
         usedKeys.add(key);
+        return [{
+          id: opp.id, title: opp.opportunityTitle || opp.title, area: getAreaText(opp), owner: opp.owner,
+          status: opp.status, strategicFit: opp.strategicFit, hasSettledDecision,
+        }];
       });
-
-    // 2. EXECUTION BOTTLENECK
-    // Decisions without an execution path
-    decisionsWithoutExecution.forEach((decision) => {
-      const key = `Decision:${decision.id}`;
-      if (usedKeys.has(key)) return;
-
-      rawBottlenecks.push({
-        id: decision.id,
-        category: "Execution",
-        title: decision.title,
-        objectType: "Decision",
-        area: decision.area,
-        owner: decision.owner,
-        severity: "Material",
-        why: `Active decision '${decision.title}' has no direct or project-mediated execution path, stalling implementation.`,
-        releasePath: "Create or link an active Action or Project to establish an executable path.",
-        onOpen: () => handleOpenAttentionRecord("Decision", decision.id),
-      });
-      usedKeys.add(key);
-    });
-
-    // Blocked actions with upstream blockers
-    actionRecords.filter((action) => isActionActive(action) && !isActionWaiting(action) && !isReleaseInterventionAction(action)).forEach((action) => {
+    const executionDecisions = decisionsWithoutExecution.map(({ id, title, area, owner }) => ({ id, title, area, owner }));
+    executionDecisions.forEach((decision) => usedKeys.add(`Decision:${decision.id}`));
+    const blockedActions = actionRecords.filter((action) => isActionActive(action) && !isActionWaiting(action) && !isReleaseInterventionAction(action)).flatMap((action) => {
       const key = `Action:${action.id}`;
-      if (usedKeys.has(key)) return;
-
+      if (usedKeys.has(key)) return [];
       const dependencyBlocker = getActionDependencyBlocker(action);
       const founderOwned = isFounderOwned(action.owner, action.ownerPersonId);
-      const waitingOnDecision = dependencyBlocker?.reason.startsWith("WAITING ON DECISION:") ?? false;
-      if ((action.status === "Blocked" || dependencyBlocker) && (founderOwned || waitingOnDecision)) {
-        rawBottlenecks.push({
-          id: action.id,
-          category: "Execution",
-          title: action.actionTitle || action.title,
-          objectType: "Action",
-          area: getAreaText(action),
-          owner: getActionOwnerDisplay(action, people),
-          severity: "Critical",
-          why: dependencyBlocker
-            ? `Action '${action.actionTitle || action.title}' is blocked by an upstream dependency (${dependencyBlocker.reason.replace("BLOCKED BY PROBLEM: ", "").replace("WAITING ON DECISION: ", "")}).`
-            : `Action '${action.actionTitle || action.title}' is blocked, preventing downstream operational progress.`,
-          releasePath: dependencyBlocker
-            ? "Resolve the upstream dependency to clear the execution blocker."
-            : "Remove operational blocker or re-sequence work.",
-          onOpen: () => handleOpenAttentionRecord("Action", action.id),
-        });
-        usedKeys.add(key);
-      }
+      const facts = {
+        id: action.id, title: action.actionTitle || action.title,
+        isBlocked: action.status === "Blocked", isFounderOwned: founderOwned,
+        dependencyReason: dependencyBlocker?.reason ?? null,
+      };
+      if (!isFounderBottleneckBlockedAction(facts)) return [];
+      usedKeys.add(key);
+      return [{ ...facts, area: getAreaText(action), owner: getActionOwnerDisplay(action, people) }];
     });
-
-    // Founder-owned overdue execution work
-    actionRecords.filter((action) => isActionActive(action) && !isActionWaiting(action) && !isReleaseInterventionAction(action)).forEach((action) => {
+    const overdueActions = actionRecords.filter((action) => isActionActive(action) && !isActionWaiting(action) && !isReleaseInterventionAction(action)).flatMap((action) => {
       const key = `Action:${action.id}`;
-      if (usedKeys.has(key)) return;
-
-      if (isFounderOwned(action.owner, action.ownerPersonId)) {
-        const isOverdue = action.dueDate && new Date(action.dueDate).getTime() < Date.now();
-        if (isOverdue) {
-          rawBottlenecks.push({
-            id: action.id,
-            category: "Execution",
-            title: action.actionTitle || action.title,
-            objectType: "Action",
-            area: getAreaText(action),
-            owner: getActionOwnerDisplay(action, people),
-            severity: "Material",
-            why: `Founder-owned action '${action.actionTitle || action.title}' is overdue (due ${action.dueDate.slice(0, 10)}), creating execution drag.`,
-            releasePath: "Complete execution or reassign to an operational owner in People.",
-            onOpen: () => handleOpenAttentionRecord("Action", action.id),
-          });
-          usedKeys.add(key);
-        }
-      }
+      if (usedKeys.has(key) || !isFounderOwned(action.owner, action.ownerPersonId)) return [];
+      const isOverdue = action.dueDate && new Date(action.dueDate).getTime() < Date.now();
+      if (!isOverdue) return [];
+      usedKeys.add(key);
+      return [{
+        id: action.id, title: action.actionTitle || action.title, area: getAreaText(action),
+        owner: getActionOwnerDisplay(action, people), dueDate: action.dueDate, isOverdue: true,
+      }];
     });
-
-    projects.filter(isProjectActive).forEach((project) => {
+    const executionProjects = projects.filter(isProjectActive).flatMap((project) => {
       const key = `Project:${project.id}`;
-      if (usedKeys.has(key)) return;
+      if (usedKeys.has(key)) return [];
       const health = getEffectiveProjectHealth(project);
       const reviewDue = isProjectReviewDue(project);
       const reviewFuture = isProjectReviewFuture(project);
-      if (health === "Waiting" && reviewFuture) return;
-      if (health !== "Blocked" && !reviewDue) return;
-
-      rawBottlenecks.push({
-        id: project.id,
-        category: "Execution",
-        title: project.projectName,
-        objectType: "Project",
-        area: project.area,
-        owner: project.owner || "Unassigned",
-        severity: health === "Blocked" ? "Critical" : "Material",
-        why: health === "Blocked"
-          ? `Project '${project.projectName}' is blocked${project.reviewNote ? `: ${project.reviewNote}` : "."}`
-          : `Project '${project.projectName}' has reached its review date (${project.nextReviewDate}) without resolution.`,
-        releasePath: health === "Blocked" ? "Remove the blocker or correct the project course." : "Complete the project review and set the next intervention point.",
-        onOpen: () => handleOpenAttentionRecord("Project", project.id),
-      });
+      const facts = { id: project.id, title: project.projectName, health, reviewDue, reviewFuture };
+      if (!isFounderBottleneckExecutionProject(facts)) return [];
       usedKeys.add(key);
+      return [{ ...facts, area: project.area, owner: project.owner, reviewNote: project.reviewNote, nextReviewDate: project.nextReviewDate }];
     });
-
-    // 3. RECURRING / SYSTEM BOTTLENECK
-    // Convergent risk clusters
-    correlationLayer.convergentRisks.forEach((cluster) => {
-      const key = cluster.clusterKey;
-      if (usedKeys.has(key)) return;
-
+    const convergentRisks = correlationLayer.convergentRisks.flatMap((cluster) => {
+      if (usedKeys.has(cluster.clusterKey)) return [];
       const root = cluster.records[0];
-      rawBottlenecks.push({
-        id: root.id,
-        category: "Recurrence",
-        title: cluster.title,
-        objectType: root.objectType,
-        area: root.area,
-        severity: "Critical",
-        why: `Convergent risk — one situation generates ${cluster.categories.size} signal categories across ${cluster.recordCount} linked records, requiring repeated founder intervention.`,
-        releasePath: "Address root cause across linked records to resolve systemic recurrence.",
-        onOpen: () => handleOpenAttentionRecord(root.objectType, root.id),
-      });
-      usedKeys.add(key);
+      usedKeys.add(cluster.clusterKey);
+      return [{
+        clusterKey: cluster.clusterKey, title: cluster.title,
+        root: { id: root.id, objectType: root.objectType, area: root.area },
+        categoryCount: cluster.categories.size, recordCount: cluster.recordCount,
+      }];
     });
-
-    // Unresolved recurring problems without captured learning
-    recurringProblemLearning.gaps.forEach((problem) => {
-      const key = `Problem:${problem.id}`;
-      if (usedKeys.has(key)) return;
-
-      rawBottlenecks.push({
-        id: problem.id,
-        category: "Recurrence",
-        title: problem.title,
-        objectType: "Problem",
-        area: problem.area,
-        owner: problem.owner,
-        severity: problem.severity === "Critical" ? "Critical" : "Material",
-        why: `Unresolved recurring problem '${problem.title}' (${problem.frequency}) occurs repeatedly without an active SOP or system.`,
-        releasePath: "Capture operational learning into a System or SOP to institutionalise prevention.",
-        onOpen: () => handleOpenAttentionRecord("Problem", problem.id),
-      });
-      usedKeys.add(key);
-    });
-
-    // 4. CAPABILITY BOTTLENECK
-    if (routineDelegateItems.length > 0) {
-      if (activeOperationalDelegationPeople.length === 0) {
-        const key = "People:no-nonfounder";
-        if (!usedKeys.has(key)) {
-          rawBottlenecks.push({
-            id: "unassigned",
-            category: "Capability",
-            title: "No active non-founder team members available",
-            objectType: "People",
-            area: "People",
-            severity: "Critical",
-            why: `${routineDelegateItems.length} routine founder-owned item(s) sit with the founder because no active non-founder team member exists.`,
-            releasePath: "Onboard or activate team members in People to absorb operational load.",
-            onOpen: () => setActiveView("People"),
-          });
-          usedKeys.add(key);
-        }
-      } else if (delegationReadyPeople.length === 0 && teamDelegationReadinessGapPeople.length > 0) {
-        const key = "People:readiness-gap";
-        if (!usedKeys.has(key)) {
-          rawBottlenecks.push({
-            id: "unassigned",
-            category: "Capability",
-            title: "Team delegation readiness gap",
-            objectType: "People",
-            area: "People",
-            severity: "Material",
-            why: `${routineDelegateItems.length} founder-owned routine item(s) are ready for delegation, but readiness gaps remain: ${teamDelegationReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")}.`,
-            releasePath: `Complete delegation readiness in People: ${teamDelegationReadinessGapPeople.map((person) => `${person.name} — ${getDelegationReadinessMissingFields(person).join(", ")}`).join("; ")}.`,
-            onOpen: () => setActiveView("People"),
-          });
-          usedKeys.add(key);
-        }
-      }
-    }
-
-    // Co-founder readiness gap is surfaced on its own, without labelling a Co-founder as a non-founder team member.
-    if (cofounderReadinessGapPeople.length > 0) {
-      const key = "People:cofounder-readiness-gap";
-      if (!usedKeys.has(key)) {
-        rawBottlenecks.push({
-          id: "cofounder-readiness-gap",
-          category: "Capability",
-          title: "Co-founder delegation readiness gap",
-          objectType: "People",
-          area: "People",
-          severity: "Emerging",
-          why: `${cofounderReadinessGapPeople.map((person) => `${person.name} (${getDelegationReadinessMissingFields(person).join(", ")})`).join("; ")} ${cofounderReadinessGapPeople.length === 1 ? "has" : "have"} incomplete Co-founder delegation readiness in People.`,
-          releasePath: `Complete Co-founder delegation readiness in People: ${cofounderReadinessGapPeople.map((person) => `${person.name} — ${getDelegationReadinessMissingFields(person).join(", ")}`).join("; ")}.`,
-          onOpen: () => setActiveView("People"),
-        });
-        usedKeys.add(key);
-      }
-    }
-
-    // 5. OWNERSHIP BOTTLENECK
-    // Routine delegable items carried by founder
-    for (const item of routineDelegateItems) {
+    const learningGaps = recurringProblemLearning.gaps.map(({ id, title, area, owner, severity, frequency }) => ({ id, title, area, owner, severity, frequency }));
+    learningGaps.forEach((problem) => usedKeys.add(`Problem:${problem.id}`));
+    const teamReadinessGaps = routineDelegateItems.length > 0
+      && activeOperationalDelegationPeople.length > 0 && delegationReadyPeople.length === 0
+      && !usedKeys.has("People:readiness-gap")
+      ? teamDelegationReadinessGapPeople.map((person) => ({ name: person.name, missingFields: getDelegationReadinessMissingFields(person) }))
+      : [];
+    if (routineDelegateItems.length > 0 && activeOperationalDelegationPeople.length === 0) usedKeys.add("People:no-nonfounder");
+    else if (teamReadinessGaps.length > 0) usedKeys.add("People:readiness-gap");
+    const cofounderReadinessGaps = usedKeys.has("People:cofounder-readiness-gap") ? []
+      : cofounderReadinessGapPeople.map((person) => ({ name: person.name, missingFields: getDelegationReadinessMissingFields(person) }));
+    if (cofounderReadinessGaps.length > 0) usedKeys.add("People:cofounder-readiness-gap");
+    let needsOwnershipReadinessGaps = false;
+    const routineItems = routineDelegateItems.map((item) => {
       const key = `${item.objectType}:${item.id}`;
-      if (usedKeys.has(key)) continue;
-      const areaDelegationReadyPeople = getCapacityRankedDelegationPeopleForArea(item.pillar);
-
-      rawBottlenecks.push({
-        id: item.id,
-        category: "Ownership",
-        title: `Routine founder-owned ${item.objectType.toLowerCase()}: ${item.title}`,
-        objectType: item.objectType,
-        area: item.pillar,
-        owner: item.owner,
-        severity: "Material",
-        why: `Founder carries routine ${item.objectType.toLowerCase()} execution ('${item.title}') that is suitable for delegation.`,
-        releasePath: areaDelegationReadyPeople.length > 0
-          ? `Delegate ownership to an active team member for ${item.pillar} (${areaDelegationReadyPeople.map((person) => person.name).join(", ")}).`
-          : delegationReadyPeople.length > 0
-            ? `Assign a delegation-ready Person to ${item.pillar} before transferring ownership.`
-            : `Complete delegation readiness in People: ${delegationReadinessGapPeople.map((person) => `${person.name} — ${getDelegationReadinessMissingFields(person).join(", ")}`).join("; ")}, then transfer ownership.`,
-        onOpen: () => handleOpenAttentionRecord(item.objectType, item.id),
-      });
+      const facts = { id: item.id, objectType: item.objectType, title: item.title, pillar: item.pillar, owner: item.owner };
+      if (usedKeys.has(key)) return { ...facts, capacityRankedNames: [] };
+      const capacityRankedNames = getCapacityRankedDelegationPeopleForArea(item.pillar).map((person) => person.name);
+      if (capacityRankedNames.length === 0 && delegationReadyPeople.length === 0) needsOwnershipReadinessGaps = true;
       usedKeys.add(key);
-    }
-
-    const severityRank: Record<BottleneckSeverity, number> = { Critical: 3, Material: 2, Emerging: 1 };
-    const categoryRank: Record<BottleneckCategory, number> = { Authority: 5, Execution: 4, Recurrence: 3, Capability: 2, Ownership: 1 };
-
-    const sortedBottlenecks = [...rawBottlenecks].sort((left, right) => {
-      const sevDiff = severityRank[right.severity] - severityRank[left.severity];
-      if (sevDiff !== 0) return sevDiff;
-      const catDiff = categoryRank[right.category] - categoryRank[left.category];
-      if (catDiff !== 0) return catDiff;
-      return left.title.localeCompare(right.title);
+      return { ...facts, capacityRankedNames };
     });
-
-    const totalCount = sortedBottlenecks.length;
-    const criticalCount = sortedBottlenecks.filter((b) => b.severity === "Critical").length;
-    const materialCount = sortedBottlenecks.filter((b) => b.severity === "Material").length;
-    const emergingCount = sortedBottlenecks.filter((b) => b.severity === "Emerging").length;
-
-    const categoryCounts: Record<BottleneckCategory, number> = { Authority: 0, Execution: 0, Recurrence: 0, Capability: 0, Ownership: 0 };
-    sortedBottlenecks.forEach((b) => {
-      categoryCounts[b.category] = (categoryCounts[b.category] || 0) + 1;
+    const policy = buildFounderBottleneckMap({
+      reviewItems: empireDecisionQueue.founderReviewQueue.map(({ id, kind, title, pillar, owner, reasonCategory, whyItMatters }) => ({
+        id, kind, title, pillar, owner, reasonCategory, whyItMatters,
+      })),
+      retainedProjects, opportunities, decisionsWithoutExecution: executionDecisions,
+      blockedActions, overdueActions, executionProjects, convergentRisks, learningGaps,
+      routineDelegateItems: routineItems,
+      activeOperationalPeopleCount: activeOperationalDelegationPeople.length,
+      delegationReadyPeopleCount: delegationReadyPeople.length,
+      teamReadinessGaps, cofounderReadinessGaps,
+      delegationReadinessGaps: needsOwnershipReadinessGaps
+        ? delegationReadinessGapPeople.map((person) => ({ name: person.name, missingFields: getDelegationReadinessMissingFields(person) }))
+        : [],
     });
-
-    const categoryDisplayName: Record<BottleneckCategory, string> = {
-      Authority: "Authority decisions",
-      Execution: "Execution blockers",
-      Recurrence: "Systemic recurrence",
-      Capability: "Delegation capacity",
-      Ownership: "Ownership load",
-    };
-
-    const sortedCategoryCounts = (Object.entries(categoryCounts) as [BottleneckCategory, number][])
-      .filter(([, count]) => count > 0)
-      .sort((a, b) => b[1] - a[1]);
-
-    let headline = "";
-    let topCategoryText = "";
-
-    if (totalCount === 0) {
-      headline = "No structural founder bottlenecks are currently detected.";
-      topCategoryText = "None";
-    } else if (sortedCategoryCounts.length === 1) {
-      const cat = sortedCategoryCounts[0][0];
-      topCategoryText = categoryDisplayName[cat];
-      headline = `Founder dependency is currently concentrated in ${categoryDisplayName[cat].toLowerCase()}.`;
-    } else {
-      const top1 = sortedCategoryCounts[0];
-      const top2 = sortedCategoryCounts[1];
-      if (top2 && top2[1] >= Math.max(1, top1[1] - 1)) {
-        topCategoryText = `${categoryDisplayName[top1[0]]} & ${categoryDisplayName[top2[0]]}`;
-        headline = `Founder dependency is currently concentrated in ${categoryDisplayName[top1[0]].toLowerCase()} and ${categoryDisplayName[top2[0]].toLowerCase()}.`;
-      } else {
-        topCategoryText = categoryDisplayName[top1[0]];
-        headline = `Founder dependency is currently concentrated in ${categoryDisplayName[top1[0]].toLowerCase()}.`;
-      }
-    }
-
     return {
-      summary: {
-        headline,
-        totalCount,
-        criticalCount,
-        materialCount,
-        emergingCount,
-        topCategoryText,
-      },
-      bottlenecks: sortedBottlenecks,
+      summary: policy.summary,
+      bottlenecks: policy.bottlenecks.map(({ openPeopleView, ...item }) => ({
+        ...item,
+        onOpen: openPeopleView
+          ? () => setActiveView("People")
+          : () => handleOpenAttentionRecord(item.objectType, item.id),
+      })),
     };
   })();
 
