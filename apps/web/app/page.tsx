@@ -65,6 +65,7 @@ import { buildOrganisationalHealth } from "./lib/organisational-health";
 import { buildOperationalIndependence } from "./lib/operational-independence";
 import { buildFounderFocus, type FounderFocusRecordFact } from "./lib/founder-focus";
 import { buildFounderOperatingBrief, type OperatingBriefDomainItem } from "./lib/founder-operating-brief";
+import { buildOperatingPosture } from "./lib/operating-posture";
 import {
   buildAccountabilitySnapshot as buildAccountabilitySnapshotPolicy,
   type AccountabilityRiskInput,
@@ -10922,189 +10923,51 @@ export default function Home() {
     };
   })();
 
-  const todayBrief = (() => {
-    const authorityCount = empireDecisionQueue.founderAuthorityItems.length;
-    const reviewDueCount = decisionTrackRecord.reviewsDue.length;
-    const ownershipGapCount = unassignedAccountability.ownedActions.length
-      + unassignedAccountability.activeProjects.length
-      + unassignedAccountability.pipelineLeads.length
-      + unassignedAccountability.unresolvedProblems.length;
-    const learningGapCount = recurringProblemLearning.gaps.length;
-    const executionGapCount = decisionsWithoutExecution.length;
-    const focusCount = founderFocusCandidates.length;
-    const ownershipHygieneGapCount = unassignedAccountability.carriedCount;
-    const financeCount = founderCapitalAttention.length;
-
-    const postureParts: string[] = [];
-    const strategicConfidenceAttentionCount =
-      strategicDataConfidence.limitations.filter(
-        (limitation) =>
-          limitation.severity === "Blocker" ||
-          limitation.severity === "Material",
-      ).length;
-
-    if (authorityCount > 0) postureParts.push(`${authorityCount} need${authorityCount === 1 ? "s" : ""} your authority`);
-    if (reviewDueCount > 0) postureParts.push(`${reviewDueCount} decision review${reviewDueCount === 1 ? "" : "s"} overdue`);
-    if (ownershipGapCount > 0) postureParts.push(`${ownershipGapCount} ownership gap${ownershipGapCount === 1 ? "" : "s"}`);
-    if (learningGapCount > 0) postureParts.push(`${learningGapCount} recurring problem${learningGapCount === 1 ? "" : "s"} not yet captured as learning`);
-    if (executionGapCount > 0) postureParts.push(`${executionGapCount} decision${executionGapCount === 1 ? "" : "s"} without an execution path`);
-    if (strategicConfidenceAttentionCount > 0) {
-      postureParts.push(
-        `${strategicConfidenceAttentionCount} strategic data confidence issue${strategicConfidenceAttentionCount === 1 ? " needs" : "s need"} attention`,
-      );
-    }
-
-    if (financeCount > 0) postureParts.push(`${financeCount} capital attention item${financeCount === 1 ? " needs" : "s need"} founder review`);
-
-    const posture = postureParts.length > 0
-      ? postureParts.join(" • ")
-      : "Nothing needs founder authority, review, ownership triage, learning capture or cash attention right now.";
-
-    const steps = [
-      {
-        label: "Clear founder focus",
-        count: focusCount,
-        hint: "Work the ranked top items first.",
-      },
-      {
-        label: "Fix ownership gaps",
-        count: ownershipHygieneGapCount,
-        hint: "Assign a valid active owner to dropped or ghost-owned work.",
-      },
-      {
-        label: "Complete decision reviews",
-        count: reviewDueCount,
-        hint: "Record outcomes and ratings so decisions stop drifting.",
-      },
-      {
-        label: "Restore execution paths",
-        count: executionGapCount,
-        hint: "Give each active decision an open linked action.",
-      },
-      {
-        label: "Close recurring-learning gaps",
-        count: learningGapCount,
-        hint: "Turn repeat problems into a lesson, system or SOP.",
-      },
-      {
-        label: "Clear cash attention",
-        count: financeCount,
-        hint: "Address cash buffer pressure, overdue commitments and overdue expected income.",
-      },
-    ];
-
-    const peopleWithAttention = personAccountabilitySummaries.filter((entry) => entry.attentionCount > 0);
-
-    const ownership = ownershipHygieneGapCount === 0
-      ? "Every active work item has a valid active owner."
-      : `${ownershipHygieneGapCount} active item${ownershipHygieneGapCount === 1 ? "" : "s"} lack${ownershipHygieneGapCount === 1 ? "s" : ""} a valid active owner. ${peopleWithAttention.length} ${peopleWithAttention.length === 1 ? "person is" : "people are"} carrying attention items.`;
-    const delegationCandidateCount = empireDecisionQueue.delegateItems.length;
-    const founderDependency = organisationalHealth.delegationQuality.label === "Needs attention" && organisationalHealth.selfSufficiencyPct !== null
-      ? `${organisationalHealth.selfSufficiencyPct}% of validly owned active work is owned outside the primary Founder; ${operationalIndependence.operationalIndependencePct ?? 0}% can run without routine Founder intervention; the top owner carries ${organisationalHealth.topOwnerShare ?? 0}%${delegationCandidateCount > 0 ? `, and ${delegationCandidateCount} founder-owned item${delegationCandidateCount === 1 ? " is" : "s are"} suitable for delegation${empireDecisionQueue.delegationCapacityNames.length === 0 ? `, but ${empireDecisionQueue.delegationReadinessGapNames.length > 0 ? `${empireDecisionQueue.delegationReadinessGapNames.length} active operational delegation person${empireDecisionQueue.delegationReadinessGapNames.length === 1 ? " is" : "s are"} not yet delegation-ready` : "no active operational delegation person is available"}` : ""}.` : "."}`
-      : null;
-
-    const staleCount = staleRecords.length;
-    const freshness = staleCount === 0
-      ? "The operating picture looks current — no stale active records detected."
-      : `${staleCount} active record${staleCount === 1 ? "" : "s"} may be stale — the operating picture needs review.`;
-
-    const growthParts: string[] = [];
-    if (growthAttention.stalledOpportunities.length > 0) growthParts.push(`${growthAttention.stalledOpportunities.length} high-fit opportunit${growthAttention.stalledOpportunities.length === 1 ? "y" : "ies"} idle`);
-    if (growthAttention.stalledLeads.length > 0) growthParts.push(`${growthAttention.stalledLeads.length} lead${growthAttention.stalledLeads.length === 1 ? "" : "s"} stalled`);
-    if (growthAttention.stalledQuoteValue > 0) growthParts.push(`${formatFinanceAmount(growthAttention.stalledQuoteValue)} in quotes awaiting movement`);
-    const growth = growthParts.length > 0
-      ? growthParts.join(" • ")
-      : "Growth pipeline is moving — no stalled high-fit opportunities or leads.";
-    const growthIsClear = growthParts.length === 0;
-
-    const outstandingRecordKeys = new Set<string>();
-    founderFocusCandidates.forEach((item) =>
-      outstandingRecordKeys.add(`${item.objectType}:${item.id}`),
-    );
-    empireDecisionQueue.founderAuthorityItems.forEach((item) => outstandingRecordKeys.add(`${item.objectType}:${item.id}`));
-    decisionTrackRecord.reviewsDue.forEach((decision) => outstandingRecordKeys.add(`Decision:${decision.id}`));
-    unassignedAccountability.ownedActions.forEach((action) => outstandingRecordKeys.add(`Action:${action.id}`));
-    unassignedAccountability.activeProjects.forEach((project) => outstandingRecordKeys.add(`Project:${project.id}`));
-    unassignedAccountability.pipelineLeads.forEach((lead) => outstandingRecordKeys.add(`Lead:${lead.id}`));
-    unassignedAccountability.unresolvedProblems.forEach((problem) => outstandingRecordKeys.add(`Problem:${problem.id}`));
-    decisionsWithoutExecution.forEach((decision) => outstandingRecordKeys.add(`Decision:${decision.id}`));
-    recurringProblemLearning.gaps.forEach((problem) => outstandingRecordKeys.add(`Problem:${problem.id}`));
-    staleRecords.forEach((item) => outstandingRecordKeys.add(`${item.objectType}:${item.id}`));
-    founderCapitalAttention.forEach((item) => outstandingRecordKeys.add(item.key));
-    growthAttention.stalledOpportunities.forEach((item) => outstandingRecordKeys.add(`Opportunity:${item.id}`));
-    growthAttention.stalledLeads.forEach((item) => outstandingRecordKeys.add(`Lead:${item.id}`));
-    const outstandingCount = outstandingRecordKeys.size;
-
-    const clusteredOutstandingRecordKeys = new Set<string>();
-    const clusteredSituationCount = correlationLayer.clusters.reduce((count, cluster) => {
-      const matchingRecords = cluster.records.filter((record) =>
-        outstandingRecordKeys.has(record.recordKey),
-      );
-
-      if (matchingRecords.length === 0) {
-        return count;
-      }
-
-      matchingRecords.forEach((record) =>
-        clusteredOutstandingRecordKeys.add(record.recordKey),
-      );
-
-      return count + 1;
-    }, 0);
-
-    const unclusteredOutstandingCount = [...outstandingRecordKeys].filter(
-      (key) => !clusteredOutstandingRecordKeys.has(key),
-    ).length;
-
-    const outstandingSituationCount =
-      clusteredSituationCount + unclusteredOutstandingCount;
-
-    const founderFocusByRecordKey = new Map(
-      founderFocusCandidates.map((item) => [
-        `${item.objectType}:${item.id}`,
-        item,
-      ]),
-    );
-
-    const outstandingKeys = [...outstandingRecordKeys].map((key) => {
-      const signalled = correlationLayer.signalled.get(key);
-      const focusItem = founderFocusByRecordKey.get(key);
-      const separatorIndex = key.indexOf(":");
-      const objectType = separatorIndex >= 0 ? key.slice(0, separatorIndex) : key;
-      return {
-        key,
-        title: signalled?.title || focusItem?.title || key,
-        objectType: signalled?.objectType || focusItem?.objectType || objectType,
-        category: signalled
-          ? [...signalled.signals].join(", ")
-          : focusItem?.reason || "attention",
-      };
-    });
-
-    return {
-      posture,
-      postureIsClear: postureParts.length === 0,
-      steps,
-      ownership,
-      ownershipIsClear: ownershipHygieneGapCount === 0,
-      founderDependency,
-      freshness,
-      freshnessIsClear: staleCount === 0,
-      growth,
-      growthIsClear,
-      outstandingCount,
-      outstandingSituationCount,
-      outstandingKeys,
-      authorityCount,
-      reviewDueCount,
-      ownershipGapCount,
-      learningGapCount,
-      executionGapCount,
-      staleCount,
-      financeCount,
-      growthStallCount: growthAttention.count,
-    };
-  })();
+  const todayBrief = buildOperatingPosture({
+    focusCandidates: founderFocusCandidates.map(({ objectType, id, title, reason }) => ({ objectType, id, title, reason })),
+    authorityItems: empireDecisionQueue.founderAuthorityItems.map(({ objectType, id }) => ({ objectType, id })),
+    reviewsDue: decisionTrackRecord.reviewsDue.map(({ id }) => ({ id })),
+    unassigned: {
+      ownedActions: unassignedAccountability.ownedActions.map(({ id }) => ({ id })),
+      activeProjects: unassignedAccountability.activeProjects.map(({ id }) => ({ id })),
+      pipelineLeads: unassignedAccountability.pipelineLeads.map(({ id }) => ({ id })),
+      unresolvedProblems: unassignedAccountability.unresolvedProblems.map(({ id }) => ({ id })),
+      carriedCount: unassignedAccountability.carriedCount,
+    },
+    learningGaps: recurringProblemLearning.gaps.map(({ id }) => ({ id })),
+    decisionsWithoutExecution: decisionsWithoutExecution.map(({ id }) => ({ id })),
+    confidenceLimitations: strategicDataConfidence.limitations.map(({ severity }) => ({ severity })),
+    personAttentionCounts: personAccountabilitySummaries.map(({ attentionCount }) => attentionCount),
+    health: {
+      delegationQualityLabel: organisationalHealth.delegationQuality.label,
+      selfSufficiencyPct: organisationalHealth.selfSufficiencyPct,
+      topOwnerShare: organisationalHealth.topOwnerShare,
+    },
+    operationalIndependencePct: operationalIndependence.operationalIndependencePct,
+    delegation: {
+      candidateCount: empireDecisionQueue.delegateItems.length,
+      capacityCount: empireDecisionQueue.delegationCapacityNames.length,
+      readinessGapCount: empireDecisionQueue.delegationReadinessGapNames.length,
+    },
+    staleRecords: staleRecords.map(({ objectType, id }) => ({ objectType, id })),
+    capitalAttention: founderCapitalAttention.map(({ key }) => ({ key })),
+    growth: {
+      stalledOpportunities: growthAttention.stalledOpportunities.map(({ id }) => ({ id })),
+      stalledLeads: growthAttention.stalledLeads.map(({ id }) => ({ id })),
+      stalledQuoteValue: growthAttention.stalledQuoteValue,
+      formattedStalledQuoteValue: growthAttention.stalledQuoteValue > 0
+        ? formatFinanceAmount(growthAttention.stalledQuoteValue)
+        : "",
+      count: growthAttention.count,
+    },
+    clusters: correlationLayer.clusters.map((cluster) => ({
+      recordKeys: cluster.records.map(({ recordKey }) => recordKey),
+    })),
+    signalled: new Map([...correlationLayer.signalled].map(([key, record]) => [
+      key,
+      { title: record.title, objectType: record.objectType, signals: [...record.signals] },
+    ])),
+  });
 
   const deskIsClear = founderFocusList.length === 0 && todayBrief.outstandingCount === 0;
 
