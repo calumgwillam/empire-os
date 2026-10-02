@@ -53,6 +53,7 @@ import {
 } from "./lib/capture-conversions";
 import { isValidCalendarDateInput } from "./lib/dates";
 import { buildCapitalAllocation, type CashSnapshotFreshness, type ProcurementReadinessState } from "./lib/capital-allocation";
+import { buildCorrelationGraph } from "./lib/correlation-graph";
 import {
   assessDelegationReadiness,
   buildExecutionReleasePlan,
@@ -11202,202 +11203,31 @@ export default function Home() {
     return { byArea, empireWide };
   })();
 
-  const correlationLayer = (() => {
-    type SignalledRecord = {
-      recordKey: string;
-      objectType: string;
-      id: string;
-      title: string;
-      area: string;
-      signals: Set<string>;
-      baseScore: number;
-    };
-
-    const signalled = new Map<string, SignalledRecord>();
-    const addSignal = (recordKey: string, objectType: string, id: string, title: string, area: string, signal: string, baseScore: number) => {
-      const existing = signalled.get(recordKey);
-      if (existing) {
-        existing.signals.add(signal);
-        existing.baseScore = Math.max(existing.baseScore, baseScore);
-      } else {
-        signalled.set(recordKey, { recordKey, objectType, id, title, area, signals: new Set([signal]), baseScore });
-      }
-    };
-
-    empireDecisionQueue.founderAuthorityItems.forEach((item) =>
-      addSignal(`${item.objectType}:${item.id}`, item.objectType, item.id, item.title, item.pillar, "founder authority", 400));
-
-    commandAttentionItemList
-      .filter((item) => item.reasons.some((reason) => reason === "BLOCKED PROJECT" || reason === "BLOCKED" || reason.startsWith("BLOCKED BY PROBLEM:")))
-      .forEach((item) => addSignal(`${item.objectType}:${item.id}`, item.objectType, item.id, item.title, item.area, "blocked", 360 + item.priorityScore));
-
-    commandAttentionItemList
-      .filter((item) => item.reasons.some((reason) => reason.startsWith("OVERDUE")))
-      .forEach((item) => addSignal(`${item.objectType}:${item.id}`, item.objectType, item.id, item.title, item.area, "overdue", 200 + item.priorityScore));
-
-    decisionTrackRecord.reviewsDue.forEach((decision) =>
-      addSignal(`Decision:${decision.id}`, "Decision", decision.id, decision.decisionTitle || decision.title, getAreaText(decision) || "Unassigned", "review due", 300));
-
-    decisionsWithoutExecution.forEach((decision) =>
-      addSignal(`Decision:${decision.id}`, "Decision", decision.id, decision.title, decision.area, "no execution path", 280));
-
-    recurringProblemLearning.gaps.forEach((problem) =>
-      addSignal(`Problem:${problem.id}`, "Problem", problem.id, problem.title, problem.area, "learning not captured", 240));
-
-    staleUnownedWork.forEach((item) =>
-      addSignal(item.key, item.objectType, item.id, item.title, item.area, "no valid owner", item.score));
-
-    staleRecords.forEach((item) =>
-      addSignal(`${item.objectType}:${item.id}`, item.objectType, item.id, item.title, item.area, "stale record", 230));
-
-    growthAttention.stalledOpportunities.forEach((item) =>
-      addSignal(`Opportunity:${item.id}`, "Opportunity", item.id, item.title, item.area, "opportunity stalled", item.strategicFit === "Exceptional" ? 290 : 250));
-
-    growthAttention.stalledLeads.forEach((item) =>
-      addSignal(`Lead:${item.id}`, "Lead", item.id, item.title, item.area, "lead stalled", item.quoteValue >= 1000 ? 240 : 180));
-
-    if (cashAttention.buffer) {
-      addSignal("Finance:cash-buffer", "Finance", "cash-buffer", cashAttention.buffer.title, "Finance", "cash buffer pressure", cashAttention.buffer.severity === "critical" ? 380 : 300);
-    }
-    if (cashAttention.fundingGap) {
-      addSignal("Finance:funding-gap", "Finance", "funding-gap", cashAttention.fundingGap.title, "Finance", "committed obligations exceed available cash", 360);
-    }
-    cashAttention.overdueCommitments.forEach((item) =>
-      addSignal(`Finance:commitment:${item.id}`, "Finance", `commitment:${item.id}`, item.title, "Finance", "overdue commitment", 310));
-    cashAttention.overdueExpectedIncome.forEach((item) =>
-      addSignal(`Finance:income:${item.id}`, "Finance", `income:${item.id}`, item.title, "Finance", "expected income overdue", 260));
-
-    const adjacency = new Map<string, Set<string>>();
-    const recordKeys = new Set<string>([
-      ...captures.map((capture) => `Capture:${capture.id}`),
-      ...problemRecords.map((problem) => `Problem:${problem.id}`),
-      ...actionRecords.map((action) => `Action:${action.id}`),
-      ...decisionRecords.map((decision) => `Decision:${decision.id}`),
-      ...opportunityRecords.map((opportunity) => `Opportunity:${opportunity.id}`),
-      ...lessonRecords.map((lesson) => `Lesson:${lesson.id}`),
-      ...systemRecords.map((system) => `System:${system.id}`),
-      ...sopRecords.map((sop) => `SOP:${sop.id}`),
-      ...projects.map((project) => `Project:${project.id}`),
-      ...leads.map((lead) => `Lead:${lead.id}`),
-    ]);
-    const link = (a: string, b: string) => {
-      if (a === b) return;
-      if (!recordKeys.has(a) || !recordKeys.has(b)) return;
-      if (!adjacency.has(a)) adjacency.set(a, new Set());
-      if (!adjacency.has(b)) adjacency.set(b, new Set());
-      adjacency.get(a)!.add(b);
-      adjacency.get(b)!.add(a);
-    };
-
-    const linkCapture = (recordKey: string, sourceCaptureId?: string, relatedCaptureId?: string) => {
-      const captureId = relatedCaptureId || sourceCaptureId;
-      if (captureId) link(recordKey, `Capture:${captureId}`);
-    };
-
-    actionRecords.forEach((action) => {
-      const actionKey = `Action:${action.id}`;
-      if (action.relatedProblem) link(`Action:${action.id}`, `Problem:${action.relatedProblem}`);
-      if (action.relatedDecision) link(`Action:${action.id}`, `Decision:${action.relatedDecision}`);
-      if (action.relatedOpportunity) link(`Action:${action.id}`, `Opportunity:${action.relatedOpportunity}`);
-      linkCapture(actionKey, action.sourceCaptureId, action.relatedCapture);
-    });
-    decisionRecords.forEach((decision) => {
-      if (decision.relatedOpportunity) link(`Decision:${decision.id}`, `Opportunity:${decision.relatedOpportunity}`);
-      linkCapture(`Decision:${decision.id}`, decision.sourceCaptureId, decision.relatedCapture);
-    });
-    problemRecords.forEach((problem) => {
-      linkCapture(`Problem:${problem.id}`, problem.sourceCaptureId, problem.relatedCapture);
-    });
-    opportunityRecords.forEach((opportunity) => {
-      linkCapture(`Opportunity:${opportunity.id}`, opportunity.sourceCaptureId, opportunity.relatedCapture);
-    });
-    lessonRecords.forEach((lesson) => {
-      if (lesson.relatedProblem) link(`Lesson:${lesson.id}`, `Problem:${lesson.relatedProblem}`);
-      if (lesson.relatedDecision) link(`Lesson:${lesson.id}`, `Decision:${lesson.relatedDecision}`);
-      if (lesson.relatedProject) link(`Lesson:${lesson.id}`, `Project:${lesson.relatedProject}`);
-      if (lesson.relatedSystem) link(`Lesson:${lesson.id}`, `System:${lesson.relatedSystem}`);
-      linkCapture(`Lesson:${lesson.id}`, lesson.sourceCaptureId, lesson.relatedCapture);
-    });
-    systemRecords.forEach((system) => {
-      if (system.relatedLesson) link(`System:${system.id}`, `Lesson:${system.relatedLesson}`);
-      linkCapture(`System:${system.id}`, system.sourceCaptureId, system.relatedCapture);
-    });
-    sopRecords.forEach((sop) => {
-      if (sop.relatedSystem) link(`SOP:${sop.id}`, `System:${sop.relatedSystem}`);
-      if (sop.relatedLesson) link(`SOP:${sop.id}`, `Lesson:${sop.relatedLesson}`);
-      linkCapture(`SOP:${sop.id}`, sop.sourceCaptureId, sop.relatedCapture);
-    });
-    projects.forEach((project) => {
-      linkCapture(`Project:${project.id}`, project.sourceCaptureId);
-      (project.relatedActionIds || []).forEach((actionId) => link(`Project:${project.id}`, `Action:${actionId}`));
-      (project.relatedDecisionIds || []).forEach((decisionId) => link(`Project:${project.id}`, `Decision:${decisionId}`));
-      (project.relatedSystemIds || []).forEach((systemId) => link(`Project:${project.id}`, `System:${systemId}`));
-      (project.relatedSopIds || []).forEach((sopId) => link(`Project:${project.id}`, `SOP:${sopId}`));
-    });
-
-    const assignedSignalledRecords = new Set<string>();
-    const clusters: Array<{
-      clusterKey: string;
-      title: string;
-      records: SignalledRecord[];
-      categories: Set<string>;
-      recordCount: number;
-      contributingRecordCount: number;
-      topScore: number;
-    }> = [];
-
-    signalled.forEach((record, recordKey) => {
-      if (assignedSignalledRecords.has(recordKey)) return;
-
-      const component: SignalledRecord[] = [];
-      const visitedGraphNodes = new Set<string>([recordKey]);
-      const queue = [recordKey];
-
-      while (queue.length > 0) {
-        const current = queue.pop()!;
-        const currentRecord = signalled.get(current);
-        if (currentRecord) {
-          component.push(currentRecord);
-          assignedSignalledRecords.add(current);
-        }
-        const neighbours = adjacency.get(current);
-        if (neighbours) {
-          neighbours.forEach((neighbour) => {
-            if (!visitedGraphNodes.has(neighbour)) {
-              visitedGraphNodes.add(neighbour);
-              queue.push(neighbour);
-            }
-          });
-        }
-      }
-
-      const categories = new Set<string>();
-      component.forEach((item) => item.signals.forEach((signal) => categories.add(signal)));
-
-      const root = component.reduce((best, item) => (item.baseScore > best.baseScore ? item : best), component[0]);
-
-      clusters.push({
-        clusterKey: `cluster:${root.recordKey}`,
-        title: root.title,
-        records: component,
-        categories,
-        recordCount: component.length,
-        contributingRecordCount: component.filter((item) => item.signals.size > 0).length,
-        topScore: root.baseScore,
-      });
-    });
-
-    const convergentRisks = clusters
-      .filter((cluster) => cluster.categories.size >= 3 && cluster.recordCount >= 2 && cluster.contributingRecordCount >= 2)
-      .sort((a, b) => b.categories.size - a.categories.size || b.recordCount - a.recordCount || b.topScore - a.topScore);
-
-    const clusterByRecordKey = new Map<string, (typeof clusters)[number]>();
-    clusters.forEach((cluster) => {
-      cluster.records.forEach((record) => clusterByRecordKey.set(record.recordKey, cluster));
-    });
-
-    return { signalled, clusters, convergentRisks, clusterByRecordKey };
-  })();
+  const correlationLayer = buildCorrelationGraph({
+    founderAuthorityItems: empireDecisionQueue.founderAuthorityItems.map(({ objectType, id, title, pillar }) => ({ objectType, id, title, pillar })),
+    commandAttentionItems: commandAttentionItemList.map(({ objectType, id, title, area, reasons, priorityScore }) => ({ objectType, id, title, area, reasons, priorityScore })),
+    decisionReviewsDue: decisionTrackRecord.reviewsDue.map(({ id, decisionTitle, title, relatedArea, relatedPillar, area }) => ({ id, decisionTitle, title, relatedArea, relatedPillar, area })),
+    decisionsWithoutExecution: decisionsWithoutExecution.map(({ id, title, area }) => ({ id, title, area })),
+    learningGaps: recurringProblemLearning.gaps.map(({ id, title, area }) => ({ id, title, area })),
+    staleUnownedWork: staleUnownedWork.map(({ key, objectType, id, title, area, score }) => ({ key, objectType, id, title, area, score })),
+    staleRecords: staleRecords.map(({ objectType, id, title, area }) => ({ objectType, id, title, area })),
+    stalledOpportunities: growthAttention.stalledOpportunities.map(({ id, title, area, strategicFit }) => ({ id, title, area, strategicFit })),
+    stalledLeads: growthAttention.stalledLeads.map(({ id, title, area, quoteValue }) => ({ id, title, area, quoteValue })),
+    cashBuffer: cashAttention.buffer ? { title: cashAttention.buffer.title, severity: cashAttention.buffer.severity } : null,
+    fundingGap: cashAttention.fundingGap ? { title: cashAttention.fundingGap.title } : null,
+    overdueCommitments: cashAttention.overdueCommitments.map(({ id, title }) => ({ id, title })),
+    overdueExpectedIncome: cashAttention.overdueExpectedIncome.map(({ id, title }) => ({ id, title })),
+    captures: captures.map(({ id }) => ({ id })),
+    problems: problemRecords.map(({ id, sourceCaptureId, relatedCapture }) => ({ id, sourceCaptureId, relatedCapture })),
+    actions: actionRecords.map(({ id, sourceCaptureId, relatedCapture, relatedProblem, relatedDecision, relatedOpportunity }) => ({ id, sourceCaptureId, relatedCapture, relatedProblem, relatedDecision, relatedOpportunity })),
+    decisions: decisionRecords.map(({ id, sourceCaptureId, relatedCapture, relatedOpportunity }) => ({ id, sourceCaptureId, relatedCapture, relatedOpportunity })),
+    opportunities: opportunityRecords.map(({ id, sourceCaptureId, relatedCapture }) => ({ id, sourceCaptureId, relatedCapture })),
+    lessons: lessonRecords.map(({ id, sourceCaptureId, relatedCapture, relatedProblem, relatedDecision, relatedProject, relatedSystem }) => ({ id, sourceCaptureId, relatedCapture, relatedProblem, relatedDecision, relatedProject, relatedSystem })),
+    systems: systemRecords.map(({ id, sourceCaptureId, relatedCapture, relatedLesson }) => ({ id, sourceCaptureId, relatedCapture, relatedLesson })),
+    sops: sopRecords.map(({ id, sourceCaptureId, relatedCapture, relatedSystem, relatedLesson }) => ({ id, sourceCaptureId, relatedCapture, relatedSystem, relatedLesson })),
+    projects: projects.map(({ id, sourceCaptureId, relatedActionIds, relatedDecisionIds, relatedSystemIds, relatedSopIds }) => ({ id, sourceCaptureId, relatedActionIds, relatedDecisionIds, relatedSystemIds, relatedSopIds })),
+    leads: leads.map(({ id }) => ({ id })),
+  });
 
   const founderFocusCandidates = (() => {
     type FocusCandidate = {
