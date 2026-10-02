@@ -54,6 +54,11 @@ import {
 import { isValidCalendarDateInput } from "./lib/dates";
 import { buildCapitalAllocation, type CashSnapshotFreshness, type ProcurementReadinessState } from "./lib/capital-allocation";
 import { buildCorrelationGraph } from "./lib/correlation-graph";
+import {
+  buildDecisionExecutionControl,
+  type DecisionExecutionControlItem,
+  type DecisionExecutionControlSummary,
+} from "./lib/decision-execution-control";
 import { buildStrategicDataConfidence } from "./lib/strategic-data-confidence";
 import {
   assessDelegationReadiness,
@@ -4802,42 +4807,8 @@ function FounderBottleneckMap({
   );
 }
 
-type DecisionControlStatus =
-  | "No execution path"
-  | "Delivery slipping"
-  | "Ownership gap"
-  | "Review due"
-  | "Learning incomplete"
-  | "On track";
-
-type DecisionControlSeverity = "Critical" | "Material" | "Healthy";
-
-type DecisionControlItem = {
-  id: string;
-  title: string;
-  decisionStatus: string;
-  controlStatus: DecisionControlStatus;
-  severity: DecisionControlSeverity;
-  area?: string;
-  owner?: string;
-  directActiveActionCount: number;
-  linkedActiveProjectCount: number;
-  why: string;
-  controlAction: string;
-  onOpen: () => void;
-  linkedActionsPreview?: Array<{ id: string; title: string; status: string }>;
-  linkedProjectsPreview?: Array<{ id: string; name: string; status: string }>;
-};
-
-type DecisionControlSummary = {
-  headline: string;
-  activeTrackedCount: number;
-  hasPathCount: number;
-  noPathCount: number;
-  slippingCount: number;
-  onTrackCount: number;
-  learningIncompleteCount: number;
-};
+type DecisionControlItem = DecisionExecutionControlItem & { onOpen: () => void };
+type DecisionControlSummary = DecisionExecutionControlSummary;
 
 type LearningClosureStage = "Needs Review" | "Needs System" | "System in Development" | "Needs SOP" | "Institutionalised";
 
@@ -4903,18 +4874,17 @@ function deriveLearningClosure(
     const activeSops = linkedSops.filter((sop) => ["Active", "Reviewing"].includes(sop.status));
 
     let closureStage: LearningClosureStage;
-if (activeSystems.length > 0 && activeSops.length > 0) {
-  closureStage = "Institutionalised";
-} else if (["New", "Change Required"].includes(lesson.status)) {
-  closureStage = "Needs Review";
-} else if (linkedSystems.length === 0) {
-  closureStage = "Needs System";
-} else if (activeSystems.length === 0) {
-  closureStage = "System in Development";
-} else {
-  closureStage = "Needs SOP";
-}
-
+    if (activeSystems.length > 0 && activeSops.length > 0) {
+      closureStage = "Institutionalised";
+    } else if (["New", "Change Required"].includes(lesson.status)) {
+      closureStage = "Needs Review";
+    } else if (linkedSystems.length === 0) {
+      closureStage = "Needs System";
+    } else if (activeSystems.length === 0) {
+      closureStage = "System in Development";
+    } else {
+      closureStage = "Needs SOP";
+    }
 
     const sourceParts = [
       lesson.relatedDecision ? `Decision: ${decisionRecords.find((decision) => decision.id === lesson.relatedDecision)?.decisionTitle || "Linked"}` : "",
@@ -5093,15 +5063,9 @@ function DecisionExecutionControlLayer({
     <section className="rounded-2xl border border-[#171717] bg-[#f9f7f4] p-4">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#d3cbc3] pb-3">
         <div>
-          <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">
-            Execution Control
-          </p>
-          <h2 className="mt-1 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">
-            Decision-to-Execution Control Layer
-          </h2>
-          <p className="mt-1 text-[12px] font-medium text-[#4d4944]">
-            {summary.headline}
-          </p>
+          <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#4d4944]">Execution Control</p>
+          <h2 className="mt-1 text-[20px] font-semibold tracking-[-0.05em] text-[#171717]">Decision-to-Execution Control Layer</h2>
+          <p className="mt-1 text-[12px] font-medium text-[#4d4944]">{summary.headline}</p>
         </div>
         <span className="rounded-full border border-[#d3cbc3] bg-[#f1eee9] px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.14em] text-[#2f2b28]">
           {summary.activeTrackedCount} Active Decision{summary.activeTrackedCount === 1 ? "" : "s"} Tracked
@@ -5111,48 +5075,24 @@ function DecisionExecutionControlLayer({
       {/* Summary strip */}
       <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
         <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
-          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
-            Execution Path Exists
-          </div>
-          <div className="mt-1 text-[20px] font-semibold tracking-[-0.04em] text-[#171717]">
-            {summary.hasPathCount}
-          </div>
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Execution Path Exists</div>
+          <div className="mt-1 text-[20px] font-semibold tracking-[-0.04em] text-[#171717]">{summary.hasPathCount}</div>
         </div>
-
         <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
-          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
-            No Execution Path
-          </div>
-          <div className={`mt-1 text-[20px] font-semibold tracking-[-0.04em] ${summary.noPathCount > 0 ? "text-[#6a3328]" : "text-[#171717]"}`}>
-            {summary.noPathCount}
-          </div>
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">No Execution Path</div>
+          <div className={`mt-1 text-[20px] font-semibold tracking-[-0.04em] ${summary.noPathCount > 0 ? "text-[#6a3328]" : "text-[#171717]"}`}>{summary.noPathCount}</div>
         </div>
-
         <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
-          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
-            Delivery Slipping
-          </div>
-          <div className={`mt-1 text-[20px] font-semibold tracking-[-0.04em] ${summary.slippingCount > 0 ? "text-[#6a4a28]" : "text-[#171717]"}`}>
-            {summary.slippingCount}
-          </div>
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Delivery Slipping</div>
+          <div className={`mt-1 text-[20px] font-semibold tracking-[-0.04em] ${summary.slippingCount > 0 ? "text-[#6a4a28]" : "text-[#171717]"}`}>{summary.slippingCount}</div>
         </div>
-
         <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
-          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
-            Execution On Track
-          </div>
-          <div className="mt-1 text-[20px] font-semibold tracking-[-0.04em] text-[#2f5d3a]">
-            {summary.onTrackCount}
-          </div>
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Execution On Track</div>
+          <div className="mt-1 text-[20px] font-semibold tracking-[-0.04em] text-[#2f5d3a]">{summary.onTrackCount}</div>
         </div>
-
         <div className="rounded-xl border border-[#d3cbc3] bg-white px-3 py-2.5">
-          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">
-            Learning Incomplete
-          </div>
-          <div className={`mt-1 text-[20px] font-semibold tracking-[-0.04em] ${summary.learningIncompleteCount > 0 ? "text-[#6a4a28]" : "text-[#171717]"}`}>
-            {summary.learningIncompleteCount}
-          </div>
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#4d4944]">Learning Incomplete</div>
+          <div className={`mt-1 text-[20px] font-semibold tracking-[-0.04em] ${summary.learningIncompleteCount > 0 ? "text-[#6a4a28]" : "text-[#171717]"}`}>{summary.learningIncompleteCount}</div>
         </div>
       </div>
 
@@ -9667,7 +9607,16 @@ export default function Home() {
     );
     const followUpLeads = activeLeads.filter((lead) => (lead.relatedPillar || "") === selectedPillar && lead.status === "Follow-Up");
 
-    const sections = [
+    const sections: Array<{
+      label: string;
+      items: Array<{
+        id: string;
+        objectType: string;
+        title: string;
+        meta: string;
+        why: string;
+      }>;
+    }> = [
       {
         label: "Blocked projects",
         items: blockedProjects.map((project) => ({
@@ -13122,283 +13071,59 @@ export default function Home() {
   })();
   const currentAppliedReview = strategicReviews.find((review) => review.status === "Applied") || null;
 
-  const decisionControlLayer = (() => {
-    const items: DecisionControlItem[] = [];
-    const onTrackItems: DecisionControlItem[] = [];
-    const learningIncompleteItems: DecisionControlItem[] = [];
-
-    let activeTrackedCount = 0;
-    let hasPathCount = 0;
-    let noPathCount = 0;
-    let slippingCount = 0;
-    let onTrackCount = 0;
-
-    const nowMs = Date.now();
-
-    decisionRecords.forEach((decision) => {
-      const isActive = isDecisionActive(decision);
-      const isClosed = ["Completed", "Reversed"].includes(decision.decisionStatus);
-
-      if (!isActive && !isClosed) return;
-
-      // Direct active actions
-      const directActiveActions = actionRecords.filter(
-        (action) => action.relatedDecision === decision.id && isActionActive(action)
-      );
-
-      // Linked active projects
-      const linkedActiveProjects = projects.filter(
-        (project) => (project.relatedDecisionIds || []).includes(decision.id) && isProjectActive(project)
-      );
-
-      // Project action IDs
-      const projectActionIds = new Set(
-        linkedActiveProjects.flatMap((project) => project.relatedActionIds || [])
-      );
-
-      // All implementation active actions (direct + via linked active projects)
-      const implementationActiveActions = Array.from(
-        new Map(
-          [
-            ...directActiveActions,
-            ...actionRecords.filter(
-              (action) => projectActionIds.has(action.id) && isActionActive(action)
-            ),
-          ].map((action) => [action.id, action])
-        ).values()
-      );
-
-      const directActiveActionCount = directActiveActions.length;
-      const linkedActiveProjectCount = linkedActiveProjects.length;
-      const totalActiveExecutionCount = implementationActiveActions.length + linkedActiveProjectCount;
-      const hasExecutionPath = totalActiveExecutionCount > 0;
-
-      const reviewDue = isActive && isDecisionReviewDue(decision);
-
-      // Evaluate delivery slipping on linked execution
-      const blockedActions = implementationActiveActions.filter((a) => a.status === "Blocked");
-      const overdueActions = implementationActiveActions.filter(
-        (a) => !isActionWaiting(a) && a.dueDate && new Date(a.dueDate).getTime() < nowMs
-      );
-      const blockedProjects = linkedActiveProjects.filter(
-        (p) => p.status.trim().toLowerCase() === "blocked"
-      );
-      const overdueProjects = linkedActiveProjects.filter(
-        (p) => p.targetCompletionDate && new Date(`${p.targetCompletionDate}T00:00:00`).getTime() < nowMs
-      );
-
-      const isDeliverySlipping =
-        blockedActions.length > 0 ||
-        overdueActions.length > 0 ||
-        blockedProjects.length > 0 ||
-        overdueProjects.length > 0;
-
-      // Evaluate ownership on linked execution
-      const allLinkedExecutionOwners = [
-        ...implementationActiveActions.map((a) => getValidActiveOwnerKey(a.owner, a.ownerPersonId)),
-        ...linkedActiveProjects.map((p) => getValidActiveOwnerKey(p.owner, undefined)),
-      ];
-
-      const hasDelegationSuitableFounderOwnedExecution =
-  implementationActiveActions.some((action) =>
-    empireDecisionQueue.delegateItems.some(
-      (item) => item.objectType === "Action" && item.id === action.id,
-    ),
-  ) ||
-  linkedActiveProjects.some((project) =>
-    empireDecisionQueue.delegateItems.some(
-      (item) => item.objectType === "Project" && item.id === project.id,
-    ),
-  );
-
-const isOwnershipGap =
-  hasExecutionPath &&
-  (
-    allLinkedExecutionOwners.some((key) => key === null) ||
-    hasDelegationSuitableFounderOwnedExecution
-  );
-
-      // Evaluate closed decision learning
-      const isClosedLearningIncomplete =
-        isClosed &&
-        (!["Worked", "Partially worked", "Failed"].includes(decision.outcomeRating) ||
-          !decision.actualOutcome.trim());
-
-      if (isActive) {
-        activeTrackedCount++;
-        if (hasExecutionPath) {
-          hasPathCount++;
-        } else {
-          noPathCount++;
-        }
-        if (isDeliverySlipping) {
-          slippingCount++;
-        }
-      }
-
-      // Determine primary control status and severity
-      let controlStatus: DecisionControlStatus = "On track";
-      let severity: DecisionControlSeverity = "Healthy";
-      let why = "";
-      let controlAction = "";
-
-      if (isActive) {
-        if (!hasExecutionPath) {
-          controlStatus = "No execution path";
-          const isHighRisk =
-            decision.riskLevel === "Critical" ||
-            decision.riskLevel === "High"
-
-          severity = isHighRisk ? "Critical" : "Material";
-          why = `Active decision '${decision.decisionTitle || decision.title}' has no direct linked actions or projects, leaving implementation stalled.`;
-          if (reviewDue) {
-            why += ` Note: Decision review date is also due (${decision.reviewDate?.slice(0, 10)}).`;
-          }
-          controlAction = "Create or link an Action or Project to establish an executable path.";
-        } else if (isDeliverySlipping) {
-          controlStatus = "Delivery slipping";
-          const hasCriticalSlippage =
-            blockedActions.length > 0 ||
-            blockedProjects.length > 0 ||
-            overdueActions.some((a) => nowMs - new Date(a.dueDate).getTime() > 7 * 24 * 60 * 60 * 1000);
-          severity = hasCriticalSlippage ? "Critical" : "Material";
-
-          const slippageDetails: string[] = [];
-          if (blockedActions.length > 0)
-            slippageDetails.push(`${blockedActions.length} blocked action${blockedActions.length === 1 ? "" : "s"}`);
-          if (overdueActions.length > 0)
-            slippageDetails.push(`${overdueActions.length} overdue action${overdueActions.length === 1 ? "" : "s"}`);
-          if (blockedProjects.length > 0)
-            slippageDetails.push(`${blockedProjects.length} blocked project${blockedProjects.length === 1 ? "" : "s"}`);
-          if (overdueProjects.length > 0)
-            slippageDetails.push(`${overdueProjects.length} overdue project${overdueProjects.length === 1 ? "" : "s"}`);
-
-          why = `Delivery is slipping on execution path for '${decision.decisionTitle || decision.title}' (${slippageDetails.join(", ")}).`;
-          if (reviewDue) {
-            why += ` Scheduled review date (${decision.reviewDate?.slice(0, 10)}) is also due.`;
-          }
-          controlAction = "Resolve blocker or update target dates on linked execution items.";
-        } else if (isOwnershipGap) {
-          controlStatus = "Ownership gap";
-          severity = "Material";
-          why = `Linked execution path exists for '${decision.decisionTitle || decision.title}', but execution items lack a valid active owner in People.`;
-          if (reviewDue) {
-            why += ` Scheduled review date (${decision.reviewDate?.slice(0, 10)}) is also due.`;
-          }
-          controlAction = "Assign a valid active execution owner in People.";
-        } else if (reviewDue) {
-          controlStatus = "Review due";
-          severity = "Material";
-          why = `Scheduled review date (${decision.reviewDate?.slice(0, 10)}) for '${decision.decisionTitle || decision.title}' has been reached.`;
-          controlAction = "Complete scheduled Decision review, record actual outcome and rating.";
-        } else {
-          controlStatus = "On track";
-          severity = "Healthy";
-          why = `Execution path is active (${directActiveActionCount} action${directActiveActionCount === 1 ? "" : "s"}, ${linkedActiveProjectCount} project${linkedActiveProjectCount === 1 ? "" : "s"}), validly owned, and progressing without delivery warnings.`;
-          controlAction = "No intervention required — execution path is active and owned.";
-          onTrackCount++;
-        }
-      } else if (isClosed) {
-        if (isClosedLearningIncomplete) {
-          controlStatus = "Learning incomplete";
-          severity = "Material";
-          why = `Decision '${decision.decisionTitle || decision.title}' is ${decision.decisionStatus.toLowerCase()} but lacks formal outcome rating or recorded actual outcome.`;
-          controlAction = "Capture actual outcome notes and formal outcome rating.";
-        } else {
-          controlStatus = "On track";
-          severity = "Healthy";
-          why = `Decision '${decision.decisionTitle || decision.title}' is ${decision.decisionStatus.toLowerCase()} with complete outcome rating (${decision.outcomeRating}).`;
-          controlAction = "No intervention required — decision learning is complete.";
-        }
-      }
-
-      const item: DecisionControlItem = {
-        id: decision.id,
-        title: decision.decisionTitle || decision.title,
-        decisionStatus: decision.decisionStatus,
-        controlStatus,
-        severity,
-        area: getAreaText(decision) || "Unassigned",
-        owner: decision.decisionMaker || "Unassigned",
-        directActiveActionCount,
-        linkedActiveProjectCount,
-        why,
-        controlAction,
-        onOpen: () => handleOpenAttentionRecord("Decision", decision.id),
-        linkedActionsPreview: directActiveActions.slice(0, 3).map((a) => ({
-          id: a.id,
-          title: a.actionTitle || a.title,
-          status: a.status,
-        })),
-        linkedProjectsPreview: linkedActiveProjects.slice(0, 3).map((p) => ({
-          id: p.id,
-          name: p.projectName,
-          status: p.status,
-        })),
-      };
-
-      if (controlStatus === "On track") {
-        onTrackItems.push(item);
-      } else if (controlStatus === "Learning incomplete") {
-        learningIncompleteItems.push(item);
-        items.push(item);
-      } else {
-        items.push(item);
-      }
-    });
-
-    const learningIncompleteCount = learningIncompleteItems.length;
-
-    const severityRank: Record<DecisionControlSeverity, number> = { Critical: 3, Material: 2, Healthy: 1 };
-    const statusRank: Record<DecisionControlStatus, number> = {
-      "No execution path": 6,
-      "Delivery slipping": 5,
-      "Ownership gap": 4,
-      "Review due": 3,
-      "Learning incomplete": 2,
-      "On track": 1,
+  const decisionExecutionControlNowMs = Date.now();
+  const decisionExecutionControlFacts = buildDecisionExecutionControl({
+    decisions: decisionRecords.map((decision) => ({
+      id: decision.id,
+      title: decision.title,
+      decisionTitle: decision.decisionTitle,
+      status: decision.decisionStatus,
+      riskLevel: decision.riskLevel,
+      reviewDate: decision.reviewDate,
+      reviewDue: isDecisionActive(decision) && isDecisionReviewDue(decision),
+      outcomeRating: decision.outcomeRating,
+      actualOutcome: decision.actualOutcome,
+      decisionMaker: decision.decisionMaker,
+      area: getAreaText(decision) || "Unassigned",
+    })),
+    actions: actionRecords.map((action) => ({
+      id: action.id,
+      relatedDecision: action.relatedDecision,
+      status: action.status,
+      dueDate: action.dueDate,
+      title: action.title,
+      actionTitle: action.actionTitle,
+      hasValidOwner: getValidActiveOwnerKey(action.owner, action.ownerPersonId) !== null,
+    })),
+    projects: projects.map((project) => ({
+      id: project.id,
+      status: project.status,
+      relatedDecisionIds: project.relatedDecisionIds,
+      relatedActionIds: project.relatedActionIds,
+      targetCompletionDate: project.targetCompletionDate,
+      projectName: project.projectName,
+      hasValidOwner: getValidActiveOwnerKey(project.owner, undefined) !== null,
+    })),
+    delegateItems: empireDecisionQueue.delegateItems.map(({ objectType, id }) => ({ objectType, id })),
+    nowMs: decisionExecutionControlNowMs,
+  });
+  const decisionControlItemsByFact = new Map<DecisionExecutionControlItem, DecisionControlItem>();
+  const withDecisionNavigation = (item: DecisionExecutionControlItem): DecisionControlItem => {
+    const existing = decisionControlItemsByFact.get(item);
+    if (existing) return existing;
+    const withNavigation = {
+      ...item,
+      onOpen: () => handleOpenAttentionRecord("Decision", item.id),
     };
-
-    items.sort((left, right) => {
-      const sevDiff = severityRank[right.severity] - severityRank[left.severity];
-      if (sevDiff !== 0) return sevDiff;
-      const statDiff = statusRank[right.controlStatus] - statusRank[left.controlStatus];
-      if (statDiff !== 0) return statDiff;
-      return left.title.localeCompare(right.title);
-    });
-
-    let headline = "";
-    if (noPathCount > 0) {
-      headline = `Decision execution is constrained by ${noPathCount} missing execution path${noPathCount === 1 ? "." : "s."}`;
-    } else if (slippingCount > 0) {
-      headline = `Decision delivery is slipping on ${slippingCount} decision${slippingCount === 1 ? "." : "s."}`;
-    } else if (activeTrackedCount > 0 && onTrackCount === activeTrackedCount) {
-      headline = "Decision delivery is on track across all active decisions.";
-    } else if (items.length > 0 && items.some((i) => i.controlStatus === "Review due")) {
-      const reviewDueGaps = items.filter((i) => i.controlStatus === "Review due").length;
-      headline = `Decision delivery is broadly on track; ${reviewDueGaps} review control gap${reviewDueGaps === 1 ? " remains." : "s remain."}`;
-    } else if (learningIncompleteCount > 0) {
-  headline = activeTrackedCount > 0
-  ? `Active decision delivery is on track; ${learningIncompleteCount} closed decision${learningIncompleteCount === 1 ? " needs" : "s need"} outcome rating.`
-  : `${learningIncompleteCount} closed decision${learningIncompleteCount === 1 ? " needs" : "s need"} outcome rating; no active decisions are currently being tracked.`;  } else {
-      headline = "No active decision-execution control gaps detected.";
-    }
-
-    return {
-      summary: {
-        headline,
-        activeTrackedCount,
-        hasPathCount,
-        noPathCount,
-        slippingCount,
-        onTrackCount,
-        learningIncompleteCount,
-      },
-      items,
-      onTrackItems,
-      learningIncompleteItems,
-    };
-  })();
+    decisionControlItemsByFact.set(item, withNavigation);
+    return withNavigation;
+  };
+  const decisionControlLayer = {
+    summary: decisionExecutionControlFacts.summary,
+    items: decisionExecutionControlFacts.items.map(withDecisionNavigation),
+    onTrackItems: decisionExecutionControlFacts.onTrackItems.map(withDecisionNavigation),
+    learningIncompleteItems: decisionExecutionControlFacts.learningIncompleteItems.map(withDecisionNavigation),
+  };
 
   const getAttentionGroup = (item: AttentionItem) => {
     const isBlockedOrWaiting = item.reasons.some((reason) =>
