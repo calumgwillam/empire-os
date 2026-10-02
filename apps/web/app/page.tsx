@@ -54,6 +54,7 @@ import {
 import { isValidCalendarDateInput } from "./lib/dates";
 import { buildCapitalAllocation, type CashSnapshotFreshness, type ProcurementReadinessState } from "./lib/capital-allocation";
 import { buildCorrelationGraph } from "./lib/correlation-graph";
+import { buildStrategicDataConfidence } from "./lib/strategic-data-confidence";
 import {
   assessDelegationReadiness,
   buildExecutionReleasePlan,
@@ -10072,181 +10073,22 @@ export default function Home() {
     nowMs: Date.now(),
   });
 
-  const strategicDataConfidence = (() => {
-    type LimitationSeverity = "Blocker" | "Material" | "Warning";
-    type Limitation = {
-      key: string;
-      label: string;
-      severity: LimitationSeverity;
-      action?: { label: string; objectType: string; id: string };
-    };
-
-    const limitations: Limitation[] = [];
-    const cashPositionBlocksAllocation = !capitalAllocation.cashConfigured;
-
-    if (
-      cashPositionBlocksAllocation ||
-      capitalAllocation.cashSnapshotFreshness.label === "Missing / invalid date"
-    ) {
-      limitations.push({
-        key: "cash-position",
-        label: "Cash position incomplete",
-        severity: "Blocker",
-        action: { label: "Update cash snapshot", objectType: "Finance", id: "cash-buffer" },
-      });
-    } else if (capitalAllocation.cashSnapshotFreshness.label === "Stale") {
-      limitations.push({
-        key: "cash-position",
-        label: "Cash snapshot is stale",
-        severity: "Material",
-        action: { label: "Update cash snapshot", objectType: "Finance", id: "cash-buffer" },
-      });
-    }
-
-    if (capitalAllocation.commitmentsNeedingAttention.length > 0) {
-      const firstCommitment =
-        capitalAllocation.commitmentsNeedingAttention[0].commitment;
-
-      limitations.push({
-        key: "commitments",
-        label: `${capitalAllocation.commitmentsNeedingAttention.length} commitment record${capitalAllocation.commitmentsNeedingAttention.length === 1 ? "" : "s"} need attention`,
-        severity: "Material",
-        action: {
-          label: "Review commitments",
-          objectType: "Finance",
-          id: `commitment:${firstCommitment.id}`,
-        },
-      });
-    }
-
-    if (capitalAllocation.highFitMissingCapitalCount > 0) {
-      const firstOpportunity = capitalAllocation.liveOpportunities.find(
-        (opportunity) =>
-          opportunity.fitRank >= 3 && opportunity.capitalState === "missing",
-      );
-
-      limitations.push({
-        key: "opportunity-capital",
-        label: `${capitalAllocation.highFitMissingCapitalCount} high-fit opportunit${capitalAllocation.highFitMissingCapitalCount === 1 ? "y is" : "ies are"} missing a capital requirement`,
-        severity: "Material",
-        action: firstOpportunity
-          ? {
-              label: "Add capital requirement",
-              objectType: "Opportunity",
-              id: firstOpportunity.id,
-            }
-          : undefined,
-      });
-    }
-
-    if (capitalAllocation.highFitQualitativeCapitalCount > 0) {
-      const firstOpportunity = capitalAllocation.liveOpportunities.find(
-        (opportunity) =>
-          opportunity.fitRank >= 3 && opportunity.capitalState === "qualitative",
-      );
-
-      limitations.push({
-        key: "opportunity-capital-qualitative",
-        label: `${capitalAllocation.highFitQualitativeCapitalCount} high-fit opportunit${capitalAllocation.highFitQualitativeCapitalCount === 1 ? "y has" : "ies have"} a qualitative rather than numeric capital requirement`,
-        severity: "Warning",
-        action: firstOpportunity
-          ? {
-              label: "Quantify capital requirement",
-              objectType: "Opportunity",
-              id: firstOpportunity.id,
-            }
-          : undefined,
-      });
-    }
-
-    const ownershipGapCount =
-      organisationalHealth.totalWork - organisationalHealth.validOwned;
-
-    if (ownershipGapCount > 0) {
-      limitations.push({
-        key: "ownership",
-        label: `${ownershipGapCount} active operational record${ownershipGapCount === 1 ? " has" : "s have"} invalid or missing ownership`,
-        severity: "Material",
-      });
-    }
-
-    if (decisionTrackRecord.closedButUnrated.length > 0) {
-      const firstDecision = decisionTrackRecord.closedButUnrated[0];
-
-      limitations.push({
-        key: "decision-outcomes",
-        label: `${decisionTrackRecord.closedButUnrated.length} closed Decision${decisionTrackRecord.closedButUnrated.length === 1 ? " is" : "s are"} still unrated`,
-        severity: "Warning",
-        action: {
-          label: "Rate Decision",
-          objectType: "Decision",
-          id: firstDecision.id,
-        },
-      });
-    }
-
-    if (
-      capitalAllocation.wonCommercialEvidence.totalWonLeads > 0 &&
-      capitalAllocation.wonCommercialEvidence.totalMissingFinalValues > 0
-    ) {
-      const firstLead = leads.find(
-        (lead) =>
-          lead.status === "Won" &&
-          (parseOptionalFinanceAmount(lead.finalJobValue) ?? 0) <= 0,
-      );
-
-      limitations.push({
-        key: "commercial-evidence",
-        label: `${capitalAllocation.wonCommercialEvidence.totalMissingFinalValues} Won Lead${capitalAllocation.wonCommercialEvidence.totalMissingFinalValues === 1 ? " is" : "s are"} missing a valid final job value`,
-        severity: "Warning",
-        action: firstLead
-          ? {
-              label: "Add final job value",
-              objectType: "Lead",
-              id: firstLead.id,
-            }
-          : undefined,
-      });
-    }
-
-    const severityRank: Record<LimitationSeverity, number> = {
-      Blocker: 3,
-      Material: 2,
-      Warning: 1,
-    };
-
-    limitations.sort(
-      (left, right) =>
-        severityRank[right.severity] - severityRank[left.severity],
-    );
-
-    const blockerCount = limitations.filter(
-      (limitation) => limitation.severity === "Blocker",
-    ).length;
-
-    const materialCount = limitations.filter(
-      (limitation) => limitation.severity === "Material",
-    ).length;
-
-    const warningCount = limitations.filter(
-      (limitation) => limitation.severity === "Warning",
-    ).length;
-
-    const state =
-      blockerCount > 0 || materialCount >= 2
-        ? ("Limited" as const)
-        : limitations.length > 0
-          ? ("Usable" as const)
-          : ("Strong" as const);
-
-    return {
-      state,
-      limitations,
-      blockerCount,
-      materialCount,
-      warningCount,
-    };
-  })();
+  const strategicDataConfidence = buildStrategicDataConfidence({
+    cashConfigured: capitalAllocation.cashConfigured,
+    cashSnapshotFreshnessLabel: capitalAllocation.cashSnapshotFreshness.label,
+    commitmentsNeedingAttention: capitalAllocation.commitmentsNeedingAttention.map(({ commitment }) => ({ id: commitment.id })),
+    highFitMissingCapitalCount: capitalAllocation.highFitMissingCapitalCount,
+    highFitQualitativeCapitalCount: capitalAllocation.highFitQualitativeCapitalCount,
+    liveOpportunities: capitalAllocation.liveOpportunities.map(({ id, fitRank, capitalState }) => ({ id, fitRank, capitalState })),
+    totalWork: organisationalHealth.totalWork,
+    validOwned: organisationalHealth.validOwned,
+    closedButUnrated: decisionTrackRecord.closedButUnrated.map(({ id }) => ({ id })),
+    totalWonLeads: capitalAllocation.wonCommercialEvidence.totalWonLeads,
+    totalMissingFinalValues: capitalAllocation.wonCommercialEvidence.totalMissingFinalValues,
+    wonLeads: leads
+      .filter((lead) => lead.status === "Won")
+      .map((lead) => ({ id: lead.id, parsedFinalValue: parseOptionalFinanceAmount(lead.finalJobValue) })),
+  });
 
   const isBlankOwnerText = (ownerValue?: string) => {
     const text = (ownerValue || "").trim();
