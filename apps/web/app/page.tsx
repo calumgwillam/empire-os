@@ -60,6 +60,7 @@ import {
   type DecisionExecutionControlSummary,
 } from "./lib/decision-execution-control";
 import { buildStrategicDataConfidence } from "./lib/strategic-data-confidence";
+import { buildRecurringProblemLearning } from "./lib/recurring-problem-learning";
 import {
   assessDelegationReadiness,
   buildExecutionReleasePlan,
@@ -9503,71 +9504,24 @@ export default function Home() {
     };
   })();
 
-  const recurringProblemLearning = (() => {
-    const isRecurring = (problem: ProblemRecord) =>
-      problem.frequency === "Recurring" || problem.frequency === "Persistent";
-
-    const recurringProblems = problemRecords.filter((problem) => isRecurring(problem));
-    const unresolvedRecurring = recurringProblems.filter((problem) => isProblemUnresolved(problem));
-    const maturityFor = (problem: ProblemRecord) => {
-      const linkedLessons = lessonRecords.filter((lesson) => lesson.relatedProblem === problem.id);
-      const meaningfulLessons = linkedLessons.filter((lesson) => ["Reviewed", "Implemented"].includes(lesson.status));
-
-      if (meaningfulLessons.length === 0) {
-        return "missing" as const;
-      }
-
-      const meaningfulLessonIds = new Set(meaningfulLessons.map((lesson) => lesson.id));
-      const linkedSystemIdsFromLessons = new Set(meaningfulLessons.map((lesson) => lesson.relatedSystem).filter(Boolean));
-      const activeLinkedSystems = systemRecords.filter((system) =>
-        ["Active", "Reviewing"].includes(system.status) &&
-        (meaningfulLessonIds.has(system.relatedLesson) || linkedSystemIdsFromLessons.has(system.id)),
-      );
-      const activeLinkedSystemIds = new Set(activeLinkedSystems.map((system) => system.id));
-      const hasActiveLinkedSop = sopRecords.some((sop) =>
-        ["Active", "Reviewing"].includes(sop.status) &&
-        (meaningfulLessonIds.has(sop.relatedLesson) || activeLinkedSystemIds.has(sop.relatedSystem)),
-      );
-
-      if (activeLinkedSystems.length > 0 || hasActiveLinkedSop) {
-        return "institutionalised" as const;
-      }
-
-      return "captured" as const;
-    };
-
-    const maturityRecords = recurringProblems.map((problem) => ({
-      problem,
-      maturity: maturityFor(problem),
-    }));
-    const maturityByProblemId = new Map(maturityRecords.map(({ problem, maturity }) => [problem.id, maturity]));
-    const gaps = maturityRecords
-      .filter(({ problem, maturity }) => isProblemUnresolved(problem) && maturity === "missing")
-      .map(({ problem }) => ({
-        id: problem.id,
-        objectType: "Problem" as const,
-        title: problem.problemStatement || problem.title,
-        frequency: problem.frequency,
-        severity: problem.severity,
-        status: problem.problemStatus,
-        area: getAreaText(problem) || "Unassigned",
-        owner: problem.owner || "Unassigned",
-      }));
-    const capturedNotInstitutionalised = maturityRecords.filter(({ problem, maturity }) =>
-      isProblemUnresolved(problem) && maturity === "captured",
-    ).length;
-    const closedInstitutionalised = maturityRecords.filter(({ problem, maturity }) =>
-      !isProblemUnresolved(problem) && maturity === "institutionalised",
-    ).length;
-
-    return {
-      unresolvedRecurring,
-      gaps,
-      maturityByProblemId,
-      capturedNotInstitutionalised,
-      closedInstitutionalised,
-    };
-  })();
+  const recurringProblemLearning = buildRecurringProblemLearning({
+    problems: problemRecords.map((problem) => ({
+      id: problem.id,
+      frequency: problem.frequency,
+      severity: problem.severity,
+      problemStatus: problem.problemStatus,
+      problemStatement: problem.problemStatement,
+      title: problem.title,
+      owner: problem.owner,
+      relatedPillar: problem.relatedPillar,
+      relatedArea: problem.relatedArea,
+      area: problem.area,
+      isUnresolved: isProblemUnresolved(problem),
+    })),
+    lessons: lessonRecords.map(({ id, relatedProblem, relatedSystem, status }) => ({ id, relatedProblem, relatedSystem, status })),
+    systems: systemRecords.map(({ id, relatedLesson, status }) => ({ id, relatedLesson, status })),
+    sops: sopRecords.map(({ relatedLesson, relatedSystem, status }) => ({ relatedLesson, relatedSystem, status })),
+  });
 
   const decisionExecutionRecords = decisionRecords
     .filter((decision) => ["Active", "Under Review"].includes(decision.decisionStatus))
