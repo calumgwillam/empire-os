@@ -22,6 +22,7 @@ import {
   decisionOutcomeRatingOptions,
   decisionRiskOptions,
   decisionStatusOptions,
+  isValidActionImplementationLessonId,
   lessonStatusOptions,
   normalizeActionRecord,
   normalizeDecisionRecord,
@@ -12820,6 +12821,14 @@ export default function Home() {
 
   const handleActionSave = () => {
     if (!selectedActionId || !actionEditor) {
+      return;
+    }
+
+    if (!isValidActionImplementationLessonId(actionEditor.implementsLessonId, lessonRecords)) {
+      setFeedback({
+        type: "error",
+        message: "The implementation Lesson could not be found. The Action was not saved.",
+      });
       return;
     }
 

@@ -40,6 +40,9 @@ export type CaptureConversionRecord = {
   priority?: string;
   relatedProblem?: string;
   relatedDecision?: string;
+  // Exact Lesson ID intentionally designated for this Action to implement its required change.
+  // Optional: one Lesson may have many Actions; each Action implements at most one Lesson.
+  implementsLessonId?: string;
   relatedOpportunity?: string;
   relatedCapture?: string;
   relatedPillar?: string;
@@ -304,6 +307,14 @@ export function normalizeProblemRecord(record: CaptureConversionRecord): Problem
   };
 }
 
+export function isValidActionImplementationLessonId(
+  implementsLessonId: string | undefined,
+  lessons: readonly Readonly<Pick<LessonRecord, "id">>[],
+): boolean {
+  const lessonId = implementsLessonId?.trim() || "";
+  return lessonId === "" || lessons.some((lesson) => lesson.id === lessonId);
+}
+
 export function normalizeActionRecord(record: CaptureConversionRecord): ActionRecord {
   // record.status holds the generic conversion status (e.g. "Converted") until
   // set to a real ActionStatus, so it must be validated rather than passed through via `??`.
@@ -314,6 +325,9 @@ export function normalizeActionRecord(record: CaptureConversionRecord): ActionRe
 
   return {
     ...record,
+    ...(record.implementsLessonId !== undefined
+      ? { implementsLessonId: record.implementsLessonId.trim() }
+      : {}),
     actionTitle: record.title?.trim() || "Untitled action",
     description: (record as Partial<ActionRecord>).description?.trim() || record.actionDescription?.trim() || record.originalRawNote?.trim() || "",
     owner: record.owner?.trim() || "",
