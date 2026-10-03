@@ -145,15 +145,68 @@ describe("read-only organisational learning policy", () => {
     });
   });
 
-  it("requires exact meaningful Lesson statuses before considering a recorded System/SOP change", () => {
+  it("preserves Lesson status meanings without treating recommendation text as outstanding work", () => {
     const statuses = ["New", "Reviewed", "Implemented", "Change Required", "Archived"] as const;
     const signals = buildOrganisationalLearning(input({
       lessons: statuses.map((status) => lesson({ id: status, status, recommendedChange: "Update the checklist" })),
     }));
     expect(signals.map(({ recommendedNextTransition }) => recommendedNextTransition)).toEqual([
-      "Review existing Lesson", "Consider System/SOP change", "Consider System/SOP change",
+      "Review existing Lesson", "Review existing Lesson", "Review existing Lesson",
       "Review existing Lesson", "Review existing Lesson",
     ]);
+    expect(signals.map(({ learningState }) => learningState)).toEqual([
+      "Lesson available", "Meaningful learning captured", "Meaningful learning captured",
+      "Lesson available", "Lesson available",
+    ]);
+  });
+
+  it.each(["Reviewed", "Implemented"] as const)(
+    "retains historical recommendedChange for a %s Lesson without inferring unresolved institutionalisation",
+    (status) => {
+      const result = buildOrganisationalLearning(input({
+        lessons: [lesson({ status, recommendedChange: "Update the checklist" })],
+      }))[0];
+      expect(result).toMatchObject({
+        learningState: "Meaningful learning captured",
+        recommendedNextTransition: "Review existing Lesson",
+      });
+      expect(result.evidence).toContainEqual({
+        sourceType: "Lesson", sourceId: "l", field: "recommendedChange", value: "Update the checklist",
+      });
+    },
+  );
+
+  it.each(["System", "SOP"] as const)(
+    "does not recommend unresolved institutionalisation for learning already institutionalised through an active %s",
+    (objectType) => {
+      const signals = buildOrganisationalLearning(input({
+        problems: [problem()],
+        lessons: [lesson({
+          status: "Implemented", recommendedChange: "Update the checklist", relatedProblem: "r",
+        })],
+        systems: objectType === "System" ? [{ id: "s", relatedLesson: "l", status: "Active" }] : [],
+        sops: objectType === "SOP" ? [{ relatedLesson: "l", relatedSystem: "", status: "Active" }] : [],
+      }));
+      expect(signals.find(({ sourceType }) => sourceType === "Lesson"))
+        .toMatchObject({ recommendedNextTransition: "Review existing Lesson" });
+      expect(signals.find(({ sourceType }) => sourceType === "Problem"))
+        .toMatchObject({ recurrenceState: "Institutionalised", recommendedNextTransition: "Investigate recurrence" });
+      expect(signals.some(({ recommendedNextTransition }) => recommendedNextTransition === "Consider System/SOP change"))
+        .toBe(false);
+    },
+  );
+
+  it("does not conclude that learning is unnecessary for a resolved institutionalised Problem", () => {
+    const result = buildOrganisationalLearning(input({
+      problems: [problem({ problemStatus: "Resolved", isUnresolved: false })],
+      lessons: [lesson({ relatedProblem: "r", status: "Implemented" })],
+      systems: [{ id: "s", relatedLesson: "l", status: "Active" }],
+    })).find(({ sourceType }) => sourceType === "Problem");
+    expect(result).toMatchObject({
+      recurrenceState: "Institutionalised", learningState: "Meaningful learning captured",
+      recommendedNextTransition: "Review learning",
+    });
+    expect(result?.recommendedNextTransition).not.toBe("No learning required");
   });
 
   it("uses only exact recorded Recurring/Persistent frequencies rather than names or poor outcomes", () => {
@@ -184,7 +237,7 @@ describe("read-only organisational learning policy", () => {
     expect(buildOrganisationalLearning({
       ...institutionalised, problems: [problem({ isUnresolved: false })],
     }).find(({ sourceType }) => sourceType === "Problem"))
-      .toMatchObject({ recommendedNextTransition: "No learning required" });
+      .toMatchObject({ recommendedNextTransition: "Review learning" });
   });
 
   it("preserves execution terminology without treating reversal or cancellation as failure", () => {

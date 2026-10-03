@@ -61,12 +61,12 @@ describe("Learning Attention Gate", () => {
     }) }])).toEqual([]);
   });
 
-  it("qualifies explicit meaningful learning with a recorded unresolved institutional change", () => {
-    expect(buildLearningAttention(lessonSignals().map((signal) => ({ signal })))).toEqual([{
-      sourceType: "Lesson", sourceId: "l", sourceTitle: "Lesson", attentionRequired: true,
-      attentionKind: "Institutionalisation", target: { objectType: "Lesson", id: "l" },
-    }]);
-  });
+  it.each(["Reviewed", "Implemented"] as const)(
+    "does not qualify a %s Lesson's historical recommendedChange as unresolved institutionalisation",
+    (status) => {
+      expect(buildLearningAttention(lessonSignals(status).map((signal) => ({ signal })))).toEqual([]);
+    },
+  );
 
   it("qualifies exact Change Required status using actual Learning Signals", () => {
     expect(buildLearningAttention(lessonSignals("Change Required").map((signal) => ({ signal })))[0])
@@ -98,15 +98,58 @@ describe("Learning Attention Gate", () => {
     });
   });
 
-  it("requires both meaningful status and the existing institutionalisation transition", () => {
-    const meaningful = lessonSignals()[0];
+  it("requires both meaningful status and the existing captured recurrence institutionalisation transition", () => {
+    const meaningful = signal({
+      ...recurrenceSignals("Recurring")[0],
+      learningState: "Meaningful learning captured",
+      recommendedNextTransition: "Consider System/SOP change",
+      linkedLessonIds: ["l"],
+      evidence: [
+        ...recurrenceSignals("Recurring")[0].evidence,
+        { sourceType: "Lesson", sourceId: "l", field: "status", value: "Reviewed" },
+      ],
+    });
+    expect(buildLearningAttention([{ signal: meaningful }])[0])
+      .toMatchObject({ attentionKind: "Institutionalisation" });
     expect(buildLearningAttention([{ signal: { ...meaningful, recommendedNextTransition: "Review existing Lesson" } }]))
       .toEqual([]);
     expect(buildLearningAttention(lessonSignals("New").map((signal) => ({ signal })))).toEqual([]);
     expect(buildLearningAttention([{ signal: {
-      ...meaningful, evidence: meaningful.evidence.filter(({ field }) => field !== "recommendedChange"),
+      ...meaningful, evidence: meaningful.evidence.filter(({ sourceType }) => sourceType !== "Lesson"),
     } }])).toEqual([]);
   });
+
+  it.each(["System", "SOP"] as const)(
+    "does not qualify already-institutionalised learning as unresolved institutionalisation through an active %s",
+    (objectType) => {
+      const source = learningInput({
+        problems: [{
+          id: "p", title: "Problem", problemStatement: "", frequency: "Recurring",
+          severity: "High", problemStatus: "Open", owner: "", isUnresolved: true,
+        }],
+        lessons: [{
+          id: "l", title: "Lesson", lessonTitle: "", status: "Implemented", description: "Recorded learning",
+          recommendedChange: "Update the checklist", relatedProblem: "p", relatedProject: "",
+          relatedDecision: "", relatedSystem: "",
+        }],
+        systems: objectType === "System" ? [{ id: "s", relatedLesson: "l", status: "Active" }] : [],
+        sops: objectType === "SOP" ? [{ relatedLesson: "l", relatedSystem: "", status: "Active" }] : [],
+      });
+      const signals = buildOrganisationalLearning(source);
+      expect(buildLearningAttention(signals.map((signal) => ({ signal })))).toEqual([{
+        sourceType: "Problem", sourceId: "p", sourceTitle: "Problem",
+        attentionRequired: true, attentionKind: "Recurring learning",
+        target: { objectType: "Problem", id: "p" },
+      }]);
+      const resolved = buildOrganisationalLearning({
+        ...source,
+        problems: source.problems.map((problem) => ({
+          ...problem, problemStatus: "Resolved", isUnresolved: false,
+        })),
+      });
+      expect(buildLearningAttention(resolved.map((signal) => ({ signal })))).toEqual([]);
+    },
+  );
 
   it.each(["Recurring", "Persistent"])("consumes authoritative %s recurrence without reclassifying frequency", (frequency) => {
     const signals = recurrenceSignals(frequency);
@@ -161,7 +204,7 @@ describe("Learning Attention Gate", () => {
 
   it("preserves an explicit associated Command target without adding ranking fields", () => {
     const target = { objectType: "System", id: "s" } as const;
-    const result = buildLearningAttention([{ signal: lessonSignals()[0], associatedTarget: target }]);
+    const result = buildLearningAttention([{ signal: lessonSignals("Change Required")[0], associatedTarget: target }]);
     expect(result[0].target).toEqual(target);
     expect(result[0].target).not.toBe(target);
     expect(Object.keys(result[0]).sort()).toEqual([
@@ -189,7 +232,7 @@ describe("Learning Attention Gate", () => {
     const first = buildLearningAttention(source);
     expect(buildLearningAttention(source)).toEqual(first);
     expect(first.map(({ sourceId, attentionKind }) => [sourceId, attentionKind])).toEqual([
-      ["p", "Recurring learning"], ["l", "Change required"], ["l", "Institutionalisation"],
+      ["p", "Recurring learning"], ["l", "Change required"],
     ]);
     first[0].target.id = "changed output";
     expect(source).toEqual(before);

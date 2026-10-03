@@ -452,6 +452,22 @@ function learningFor(
   }).map((signal) => ({ signal, associatedTarget: target }));
 }
 
+function institutionalisationFor(target: LearningAttentionInput["associatedTarget"]): LearningAttentionInput[] {
+  return buildOrganisationalLearning({
+    actions: [], projects: [], decisions: [], systems: [], sops: [],
+    problems: [{
+      id: "learning-problem", title: "Recorded recurring problem", problemStatement: "",
+      frequency: "Recurring", severity: "High", problemStatus: "Open", owner: "", isUnresolved: true,
+    }],
+    lessons: [{
+      id: "learning-lesson", title: "Recorded learning", lessonTitle: "", status: "Reviewed",
+      description: "Recorded evidence", recommendedChange: "",
+      relatedProblem: "learning-problem", relatedProject: "", relatedDecision: "", relatedSystem: "",
+    }],
+  }).filter(({ sourceType }) => sourceType === "Problem")
+    .map((signal) => ({ signal, associatedTarget: target }));
+}
+
 function productionLearning(records: OrganisationalLearningInput): LearningAttentionInput[] {
   const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
   function section(start: string, end: string): string {
@@ -554,7 +570,7 @@ describe("Production record projection into Command learning", () => {
     expect(result.items[0].reasons).toContain("Learning: review recorded recurrence");
   });
 
-  it("omits qualifying institutionalisation signals whose source Lesson has no existing Command item", () => {
+  it("omits historical Lesson recommendations without explicit outstanding-change evidence", () => {
     const record = {
       ...lesson({ status: "Reviewed" }),
       description: "Recorded learning", recommendedChange: "Revise an SOP",
@@ -564,7 +580,7 @@ describe("Production record projection into Command learning", () => {
       lessons: [record], systems: [system({ status: "Reviewing" })],
     });
     const learning = productionLearning(learningRecords({ lessons: [record] }));
-    expect(learning[0].signal.recommendedNextTransition).toBe("Consider System/SOP change");
+    expect(learning[0].signal.recommendedNextTransition).toBe("Review existing Lesson");
     expect(buildCommandAttention({ ...source, learning })).toEqual(buildCommandAttention(source));
     expect(buildCommandAttention({ ...source, learning }).items.some(({ objectType }) => objectType === "Lesson"))
       .toBe(false);
@@ -654,7 +670,7 @@ describe("Command learning pipeline integration", () => {
     });
     const baseline = buildCommandAttention(source);
     const result = buildCommandAttention({
-      ...source, learning: learningFor({ objectType: "Project", id: "project-1" }, "Reviewed"),
+      ...source, learning: institutionalisationFor({ objectType: "Project", id: "project-1" }),
     });
     expect(result.items).toHaveLength(1);
     expect(withoutReasons(result.items[0])).toEqual(withoutReasons(baseline.items[0]));
@@ -690,7 +706,7 @@ describe("Command learning pipeline integration", () => {
     const source = input({ actions: [action({ status: "Blocked" })] });
     const target = { objectType: "Action", id: "action-1" } as const;
     const change = learningFor(target);
-    const learning = [...change, ...learningFor(target, "Reviewed", "another-lesson"), ...change];
+    const learning = [...change, ...institutionalisationFor(target), ...change];
     const baseline = buildCommandAttention(source);
     const result = buildCommandAttention({ ...source, learning });
     expect(result.items).toHaveLength(1);

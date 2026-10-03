@@ -179,9 +179,6 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
       ["relatedProject", lesson.relatedProject], ["relatedDecision", lesson.relatedDecision],
       ["relatedSystem", lesson.relatedSystem],
     ], [lesson]);
-    if (meaningfulLesson(lesson) && lesson.recommendedChange.trim()) {
-      item.recommendedNextTransition = "Consider System/SOP change";
-    }
     signals.push(item);
   });
 
@@ -197,7 +194,7 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
         item.recommendedNextTransition = maturity === "captured"
           ? "Consider System/SOP change" : "Investigate recurrence";
       } else if (maturity === "institutionalised") {
-        item.recommendedNextTransition = "No learning required";
+        item.recommendedNextTransition = "Review learning";
       }
     }
     signals.push(item);
