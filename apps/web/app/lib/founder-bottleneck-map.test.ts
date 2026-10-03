@@ -198,7 +198,7 @@ describe("Founder Bottleneck Map recurrence, capability and ownership", () => {
 
   it("maps only exact Critical recurring severity to Critical", () => {
     expect(buildFounderBottleneckMap(input({ learningGaps: [gap("a", { severity: "Critical" }), gap("b", { severity: "critical" }), gap("c", { severity: "Low" })] }))
-      .bottlenecks.map(({ id, severity }) => [id, severity]).toEqual([["a", "Critical"], ["b", "Material"], ["c", "Material"]]);
+      .bottlenecks.map(({ id, severity }) => [id, severity])).toEqual([["a", "Critical"], ["b", "Material"], ["c", "Material"]]);
   });
 
   it("counts all routine inputs including claimed and duplicate records for no-team capability", () => {
@@ -491,7 +491,7 @@ function pageMap(overrides: PageOverrides = {}, samples: number[] = []) {
   const capacity = vi.fn(rankDelegationPeopleForArea);
   const ownership = vi.fn(isFounderOwnedRule);
   const dependency = vi.fn(getActionDependencyBlockerRule);
-  const health = vi.fn(getEffectiveProjectHealth);
+  const health = vi.fn((value: PageProject) => getEffectiveProjectHealth(value));
   let projected: Input | undefined;
   const context: { result?: { summary: Result["summary"]; bottlenecks: (Omit<Result["bottlenecks"][number], "openPeopleView"> & { onOpen: () => void })[] } } = {};
   runInNewContext(outputText, Object.assign(context, {

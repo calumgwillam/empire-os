@@ -202,6 +202,13 @@ import {
 } from "./lib/integrity-audit";
 import { persistJsonArray, persistJsonValue } from "./lib/persistence";
 import {
+  attachOperatingProfileSourceSubmission,
+  lewisLeadershipAlignmentSubmission,
+  mergeOperatingProfileSourceSubmissions,
+  normaliseOperatingProfileSourceSubmissions,
+  type OperatingProfileSourceSubmission,
+} from "./lib/operating-profile-evidence";
+import {
   applyCapitalDecision,
   applyQuoteRevalidation,
   expenseStatusOptions,
@@ -402,6 +409,7 @@ type CompatibilityDimension = {
 };
 
 type OperatingProfile = {
+  sourceSubmissions: OperatingProfileSourceSubmission[];
   communicationStyle: CompatibilityDimension;
   decisionStyle: CompatibilityDimension;
   riskTolerance: CompatibilityDimension;
@@ -470,6 +478,7 @@ function normaliseOperatingProfile(value: unknown): OperatingProfile {
   compatibilityDimensionDefinitions.forEach(({ key }) => {
     profile[key] = normaliseCompatibilityDimension(source[key]);
   });
+  profile.sourceSubmissions = normaliseOperatingProfileSourceSubmissions(source.sourceSubmissions);
   return profile;
 }
 
@@ -8560,7 +8569,28 @@ export default function Home() {
         const parsedPeople = JSON.parse(storedPeople);
 
         if (Array.isArray(parsedPeople)) {
-          setPeople(parsedPeople);
+          const attachment = attachOperatingProfileSourceSubmission(
+            parsedPeople,
+            lewisLeadershipAlignmentSubmission,
+            (person) => typeof person?.name === "string" ? person.name : "",
+            (person) => person?.operatingProfile?.sourceSubmissions,
+            (person, sourceSubmissions) => ({
+              ...person,
+              operatingProfile: {
+                ...normaliseOperatingProfile(person.operatingProfile),
+                sourceSubmissions,
+              },
+            }),
+          );
+          setPeople(attachment.people);
+          if (attachment.status !== "attached") {
+            setFeedback({
+              type: "error",
+              message: attachment.status === "person-not-found"
+                ? "Lewis's submitted operating-profile evidence could not be attached because no matching People record exists."
+                : "Lewis's submitted operating-profile evidence could not be attached because multiple matching People records exist.",
+            });
+          }
         }
       }
 
@@ -11378,7 +11408,7 @@ export default function Home() {
       id: item.id,
       objectType: item.objectType,
       title: item.title,
-      area: item.area,
+      area: item.area || "",
       why: item.why,
       sourceIndex,
     })),
@@ -11483,7 +11513,7 @@ export default function Home() {
       usedKeys.add(cluster.clusterKey);
       return [{
         clusterKey: cluster.clusterKey, title: cluster.title,
-        root: { id: root.id, objectType: root.objectType, area: root.area },
+        root: { id: root.id, objectType: root.objectType, area: root.area || "" },
         categoryCount: cluster.categories.size, recordCount: cluster.recordCount,
       }];
     });
@@ -19533,9 +19563,43 @@ export default function Home() {
                 Compatibility &amp; Operating Profile
               </div>
               <p className="mt-1 text-[11px] leading-5 text-[#4d4944]">
-                Evidence-based human operating profile. Separate from formal responsibilities, authority, skills and performance. Record only what evidence supports — blank is valid.
+                Submitted answers are verbatim source evidence. Structured observations are separate and are not automatically inferred. This section does not establish or replace formal responsibilities, authority, skills, performance, commitments, financial arrangements, ownership or decision rights.
               </p>
 
+              <div className="mt-3 rounded-xl border border-[#d3cbc3] bg-white p-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#2f2b28]">
+                  Submitted source evidence
+                </div>
+                {personOperatingProfile.sourceSubmissions.length === 0 ? (
+                  <p className="mt-2 text-[12px] text-[#4d4944]">No submitted source answers recorded.</p>
+                ) : (
+                  <div className="mt-2 space-y-2">
+                    {personOperatingProfile.sourceSubmissions.map((submission) => (
+                      <details key={submission.id} className="rounded-lg border border-[#e3ddd6] p-2.5">
+                        <summary className="cursor-pointer list-none text-[12px] font-medium text-[#171717]">
+                          {submission.sourceTitle} • Submitted by {submission.respondentName} • {submission.answers.length} answers
+                        </summary>
+                        <ol className="mt-3 space-y-3">
+                          {submission.answers.map((answer, index) => (
+                            <li key={`${submission.id}-${index}`} className="border-t border-[#eee9e3] pt-2.5">
+                              <div className="text-[12px] font-medium leading-5 text-[#2f2b28]">
+                                {index + 1}. {answer.question}
+                              </div>
+                              <p className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-[#4d4944]">
+                                {answer.answer}
+                              </p>
+                            </li>
+                          ))}
+                        </ol>
+                      </details>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#2f2b28]">
+                Structured operating-profile observations
+              </div>
               <div className="mt-3 space-y-2">
                 {compatibilityDimensionDefinitions.map(({ key, label }) => {
                   const dimension = personOperatingProfile[key];
