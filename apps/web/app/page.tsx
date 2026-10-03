@@ -98,6 +98,7 @@ import {
 import { buildEmpireDecisionQueue, type EmpireDecisionQueueResult } from "./lib/empire-decision-queue";
 import {
   applyStrategicReviewTransition,
+  buildStrategicReviewLiveEvidence,
   founderAllocations,
   initialStrategicObjectives,
   isStrategicObjectiveRecord,
@@ -116,6 +117,7 @@ import {
   strategicPillars,
   strategicStatuses,
   validateStrategicReviewApplication,
+  type LiveReviewEvidence,
   type ReviewAssumption,
   type ReviewCandidate,
   type ReviewConstraint,
@@ -5835,7 +5837,7 @@ function StrategicReviewSection({ reviews, onCreate, onOpen }: { reviews: Strate
 }
 
 function StrategicReviewPanel({ review, objectives, projects, liveEvidence, gaps, contradictions, systemCandidate, saveStatus, lastSavedAt, onChange, onSave, onApply, onClose }: {
-  review: StrategicReview; objectives: StrategicObjective[]; projects: ProjectRecord[]; liveEvidence: ReviewEvidence;
+  review: StrategicReview; objectives: StrategicObjective[]; projects: ProjectRecord[]; liveEvidence: LiveReviewEvidence;
   gaps: ReviewGap[]; contradictions: ReviewContradiction[];
   systemCandidate: { title: string; reasons: string[] } | null;
   saveStatus: "idle" | "saving" | "saved" | "unsaved" | "error";
@@ -18944,7 +18946,7 @@ export default function Home() {
         review={reviewDraft}
         objectives={strategicObjectives}
         projects={projects}
-        liveEvidence={captureReviewEvidence()}
+        liveEvidence={buildStrategicReviewLiveEvidence(captureReviewEvidence(), commandLearningInput.map(({ signal }) => signal))}
         gaps={reviewDraft.status === "Draft" ? reviewGapCandidates(reviewDraft, strategicAssessments, projects, opportunityRecords, actionRecords, executableAction) : reviewDraft.strategicGaps.filter((gap) => !gap.id.startsWith("manual:"))}
         contradictions={reviewDraft.status === "Draft" ? reviewContradictions(reviewDraft, strategicObjectives, projects, actionRecords, reviewGapCandidates(reviewDraft, strategicAssessments, projects, opportunityRecords, actionRecords, executableAction), executableAction) : reviewDraft.contradictions}
         systemCandidate={strategicFounderAllocation.objective ? { title: strategicFounderAllocation.objective.title, reasons: strategicFounderAllocation.reasons } : null}

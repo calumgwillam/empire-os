@@ -2,6 +2,8 @@ import { isPlainObject } from "./backup";
 import type { ActionRecord, DecisionRecord, OpportunityRecord } from "./capture-conversions";
 import { isValidCalendarDateInput } from "./dates";
 import type { ProjectRecord } from "./projects";
+import { buildLearningAttention, type LearningAttentionInput } from "./learning-attention";
+import type { LearningSignal } from "./organisational-learning";
 
 export const reviewTriggers = ["Weekly", "Major change", "Project completed", "Founder initiated"] as const;
 export const reviewGapTypes = ["Execution Gap", "Decision Gap", "Knowledge Gap", "Capability Gap"] as const;
@@ -61,6 +63,26 @@ export type ReviewEvidence = {
   finance: string;
   execution: string;
 };
+
+export type LiveReviewEvidence = ReviewEvidence & {
+  learning?: readonly LearningAttentionInput["signal"][];
+};
+
+// Live learning context is not a strategic judgement or part of the persisted review snapshot.
+export function buildStrategicReviewLiveEvidence(
+  evidence: ReviewEvidence,
+  signals: readonly LearningAttentionInput["signal"][] = [],
+): LiveReviewEvidence {
+  const learning: LearningSignal[] = signals
+    .filter((signal) => signal.learningState === "Meaningful learning captured"
+      || buildLearningAttention([{ signal }]).length > 0)
+    .map((signal) => ({
+      ...signal,
+      evidence: signal.evidence.map((entry) => ({ ...entry })),
+      linkedLessonIds: [...signal.linkedLessonIds],
+    }));
+  return learning.length > 0 ? { ...evidence, learning } : evidence;
+}
 
 export type ReviewConstraint = { id: string; description: string; evidence: string; objectiveIds: string[]; recommendation: string; decision: "" | "Confirm" | "Modify" | "Dismiss"; founderRationale: string; response: string };
 export type ReviewOpportunity = { id: string; opportunityId: string; title: string; relevance: string; evidence: string; recommendation: string; decision: "" | "Pursue" | "Investigate" | "Monitor" | "Reject" | "Park"; founderRationale: string };
