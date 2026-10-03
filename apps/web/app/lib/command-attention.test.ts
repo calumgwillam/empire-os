@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
+import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import { describe, expect, it } from "vitest";
-import { buildOrganisationalLearning } from "./organisational-learning";
+import { buildOrganisationalLearning, type OrganisationalLearningInput } from "./organisational-learning";
 import type { LearningAttentionInput } from "./learning-attention";
 import {
   buildCommandAttention,
@@ -448,6 +451,158 @@ function learningFor(
     }],
   }).map((signal) => ({ signal, associatedTarget: target }));
 }
+
+function productionLearning(records: OrganisationalLearningInput): LearningAttentionInput[] {
+  const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+  function section(start: string, end: string): string {
+    const first = page.indexOf(start);
+    const last = page.indexOf(end, first);
+    if (first < 0 || last < 0) throw new Error(`Missing production learning boundary: ${start}`);
+    return page.slice(first, last);
+  }
+  const source = [
+    section("function isActionWaiting(", "\nconst personStatusOptions"),
+    section("function deriveDecisionExecutionState(", "\nconst expenseCategoryOptions"),
+    section("  const isProblemUnresolved =", "  const isDecisionActive ="),
+    section("  const commandLearningInput =", "  const commandAttentionPolicy ="),
+    "result = commandLearningInput;",
+  ].join("\n");
+  const { outputText } = transpileModule(source, {
+    compilerOptions: { target: ScriptTarget.ES2020, module: ModuleKind.ESNext },
+  });
+  const context: { result?: LearningAttentionInput[] } = {};
+  runInNewContext(outputText, Object.assign(context, {
+    Map, Set, buildOrganisationalLearning,
+    actionRecords: records.actions,
+    projects: records.projects,
+    decisionRecords: records.decisions,
+    lessonRecords: records.lessons,
+    problemRecords: records.problems,
+    systemRecords: records.systems,
+    sopRecords: records.sops,
+  }), { timeout: 1000 });
+  if (!context.result) throw new Error("Production learning projection returned no result");
+  return context.result;
+}
+
+function learningRecords(overrides: Partial<OrganisationalLearningInput> = {}): OrganisationalLearningInput {
+  return { actions: [], projects: [], decisions: [], lessons: [], problems: [], systems: [], sops: [], ...overrides };
+}
+
+describe("Production record projection into Command learning", () => {
+  const metadata = ({ reason, reasons, ...rest }: CommandAttentionItem) => rest;
+
+  it("supplies the production learning projection to the existing Command call", () => {
+    const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+    const start = page.indexOf("  const commandAttentionPolicy = buildCommandAttention({");
+    const end = page.indexOf("  const commandAttentionItemList:", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(page.slice(start, end)).toContain("learning: commandLearningInput,");
+  });
+
+  it("leaves ordinary execution and outcomes without explicit learning conditions unchanged", () => {
+    const actions = [action({ status: "Blocked" })];
+    const projects = [project({ status: "blocked" })];
+    const decisions = [decision({ decisionStatus: "Under Review" })];
+    const baseline = input({ actions, projects, decisions });
+    const learning = productionLearning(learningRecords({
+      actions: actions.map((record) => ({ ...record, completionEvidence: "Work recorded" })),
+      projects,
+      decisions: decisions.map((record) => ({
+        ...record, actualOutcome: "Recorded result",
+        outcomeRating: "Worked", lessons: "",
+      })),
+    }));
+    expect(buildCommandAttention({ ...baseline, learning })).toEqual(buildCommandAttention(baseline));
+    expect(learning.find(({ signal }) => signal.sourceType === "Decision")?.signal.executionState)
+      .toBe("No execution path");
+  });
+
+  it("passes a real Change Required Lesson to its existing Command item without changing metadata or ordering", () => {
+    const record = {
+      ...lesson({ status: "Change Required" }),
+      description: "Recorded lesson", recommendedChange: "Revise the checklist",
+      relatedProblem: "", relatedProject: "", relatedDecision: "", relatedSystem: "",
+    };
+    const source = input({ lessons: [record], actions: [action({ status: "Blocked" })] });
+    const original = buildCommandAttention(source);
+    const learning = productionLearning(learningRecords({ lessons: [record] }));
+    const result = buildCommandAttention({ ...source, learning });
+    expect(result.items.map(metadata)).toEqual(original.items.map(metadata));
+    expect(result.items.filter(({ objectType, id }) => objectType === "Lesson" && id === record.id)).toHaveLength(1);
+    const augmented = result.items.find(({ objectType }) => objectType === "Lesson")!;
+    const prior = original.items.find(({ objectType }) => objectType === "Lesson")!;
+    expect(augmented.reasons).toEqual(orderAttentionReasons([...prior.reasons, "Learning: change required"]));
+    expect(augmented.reason).toBe(augmented.reasons.join(" • "));
+  });
+
+  it("reuses the production unresolved predicate and existing authoritative recurrence classification", () => {
+    const record = problem({ frequency: "Persistent" });
+    const source = input({ problems: [record] });
+    const records = learningRecords({
+      problems: [{ ...record, isUnresolved: false }],
+    });
+    const learning = productionLearning(records);
+    expect(learning[0].signal.recurrenceState).toBe("Recorded recurrence");
+    expect(learning[0].signal.evidence).toContainEqual({
+      sourceType: "Problem", sourceId: record.id, field: "isUnresolved", value: "true",
+    });
+    const result = buildCommandAttention({ ...source, learning });
+    expect(result.items).toHaveLength(1);
+    expect(metadata(result.items[0])).toEqual(metadata(buildCommandAttention(source).items[0]));
+    expect(result.items[0].reasons).toContain("Learning: review recorded recurrence");
+  });
+
+  it("omits qualifying institutionalisation signals whose source Lesson has no existing Command item", () => {
+    const record = {
+      ...lesson({ status: "Reviewed" }),
+      description: "Recorded learning", recommendedChange: "Revise an SOP",
+      relatedProblem: "", relatedProject: "", relatedDecision: "", relatedSystem: "system-1",
+    };
+    const source = input({
+      lessons: [record], systems: [system({ status: "Reviewing" })],
+    });
+    const learning = productionLearning(learningRecords({ lessons: [record] }));
+    expect(learning[0].signal.recommendedNextTransition).toBe("Consider System/SOP change");
+    expect(buildCommandAttention({ ...source, learning })).toEqual(buildCommandAttention(source));
+    expect(buildCommandAttention({ ...source, learning }).items.some(({ objectType }) => objectType === "Lesson"))
+      .toBe(false);
+  });
+
+  it.each(["Worked", "Failed", "Partially worked"])("omits %s without explicit learning evidence in production", (outcomeRating) => {
+    const record = {
+      ...decision({ decisionStatus: "Under Review" }), actualOutcome: "Recorded result", outcomeRating, lessons: "",
+    };
+    const source = input({ decisions: [record] });
+    const learning = productionLearning(learningRecords({ decisions: [record] }));
+    expect(buildCommandAttention({ ...source, learning })).toEqual(buildCommandAttention(source));
+  });
+
+  it("preserves deterministic results and frozen source records through the actual page projection", () => {
+    const record = {
+      ...lesson({ status: "Change Required" }), description: "Source evidence", recommendedChange: "",
+      relatedProblem: "", relatedProject: "", relatedDecision: "", relatedSystem: "",
+    };
+    const records = learningRecords({ lessons: [record] });
+    const command = input({ lessons: [record] });
+    const before = structuredClone({ records, command });
+    function freeze(value: unknown): void {
+      if (value && typeof value === "object") {
+        Object.values(value).forEach(freeze);
+        Object.freeze(value);
+      }
+    }
+    freeze(records);
+    freeze(command);
+    const learning = productionLearning(records);
+    expect(productionLearning(records)).toEqual(learning);
+    const result = buildCommandAttention({ ...command, learning });
+    expect(buildCommandAttention({ ...command, learning: productionLearning(records) })).toEqual(result);
+    result.items[0].reasons.push("Changed output");
+    expect({ records, command }).toEqual(before);
+  });
+});
 
 describe("Command learning pipeline integration", () => {
   const withoutReasons = ({ reason, reasons, ...metadata }: CommandAttentionItem) => metadata;

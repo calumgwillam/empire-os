@@ -67,6 +67,7 @@ import { buildFounderFocus, type FounderFocusRecordFact } from "./lib/founder-fo
 import { buildFounderOperatingBrief, type OperatingBriefDomainItem } from "./lib/founder-operating-brief";
 import { buildFounderOperatingReview } from "./lib/founder-operating-review";
 import { buildOperatingPosture } from "./lib/operating-posture";
+import { buildOrganisationalLearning } from "./lib/organisational-learning";
 import {
   buildFounderBottleneckMap,
   isFounderBottleneckBlockedAction,
@@ -10427,6 +10428,22 @@ export default function Home() {
   });
   const unlinkedStrategicProjects = projects.filter((project) => isProjectActive(project) && !strategicObjectives.some((objective) => objective.linkedProjectIds.includes(project.id)));
 
+  const commandLearningInput = buildOrganisationalLearning({
+    actions: actionRecords,
+    projects,
+    decisions: decisionRecords.map((decision) => ({
+      ...decision,
+      executionState: deriveDecisionExecutionState(decision, actionRecords, projects).state,
+    })),
+    lessons: lessonRecords,
+    problems: problemRecords.map((problem) => ({
+      ...problem,
+      isUnresolved: isProblemUnresolved(problem),
+    })),
+    systems: systemRecords,
+    sops: sopRecords,
+  }).map((signal) => ({ signal }));
+
   const commandAttentionPolicy = buildCommandAttention({
     problems: problemRecords,
     actions: actionRecords,
@@ -10453,6 +10470,7 @@ export default function Home() {
         : undefined,
     })),
     procurementQueue: capitalAllocation.procurementQueue,
+    learning: commandLearningInput,
     nowMs: Date.now(),
   });
   const commandAttentionItemList: AttentionItem[] = commandAttentionPolicy.items.map((item) => {
