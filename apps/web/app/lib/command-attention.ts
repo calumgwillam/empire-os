@@ -10,6 +10,8 @@ import type {
 import type { CommitmentCertainty, CommitmentRecord, ProcurementApprovalStatus } from "./finance";
 import { isOutreachFollowUpExcluded, type OutreachRecord } from "./crm";
 import type { ProjectRecord } from "./projects";
+import { buildLearningAttention, type LearningAttentionInput } from "./learning-attention";
+import { buildLearningCommandAdapter } from "./learning-command-adapter";
 import {
   getActionDependencyBlocker,
   type HandoffObjectType,
@@ -88,6 +90,7 @@ export type CommandAttentionInput = {
   sops: readonly Pick<SopRecord, "id" | "sopTitle" | "title" | "status" | "reviewDate" | "createdAt" | "relatedArea" | "relatedPillar">[];
   handoffs: readonly CommandAttentionHandoffInput[];
   procurementQueue: readonly CommandAttentionProcurementInput[];
+  learning?: readonly LearningAttentionInput[];
   nowMs?: number;
 };
 
@@ -655,6 +658,23 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
       sortDateAscending: true,
     });
   });
+
+  if (input.learning) {
+    const augmentations = buildLearningCommandAdapter(
+      buildLearningAttention(input.learning),
+      [...uniqueByKey.values()].map(({ objectType, id }) => ({ objectType, id })),
+    );
+    augmentations.forEach((augmentation) => {
+      if (augmentation.targetResolution !== "Augment existing target") return;
+      const existing = uniqueByKey.get(`${augmentation.target.objectType}:${augmentation.target.id}`);
+      if (!existing) return;
+      addAttentionItem(augmentation.reason, {
+        ...existing,
+        reason: augmentation.reason,
+        reasons: [augmentation.reason],
+      });
+    });
+  }
 
   const sortedGroups = Object.fromEntries(Object.entries(groups).map(([reason, items]) => [reason, [...items].sort(compareAttentionItems)]));
   const items = Array.from(new Map(

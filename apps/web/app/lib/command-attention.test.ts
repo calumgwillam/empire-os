@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { buildOrganisationalLearning } from "./organisational-learning";
+import type { LearningAttentionInput } from "./learning-attention";
 import {
   buildCommandAttention,
   compareAttentionItems,
@@ -429,5 +431,138 @@ describe("buildCommandAttention", () => {
     buildCommandAttention(value);
 
     expect(value).toEqual(before);
+  });
+});
+
+function learningFor(
+  target: LearningAttentionInput["associatedTarget"],
+  status: "Change Required" | "Reviewed" | "New" = "Change Required",
+  id = "learning-lesson",
+): LearningAttentionInput[] {
+  return buildOrganisationalLearning({
+    actions: [], projects: [], decisions: [], problems: [], systems: [], sops: [],
+    lessons: [{
+      id, title: "Source learning title", lessonTitle: "", status,
+      description: "Recorded evidence", recommendedChange: "Update the checklist",
+      relatedProblem: "", relatedProject: "", relatedDecision: "", relatedSystem: "",
+    }],
+  }).map((signal) => ({ signal, associatedTarget: target }));
+}
+
+describe("Command learning pipeline integration", () => {
+  const withoutReasons = ({ reason, reasons, ...metadata }: CommandAttentionItem) => metadata;
+
+  it("preserves all existing domain output with absent, empty or non-qualifying learning input", () => {
+    const source = input({
+      problems: [problem({ frequency: "Recurring" })],
+      actions: [action({ status: "Blocked" })], outreach: [outreach()],
+      projects: [project({ status: "blocked" })],
+      decisions: [decision({ decisionStatus: "Under Review" })],
+      opportunities: [opportunity()], lessons: [lesson({ status: "Change Required" })],
+      systems: [system({ status: "Reviewing" })], sops: [sop({ reviewDate: iso() })],
+      handoffs: [handoff()], procurementQueue: [procurement()],
+    });
+    const baseline = buildCommandAttention(source);
+    expect(buildCommandAttention({ ...source, learning: [] })).toEqual(baseline);
+    expect(buildCommandAttention({
+      ...source, learning: learningFor({ objectType: "Action", id: "action-1" }, "New"),
+    })).toEqual(baseline);
+  });
+
+  it("augments an existing Action through reason merging without changing any metadata or ordering", () => {
+    const source = input({
+      problems: [problem({ id: "blocker" })],
+      actions: [action({ status: "Blocked", priority: "High", relatedProblem: "blocker" })],
+      lessons: [lesson({ status: "Change Required" })],
+    });
+    const baseline = buildCommandAttention(source);
+    const result = buildCommandAttention({
+      ...source, learning: learningFor({ objectType: "Action", id: "action-1" }),
+    });
+    expect(result.items.map(({ objectType, id }) => [objectType, id]))
+      .toEqual(baseline.items.map(({ objectType, id }) => [objectType, id]));
+    expect(result.items.map(withoutReasons)).toEqual(baseline.items.map(withoutReasons));
+    const original = baseline.items.find(({ objectType }) => objectType === "Action")!;
+    const augmented = result.items.find(({ objectType }) => objectType === "Action")!;
+    expect(augmented.reasons).toEqual(orderAttentionReasons([...original.reasons, "Learning: change required"]));
+    expect(augmented.reason).toBe(augmented.reasons.join(" • "));
+    expect(augmented.dependencyAction).toEqual(original.dependencyAction);
+    expect(result.groups["Learning: change required"]).toEqual([augmented]);
+    Object.entries(baseline.groups).forEach(([key, entries]) => {
+      expect(result.groups[key].map(withoutReasons)).toEqual(entries.map(withoutReasons));
+    });
+  });
+
+  it("augments a Project while retaining its dates, ranking, priority and navigation", () => {
+    const source = input({
+      projects: [project({ status: "blocked", targetCompletionDate: day(-2), reviewNote: "Blocker" })],
+    });
+    const baseline = buildCommandAttention(source);
+    const result = buildCommandAttention({
+      ...source, learning: learningFor({ objectType: "Project", id: "project-1" }, "Reviewed"),
+    });
+    expect(result.items).toHaveLength(1);
+    expect(withoutReasons(result.items[0])).toEqual(withoutReasons(baseline.items[0]));
+    expect(result.items[0].reasons).toEqual(orderAttentionReasons([
+      ...baseline.items[0].reasons, "Learning: consider System/SOP change",
+    ]));
+  });
+
+  it("confirms only assembled Command identities and omits unresolved or non-attention targets", () => {
+    const source = input({ actions: [action({ status: "Completed" })] });
+    const learning = [
+      ...learningFor({ objectType: "Action", id: "action-1" }),
+      ...learningFor({ objectType: "System", id: "missing" }),
+      ...learningFor(undefined),
+    ];
+    expect(buildCommandAttention({ ...source, learning })).toEqual(buildCommandAttention(source));
+    expect(buildCommandAttention({ ...source, learning }).items).toEqual([]);
+  });
+
+  it.each(["Worked", "Failed", "Partially worked"])("does not introduce %s outcome-only learning into Command", (outcomeRating) => {
+    const source = input({ decisions: [decision({ decisionStatus: "Under Review" })] });
+    const learning = buildOrganisationalLearning({
+      actions: [], projects: [], lessons: [], problems: [], systems: [], sops: [],
+      decisions: [{
+        id: "decision-1", title: "Decision", decisionTitle: "",
+        decisionStatus: "Completed", outcomeRating, actualOutcome: "Recorded outcome", lessons: "",
+      }],
+    }).map((signal) => ({ signal }));
+    expect(buildCommandAttention({ ...source, learning })).toEqual(buildCommandAttention(source));
+  });
+
+  it("merges multiple qualifying reasons and duplicate candidates into one existing item", () => {
+    const source = input({ actions: [action({ status: "Blocked" })] });
+    const target = { objectType: "Action", id: "action-1" } as const;
+    const change = learningFor(target);
+    const learning = [...change, ...learningFor(target, "Reviewed", "another-lesson"), ...change];
+    const baseline = buildCommandAttention(source);
+    const result = buildCommandAttention({ ...source, learning });
+    expect(result.items).toHaveLength(1);
+    expect(withoutReasons(result.items[0])).toEqual(withoutReasons(baseline.items[0]));
+    expect(result.items[0].reasons).toEqual(orderAttentionReasons([
+      ...baseline.items[0].reasons, "Learning: change required", "Learning: consider System/SOP change",
+    ]));
+    expect(result.groups["Learning: change required"]).toHaveLength(1);
+    expect(result.groups["Learning: consider System/SOP change"]).toHaveLength(1);
+  });
+
+  it("is deterministic and does not mutate frozen records, learning evidence or targets", () => {
+    const source = input({
+      actions: [action({ status: "Blocked" })],
+      learning: learningFor({ objectType: "Action", id: "action-1" }),
+    });
+    const before = structuredClone(source);
+    function freeze(value: unknown): void {
+      if (value && typeof value === "object") {
+        Object.values(value).forEach(freeze);
+        Object.freeze(value);
+      }
+    }
+    freeze(source);
+    const first = buildCommandAttention(source);
+    expect(buildCommandAttention(source)).toEqual(first);
+    first.items[0].reasons.push("Changed output");
+    expect(source).toEqual(before);
   });
 });
