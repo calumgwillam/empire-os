@@ -207,6 +207,7 @@ import {
 import { persistJsonArray, persistJsonValue } from "./lib/persistence";
 import {
   attachOperatingProfileSourceSubmission,
+  emekaLeadershipAlignmentSubmission,
   lewisLeadershipAlignmentSubmission,
   mergeOperatingProfileSourceSubmissions,
   normaliseOperatingProfileSourceSubmissions,
@@ -8573,7 +8574,7 @@ export default function Home() {
         const parsedPeople = JSON.parse(storedPeople);
 
         if (Array.isArray(parsedPeople)) {
-          const attachment = attachOperatingProfileSourceSubmission(
+          const lewisAttachment = attachOperatingProfileSourceSubmission(
             parsedPeople,
             lewisLeadershipAlignmentSubmission,
             (person) => typeof person?.name === "string" ? person.name : "",
@@ -8586,13 +8587,33 @@ export default function Home() {
               },
             }),
           );
-          setPeople(attachment.people);
-          if (attachment.status !== "attached") {
+          const emekaAttachment = attachOperatingProfileSourceSubmission(
+            lewisAttachment.people,
+            emekaLeadershipAlignmentSubmission,
+            (person) => typeof person?.name === "string" ? person.name : "",
+            (person) => person?.operatingProfile?.sourceSubmissions,
+            (person, sourceSubmissions) => ({
+              ...person,
+              operatingProfile: {
+                ...normaliseOperatingProfile(person.operatingProfile),
+                sourceSubmissions,
+              },
+            }),
+          );
+          setPeople(emekaAttachment.people);
+          if (lewisAttachment.status !== "attached") {
             setFeedback({
               type: "error",
-              message: attachment.status === "person-not-found"
+              message: lewisAttachment.status === "person-not-found"
                 ? "Lewis's submitted operating-profile evidence could not be attached because no matching People record exists."
                 : "Lewis's submitted operating-profile evidence could not be attached because multiple matching People records exist.",
+            });
+          } else if (emekaAttachment.status !== "attached") {
+            setFeedback({
+              type: "error",
+              message: emekaAttachment.status === "person-not-found"
+                ? "Emeka's submitted operating-profile evidence could not be attached because no matching People record exists."
+                : "Emeka's submitted operating-profile evidence could not be attached because multiple matching People records exist.",
             });
           }
         }
