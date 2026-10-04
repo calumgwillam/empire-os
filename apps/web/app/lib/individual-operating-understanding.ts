@@ -58,7 +58,7 @@ type DirectUnderstandingSeed = {
   answerIndexes: number[];
 };
 
-function createFounderSeed(
+function createIndividualSeed(
   submission: OperatingProfileSourceSubmission,
   entries: readonly DirectUnderstandingSeed[],
 ): IndividualOperatingUnderstandingSeed {
@@ -82,8 +82,8 @@ function createFounderSeed(
   };
 }
 
-export const founderIndividualOperatingUnderstandings: IndividualOperatingUnderstandingSeed[] = [
-  createFounderSeed(calumLeadershipReflectionSubmission, [
+export const individualOperatingUnderstandingSeeds: IndividualOperatingUnderstandingSeed[] = [
+  createIndividualSeed(calumLeadershipReflectionSubmission, [
     { dimension: "ultimate-motivation", statement: "Calum says he wants a purposeful life and a monumental, systems-based organisation, using time, money, people and systems together to create greater freedom.", answerIndexes: [0] },
     { dimension: "desired-future", statement: "Calum says that in five years he wants to have moved away from practical delivery toward orchestrating infrastructure, with business scale guided by evidence and capability.", answerIndexes: [0, 1] },
     { dimension: "time-and-commitment", statement: "Calum says he will give essentially every waking hour outside fight training and weekly family time to building the business and wider Empire.", answerIndexes: [2] },
@@ -97,7 +97,7 @@ export const founderIndividualOperatingUnderstandings: IndividualOperatingUnders
     { dimension: "unacceptable-behaviour", statement: "Calum identifies unreliability, poor communication, cutting corners, avoiding responsibility, dishonesty, obstructive ego, unmanaged workload resentment, disconnected financial expectations, low commitment, unconstructive negativity, poor treatment of others and lack of loyalty as behaviours that can undermine or end the working relationship.", answerIndexes: [10] },
     { dimension: "long-term-commitment", statement: "Calum says his commitment to the business is already solidified; deeper commitment to the team depends on accumulated evidence over time that standards hold and loyalty persists through difficulty.", answerIndexes: [11] },
   ]),
-  createFounderSeed(lewisLeadershipAlignmentSubmission, [
+  createIndividualSeed(lewisLeadershipAlignmentSubmission, [
     { dimension: "ultimate-motivation", statement: "Lewis says he ultimately wants security for himself and his family across generations.", answerIndexes: [0] },
     { dimension: "desired-future", statement: "Lewis says he wants clarity about how his life will develop and sees self-employment as enabling that more than remaining in the corporate system.", answerIndexes: [1] },
     { dimension: "time-and-commitment", statement: "Lewis says he expects a gradual start followed by an accelerated move into full-time work, giving the business the work required.", answerIndexes: [2] },
@@ -111,7 +111,7 @@ export const founderIndividualOperatingUnderstandings: IndividualOperatingUnders
     { dimension: "unacceptable-behaviour", statement: "Lewis identifies irrational behaviour, ignoring previously made mistakes and reluctance to listen, learn or grow as behaviours that would make him no longer want to build a business with someone.", answerIndexes: [10] },
     { dimension: "long-term-commitment", statement: "Lewis says motion, growth and scalability would need to be present for him to make a deeper long-term commitment to the business and team.", answerIndexes: [11] },
   ]),
-  createFounderSeed(emekaLeadershipAlignmentSubmission, [
+  createIndividualSeed(emekaLeadershipAlignmentSubmission, [
     { dimension: "ultimate-motivation", statement: "Emeka says he wants financial freedom without sacrificing time or quality of life, alongside achievement, independence, meaningful work and long-term purpose.", answerIndexes: [0] },
     { dimension: "desired-future", statement: "Emeka says he wants to contribute meaningfully to an established, growing and well-run business, with responsibility, financial independence and flexibility.", answerIndexes: [1] },
     { dimension: "time-and-commitment", statement: "Emeka says he is prepared to contribute serious time and energy, while balancing existing responsibilities and keeping commitment sustainable; he values consistent reliability.", answerIndexes: [2] },
@@ -123,9 +123,11 @@ export const founderIndividualOperatingUnderstandings: IndividualOperatingUnders
     { dimension: "pressure-and-setbacks", statement: "Emeka says he generally tries to stay calm, focus on what is controllable, understand the problem and identify practical priorities; he notes he may become more focused and direct under pressure.", answerIndexes: [8] },
     { dimension: "financial-expectations", statement: "Emeka says financial reward should reflect contribution, responsibility, risk and commitment, with a fair, transparent structure that may include salary, profit or ownership over time.", answerIndexes: [9] },
     { dimension: "unacceptable-behaviour", statement: "Emeka identifies serious dishonesty or broken trust, repeated failure to deliver, avoiding responsibility, poor communication, below-standard work, disrespect, manipulation, ego and self-interested decisions as unacceptable.", answerIndexes: [10] },
-    { dimension: "long-term-commitment", statement: "Emeka says deeper commitment depends on a genuine opportunity, alignment among the three founders, clear roles and decisions, trust, transparency, shared contribution, progress and a fair structure.", answerIndexes: [11] },
+    { dimension: "long-term-commitment", statement: "Emeka says deeper commitment depends on a genuine opportunity, alignment among the three people, clear roles and decisions, trust, transparency, shared contribution, progress and a fair structure.", answerIndexes: [11] },
   ]),
 ];
+
+export const founderIndividualOperatingUnderstandings = individualOperatingUnderstandingSeeds;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -156,10 +158,10 @@ function normaliseClaim(
   };
   if (
     typeof value.status !== "string"
-    || !allowedStatuses.includes(value.status as UnderstandingClaimStatus)
-    || value.status === "unresolved"
+    || (value.status !== "unresolved"
+      && !allowedStatuses.includes(value.status as UnderstandingClaimStatus))
     || typeof value.statement !== "string"
-    || !value.statement.trim()
+    || (value.status !== "unresolved" && !value.statement.trim())
     || !Array.isArray(value.sourceSubmissionIds)
     || !Array.isArray(value.sourceAnswerReferences)
   ) return unresolved;
@@ -200,6 +202,14 @@ function normaliseClaim(
     || referenceIds.some((id) => !declaredIds.includes(id))
   ) return unresolved;
 
+  if (value.status === "unresolved") {
+    return {
+      ...unresolved,
+      sourceSubmissionIds: referenceIds,
+      sourceAnswerReferences: references,
+    };
+  }
+
   return {
     id: value.id,
     status: value.status as UnderstandingClaimStatus,
@@ -238,13 +248,121 @@ export function normaliseIndividualOperatingUnderstandings(
   value: unknown,
   sourceSubmissions: readonly OperatingProfileSourceSubmission[],
 ): IndividualOperatingUnderstanding[] {
-  if (!Array.isArray(value)) return [];
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("Individual operating understandings must be stored as an array.");
+  }
+  assertIndividualOperatingUnderstandingsDataStructure(value);
   const byId = new Map<string, IndividualOperatingUnderstanding>();
   value.forEach((entry: unknown) => {
     const understanding = normaliseUnderstanding(entry, sourceSubmissions);
-    if (understanding) byId.set(understanding.id, understanding);
+    if (!understanding) {
+      throw new Error("An individual operating understanding has a malformed record structure.");
+    }
+    const existing = byId.get(understanding.id);
+    byId.set(
+      understanding.id,
+      existing ? mergeUnderstandingRecords(existing, understanding) : understanding,
+    );
   });
   return [...byId.values()];
+}
+
+export function assertIndividualOperatingUnderstandingsDataStructure(value: unknown): void {
+  if (value === undefined || value === null) return;
+  if (!Array.isArray(value)) {
+    throw new Error("Individual operating understandings must be stored as an array.");
+  }
+
+  const isClaimStructure = (claim: unknown): boolean => isPlainObject(claim)
+    && typeof claim.id === "string"
+    && Boolean(claim.id.trim())
+    && typeof claim.status === "string"
+    && typeof claim.statement === "string"
+    && Array.isArray(claim.sourceSubmissionIds)
+    && claim.sourceSubmissionIds.every((id) => typeof id === "string")
+    && Array.isArray(claim.sourceAnswerReferences)
+    && claim.sourceAnswerReferences.every((reference) => isPlainObject(reference)
+      && typeof reference.sourceSubmissionId === "string"
+      && Boolean(reference.sourceSubmissionId.trim())
+      && Array.isArray(reference.answerIndexes)
+      && reference.answerIndexes.every((index) => Number.isInteger(index)));
+
+  const malformed = value.some((entry) => !isPlainObject(entry)
+    || typeof entry.id !== "string"
+    || !entry.id.trim()
+    || !isDimension(entry.dimension)
+    || !isClaimStructure(entry.understanding)
+    || (entry.interpretations !== undefined
+      && (!Array.isArray(entry.interpretations)
+        || !entry.interpretations.every(isClaimStructure))));
+  if (malformed) {
+    throw new Error("An individual operating understanding has a malformed nested record.");
+  }
+}
+
+function mergeClaim(
+  existing: EvidenceLinkedUnderstandingClaim,
+  incoming: EvidenceLinkedUnderstandingClaim,
+): EvidenceLinkedUnderstandingClaim {
+  const answerIndexesBySubmission = new Map<string, Set<number>>();
+  [...existing.sourceAnswerReferences, ...incoming.sourceAnswerReferences].forEach((reference) => {
+    const answerIndexes = answerIndexesBySubmission.get(reference.sourceSubmissionId) ?? new Set<number>();
+    reference.answerIndexes.forEach((answerIndex) => answerIndexes.add(answerIndex));
+    answerIndexesBySubmission.set(reference.sourceSubmissionId, answerIndexes);
+  });
+  const orderedReferences = [...answerIndexesBySubmission]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([sourceSubmissionId, answerIndexes]) => ({
+      sourceSubmissionId,
+      answerIndexes: [...answerIndexes].sort((left, right) => left - right),
+    }));
+  const sourceSubmissionIds = [...new Set(orderedReferences.map(({ sourceSubmissionId }) => sourceSubmissionId))];
+  const conflicts = existing.id !== incoming.id
+    || existing.status === "unresolved"
+    || incoming.status === "unresolved"
+    || existing.statement !== incoming.statement;
+
+  return conflicts
+    ? {
+      id: existing.id,
+      status: "unresolved",
+      statement: "",
+      sourceSubmissionIds,
+      sourceAnswerReferences: orderedReferences,
+    }
+    : {
+      ...existing,
+      sourceSubmissionIds,
+      sourceAnswerReferences: orderedReferences,
+    };
+}
+
+function mergeUnderstandingRecords(
+  existingUnderstanding: IndividualOperatingUnderstanding,
+  incomingUnderstanding: IndividualOperatingUnderstanding,
+): IndividualOperatingUnderstanding {
+  const interpretations = [...existingUnderstanding.interpretations];
+  incomingUnderstanding.interpretations.forEach((interpretation) => {
+    const interpretationIndex = interpretations.findIndex(({ id }) => id === interpretation.id);
+    if (interpretationIndex === -1) interpretations.push(interpretation);
+    else interpretations[interpretationIndex] = mergeClaim(
+      interpretations[interpretationIndex],
+      interpretation,
+    );
+  });
+
+  return {
+    id: existingUnderstanding.id,
+    dimension: existingUnderstanding.dimension,
+    understanding: {
+      ...mergeClaim(existingUnderstanding.understanding, incomingUnderstanding.understanding),
+      ...(existingUnderstanding.dimension !== incomingUnderstanding.dimension
+        ? { status: "unresolved" as const, statement: "" }
+        : {}),
+    },
+    interpretations,
+  };
 }
 
 export function mergeIndividualOperatingUnderstandings(
@@ -252,22 +370,16 @@ export function mergeIndividualOperatingUnderstandings(
   incoming: readonly IndividualOperatingUnderstanding[],
   sourceSubmissions: readonly OperatingProfileSourceSubmission[],
 ): IndividualOperatingUnderstanding[] {
+  assertIndividualOperatingUnderstandingsDataStructure(incoming);
   const merged = normaliseIndividualOperatingUnderstandings(existing, sourceSubmissions);
   incoming.forEach((entry) => {
     const normalised = normaliseUnderstanding(entry, sourceSubmissions);
-    if (!normalised) return;
+    if (!normalised) {
+      throw new Error("An incoming individual operating understanding has a malformed record structure.");
+    }
     const index = merged.findIndex(({ id }) => id === normalised.id);
     if (index === -1) merged.push(normalised);
-    else {
-      const existingUnderstanding = merged[index];
-      const interpretations = [...existingUnderstanding.interpretations];
-      normalised.interpretations.forEach((interpretation) => {
-        const interpretationIndex = interpretations.findIndex(({ id }) => id === interpretation.id);
-        if (interpretationIndex === -1) interpretations.push(interpretation);
-        else interpretations[interpretationIndex] = interpretation;
-      });
-      merged[index] = { ...normalised, interpretations };
-    }
+    else merged[index] = mergeUnderstandingRecords(merged[index], normalised);
   });
   return merged;
 }

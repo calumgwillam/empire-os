@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { persistJsonArray } from "./persistence";
 import {
   attachIndividualOperatingUnderstandings,
+  assertIndividualOperatingUnderstandingsDataStructure,
   founderIndividualOperatingUnderstandings,
+  individualOperatingUnderstandingSeeds,
   individualOperatingDimensions,
   mergeIndividualOperatingUnderstandings,
   normaliseIndividualOperatingUnderstandings,
@@ -23,6 +25,8 @@ type TestPerson = {
   name: string;
   responsibilities: string;
   authority: string;
+  role?: string;
+  accessLevel?: string;
   operatingProfile?: {
     sourceSubmissions?: OperatingProfileSourceSubmission[];
     individualUnderstandings?: IndividualOperatingUnderstanding[];
@@ -302,6 +306,10 @@ describe("operating profile source evidence", () => {
           expect(seed.understandings.map(({ dimension }) => dimension)).toEqual(
             individualOperatingDimensions.map(({ key }) => key),
           );
+          if (seed.respondentName === "Emeka") {
+            expect(seed.understandings.every(({ understanding }) =>
+              !/\bco-?founders?\b|\bfounders?\b/i.test(understanding.statement))).toBe(true);
+          }
           seed.understandings.forEach((item, answerIndex) => {
             expect(item.id).toBe(`${submission.id}:individual-understanding:${item.dimension}`);
             expect(item.understanding).toMatchObject({
@@ -579,6 +587,78 @@ describe("operating profile source evidence", () => {
         expect(merged[merged.length - 1].interpretations).toEqual(updatedDimension.interpretations);
       });
 
+      it("keeps conflicting same-ID understanding claims unresolved while retaining both valid citations", () => {
+        const original = founderIndividualOperatingUnderstandings[0].understandings[0];
+        const laterSubmission: OperatingProfileSourceSubmission = {
+          ...calumLeadershipReflectionSubmission,
+          id: "fg-exterior-care-leadership-alignment-calum-later",
+          answers: [{ question: "Updated motivation", answer: "A conflicting later self-report." }],
+        };
+        const conflicting = {
+          ...original,
+          understanding: {
+            ...original.understanding,
+            statement: "A conflicting understanding statement.",
+            sourceSubmissionIds: [laterSubmission.id],
+            sourceAnswerReferences: [{
+              sourceSubmissionId: laterSubmission.id,
+              answerIndexes: [0],
+            }],
+          },
+        };
+        const sources = [...founderSubmissions, laterSubmission];
+        const before = structuredClone([original, conflicting]);
+        const merged = mergeIndividualOperatingUnderstandings([original], [conflicting], sources);
+        const normalizedDuplicates = normaliseIndividualOperatingUnderstandings(
+          [original, conflicting],
+          sources,
+        );
+        const [rehydrated] = normaliseIndividualOperatingUnderstandings(
+          JSON.parse(JSON.stringify(merged)),
+          sources,
+        );
+
+        expect(merged[0].understanding).toEqual({
+          id: original.understanding.id,
+          status: "unresolved",
+          statement: "",
+          sourceSubmissionIds: [
+            calumLeadershipReflectionSubmission.id,
+            laterSubmission.id,
+          ],
+          sourceAnswerReferences: [{
+            sourceSubmissionId: calumLeadershipReflectionSubmission.id,
+            answerIndexes: [0],
+          }, {
+            sourceSubmissionId: laterSubmission.id,
+            answerIndexes: [0],
+          }],
+        });
+        expect(normalizedDuplicates).toEqual(merged);
+        expect(rehydrated).toEqual(merged[0]);
+        expect([original, conflicting]).toEqual(before);
+      });
+
+      it("fails closed on malformed stored understanding records without dropping them during normalization", () => {
+        const valid = founderIndividualOperatingUnderstandings[0].understandings[0];
+        const malformed = [{
+          ...valid,
+          understanding: {
+            ...valid.understanding,
+            sourceAnswerReferences: "not-an-array",
+          },
+        }];
+
+        expect(() => assertIndividualOperatingUnderstandingsDataStructure(malformed))
+          .toThrow("malformed nested record");
+        expect(() => normaliseIndividualOperatingUnderstandings(
+          malformed,
+          [calumLeadershipReflectionSubmission],
+        )).toThrow("malformed nested record");
+        expect(() => assertIndividualOperatingUnderstandingsDataStructure({ unexpected: true }))
+          .toThrow("stored as an array");
+      });
+
       it("preserves later derived interpretations when the initial understanding is reattached", () => {
         const seed = founderIndividualOperatingUnderstandings[0];
         const firstUnderstanding = seed.understandings[0];
@@ -644,6 +724,44 @@ describe("operating profile source evidence", () => {
         expect(result.people[0].operatingProfile?.individualUnderstandings).toEqual(seed.understandings);
         expect(person).toEqual(personSnapshot);
         expect(calumLeadershipReflectionSubmission).toEqual(sourceSnapshot);
+      });
+
+      it("attaches Emeka's individual understanding without changing his employee status or authority", () => {
+        const emeka: TestPerson = {
+          id: "person-emeka",
+          name: "Emeka",
+          role: "Operations Manager",
+          accessLevel: "Team Member",
+          responsibilities: "Existing operational responsibilities",
+          authority: "Existing delegated authority",
+          operatingProfile: { sourceSubmissions: [emekaLeadershipAlignmentSubmission] },
+        };
+        const seed = individualOperatingUnderstandingSeeds.find(
+          (candidate) => candidate.respondentName === "Emeka",
+        );
+        expect(seed).toBeDefined();
+        if (!seed) throw new Error("Emeka's individual understanding seed is unavailable.");
+
+        const result = attachIndividualOperatingUnderstandings(
+          [emeka],
+          seed,
+          (person) => person.name,
+          (person) => person.operatingProfile?.sourceSubmissions,
+          (person) => person.operatingProfile?.individualUnderstandings,
+          (person, individualUnderstandings) => ({
+            ...person,
+            operatingProfile: { ...person.operatingProfile, individualUnderstandings },
+          }),
+        );
+
+        expect(result.status).toBe("attached");
+        expect(result.people[0]).toMatchObject({
+          role: "Operations Manager",
+          accessLevel: "Team Member",
+          responsibilities: "Existing operational responsibilities",
+          authority: "Existing delegated authority",
+        });
+        expect(result.people[0].operatingProfile?.individualUnderstandings).toEqual(seed.understandings);
       });
 
       it("reports missing and ambiguous people through the reusable understanding attachment helper", () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendResponsibilityFitAssessment,
   createResponsibilityDefinition,
   createPairIntelligenceRecords,
   createTrioIntelligenceRecord,
@@ -430,6 +431,100 @@ describe("founder intelligence evidence foundations", () => {
       }],
     });
     expect(createResponsibilityDefinition("Own customer acquisition").id).toBe(definition.id);
+  });
+
+  it("appends a human-authored requirement assessment without allocating work or mutating source records", () => {
+    const context = createContext();
+    const employeeRecord = {
+      ...context.people[2],
+      accessLevel: "Team Member",
+      role: "Employee",
+      responsibilities: "Existing operational responsibilities",
+      authority: "Existing delegated authority",
+    };
+    const responsibilityContext: FounderIntelligenceContext = {
+      ...context,
+      people: context.people.map((person) => person.id === employeeRecord.id ? employeeRecord : person),
+    };
+    const responsibility = createResponsibilityDefinition("Coordinate customer handover", "", [{
+      id: "handover:communication",
+      capability: "Customer communication",
+      description: "Communicate handover details clearly.",
+    }]);
+    const original = {
+      pairRecords: [],
+      trioRecords: [],
+      responsibilities: [responsibility],
+      responsibilityFits: [],
+      developmentOpportunities: [],
+      operationalOutcomes: [],
+    };
+    const assessment = {
+      id: "emeka-handover-assessment",
+      personId: "person-3",
+      responsibility: responsibility.title,
+      contribution: "executor" as const,
+      fit: "inferred-fit" as const,
+      target: {
+        type: "work-item" as const,
+        responsibilityId: responsibility.id,
+        workItem: { objectType: "Action" as const, objectId: "action-1" },
+      },
+      requirementIds: ["handover:communication"],
+      claim: {
+        id: "emeka-handover-claim",
+        status: "supported-interpretation" as const,
+        statement: "Human-authored interpretation for review.",
+        evidence: [{
+          type: "source-answer" as const,
+          personId: "person-3",
+          sourceSubmissionId: emekaLeadershipAlignmentSubmission.id,
+          answerIndex: 0,
+        }],
+      },
+    };
+    const originalSnapshot = structuredClone(original);
+    const contextSnapshot = structuredClone(responsibilityContext.people);
+    const result = appendResponsibilityFitAssessment(original, responsibility, assessment);
+    const normalized = normaliseFounderIntelligence(result, {
+      ...responsibilityContext,
+      workItems: [{ objectType: "Action", objectId: "action-1" }],
+    });
+    const persistenceContext = {
+      ...responsibilityContext,
+      workItems: [{ objectType: "Action" as const, objectId: "action-1" }],
+    };
+    const rehydrated = normaliseFounderIntelligence(
+      JSON.parse(JSON.stringify(normalized)),
+      persistenceContext,
+    );
+
+    expect(normalized.responsibilityFits[0]).toMatchObject({
+      responsibilityId: responsibility.id,
+      requirements: [responsibility.requirements[0]],
+      assessments: [{
+        personId: "person-3",
+        contribution: "executor",
+        fit: "inferred-fit",
+        target: {
+          type: "work-item",
+          workItem: { objectType: "Action", objectId: "action-1" },
+        },
+        requirementIds: ["handover:communication"],
+      }],
+    });
+    expect(rehydrated).toEqual(normalized);
+    expect(appendResponsibilityFitAssessment(result, responsibility, assessment)
+      .responsibilityFits[0].assessments).toHaveLength(1);
+    expect(original).toEqual(originalSnapshot);
+    expect(responsibilityContext.people).toEqual(contextSnapshot);
+    expect(responsibilityContext.people[2]).toMatchObject({
+      accessLevel: "Team Member",
+      role: "Employee",
+      responsibilities: "Existing operational responsibilities",
+      authority: "Existing delegated authority",
+    });
+    expect(result).not.toHaveProperty("people");
   });
 
   it("links reusable responsibility requirements to separate people, contribution modes, and existing Actions", () => {

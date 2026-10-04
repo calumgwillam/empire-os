@@ -208,12 +208,14 @@ import {
 import { persistJsonArray, persistJsonValue } from "./lib/persistence";
 import {
   attachIndividualOperatingUnderstandings,
-  founderIndividualOperatingUnderstandings,
+  assertIndividualOperatingUnderstandingsDataStructure,
+  individualOperatingUnderstandingSeeds,
   individualOperatingDimensions,
   normaliseIndividualOperatingUnderstandings,
   type IndividualOperatingUnderstanding,
 } from "./lib/individual-operating-understanding";
 import {
+  appendResponsibilityFitAssessment,
   createResponsibilityDefinition,
   createPairIntelligenceRecords,
   createTrioIntelligenceRecord,
@@ -223,6 +225,9 @@ import {
   type FounderIntelligenceContext,
   type FounderIntelligence,
   type FounderIntelligenceEvidenceReference,
+  type ResponsibilityContributionMode,
+  type ResponsibilityFitKind,
+  type ResponsibilityFitAssessment,
   type ResponsibilityWorkItemReference,
 } from "./lib/founder-intelligence";
 import {
@@ -407,9 +412,26 @@ function isActionWaiting(action: Pick<ActionRecord, "status">): boolean {
 
 const personStatusOptions = ["Active", "Inactive", "Candidate", "Former"] as const;
 const personAccessLevelOptions = ["Founder", "Executive", "Manager", "Team Member", "Limited"] as const;
+const responsibilityContributionModes: readonly ResponsibilityContributionMode[] = [
+  "owner",
+  "lead",
+  "executor",
+  "contributor",
+  "support",
+  "reviewer",
+];
+const responsibilityAssessmentFitOptions = [
+  "stated-capability",
+  "evidence-grounded-fit",
+  "inferred-fit",
+] as const satisfies readonly ResponsibilityFitKind[];
 
 type PersonStatus = (typeof personStatusOptions)[number];
 type PersonAccessLevel = (typeof personAccessLevelOptions)[number];
+type ResponsibilityAssessmentSourceReference = Extract<
+  FounderIntelligenceEvidenceReference,
+  { type: "source-answer" }
+>;
 
 const compatibilityEvidenceStatusOptions = [
   "Stated Preference",
@@ -8435,6 +8457,17 @@ export default function Home() {
   const [responsibilityDescriptionDraft, setResponsibilityDescriptionDraft] = useState("");
   const [responsibilityRequirementDraft, setResponsibilityRequirementDraft] = useState("");
   const [responsibilityRequirementDescriptionDraft, setResponsibilityRequirementDescriptionDraft] = useState("");
+  const [responsibilityAssessmentResponsibilityIdDraft, setResponsibilityAssessmentResponsibilityIdDraft] =
+    useState("");
+  const [responsibilityAssessmentRequirementIdDraft, setResponsibilityAssessmentRequirementIdDraft] = useState("");
+  const [responsibilityAssessmentContributionDraft, setResponsibilityAssessmentContributionDraft] =
+    useState<ResponsibilityContributionMode | "">("");
+  const [responsibilityAssessmentFitDraft, setResponsibilityAssessmentFitDraft] =
+    useState<(typeof responsibilityAssessmentFitOptions)[number] | "">("");
+  const [responsibilityAssessmentActionIdDraft, setResponsibilityAssessmentActionIdDraft] = useState("");
+  const [responsibilityAssessmentStatementDraft, setResponsibilityAssessmentStatementDraft] = useState("");
+  const [responsibilityAssessmentEvidenceDraft, setResponsibilityAssessmentEvidenceDraft] =
+    useState<ResponsibilityAssessmentSourceReference | null>(null);
   const [selectedWorkingRelationshipId, setSelectedWorkingRelationshipId] = useState<string | null>(null);
   const [newRelationshipPersonId, setNewRelationshipPersonId] = useState<string>("");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -8458,6 +8491,7 @@ export default function Home() {
   const [taxPaymentRecords, setTaxPaymentRecords] = useState<TaxPaymentRecord[]>([]);
   const [dailyPostureSnapshots, setDailyPostureSnapshots] = useState<DailyPostureSnapshot[]>([]);
   const [operatingDataLoaded, setOperatingDataLoaded] = useState(false);
+  const peopleWritableRef = useRef(false);
   const founderIntelligenceWritableRef = useRef(false);
   const founderIntelligenceContextRef = useRef<FounderIntelligenceContext | null>(null);
   const [changeHistory, setChangeHistory] = useState<ChangeEvent[]>([]);
@@ -8565,6 +8599,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    peopleWritableRef.current = false;
     try {
       const initialIntegrityStorage: Record<string, string | null> = {};
       for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) initialIntegrityStorage[key] = window.localStorage.getItem(key);
@@ -8722,6 +8757,14 @@ export default function Home() {
         const parsedPeople = JSON.parse(storedPeople);
 
         if (Array.isArray(parsedPeople)) {
+          parsedPeople.forEach((person: unknown) => {
+            if (!isPlainObject(person) || !isPlainObject(person.operatingProfile)) return;
+            if (Object.prototype.hasOwnProperty.call(person.operatingProfile, "individualUnderstandings")) {
+              assertIndividualOperatingUnderstandingsDataStructure(
+                person.operatingProfile.individualUnderstandings,
+              );
+            }
+          });
           const submissions = [
             lewisLeadershipAlignmentSubmission,
             emekaLeadershipAlignmentSubmission,
@@ -8756,7 +8799,7 @@ export default function Home() {
             }
           });
 
-          founderIndividualOperatingUnderstandings.forEach((seed) => {
+          individualOperatingUnderstandingSeeds.forEach((seed) => {
             const attachment = attachIndividualOperatingUnderstandings(
               attachedPeople,
               seed,
@@ -8782,6 +8825,7 @@ export default function Home() {
 
           setPeople(attachedPeople);
           loadedPeople = attachedPeople;
+          peopleWritableRef.current = true;
           const attachmentFailure = attachmentFailures[0];
           if (attachmentFailure) {
             setFeedback({
@@ -9055,10 +9099,10 @@ export default function Home() {
           setDailyPostureSnapshots(normalised);
         }
       }
-    } catch {
+    } catch (error) {
       setFeedback({
         type: "error",
-        message: "Local capture storage could not be loaded.",
+        message: `Local capture storage could not be loaded. ${error instanceof Error ? error.message : String(error)}`,
       });
     } finally {
       setOperatingDataLoaded(true);
@@ -9082,7 +9126,7 @@ export default function Home() {
   }, [conversions, operatingDataLoaded]);
 
   useEffect(() => {
-    if (!operatingDataLoaded) {
+    if (!operatingDataLoaded || !peopleWritableRef.current) {
       return;
     }
 
@@ -14412,6 +14456,13 @@ export default function Home() {
     setSelectedPersonId(person.id);
     setPersonEditor(person);
     setPersonSaveState("idle");
+    setResponsibilityAssessmentResponsibilityIdDraft("");
+    setResponsibilityAssessmentRequirementIdDraft("");
+    setResponsibilityAssessmentContributionDraft("");
+    setResponsibilityAssessmentFitDraft("");
+    setResponsibilityAssessmentActionIdDraft("");
+    setResponsibilityAssessmentStatementDraft("");
+    setResponsibilityAssessmentEvidenceDraft(null);
   };
 
   const handlePersonEditorChange = (
@@ -14430,6 +14481,27 @@ export default function Home() {
   };
 
   const personOperatingProfile = normaliseOperatingProfile(personEditor?.operatingProfile);
+  const responsibilityAssessmentEvidenceOptions = personOperatingProfile.sourceSubmissions.flatMap(
+    (submission) => submission.answers.map((answer, answerIndex) => {
+      const reference: ResponsibilityAssessmentSourceReference = {
+        type: "source-answer",
+        personId: personEditor?.id ?? "",
+        sourceSubmissionId: submission.id,
+        answerIndex,
+      };
+      return {
+        value: JSON.stringify(reference),
+        label: `${submission.sourceTitle}: ${answer.question}`,
+        reference,
+      };
+    }),
+  );
+  const selectedAssessmentResponsibility = founderIntelligence.responsibilities.find(
+    (responsibility) => responsibility.id === responsibilityAssessmentResponsibilityIdDraft,
+  );
+  const selectedAssessmentRequirement = selectedAssessmentResponsibility?.requirements.find(
+    (requirement) => requirement.id === responsibilityAssessmentRequirementIdDraft,
+  );
 
   const handlePersonOperatingProfileChange = (
     dimension: CompatibilityDimensionKey,
@@ -14482,6 +14554,7 @@ export default function Home() {
     };
 
     const isNewPerson = !people.some((person) => person.id === nextPerson.id);
+    peopleWritableRef.current = true;
 
     setPeople((currentPeople) =>
       isNewPerson
@@ -19939,6 +20012,182 @@ export default function Home() {
                   ))}
                 </div>
               </div>
+              <div className="mt-3 rounded-lg border border-[#d3cbc3] bg-white p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#4d4944]">
+                  Requirement-level capability assessment
+                </div>
+                <p className="mt-1 text-[11px] leading-5 text-[#4d4944]">
+                  Record a human-authored, evidence-linked assessment for one person and one requirement. An optional Action link references existing work only; it does not allocate ownership or change authority. Demonstrated capability requires independent successful operational evidence and cannot be recorded from questionnaire answers here.
+                </p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <select
+                    aria-label="Assessment responsibility"
+                    value={responsibilityAssessmentResponsibilityIdDraft}
+                    onChange={(event) => {
+                      setResponsibilityAssessmentResponsibilityIdDraft(event.target.value);
+                      setResponsibilityAssessmentRequirementIdDraft("");
+                    }}
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  >
+                    <option value="">Select responsibility</option>
+                    {founderIntelligence.responsibilities.map((responsibility) => (
+                      <option key={responsibility.id} value={responsibility.id}>{responsibility.title}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Assessment requirement"
+                    value={responsibilityAssessmentRequirementIdDraft}
+                    onChange={(event) => setResponsibilityAssessmentRequirementIdDraft(event.target.value)}
+                    disabled={!selectedAssessmentResponsibility?.requirements.length}
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717] disabled:opacity-50"
+                  >
+                    <option value="">Select one requirement</option>
+                    {selectedAssessmentResponsibility?.requirements.map((requirement) => (
+                      <option key={requirement.id} value={requirement.id}>{requirement.capability}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Contribution mode"
+                    value={responsibilityAssessmentContributionDraft}
+                    onChange={(event) => {
+                      const mode = responsibilityContributionModes.find(
+                        (candidate) => candidate === event.target.value,
+                      );
+                      setResponsibilityAssessmentContributionDraft(mode ?? "");
+                    }}
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  >
+                    <option value="">Select contribution mode</option>
+                    {responsibilityContributionModes.map((mode) => (
+                      <option key={mode} value={mode}>{mode}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Capability assessment type"
+                    value={responsibilityAssessmentFitDraft}
+                    onChange={(event) => {
+                      const fit = responsibilityAssessmentFitOptions.find(
+                        (candidate) => candidate === event.target.value,
+                      );
+                      setResponsibilityAssessmentFitDraft(fit ?? "");
+                    }}
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  >
+                    <option value="">Select assessment type</option>
+                    {responsibilityAssessmentFitOptions.map((fit) => (
+                      <option key={fit} value={fit}>{fit.replace(/-/g, " ")}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Assessment source evidence"
+                    value={responsibilityAssessmentEvidenceDraft
+                      ? JSON.stringify(responsibilityAssessmentEvidenceDraft)
+                      : ""}
+                    onChange={(event) => {
+                      const option = responsibilityAssessmentEvidenceOptions.find(
+                        (candidate) => candidate.value === event.target.value,
+                      );
+                      setResponsibilityAssessmentEvidenceDraft(option?.reference ?? null);
+                    }}
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  >
+                    <option value="">Select a source answer</option>
+                    {responsibilityAssessmentEvidenceOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Existing Action reference"
+                    value={responsibilityAssessmentActionIdDraft}
+                    onChange={(event) => setResponsibilityAssessmentActionIdDraft(event.target.value)}
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  >
+                    <option value="">No Action link</option>
+                    {actionRecords.map((action) => (
+                      <option key={action.id} value={action.id}>
+                        {action.actionTitle || action.id}
+                      </option>
+                    ))}
+                  </select>
+                  <textarea
+                    aria-label="Assessment statement"
+                    rows={3}
+                    value={responsibilityAssessmentStatementDraft}
+                    onChange={(event) => setResponsibilityAssessmentStatementDraft(event.target.value)}
+                    placeholder="Human-authored assessment statement"
+                    className="resize-y rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717] sm:col-span-2"
+                  />
+                </div>
+                <button
+                  type="button"
+                  disabled={
+                    !personEditor.id
+                    || !selectedAssessmentResponsibility
+                    || !selectedAssessmentRequirement
+                    || !responsibilityAssessmentContributionDraft
+                    || !responsibilityAssessmentFitDraft
+                    || !responsibilityAssessmentEvidenceDraft
+                    || responsibilityAssessmentEvidenceDraft.personId !== personEditor.id
+                    || !responsibilityAssessmentStatementDraft.trim()
+                  }
+                  onClick={() => {
+                    const responsibility = founderIntelligence.responsibilities.find(
+                      (candidate) => candidate.id === responsibilityAssessmentResponsibilityIdDraft,
+                    );
+                    const requirement = responsibility?.requirements.find(
+                      (candidate) => candidate.id === responsibilityAssessmentRequirementIdDraft,
+                    );
+                    const evidence = responsibilityAssessmentEvidenceDraft;
+                    const action = actionRecords.find(
+                      (candidate) => candidate.id === responsibilityAssessmentActionIdDraft,
+                    );
+                    const fit = responsibilityAssessmentFitOptions.find(
+                      (candidate) => candidate === responsibilityAssessmentFitDraft,
+                    );
+                    const contribution = responsibilityContributionModes.find(
+                      (candidate) => candidate === responsibilityAssessmentContributionDraft,
+                    );
+                    const statement = responsibilityAssessmentStatementDraft.trim();
+                    if (!responsibility || !requirement || !evidence
+                      || evidence.personId !== personEditor.id || !fit || !contribution || !statement) return;
+
+                    const assessmentId = generateCaptureId();
+                    const assessment: ResponsibilityFitAssessment = {
+                      id: assessmentId,
+                      personId: personEditor.id,
+                      responsibility: responsibility.title,
+                      contribution,
+                      fit,
+                      target: action
+                        ? {
+                          type: "work-item",
+                          responsibilityId: responsibility.id,
+                          workItem: { objectType: "Action", objectId: action.id },
+                        }
+                        : { type: "responsibility", responsibilityId: responsibility.id },
+                      requirementIds: [requirement.id],
+                      claim: {
+                        id: `${assessmentId}:claim`,
+                        status: fit === "inferred-fit"
+                          ? "supported-interpretation"
+                          : "evidence-grounded-understanding",
+                        statement,
+                        evidence: [evidence],
+                      },
+                    };
+                    setFounderIntelligence((current) => appendResponsibilityFitAssessment(
+                      current,
+                      responsibility,
+                      assessment,
+                    ));
+                    setResponsibilityAssessmentStatementDraft("");
+                    setResponsibilityAssessmentEvidenceDraft(null);
+                  }}
+                  className="mt-2 rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white disabled:opacity-40"
+                >
+                  Record assessment (not an allocation)
+                </button>
+              </div>
               {(() => {
                 const pairRecords = founderIntelligence.pairRecords.filter(
                   (record) => record.personIds.includes(personEditor.id),
@@ -20042,7 +20291,11 @@ export default function Home() {
                       <div key={`${record.id}-${assessment.id}`} className="rounded-lg border border-[#d3cbc3] bg-white p-3">
                         <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
                           Responsibility fit • {assessment.fit} • {assessment.contribution}
+                          {assessment.candidateFit ? ` • candidate: ${assessment.candidateFit}` : ""}
                           {assessment.assessmentStatus ? ` • ${assessment.assessmentStatus}` : ""}
+                          {assessment.candidateAssessmentStatus
+                            ? ` • candidate status: ${assessment.candidateAssessmentStatus}`
+                            : ""}
                         </div>
                         <p className="mt-1 text-[12px] font-medium text-[#171717]">
                           {record.title}: {assessment.responsibility}
@@ -20227,7 +20480,9 @@ export default function Home() {
                         </div>
                       ) : (
                         <p className="mt-2 text-[12px] text-[#4d4944]">
-                          Understanding unresolved: no valid supporting source reference is available.
+                          {item.understanding.sourceAnswerReferences.length > 0
+                            ? "Understanding unresolved: source evidence is retained, but this claim has not been established."
+                            : "Understanding unresolved: no valid supporting source reference is available."}
                         </p>
                       )}
                       <div className="mt-3 space-y-2">
@@ -20290,7 +20545,31 @@ export default function Home() {
                                 })}
                               </>
                             ) : (
-                              <p className="text-[11px] text-[#4d4944]">Interpretation unresolved.</p>
+                              <>
+                                <p className="text-[11px] text-[#4d4944]">
+                                  {interpretation.sourceAnswerReferences.length > 0
+                                    ? "Interpretation unresolved; source evidence is retained but does not establish this claim."
+                                    : "Interpretation unresolved; no valid supporting source reference is available."}
+                                </p>
+                                {interpretation.sourceAnswerReferences.flatMap((reference) => {
+                                  const submission = personOperatingProfile.sourceSubmissions.find(
+                                    ({ id }) => id === reference.sourceSubmissionId,
+                                  );
+                                  if (!submission) return [];
+                                  return reference.answerIndexes.flatMap((answerIndex) => {
+                                    const answer = submission.answers[answerIndex];
+                                    if (!answer) return [];
+                                    return [(
+                                      <p
+                                        key={`${interpretation.id}-${reference.sourceSubmissionId}-${answerIndex}`}
+                                        className="mt-1 whitespace-pre-wrap text-[10px] leading-4 text-[#4d4944]"
+                                      >
+                                        Source retained: {submission.sourceTitle}, answer {answerIndex + 1}: {answer.question} — {answer.answer}
+                                      </p>
+                                    )];
+                                  });
+                                })}
+                              </>
                             )}
                           </div>
                         ))}

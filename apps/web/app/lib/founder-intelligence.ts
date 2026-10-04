@@ -542,6 +542,38 @@ export function createResponsibilityDefinition(
   };
 }
 
+export function appendResponsibilityFitAssessment(
+  intelligence: FounderIntelligence,
+  responsibility: ResponsibilityDefinition,
+  assessment: ResponsibilityFitAssessment,
+): FounderIntelligence {
+  const existingRecord = intelligence.responsibilityFits.find(
+    (record) => record.responsibilityId === responsibility.id,
+  );
+  const fitRecord: ResponsibilityFitRecord = {
+    ...(existingRecord ?? {
+      id: `responsibility-fit:${encodeURIComponent(responsibility.id)}`,
+      title: responsibility.title,
+      requirements: [],
+      assessments: [],
+    }),
+    responsibilityId: responsibility.id,
+    requirements: mergeById(
+      existingRecord?.requirements ?? [],
+      responsibility.requirements,
+    ),
+    assessments: mergeClaimedById(existingRecord?.assessments ?? [], [assessment]),
+  };
+
+  return {
+    ...intelligence,
+    responsibilityFits: existingRecord
+      ? intelligence.responsibilityFits.map((record) =>
+        record.id === existingRecord.id ? fitRecord : record)
+      : [...intelligence.responsibilityFits, fitRecord],
+  };
+}
+
 export function createPairIntelligenceRecords(personIds: readonly string[]): PairIntelligenceRecord[] {
   const uniqueIds = sortedDistinctIds(personIds);
   const records: PairIntelligenceRecord[] = [];
