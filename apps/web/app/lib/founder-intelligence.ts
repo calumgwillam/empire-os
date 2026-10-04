@@ -46,9 +46,16 @@ export type FounderIntelligenceClaim = {
   evidence: FounderIntelligenceEvidenceReference[];
 };
 
+export type FounderRelationshipEvidenceKind =
+  | "source-grounded-understanding"
+  | "operating-observation"
+  | "compatibility-interpretation";
+
 export type PairIntelligenceObservation = {
   id: string;
   dimension: string;
+  relationshipKind?: FounderRelationshipEvidenceKind;
+  integrityStatus?: "conflicting";
   direction?: {
     fromPersonId: string;
     toPersonId: string;
@@ -208,6 +215,7 @@ export type FounderIntelligence = {
 
 export type FounderIntelligencePerson = {
   id: string;
+  accessLevel?: string;
   operatingProfile?: {
     sourceSubmissions?: readonly OperatingProfileSourceSubmission[];
     individualUnderstandings?: readonly IndividualOperatingUnderstanding[];
@@ -236,6 +244,11 @@ const validClaimStatuses: readonly FounderIntelligenceClaimStatus[] = [
   "evidence-grounded-understanding",
   "supported-interpretation",
   "unresolved",
+];
+const founderRelationshipEvidenceKinds: readonly FounderRelationshipEvidenceKind[] = [
+  "source-grounded-understanding",
+  "operating-observation",
+  "compatibility-interpretation",
 ];
 const validResponsibilityFitKinds: readonly ResponsibilityFitKind[] = [
   "stated-capability",
@@ -359,6 +372,13 @@ function isValidFounderIntelligenceRecordStructure(value: unknown, key: string):
             && nonEmptyString(observation.id)
             && nonEmptyString(observation.dimension)
             && isValidClaimStructure(observation.claim)
+            && (observation.relationshipKind === undefined
+              || (key === "pairRecords"
+                && founderRelationshipEvidenceKinds.includes(
+                  observation.relationshipKind as FounderRelationshipEvidenceKind,
+                )))
+            && (observation.integrityStatus === undefined
+              || (observation.relationshipKind !== undefined && observation.integrityStatus === "conflicting"))
             && (observation.direction === undefined
               || (isPlainObject(observation.direction)
                 && nonEmptyString(observation.direction.fromPersonId)
@@ -491,6 +511,20 @@ function mergeClaimedById<T extends { id: string; claim: FounderIntelligenceClai
     }
     const claim = mergeClaims(existing.claim, record.claim);
     const merged = { ...existing, ...record, claim };
+    if (("relationshipKind" in existing || "relationshipKind" in record)
+      && (("integrityStatus" in existing && existing.integrityStatus === "conflicting")
+        || ("integrityStatus" in record && record.integrityStatus === "conflicting")
+        || existing.claim.id !== record.claim.id
+        || existing.claim.statement !== record.claim.statement
+        || ("relationshipKind" in existing ? existing.relationshipKind : undefined)
+          !== ("relationshipKind" in record ? record.relationshipKind : undefined)
+        || ("dimension" in existing ? existing.dimension : undefined)
+          !== ("dimension" in record ? record.dimension : undefined)
+        || JSON.stringify("direction" in existing ? existing.direction : undefined)
+          !== JSON.stringify("direction" in record ? record.direction : undefined))) {
+      Object.assign(merged, { integrityStatus: "conflicting" });
+      merged.claim = { ...claim, status: "unresolved" };
+    }
     if (claim.status === "unresolved") {
       if ("fit" in merged && merged.fit !== "unresolved") {
         Object.assign(merged, {
@@ -533,6 +567,45 @@ function mergeById<T extends { id: string }>(left: readonly T[], right: readonly
 
 function deterministicId(prefix: "pair" | "trio", personIds: readonly string[]): string {
   return `${prefix}:${sortedDistinctIds(personIds).map(encodeURIComponent).join(":")}`;
+}
+
+function hasFounderParticipants(personIds: readonly string[], context: FounderIntelligenceContext): boolean {
+  return personIds.length === 2 && personIds.every(nonEmptyString) && new Set(personIds).size === 2
+    && personIds.every((id) => {
+      const matches = context.people.filter((person) => person.id === id);
+      return matches.length === 1 && matches[0].accessLevel === "Founder";
+    });
+}
+
+export function createFounderRelationshipRecord(
+  personIds: readonly string[],
+  context: FounderIntelligenceContext,
+): PairIntelligenceRecord {
+  if (!hasFounderParticipants(personIds, context)) {
+    throw new Error("A founder relationship requires two distinct People records with Founder access.");
+  }
+  return createPairIntelligenceRecords(personIds)[0];
+}
+
+export function createFounderRelationshipObservation(
+  pair: PairIntelligenceRecord,
+  observationKey: string,
+  input: Pick<PairIntelligenceObservation, "dimension" | "direction" | "claim"> & {
+    relationshipKind: FounderRelationshipEvidenceKind;
+  },
+): PairIntelligenceObservation {
+  if (!nonEmptyString(observationKey)) throw new Error("A relationship observation key is required.");
+  const observation: PairIntelligenceObservation = {
+    ...input,
+    id: `${deterministicId("pair", pair.personIds)}:relationship:${encodeURIComponent(observationKey)}`,
+    ...(input.direction ? { direction: { ...input.direction } } : {}),
+    claim: {
+      ...input.claim,
+      evidence: input.claim.evidence.map((reference) => ({ ...reference })),
+    },
+  };
+  assertFounderIntelligenceDataStructure({ pairRecords: [{ ...pair, observations: [observation] }] });
+  return observation;
 }
 
 export function createResponsibilityDefinition(
@@ -966,6 +1039,92 @@ function normaliseClaim(value: unknown, context: FounderIntelligenceContext): Fo
   };
 }
 
+function isGroundedRelationshipReference(
+  reference: FounderIntelligenceEvidenceReference,
+  context: FounderIntelligenceContext,
+): boolean {
+  if (reference.type === "source-answer") return validSourceAnswer(reference, context) !== null;
+  if (reference.type === "individual-understanding") {
+    return validIndividualClaim(reference, context)?.status === "evidence-grounded-understanding";
+  }
+  return false;
+}
+
+function isIndependentRelationshipOutcome(
+  reference: Extract<FounderIntelligenceEvidenceReference, { type: "operational-outcome" }>,
+  context: FounderIntelligenceContext,
+): boolean {
+  if (!context.people.some((person) => person.id === reference.personId)) return false;
+  const recordExists = context.operationalRecords?.some((record) =>
+    record.recordType === reference.recordType && record.recordId === reference.recordId) === true
+    || context.workItems?.some((record) =>
+      record.objectType === reference.recordType && record.objectId === reference.recordId) === true;
+  const outcomes = (context.operationalEvidence ?? []).filter((outcome) =>
+    outcome.personId === reference.personId
+    && outcome.recordType === reference.recordType
+    && outcome.recordId === reference.recordId
+    && outcome.outcomeId === reference.outcomeId);
+  const first = outcomes[0];
+  return recordExists && first !== undefined
+    && first.outcome !== "unassessed"
+    && nonEmptyString(first.observedResult)
+    && outcomes.every((outcome) =>
+      outcome.outcome === first.outcome
+      && outcome.observedResult === first.observedResult
+      && outcome.contribution === first.contribution);
+}
+
+function supportsFounderRelationshipObservation(
+  observation: PairIntelligenceObservation,
+  personIds: readonly string[],
+  context: FounderIntelligenceContext,
+): boolean {
+  if (!hasFounderParticipants(personIds, context)
+    || observation.integrityStatus === "conflicting"
+    || observation.claim.evidence.length === 0
+    || !observation.claim.statement.trim()) return false;
+  const requestedStatus = observation.claim.candidateStatus ?? observation.claim.status;
+  if (observation.relationshipKind === "source-grounded-understanding") {
+    return requestedStatus === "evidence-grounded-understanding"
+      && observation.claim.evidence.every((reference) =>
+        isGroundedRelationshipReference(reference, context)
+        && reference.type !== "pair-observation"
+        && personIds.includes(reference.personId)
+        && (!observation.direction || reference.personId === observation.direction.fromPersonId));
+  }
+  if (observation.relationshipKind === "operating-observation") {
+    return requestedStatus === "evidence-grounded-understanding"
+      && observation.claim.evidence.every((reference) =>
+        reference.type === "operational-outcome"
+        && personIds.includes(reference.personId)
+        && isIndependentRelationshipOutcome(reference, context));
+  }
+  if (observation.relationshipKind !== "compatibility-interpretation"
+    || requestedStatus !== "supported-interpretation") return false;
+  const coveredPeople = new Set<string>();
+  const validEvidence = observation.claim.evidence.every((reference) => {
+    if (reference.type !== "pair-observation") {
+      if (!isGroundedRelationshipReference(reference, context)
+        || !personIds.includes(reference.personId)) return false;
+      coveredPeople.add(reference.personId);
+      return true;
+    }
+    const pair = context.pairRecords?.find((candidate) => candidate.id === reference.pairId);
+    if (!pair || JSON.stringify(sortedDistinctIds(pair.personIds)) !== JSON.stringify(sortedDistinctIds(personIds))) {
+      return false;
+    }
+    const cited = pair.observations.find((candidate) => candidate.id === reference.observationId);
+    if (!cited || cited.relationshipKind === undefined
+      || cited.relationshipKind === "compatibility-interpretation"
+      || !supportsFounderRelationshipObservation(cited, personIds, context)) return false;
+    cited.claim.evidence.forEach((evidence) => {
+      if (evidence.type !== "pair-observation") coveredPeople.add(evidence.personId);
+    });
+    return true;
+  });
+  return validEvidence && personIds.every((id) => coveredPeople.has(id));
+}
+
 function normalisePairObservation(
   value: unknown,
   personIds: readonly string[],
@@ -990,6 +1149,28 @@ function normalisePairObservation(
     ))) return null;
   const claim = normaliseClaim(value.claim, context);
   if (!claim) return null;
+  const relationshipKind = founderRelationshipEvidenceKinds.find((kind) => kind === value.relationshipKind);
+  if (relationshipKind) {
+    const observation: PairIntelligenceObservation = {
+      id: value.id,
+      dimension: value.dimension,
+      relationshipKind,
+      ...(value.integrityStatus === "conflicting" ? { integrityStatus: "conflicting" } : {}),
+      ...(direction ? { direction } : {}),
+      claim,
+    };
+    const requestedStatus = claim.candidateStatus ?? claim.status;
+    const supported = supportsFounderRelationshipObservation(observation, personIds, context);
+    return {
+      ...observation,
+      claim: {
+        ...claim,
+        status: supported ? requestedStatus : "unresolved",
+        ...(supported ? { candidateStatus: undefined }
+          : requestedStatus !== "unresolved" ? { candidateStatus: requestedStatus } : {}),
+      },
+    };
+  }
   const correctlyScoped = claim.evidence.every((reference) => {
     if (reference.type === "pair-observation") return false;
     return personIds.includes(reference.personId);
@@ -1011,7 +1192,13 @@ function normalisePairObservation(
 }
 
 function normalisePairRecord(value: unknown, context: FounderIntelligenceContext): PairIntelligenceRecord | null {
-  if (!isPlainObject(value) || !Array.isArray(value.personIds) || value.personIds.length !== 2) return null;
+  if (!isPlainObject(value)) return null;
+  if (Array.isArray(value.observations) && value.observations.some((observation) =>
+    isPlainObject(observation)
+    && (observation.relationshipKind !== undefined || observation.integrityStatus !== undefined))) {
+    assertFounderIntelligenceDataStructure({ pairRecords: [value] });
+  }
+  if (!Array.isArray(value.personIds) || value.personIds.length !== 2) return null;
   const personIds = sortedDistinctIds(value.personIds.filter(nonEmptyString));
   if (personIds.length !== 2) return null;
   const id = nonEmptyString(value.id) ? value.id : deterministicId("pair", personIds);
@@ -1021,6 +1208,103 @@ function normalisePairRecord(value: unknown, context: FounderIntelligenceContext
       .filter((observation): observation is PairIntelligenceObservation => observation !== null)
     : [];
   return { id, personIds: personIds as [string, string], observations };
+}
+
+function refreshFounderRelationshipPairs(
+  pairs: readonly PairIntelligenceRecord[],
+  context: FounderIntelligenceContext,
+): PairIntelligenceRecord[] {
+  const refreshObservation = (
+    observation: PairIntelligenceObservation,
+    pair: PairIntelligenceRecord,
+    evidenceContext: FounderIntelligenceContext,
+  ): PairIntelligenceObservation => {
+    const refreshed = normalisePairObservation(observation, pair.personIds, evidenceContext);
+    if (!refreshed) throw new Error("A founder relationship observation could not be normalized.");
+    return refreshed;
+  };
+  const directPairs = pairs.map((pair) => ({
+    ...pair,
+    observations: pair.observations.map((observation) =>
+      observation.relationshipKind !== undefined
+        && observation.relationshipKind !== "compatibility-interpretation"
+        ? refreshObservation(observation, pair, context)
+        : observation),
+  }));
+  const pairsById = new Map((context.pairRecords ?? []).map((pair) => [pair.id, pair]));
+  directPairs.forEach((pair) => pairsById.set(pair.id, pair));
+  const relationshipContext = { ...context, pairRecords: [...pairsById.values()] };
+  return directPairs.map((pair) => ({
+    ...pair,
+    observations: pair.observations.map((observation) =>
+      observation.relationshipKind === "compatibility-interpretation"
+        ? refreshObservation(observation, pair, relationshipContext)
+        : observation),
+  }));
+}
+
+export type FounderRelationshipUnderstanding = {
+  pairId: string;
+  personIds: [string, string];
+  founderStatus: "verified" | "unresolved";
+  // Bilateral citations indicate coverage, not proven mutual agreement or compatibility.
+  sourceCoverage: "both-founders" | "partial" | "unresolved";
+  compatibilityStatus: "supported-interpretation" | "unresolved";
+  sourceUnderstandings: PairIntelligenceObservation[];
+  operatingObservations: PairIntelligenceObservation[];
+  compatibilityInterpretations: PairIntelligenceObservation[];
+  authorityChanged: false;
+};
+
+export function deriveFounderRelationshipUnderstanding(
+  pair: PairIntelligenceRecord,
+  context: FounderIntelligenceContext,
+): FounderRelationshipUnderstanding {
+  assertFounderIntelligenceDataStructure({ pairRecords: [pair] });
+  const normalized = normaliseFounderIntelligence({ pairRecords: [pair] }, context).pairRecords[0];
+  const observations = normalized.observations;
+  const sourceUnderstandings = observations.filter((observation) =>
+    observation.relationshipKind === "source-grounded-understanding");
+  const operatingObservations = observations.filter((observation) =>
+    observation.relationshipKind === "operating-observation");
+  const compatibilityInterpretations = observations.filter((observation) =>
+    observation.relationshipKind === "compatibility-interpretation");
+  const coveredPeople = new Set(sourceUnderstandings
+    .filter((observation) => observation.claim.status === "evidence-grounded-understanding")
+    .flatMap((observation) => observation.claim.evidence
+      .flatMap((reference) => reference.type === "pair-observation" ? [] : [reference.personId])));
+  return {
+    pairId: normalized.id,
+    personIds: [...normalized.personIds],
+    founderStatus: hasFounderParticipants(normalized.personIds, context) ? "verified" : "unresolved",
+    sourceCoverage: normalized.personIds.every((id) => coveredPeople.has(id))
+      ? "both-founders" : coveredPeople.size > 0 ? "partial" : "unresolved",
+    compatibilityStatus: compatibilityInterpretations.length > 0
+      && compatibilityInterpretations.every((observation) => observation.claim.status === "supported-interpretation")
+      && [...sourceUnderstandings, ...operatingObservations].every((observation) =>
+        observation.claim.status !== "unresolved")
+      ? "supported-interpretation" : "unresolved",
+    sourceUnderstandings,
+    operatingObservations,
+    compatibilityInterpretations,
+    authorityChanged: false,
+  };
+}
+
+export function appendFounderRelationshipObservation(
+  intelligence: FounderIntelligence,
+  pair: PairIntelligenceRecord,
+  observation: PairIntelligenceObservation,
+  context: FounderIntelligenceContext,
+): FounderIntelligence {
+  if (observation.relationshipKind === undefined) {
+    throw new Error("A founder relationship evidence kind is required.");
+  }
+  createFounderRelationshipRecord(pair.personIds, context);
+  assertFounderIntelligenceDataStructure({ pairRecords: [{ ...pair, observations: [observation] }] });
+  return mergeFounderIntelligence(intelligence, {
+    pairRecords: [{ ...pair, observations: [observation] }],
+  }, context);
 }
 
 function normaliseTrioObservation(
@@ -1367,7 +1651,7 @@ export function normaliseFounderIntelligence(
       }
     });
   }
-  const resolvedPairs = [...pairRecords.values()];
+  const resolvedPairs = refreshFounderRelationshipPairs([...pairRecords.values()], contextWithOperationalOutcomes);
   const pairsById = new Map((contextWithOperationalOutcomes.pairRecords ?? []).map((pair) => [pair.id, pair]));
   resolvedPairs.forEach((pair) => {
     const existing = pairsById.get(pair.id);
@@ -1454,7 +1738,7 @@ export function normaliseFounderIntelligence(
     });
   }
   return {
-    pairRecords: [...pairRecords.values()],
+    pairRecords: resolvedPairs,
     trioRecords: [...trioRecords.values()],
     responsibilities: [...responsibilities.values()],
     responsibilityFits: [...responsibilityFits.values()],
@@ -1520,7 +1804,10 @@ export function mergeFounderIntelligence(
     };
   });
   return {
-    pairRecords: mergePairs(current.pairRecords, additions.pairRecords),
+    pairRecords: refreshFounderRelationshipPairs(
+      mergePairs(current.pairRecords, additions.pairRecords),
+      context,
+    ),
     trioRecords: mergeTrios(current.trioRecords, additions.trioRecords),
     responsibilities: mergeResponsibilityDefinitions(current.responsibilities, additions.responsibilities),
     responsibilityFits: mergeResponsibilities(current.responsibilityFits, additions.responsibilityFits),
