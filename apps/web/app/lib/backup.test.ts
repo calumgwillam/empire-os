@@ -5,6 +5,7 @@ import {
   CASH_POSITION_STORAGE_KEY,
   CHANGE_HISTORY_STORAGE_KEY,
   EMPIRE_OS_BACKUP_STORAGE_KEYS,
+  FOUNDER_INTELLIGENCE_STORAGE_KEY,
   PERSON_STORAGE_KEY,
   PROJECT_STORAGE_KEY,
   STORAGE_KEY,
@@ -115,6 +116,20 @@ describe("validateEmpireOsBackup", () => {
 
   it("accepts a null cash position", () => {
     expect(() => validateEmpireOsBackup(makeBackup({}, { [CASH_POSITION_STORAGE_KEY]: null }))).not.toThrow();
+  });
+
+  it("validates founder-intelligence storage as an object while remaining optional for legacy backups", () => {
+    expect(() => validateEmpireOsBackup(makeBackup({}, {
+      [FOUNDER_INTELLIGENCE_STORAGE_KEY]: JSON.stringify({
+        pairRecords: [],
+        trioRecords: [],
+        responsibilityFits: [],
+      }),
+    }))).not.toThrow();
+    expect(() => validateEmpireOsBackup(makeBackup({}, {
+      [FOUNDER_INTELLIGENCE_STORAGE_KEY]: "[]",
+    }))).toThrow(`invalid object data for ${FOUNDER_INTELLIGENCE_STORAGE_KEY}`);
+    expect(() => validateEmpireOsBackup(makeBackup())).not.toThrow();
   });
 });
 

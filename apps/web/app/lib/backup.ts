@@ -17,6 +17,7 @@ export const CHANGE_HISTORY_STORAGE_KEY = "empire-os-change-history";
 export const STRATEGIC_OBJECTIVES_STORAGE_KEY = "empire-os-strategic-objectives";
 export const STRATEGIC_REVIEWS_STORAGE_KEY = "empire-os-strategic-reviews";
 export const WORKING_RELATIONSHIP_STORAGE_KEY = "empire-os-working-relationships";
+export const FOUNDER_INTELLIGENCE_STORAGE_KEY = "empire-os-founder-intelligence";
 
 export const BACKUP_FORMAT = "empire-os-backup";
 export const BACKUP_VERSION = 1;
@@ -44,6 +45,7 @@ export const EMPIRE_OS_BACKUP_STORAGE_KEYS = [
   STRATEGIC_OBJECTIVES_STORAGE_KEY,
   STRATEGIC_REVIEWS_STORAGE_KEY,
   WORKING_RELATIONSHIP_STORAGE_KEY,
+  FOUNDER_INTELLIGENCE_STORAGE_KEY,
 ] as const;
 
 export type EmpireOsBackup = {
@@ -192,6 +194,15 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
       if (!Array.isArray(JSON.parse(storedValue))) throw new Error();
     } catch {
       throw new Error(`The backup contains invalid array data for ${key}.`);
+    }
+  }
+
+  const founderIntelligence = storage[FOUNDER_INTELLIGENCE_STORAGE_KEY];
+  if (typeof founderIntelligence === "string") {
+    try {
+      if (!isPlainObject(JSON.parse(founderIntelligence))) throw new Error();
+    } catch {
+      throw new Error(`The backup contains invalid object data for ${FOUNDER_INTELLIGENCE_STORAGE_KEY}.`);
     }
   }
 

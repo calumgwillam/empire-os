@@ -177,6 +177,7 @@ import {
   DELEGATION_HANDOFF_STORAGE_KEY,
   EMPIRE_OS_BACKUP_STORAGE_KEYS,
   EXPENSE_STORAGE_KEY,
+  FOUNDER_INTELLIGENCE_STORAGE_KEY,
   getBackupHealth,
   INCOME_STORAGE_KEY,
   isPlainObject,
@@ -212,6 +213,18 @@ import {
   normaliseIndividualOperatingUnderstandings,
   type IndividualOperatingUnderstanding,
 } from "./lib/individual-operating-understanding";
+import {
+  createResponsibilityDefinition,
+  createPairIntelligenceRecords,
+  createTrioIntelligenceRecord,
+  assertFounderIntelligenceDataStructure,
+  mergeFounderIntelligence,
+  normaliseFounderIntelligence,
+  type FounderIntelligenceContext,
+  type FounderIntelligence,
+  type FounderIntelligenceEvidenceReference,
+  type ResponsibilityWorkItemReference,
+} from "./lib/founder-intelligence";
 import {
   attachOperatingProfileSourceSubmission,
   calumLeadershipReflectionSubmission,
@@ -589,6 +602,72 @@ type PersonRecord = {
   dateCreated: string;
   operatingProfile?: OperatingProfile;
 };
+
+function getFounderIntelligenceEvidenceDetails(
+  reference: FounderIntelligenceEvidenceReference,
+  people: readonly PersonRecord[],
+  founderIntelligence: FounderIntelligence,
+  visited = new Set<string>(),
+): string[] {
+  const referenceKey = JSON.stringify(reference);
+  if (visited.has(referenceKey)) return [];
+  visited.add(referenceKey);
+
+  if (reference.type === "source-answer") {
+    const person = people.find((candidate) => candidate.id === reference.personId);
+    const submission = person?.operatingProfile?.sourceSubmissions?.find(
+      (candidate) => candidate.id === reference.sourceSubmissionId,
+    );
+    const answer = submission?.answers[reference.answerIndex];
+    return answer && submission
+      ? [`${person?.name || submission.respondentName} — ${submission.sourceTitle}, answer ${reference.answerIndex + 1}: ${answer.question} — ${answer.answer}`]
+      : [`Unresolved source answer reference: ${reference.sourceSubmissionId}, answer ${reference.answerIndex + 1}.`];
+  }
+
+  if (reference.type === "individual-understanding") {
+    const person = people.find((candidate) => candidate.id === reference.personId);
+    const understanding = person?.operatingProfile?.individualUnderstandings?.find(
+      (candidate) => candidate.id === reference.understandingId,
+    );
+    const claim = understanding
+      ? [understanding.understanding, ...understanding.interpretations]
+        .find((candidate) => candidate.id === reference.claimId)
+      : null;
+    if (!claim) return [`Unresolved individual-understanding reference: ${reference.claimId}.`];
+    return [
+      `Evidence-grounded understanding — ${person?.name || "Person"}: ${claim.statement}`,
+      ...claim.sourceAnswerReferences.flatMap((answerReference) =>
+        answerReference.answerIndexes.flatMap((answerIndex) =>
+          getFounderIntelligenceEvidenceDetails({
+            type: "source-answer",
+            personId: reference.personId,
+            sourceSubmissionId: answerReference.sourceSubmissionId,
+            answerIndex,
+          }, people, founderIntelligence, visited))),
+    ];
+  }
+
+  if (reference.type === "pair-observation") {
+    const pair = founderIntelligence.pairRecords.find((candidate) => candidate.id === reference.pairId);
+    const observation = pair?.observations.find((candidate) => candidate.id === reference.observationId);
+    if (!observation) return [`Unresolved pair-observation reference: ${reference.observationId}.`];
+    return [
+      `Pair evidence — ${observation.claim.statement}`,
+      ...observation.claim.evidence.flatMap((evidenceReference) =>
+        getFounderIntelligenceEvidenceDetails(evidenceReference, people, founderIntelligence, visited)),
+    ];
+  }
+
+  const outcome = founderIntelligence.operationalOutcomes.find(
+    (candidate) => candidate.personId === reference.personId
+      && candidate.recordType === reference.recordType
+      && candidate.recordId === reference.recordId
+      && candidate.outcomeId === reference.outcomeId,
+  );
+  return outcome
+    ? [`${outcome.evidenceStatus === "resolved" ? "Operational outcome" : "Unresolved operational outcome"} — ${outcome.recordType} ${outcome.recordId}, ${outcome.contribution}: ${outcome.outcome}. ${outcome.observedResult}`]
+    : [`Unresolved operational outcome reference — ${reference.recordType} ${reference.recordId}, outcome ${reference.outcomeId}.`];
+}
 
 type PersonFormValues = Omit<PersonRecord, "id" | "dateCreated">;
 
@@ -8344,6 +8423,18 @@ export default function Home() {
   const [personEditor, setPersonEditor] = useState<PersonRecord | null>(null);
   const [personSaveState, setPersonSaveState] = useState<"idle" | "saved">("idle");
   const [workingRelationships, setWorkingRelationships] = useState<WorkingRelationship[]>([]);
+  const [founderIntelligence, setFounderIntelligence] = useState<FounderIntelligence>({
+    pairRecords: [],
+    trioRecords: [],
+    responsibilities: [],
+    responsibilityFits: [],
+    developmentOpportunities: [],
+    operationalOutcomes: [],
+  });
+  const [responsibilityTitleDraft, setResponsibilityTitleDraft] = useState("");
+  const [responsibilityDescriptionDraft, setResponsibilityDescriptionDraft] = useState("");
+  const [responsibilityRequirementDraft, setResponsibilityRequirementDraft] = useState("");
+  const [responsibilityRequirementDescriptionDraft, setResponsibilityRequirementDescriptionDraft] = useState("");
   const [selectedWorkingRelationshipId, setSelectedWorkingRelationshipId] = useState<string | null>(null);
   const [newRelationshipPersonId, setNewRelationshipPersonId] = useState<string>("");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -8367,6 +8458,8 @@ export default function Home() {
   const [taxPaymentRecords, setTaxPaymentRecords] = useState<TaxPaymentRecord[]>([]);
   const [dailyPostureSnapshots, setDailyPostureSnapshots] = useState<DailyPostureSnapshot[]>([]);
   const [operatingDataLoaded, setOperatingDataLoaded] = useState(false);
+  const founderIntelligenceWritableRef = useRef(false);
+  const founderIntelligenceContextRef = useRef<FounderIntelligenceContext | null>(null);
   const [changeHistory, setChangeHistory] = useState<ChangeEvent[]>([]);
   const [strategicObjectives, setStrategicObjectives] = useState<StrategicObjective[]>([]);
   const [strategicReviews, setStrategicReviews] = useState<StrategicReview[]>([]);
@@ -8484,6 +8577,7 @@ export default function Home() {
       const storedLeads = window.localStorage.getItem(LEAD_STORAGE_KEY);
       const storedDelegationHandoffs = window.localStorage.getItem(DELEGATION_HANDOFF_STORAGE_KEY);
       const storedWorkingRelationships = window.localStorage.getItem(WORKING_RELATIONSHIP_STORAGE_KEY);
+      const storedFounderIntelligence = window.localStorage.getItem(FOUNDER_INTELLIGENCE_STORAGE_KEY);
       const storedCashPosition = window.localStorage.getItem(CASH_POSITION_STORAGE_KEY);
       const storedIncome = window.localStorage.getItem(INCOME_STORAGE_KEY);
       const storedExpenses = window.localStorage.getItem(EXPENSE_STORAGE_KEY);
@@ -8499,6 +8593,7 @@ export default function Home() {
           CONVERSION_STORAGE_KEY,
           PERSON_STORAGE_KEY,
           WORKING_RELATIONSHIP_STORAGE_KEY,
+          FOUNDER_INTELLIGENCE_STORAGE_KEY,
           PROJECT_STORAGE_KEY,
           LEAD_STORAGE_KEY,
           DELEGATION_HANDOFF_STORAGE_KEY,
@@ -8580,12 +8675,49 @@ export default function Home() {
         }
       }
 
+      const loadedWorkItems: ResponsibilityWorkItemReference[] = [];
+      const loadedOperationalRecords: Array<{ recordType: string; recordId: string }> = [];
+      const addOperationalRecord = (recordType: string, recordId: unknown) => {
+        if (typeof recordId !== "string" || !recordId.trim()) return;
+        if (!loadedOperationalRecords.some((record) =>
+          record.recordType === recordType && record.recordId === recordId)) {
+          loadedOperationalRecords.push({ recordType, recordId });
+        }
+      };
+      const addWorkItem = (objectType: ResponsibilityWorkItemReference["objectType"], objectId: unknown) => {
+        if (typeof objectId !== "string" || !objectId.trim()) return;
+        if (!loadedWorkItems.some((record) =>
+          record.objectType === objectType && record.objectId === objectId)) {
+          loadedWorkItems.push({ objectType, objectId });
+        }
+        addOperationalRecord(objectType, objectId);
+      };
+
       if (storedConversions) {
         const parsedConversions = JSON.parse(storedConversions);
         if (Array.isArray(parsedConversions)) {
           setConversions(parsedConversions);
+          const conversionRecordTypes: Record<string, string> = {
+            "Convert to Action": "Action",
+            "Convert to Decision": "Decision",
+            "Convert to Lesson": "Lesson",
+            "Convert to Problem": "Problem",
+            "Convert to Project": "Project",
+            "Convert to SOP": "SOP",
+            "Convert to System": "System",
+          };
+          parsedConversions.forEach((record: unknown) => {
+            if (!isPlainObject(record) || typeof record.targetType !== "string") return;
+            const recordType = conversionRecordTypes[record.targetType];
+            if (!recordType) return;
+            addOperationalRecord(recordType, record.id);
+            if (recordType === "Action" || recordType === "Problem") {
+              addWorkItem(recordType, record.id);
+            }
+          });
         }
       }
+      let loadedPeople: PersonRecord[] = [];
       if (storedPeople) {
         const parsedPeople = JSON.parse(storedPeople);
 
@@ -8649,6 +8781,7 @@ export default function Home() {
           });
 
           setPeople(attachedPeople);
+          loadedPeople = attachedPeople;
           const attachmentFailure = attachmentFailures[0];
           if (attachmentFailure) {
             setFeedback({
@@ -8680,6 +8813,11 @@ export default function Home() {
         const parsedProjects = JSON.parse(storedProjects);
 
         if (Array.isArray(parsedProjects)) {
+          parsedProjects.forEach((project: unknown) => {
+            if (isPlainObject(project) && typeof project.id === "string") {
+              addWorkItem("Project", project.id);
+            }
+          });
           setProjects(parsedProjects.map((project) => ({
             ...project,
             health: projectHealthOptions.includes(project.health as ProjectHealth) ? project.health : project.status?.trim().toLowerCase() === "blocked" ? "Blocked" : "On track",
@@ -8697,6 +8835,11 @@ export default function Home() {
         const parsedLeads = JSON.parse(storedLeads);
 
         if (Array.isArray(parsedLeads)) {
+          parsedLeads.forEach((lead: unknown) => {
+            if (isPlainObject(lead) && typeof lead.id === "string") {
+              addWorkItem("Lead", lead.id);
+            }
+          });
           setLeads(
   parsedLeads.map((lead) => ({
     ...lead,
@@ -8704,6 +8847,30 @@ export default function Home() {
   })),
 );
         }
+      }
+
+      const loadedFounderIntelligenceContext: FounderIntelligenceContext = {
+        people: loadedPeople,
+        workItems: loadedWorkItems,
+        operationalRecords: loadedOperationalRecords,
+      };
+      founderIntelligenceContextRef.current = loadedFounderIntelligenceContext;
+      if (storedFounderIntelligence) {
+        try {
+          const parsedFounderIntelligence: unknown = JSON.parse(storedFounderIntelligence);
+          assertFounderIntelligenceDataStructure(parsedFounderIntelligence);
+          setFounderIntelligence(normaliseFounderIntelligence(parsedFounderIntelligence, loadedFounderIntelligenceContext));
+          founderIntelligenceWritableRef.current = true;
+        } catch (error) {
+          founderIntelligenceWritableRef.current = false;
+          setFeedback({
+            type: "error",
+            message: `Founder intelligence data could not be loaded; the stored browser data has been preserved. ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      } else {
+        setFounderIntelligence(normaliseFounderIntelligence(null, loadedFounderIntelligenceContext));
+        founderIntelligenceWritableRef.current = true;
       }
 
       if (storedDelegationHandoffs) {
@@ -8953,6 +9120,14 @@ export default function Home() {
 
     persistJsonArray(window.localStorage, WORKING_RELATIONSHIP_STORAGE_KEY, workingRelationships);
   }, [workingRelationships, operatingDataLoaded]);
+
+  useEffect(() => {
+    if (!operatingDataLoaded || !founderIntelligenceWritableRef.current) {
+      return;
+    }
+
+    persistJsonValue(window.localStorage, FOUNDER_INTELLIGENCE_STORAGE_KEY, founderIntelligence);
+  }, [founderIntelligence, operatingDataLoaded]);
 
   useEffect(() => {
     // Gated on operatingDataLoaded (like every other Finance record) so this never fires before the stored cash position has been read back into state.
@@ -19648,6 +19823,332 @@ export default function Home() {
                   className="w-full resize-none rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] leading-6 text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
                 />
               </div>
+            </div>
+
+            <div className="mt-6 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2f2b28]">
+                Evidence-linked founder intelligence
+              </div>
+              <p className="mt-1 text-[11px] leading-5 text-[#4d4944]">
+                Pair and trio claims remain separate from first-hand answers. Every supported claim shows its evidence chain; unresolved links are not treated as established understanding. This section does not change formal responsibilities or authority.
+              </p>
+              <div className="mt-3 rounded-lg border border-[#d3cbc3] bg-white p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#4d4944]">
+                  Responsibility definitions
+                </div>
+                <p className="mt-1 text-[11px] leading-5 text-[#4d4944]">
+                  Responsibilities describe ongoing accountability; existing Actions remain the task records. Requirements are criteria, not capability claims.
+                </p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <input
+                    aria-label="Responsibility title"
+                    value={responsibilityTitleDraft}
+                    onChange={(event) => setResponsibilityTitleDraft(event.target.value)}
+                    placeholder="Responsibility"
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  />
+                  <input
+                    aria-label="Responsibility description"
+                    value={responsibilityDescriptionDraft}
+                    onChange={(event) => setResponsibilityDescriptionDraft(event.target.value)}
+                    placeholder="Scope or accountability (optional)"
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  />
+                  <input
+                    aria-label="Responsibility requirement"
+                    value={responsibilityRequirementDraft}
+                    onChange={(event) => setResponsibilityRequirementDraft(event.target.value)}
+                    placeholder="Requirement (optional)"
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  />
+                  <input
+                    aria-label="Requirement description"
+                    value={responsibilityRequirementDescriptionDraft}
+                    onChange={(event) => setResponsibilityRequirementDescriptionDraft(event.target.value)}
+                    placeholder="What the requirement means (optional)"
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  />
+                </div>
+                <button
+                  type="button"
+                  disabled={!responsibilityTitleDraft.trim()}
+                  onClick={() => {
+                    const title = responsibilityTitleDraft.trim();
+                    if (!title) return;
+                    setFounderIntelligence((current) => {
+                      const proposed = createResponsibilityDefinition(title);
+                      const existing = current.responsibilities.find((responsibility) =>
+                        responsibility.id === proposed.id);
+                      const capability = responsibilityRequirementDraft.trim();
+                      const requirement = capability
+                        ? {
+                          id: `${proposed.id}:requirement:${encodeURIComponent(capability.toLowerCase())}`,
+                          capability,
+                          description: responsibilityRequirementDescriptionDraft.trim(),
+                          type: "capability" as const,
+                        }
+                        : null;
+                      const definition = createResponsibilityDefinition(
+                        title,
+                        responsibilityDescriptionDraft.trim() || existing?.description || "",
+                        [
+                          ...(existing?.requirements ?? []),
+                          ...(requirement ? [requirement] : []),
+                        ],
+                      );
+                      return {
+                        ...current,
+                        responsibilities: [
+                          ...current.responsibilities.filter((responsibility) => responsibility.id !== definition.id),
+                          definition,
+                        ],
+                      };
+                    });
+                    setResponsibilityTitleDraft("");
+                    setResponsibilityDescriptionDraft("");
+                    setResponsibilityRequirementDraft("");
+                    setResponsibilityRequirementDescriptionDraft("");
+                  }}
+                  className="mt-2 rounded-lg border border-[#171717] bg-[#171717] px-3 py-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white disabled:opacity-40"
+                >
+                  Save responsibility
+                </button>
+                <div className="mt-3 space-y-2">
+                  {founderIntelligence.responsibilities.length === 0 ? (
+                    <p className="text-[11px] text-[#4d4944]">No responsibility definitions recorded.</p>
+                  ) : founderIntelligence.responsibilities.map((responsibility) => (
+                    <div key={responsibility.id} className="rounded-lg border border-[#e3ddd6] px-3 py-2">
+                      <div className="text-[12px] font-medium text-[#171717]">{responsibility.title}</div>
+                      {responsibility.description ? (
+                        <p className="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-[#4d4944]">{responsibility.description}</p>
+                      ) : null}
+                      {responsibility.requirements.length > 0 ? (
+                        <ul className="mt-1 list-disc pl-4 text-[11px] leading-5 text-[#4d4944]">
+                          {responsibility.requirements.map((requirement) => (
+                            <li key={requirement.id}>
+                              {requirement.capability}
+                              {requirement.type ? ` • ${requirement.type}` : ""}
+                              {requirement.description ? ` — ${requirement.description}` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-1 text-[11px] text-[#4d4944]">No requirements defined.</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {(() => {
+                const pairRecords = founderIntelligence.pairRecords.filter(
+                  (record) => record.personIds.includes(personEditor.id),
+                );
+                const trioRecords = founderIntelligence.trioRecords.filter(
+                  (record) => record.personIds.includes(personEditor.id),
+                );
+                const responsibilityFits = founderIntelligence.responsibilityFits
+                  .flatMap((record) => record.assessments
+                    .filter((assessment) => assessment.personId === personEditor.id)
+                    .map((assessment) => ({ record, assessment })));
+                const developmentOpportunities = founderIntelligence.developmentOpportunities.filter(
+                  (opportunity) => opportunity.personId === personEditor.id,
+                );
+                const operationalOutcomes = founderIntelligence.operationalOutcomes.filter(
+                  (outcome) => outcome.personId === personEditor.id,
+                );
+                const activeFounders = people.filter(
+                  (person) => person.accessLevel === "Founder" && person.status === "Active",
+                );
+                const pairScaffold = createPairIntelligenceRecords(activeFounders.map((person) => person.id));
+                const trioScaffold = createTrioIntelligenceRecord(activeFounders.map((person) => person.id));
+                const missingWorkspaceRecords = pairScaffold.some(
+                  (pair) => !founderIntelligence.pairRecords.some((record) => record.id === pair.id),
+                ) || (trioScaffold !== null
+                  && !founderIntelligence.trioRecords.some((record) => record.id === trioScaffold.id));
+                const hasObservations = pairRecords.some((record) => record.observations.length > 0)
+                  || trioRecords.some((record) => record.observations.length > 0);
+
+                return (
+                  <div className="mt-3 space-y-3">
+                    {activeFounders.length >= 2 && missingWorkspaceRecords ? (
+                      <button
+                        type="button"
+                        onClick={() => setFounderIntelligence((current) => mergeFounderIntelligence(
+                          current,
+                          {
+                            pairRecords: pairScaffold,
+                            trioRecords: trioScaffold ? [trioScaffold] : [],
+                            responsibilities: [],
+                            responsibilityFits: [],
+                            developmentOpportunities: [],
+                            operationalOutcomes: [],
+                          },
+                          {
+                            ...(founderIntelligenceContextRef.current ?? { people }),
+                            people,
+                          },
+                        ))}
+                        className="rounded-lg border border-[#171717] bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717]"
+                      >
+                        Prepare empty founder intelligence records
+                      </button>
+                    ) : null}
+                    {!hasObservations
+                      && responsibilityFits.length === 0
+                      && developmentOpportunities.length === 0
+                      && operationalOutcomes.length === 0 ? (
+                      <p className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[12px] text-[#4d4944]">
+                        No pair, trio, or responsibility-fit claims have been recorded. No conclusions are generated from the questionnaire automatically.
+                      </p>
+                    ) : null}
+
+                    {pairRecords.flatMap((record) => record.observations.map((observation) => (
+                      <div key={`${record.id}-${observation.id}`} className="rounded-lg border border-[#d3cbc3] bg-white p-3">
+                        <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
+                          Pair: {getPersonDisplayName(record.personIds.find((id) => id !== personEditor.id) || "")}
+                          {observation.direction
+                            ? ` • ${getPersonDisplayName(observation.direction.fromPersonId)} → ${getPersonDisplayName(observation.direction.toPersonId)}`
+                            : ""}
+                          {" • "}{observation.dimension} • {observation.claim.status}
+                        </div>
+                        <p className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-[#171717]">{observation.claim.statement}</p>
+                        {observation.claim.evidence.flatMap((reference, index) =>
+                          getFounderIntelligenceEvidenceDetails(reference, people, founderIntelligence)
+                            .map((detail, detailIndex) => (
+                              <p key={`${index}-${detailIndex}`} className="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-[#4d4944]">
+                                Evidence: {detail}
+                              </p>
+                              )))}
+                      </div>
+                    )))}
+
+                    {trioRecords.flatMap((record) => record.observations.map((observation) => (
+                      <div key={`${record.id}-${observation.id}`} className="rounded-lg border border-[#d3cbc3] bg-white p-3">
+                        <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
+                          Trio • {observation.dimension} • {observation.claim.status}
+                        </div>
+                        <p className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-[#171717]">{observation.claim.statement}</p>
+                        {observation.claim.evidence.flatMap((reference, index) =>
+                          getFounderIntelligenceEvidenceDetails(reference, people, founderIntelligence)
+                            .map((detail, detailIndex) => (
+                              <p key={`${index}-${detailIndex}`} className="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-[#4d4944]">
+                                Evidence: {detail}
+                              </p>
+                            )))}
+                      </div>
+                    )))}
+
+                    {responsibilityFits.map(({ record, assessment }) => (
+                      <div key={`${record.id}-${assessment.id}`} className="rounded-lg border border-[#d3cbc3] bg-white p-3">
+                        <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
+                          Responsibility fit • {assessment.fit} • {assessment.contribution}
+                          {assessment.assessmentStatus ? ` • ${assessment.assessmentStatus}` : ""}
+                        </div>
+                        <p className="mt-1 text-[12px] font-medium text-[#171717]">
+                          {record.title}: {assessment.responsibility}
+                          {record.responsibilityId
+                            ? ` • ${founderIntelligence.responsibilities.find((responsibility) =>
+                              responsibility.id === record.responsibilityId)?.title || "Unresolved responsibility"}`
+                            : ""}
+                        </p>
+                        {assessment.target?.type === "work-item" ? (
+                          <p className="mt-1 text-[11px] text-[#4d4944]">
+                            Existing {assessment.target.workItem.objectType} reference: {assessment.target.workItem.objectId}
+                          </p>
+                        ) : null}
+                        {assessment.requirementIds?.map((requirementId) => {
+                          const requirement = [
+                            ...record.requirements,
+                            ...(founderIntelligence.responsibilities
+                              .find((responsibility) => responsibility.id === record.responsibilityId)?.requirements ?? []),
+                          ].find((candidate) => candidate.id === requirementId);
+                          return (
+                            <p key={requirementId} className="mt-1 text-[11px] text-[#4d4944]">
+                              Requirement: {requirement?.capability || `Unresolved reference ${requirementId}`}
+                              {requirement?.description ? ` — ${requirement.description}` : ""}
+                            </p>
+                          );
+                        })}
+                        {assessment.unresolvedRequirementIds?.length ? (
+                          <p className="mt-1 text-[11px] text-[#4d4944]">
+                            Unresolved requirements: {assessment.unresolvedRequirementIds.join(", ")}
+                          </p>
+                        ) : null}
+                        <p className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-[#171717]">{assessment.claim.statement}</p>
+                        {assessment.limitations?.map((limitation, index) => (
+                          <p key={`${assessment.id}-limitation-${index}`} className="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-[#4d4944]">
+                            Limitation: {limitation}
+                          </p>
+                        ))}
+                        {assessment.claim.evidence.flatMap((reference, index) =>
+                          getFounderIntelligenceEvidenceDetails(reference, people, founderIntelligence)
+                            .map((detail, detailIndex) => (
+                              <p key={`${index}-${detailIndex}`} className="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-[#4d4944]">
+                                Evidence: {detail}
+                              </p>
+                            )))}
+                        {assessment.claim.evidence.length === 0 ? (
+                          <p className="mt-1 text-[11px] text-[#4d4944]">No valid evidence linked; this assessment remains unresolved.</p>
+                        ) : null}
+                      </div>
+                    ))}
+                    {founderIntelligence.responsibilityFits.flatMap((record) =>
+                      (record.arrangements ?? [])
+                        .filter((arrangement) => arrangement.assessmentIds.some((assessmentId) =>
+                          record.assessments.some((assessment) =>
+                            assessment.id === assessmentId && assessment.personId === personEditor.id)))
+                        .map((arrangement) => (
+                        <div key={`${record.id}-${arrangement.id}`} className="rounded-lg border border-[#d3cbc3] bg-white p-3">
+                          <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
+                            Possible multi-person arrangement • {arrangement.status}
+                          </div>
+                          <p className="mt-1 text-[12px] font-medium text-[#171717]">{record.title}</p>
+                          <p className="mt-1 text-[11px] text-[#4d4944]">
+                            Contributions: {arrangement.assessmentIds.map((assessmentId) => {
+                              const assessment = record.assessments.find((candidate) => candidate.id === assessmentId);
+                              return assessment
+                                ? `${getPersonDisplayName(assessment.personId)} — ${assessment.contribution}`
+                                : `Unresolved assessment ${assessmentId}`;
+                            }).join("; ")}
+                          </p>
+                          <p className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-[#171717]">{arrangement.claim.statement}</p>
+                          {arrangement.claim.evidence.flatMap((reference, index) =>
+                            getFounderIntelligenceEvidenceDetails(reference, people, founderIntelligence)
+                              .map((detail, detailIndex) => (
+                                <p key={`${index}-${detailIndex}`} className="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-[#4d4944]">
+                                  Evidence: {detail}
+                                </p>
+                              )))}
+                        </div>
+                      )))}
+                    {developmentOpportunities.map((opportunity) => (
+                      <div key={opportunity.id} className="rounded-lg border border-[#d3cbc3] bg-white p-3">
+                        <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
+                          Development opportunity • {opportunity.status}
+                        </div>
+                        <p className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-[#171717]">{opportunity.statement}</p>
+                        {opportunity.claim.evidence.flatMap((reference, index) =>
+                          getFounderIntelligenceEvidenceDetails(reference, people, founderIntelligence)
+                            .map((detail, detailIndex) => (
+                              <p key={`${index}-${detailIndex}`} className="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-[#4d4944]">
+                                Evidence: {detail}
+                              </p>
+                            )))}
+                      </div>
+                    ))}
+                    {operationalOutcomes.map((outcome) => (
+                      <div key={outcome.id} className="rounded-lg border border-[#d3cbc3] bg-white p-3">
+                        <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
+                          Operational outcome evidence • {outcome.evidenceStatus} • {outcome.outcome}
+                        </div>
+                        <p className="mt-1 text-[12px] text-[#171717]">
+                          {outcome.recordType} {outcome.recordId} • {outcome.contribution} • {outcome.observedResult}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="mt-6 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] p-3">

@@ -8,6 +8,7 @@ import {
   DELEGATION_HANDOFF_STORAGE_KEY,
   EMPIRE_OS_BACKUP_STORAGE_KEYS,
   EXPENSE_STORAGE_KEY,
+  FOUNDER_INTELLIGENCE_STORAGE_KEY,
   INCOME_STORAGE_KEY,
   isPlainObject,
   isValidChangeEvent,
@@ -470,13 +471,19 @@ export function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditRes
     SAVED_VIEWS_STORAGE_KEY, DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, CHANGE_HISTORY_STORAGE_KEY, STRATEGIC_OBJECTIVES_STORAGE_KEY, STRATEGIC_REVIEWS_STORAGE_KEY,
     WORKING_RELATIONSHIP_STORAGE_KEY,
   ]);
+  const objectStoreKeys = new Set<string>([
+    CASH_POSITION_STORAGE_KEY,
+    FOUNDER_INTELLIGENCE_STORAGE_KEY,
+  ]);
   for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
     const raw = input.storage[key];
     if (raw === null) continue;
     if (key === DEFAULT_SAVED_VIEW_STORAGE_KEY) continue;
     try {
       const parsed = JSON.parse(raw);
-      const validShape = key === CASH_POSITION_STORAGE_KEY ? isPlainObject(parsed) : !arrayStoreKeys.has(key) || Array.isArray(parsed);
+      const validShape = objectStoreKeys.has(key)
+        ? isPlainObject(parsed)
+        : !arrayStoreKeys.has(key) || Array.isArray(parsed);
       if (!validShape) throw new Error();
       if (key === CHANGE_HISTORY_STORAGE_KEY && Array.isArray(parsed)) {
         parsed.forEach((event, index) => {
