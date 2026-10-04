@@ -1,3 +1,5 @@
+import { assertIcarusDataStructure, ICARUS_STORAGE_KEY } from "./icarus";
+
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
 export const PERSON_STORAGE_KEY = "empire-os-people";
@@ -46,6 +48,7 @@ export const EMPIRE_OS_BACKUP_STORAGE_KEYS = [
   STRATEGIC_REVIEWS_STORAGE_KEY,
   WORKING_RELATIONSHIP_STORAGE_KEY,
   FOUNDER_INTELLIGENCE_STORAGE_KEY,
+  ICARUS_STORAGE_KEY,
 ] as const;
 
 export type EmpireOsBackup = {
@@ -91,12 +94,15 @@ export function runBackupRestoreTransaction(target: BackupStorage, backup: Empir
 
     writesStarted = true;
     for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
+      // Pre-Icarus backups omit this store; preserve assessments when restoring one.
+      if (key === ICARUS_STORAGE_KEY && !Object.prototype.hasOwnProperty.call(backup.storage, key)) continue;
       const value = Object.prototype.hasOwnProperty.call(backup.storage, key) ? backup.storage[key] : null;
       if (value === null) target.removeItem(key);
       else target.setItem(key, value);
     }
 
     const failedKeys = EMPIRE_OS_BACKUP_STORAGE_KEYS.filter((key) => {
+      if (key === ICARUS_STORAGE_KEY && !Object.prototype.hasOwnProperty.call(backup.storage, key)) return false;
       const expected = Object.prototype.hasOwnProperty.call(backup.storage, key) ? backup.storage[key] : null;
       return target.getItem(key) !== expected;
     });
@@ -187,6 +193,7 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
     STRATEGIC_OBJECTIVES_STORAGE_KEY,
     STRATEGIC_REVIEWS_STORAGE_KEY,
     WORKING_RELATIONSHIP_STORAGE_KEY,
+    ICARUS_STORAGE_KEY,
   ];
   for (const key of arrayStorageKeys) {
     const storedValue = storage[key];
@@ -220,6 +227,19 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
           assertIndividualOperatingUnderstandingsDataStructure(person.operatingProfile.individualUnderstandings);
         }
       });
+    }
+  }
+
+  const storedIcarus = storage[ICARUS_STORAGE_KEY];
+  if (typeof storedIcarus === "string") {
+    try {
+      assertIcarusDataStructure(JSON.parse(storedIcarus));
+    } catch (error) {
+      throw new Error(
+        error instanceof Error
+          ? `The backup contains invalid Icarus data: ${error.message}`
+          : "The backup contains invalid Icarus data.",
+      );
     }
   }
 

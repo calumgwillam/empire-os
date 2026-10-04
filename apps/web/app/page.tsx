@@ -1,6 +1,7 @@
 "use client";
 
 import FounderRelationshipPanel from "./components/founder-relationship-panel";
+import IcarusPanel from "./components/icarus-panel";
 import { recordFounderRelationshipDraft, reviewFounderRelationshipEvidence } from "./lib/founder-relationship-workflow";
 import {
   getEffectiveProjectHealth,
@@ -210,6 +211,14 @@ import {
 } from "./lib/integrity-audit";
 import { persistJsonArray, persistJsonValue } from "./lib/persistence";
 import {
+  assertIcarusDataStructure,
+  buildIcarusReview,
+  ICARUS_STORAGE_KEY,
+  parseIcarusAssessments,
+  type IcarusAssessmentRecord,
+  type IcarusSourceRecord,
+} from "./lib/icarus";
+import {
   attachIndividualOperatingUnderstandings,
   assertIndividualOperatingUnderstandingsDataStructure,
   individualOperatingUnderstandingSeeds,
@@ -294,6 +303,7 @@ import {
 const navigation = [
   "Empire OS",
   "Command",
+  "Icarus",
   "Empire",
   "Capture",
   "Problems",
@@ -342,6 +352,7 @@ const backupSummaryStores = [
   { key: STRATEGIC_OBJECTIVES_STORAGE_KEY, label: "Strategic objectives" },
   { key: STRATEGIC_REVIEWS_STORAGE_KEY, label: "Strategic reviews" },
   { key: WORKING_RELATIONSHIP_STORAGE_KEY, label: "Working relationships" },
+  { key: ICARUS_STORAGE_KEY, label: "Icarus assessments" },
 ] as const;
 
 const ChangeHistoryContext = createContext<ChangeEvent[]>([]);
@@ -1242,7 +1253,7 @@ const destinationDefinitions = [
   },
 ] as const;
 
-type DestinationKey = "Command" | "Empire" | "Capture" | "People" | "Projects" | "Leads" | "Outreach" | "Finance" | "Tax" | "Metrics" | "Pillars" | (typeof destinationDefinitions)[number]["key"];
+type DestinationKey = "Command" | "Icarus" | "Empire" | "Capture" | "People" | "Projects" | "Leads" | "Outreach" | "Finance" | "Tax" | "Metrics" | "Pillars" | (typeof destinationDefinitions)[number]["key"];
 
 type RelatedRecordItem = {
   label: string;
@@ -8606,6 +8617,9 @@ export default function Home() {
   const [conversions, setConversions] = useState<CaptureConversionRecord[]>([]);
   const [people, setPeople] = useState<PersonRecord[]>([]);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [icarusAssessments, setIcarusAssessments] = useState<IcarusAssessmentRecord[]>([]);
+  const [icarusLoaded, setIcarusLoaded] = useState(false);
+  const icarusWritableRef = useRef(false);
   const [delegationHandoffs, setDelegationHandoffs] = useState<DelegationHandoffRecord[]>([]);
   const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<ReviewOutcome>("Keep as Capture");
@@ -8785,6 +8799,23 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    icarusWritableRef.current = false;
+    try {
+      const stored = window.localStorage.getItem(ICARUS_STORAGE_KEY);
+      const parsed = parseIcarusAssessments(stored);
+      setIcarusAssessments(parsed);
+      icarusWritableRef.current = true;
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: `Icarus data could not be loaded. Existing storage was left untouched; inspect a safety backup.${error instanceof Error ? ` ${error.message}` : ""}`,
+      });
+    } finally {
+      setIcarusLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
     peopleWritableRef.current = false;
     conversionsWritableRef.current = false;
     try {
@@ -8826,6 +8857,7 @@ export default function Home() {
           SAVED_VIEWS_STORAGE_KEY,
           DEFAULT_SAVED_VIEW_STORAGE_KEY,
           DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+          ICARUS_STORAGE_KEY,
         ];
 
         const recoveryStorage: Record<string, string | null> = {};
@@ -9322,6 +9354,21 @@ export default function Home() {
   }, [conversions, operatingDataLoaded]);
 
   useEffect(() => {
+    if (!icarusLoaded || !icarusWritableRef.current) {
+      return;
+    }
+
+    try {
+      persistJsonArray(window.localStorage, ICARUS_STORAGE_KEY, icarusAssessments);
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: `Icarus data could not be saved. Check browser storage before continuing.${error instanceof Error ? ` ${error.message}` : ""}`,
+      });
+    }
+  }, [icarusAssessments, icarusLoaded]);
+
+  useEffect(() => {
     if (!operatingDataLoaded || !peopleWritableRef.current) {
       return;
     }
@@ -9611,7 +9658,7 @@ export default function Home() {
   const sopRecords = getConvertedRecordsByType("Convert to SOP").map(normalizeSopRecord);
 
   useEffect(() => {
-    if (!operatingDataLoaded || !changeHistoryLoaded || !strategicObjectivesLoaded || !strategicReviewsLoaded) return;
+    if (!operatingDataLoaded || !changeHistoryLoaded || !strategicObjectivesLoaded || !strategicReviewsLoaded || !icarusLoaded) return;
     const records = (entries: object[]): Record<string, unknown>[] => entries as Record<string, unknown>[];
     const snapshot: Record<string, Record<string, unknown>[]> = {
       Capture: records(captures),
@@ -9634,6 +9681,7 @@ export default function Home() {
       "Strategic Objective": records(strategicObjectives),
       "Strategic Review": records(strategicReviews),
       "Working Relationship": records(workingRelationships),
+      Icarus: records(icarusAssessments),
     };
     const previous = auditBaselineRef.current;
     if (!previous || auditRestoreInProgressRef.current) {
@@ -9649,6 +9697,7 @@ export default function Home() {
       "Strategic Objective": "title",
       "Strategic Review": "reviewDate",
       "Working Relationship": "id",
+      Icarus: "outcome",
     };
     const events = Object.entries(snapshot).flatMap(([type, current]) =>
       diffChangeRecords(type, previous[type] || [], current, titles[type]));
@@ -9666,7 +9715,7 @@ export default function Home() {
       }
     }
     auditBaselineRef.current = snapshot;
-  }, [operatingDataLoaded, changeHistoryLoaded, strategicObjectivesLoaded, strategicReviewsLoaded, captures, conversions, projects, people, leads, outreachContacts, cashPosition, incomeRecords, expenseRecords, commitmentRecords, taxPaymentRecords, strategicObjectives, strategicReviews, workingRelationships]);
+  }, [operatingDataLoaded, changeHistoryLoaded, strategicObjectivesLoaded, strategicReviewsLoaded, icarusLoaded, captures, conversions, projects, people, leads, outreachContacts, cashPosition, incomeRecords, expenseRecords, commitmentRecords, taxPaymentRecords, strategicObjectives, strategicReviews, workingRelationships, icarusAssessments]);
 
   const executeIntegrityAudit = (storageOverride?: Record<string, string | null>) => {
     const storage = storageOverride || Object.fromEntries(
@@ -9805,6 +9854,29 @@ export default function Home() {
   const metricsBlockedProjects = projects.filter((project) => project.status.trim().toLowerCase() === "blocked").length;
 
   const pillarOptions = ["Garden Maintenance", "Hard Landscape Construction", "Excavation"] as const;
+  const icarusSourceRecords: IcarusSourceRecord[] = [
+    ...captures.map((record) => ({ recordType: "Capture" as const, recordId: record.id, title: record.title })),
+    ...problemRecords.map((record) => ({ recordType: "Problem" as const, recordId: record.id, title: record.problemStatement || record.title })),
+    ...actionRecords.map((record) => ({ recordType: "Action" as const, recordId: record.id, title: record.actionTitle || record.title })),
+    ...decisionRecords.map((record) => ({ recordType: "Decision" as const, recordId: record.id, title: record.decisionTitle || record.title })),
+    ...lessonRecords.map((record) => ({ recordType: "Lesson" as const, recordId: record.id, title: record.lessonTitle || record.title })),
+    ...projects.map((record) => ({ recordType: "Project" as const, recordId: record.id, title: record.projectName })),
+    ...systemRecords.map((record) => ({ recordType: "System" as const, recordId: record.id, title: record.systemName || record.title })),
+    ...sopRecords.map((record) => ({ recordType: "SOP" as const, recordId: record.id, title: record.sopTitle || record.title })),
+    ...opportunityRecords.map((record) => ({ recordType: "Opportunity" as const, recordId: record.id, title: record.opportunityTitle || record.title })),
+    ...leads.map((record) => ({ recordType: "Lead" as const, recordId: record.id, title: record.leadName })),
+    ...outreachContacts.map((record) => ({ recordType: "Outreach" as const, recordId: record.id, title: record.businessName })),
+    ...commitmentRecords.map((record) => ({ recordType: "Commitment" as const, recordId: record.id, title: record.commitmentName })),
+    { recordType: "Finance", recordId: "cash-position", title: "Cash position" },
+    ...people.map((record) => ({ recordType: "Person" as const, recordId: record.id, title: record.name })),
+    ...pillarOptions.map((pillar) => ({ recordType: "Pillar" as const, recordId: pillar, title: pillar })),
+    ...strategicObjectives.map((record) => ({ recordType: "Strategic Objective" as const, recordId: record.id, title: record.title })),
+  ];
+  const icarusReviews = buildIcarusReview(icarusAssessments, icarusSourceRecords);
+  const icarusFounderAttention = icarusReviews
+    .filter((review) => icarusAssessments.find((assessment) => assessment.id === review.assessmentId)?.status !== "Closed")
+    .flatMap((review) => review.findings);
+  const icarusAttentionAssessmentCount = new Set(icarusFounderAttention.map((finding) => finding.assessmentId)).size;
   const pillarSummaries = pillarOptions.map((pillar) => {
     const pillarProjects = projects.filter((project) => project.area === pillar && isProjectActive(project));
     const pillarActions = actionRecords.filter((action) => action.relatedPillar === pillar && isActionActive(action));
@@ -15827,10 +15899,11 @@ export default function Home() {
         SAVED_VIEWS_STORAGE_KEY,
         DEFAULT_SAVED_VIEW_STORAGE_KEY,
         DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+        ICARUS_STORAGE_KEY,
       ];
 
       for (const key of storageKeys) {
-  const isOptionalLegacyKey = key === DELEGATION_HANDOFF_STORAGE_KEY;
+  const isOptionalLegacyKey = key === DELEGATION_HANDOFF_STORAGE_KEY || key === ICARUS_STORAGE_KEY;
 
   if (!Object.prototype.hasOwnProperty.call(storage, key)) {
     if (isOptionalLegacyKey) {
@@ -15859,6 +15932,7 @@ export default function Home() {
         COMMITMENT_STORAGE_KEY,
         SAVED_VIEWS_STORAGE_KEY,
         DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
+        ICARUS_STORAGE_KEY,
       ];
 
       for (const key of arrayStorageKeys) {
@@ -15872,6 +15946,9 @@ export default function Home() {
           }
         }
       }
+
+      const storedIcarus = storage[ICARUS_STORAGE_KEY];
+      if (typeof storedIcarus === "string") assertIcarusDataStructure(JSON.parse(storedIcarus));
 
       const cashValue = storage[CASH_POSITION_STORAGE_KEY];
 
@@ -15901,6 +15978,7 @@ export default function Home() {
 
       auditRestoreInProgressRef.current = true;
       for (const key of storageKeys) {
+        if (key === ICARUS_STORAGE_KEY && !Object.prototype.hasOwnProperty.call(storage, key)) continue;
         const value = storage[key];
 
         if (value === null || value === undefined) {
@@ -16022,6 +16100,7 @@ export default function Home() {
                   onClick={() => {
                     if (
                       item === "Command" ||
+                      item === "Icarus" ||
                       item === "Empire" ||
                       item === "Capture" ||
                       item === "Problems" ||
@@ -16276,6 +16355,19 @@ export default function Home() {
                     </span>
                   ))}
                 </div>
+              ) : null}
+
+              {icarusFounderAttention.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setActiveView("Icarus")}
+                  className="mt-4 block w-full rounded-xl border border-[#c9b8a3] bg-[#f5efe6] p-4 text-left transition hover:border-[#755520]"
+                >
+                  <span className="text-[10px] font-medium uppercase tracking-[0.16em] text-[#51483e]">Icarus · unresolved failure intelligence</span>
+                  <span className="mt-1 block text-[12px] leading-5 text-[#4d4944]">
+                    {icarusFounderAttention.length} unresolved signal{icarusFounderAttention.length === 1 ? "" : "s"} across {icarusAttentionAssessmentCount} active assessment{icarusAttentionAssessmentCount === 1 ? "" : "s"}. Open Icarus to review the evidence and controls; signals are not scored or ranked.
+                  </span>
+                </button>
               ) : null}
 
               <div className="mt-4 rounded-2xl border border-[#c9b8a3] bg-[#f5efe6] p-4">
@@ -19374,6 +19466,15 @@ export default function Home() {
                 </div>
               )}
             </div>
+          ) : activeView === "Icarus" ? (
+            <IcarusPanel
+              assessments={icarusAssessments}
+              sources={icarusSourceRecords}
+              loaded={icarusLoaded}
+              writable={icarusLoaded && icarusWritableRef.current}
+              onChange={setIcarusAssessments}
+              createId={generateCaptureId}
+            />
           ) : activeDestination ? (
             <ConvertedDestinationView
               title={activeDestination.title}

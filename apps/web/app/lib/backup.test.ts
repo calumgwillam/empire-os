@@ -421,10 +421,10 @@ describe("runBackupRestoreTransaction", () => {
   it("reports keys whose rollback could not be verified or threw", () => {
     const storage = new MemoryStorage(initialLiveData);
     storage.onSet = (key, value) => (key === STORAGE_KEY ? "corrupted" : value);
-    let restoreWritesDone = false;
     storage.onRemove = (key) => {
-      if (restoreWritesDone && key === PROJECT_STORAGE_KEY) throw new Error("remove failed");
-      if (key === EMPIRE_OS_BACKUP_STORAGE_KEYS[EMPIRE_OS_BACKUP_STORAGE_KEYS.length - 1]) restoreWritesDone = true;
+      if (key === PROJECT_STORAGE_KEY && storage.getItem(key) === "[\"new-project\"]") {
+        throw new Error("remove failed");
+      }
     };
     const result = runBackupRestoreTransaction(storage, restoreBackup);
 
