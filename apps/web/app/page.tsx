@@ -1,5 +1,7 @@
 "use client";
 
+import FounderRelationshipPanel from "./components/founder-relationship-panel";
+import { recordFounderRelationshipDraft, reviewFounderRelationshipEvidence } from "./lib/founder-relationship-workflow";
 import {
   getEffectiveProjectHealth,
   isProjectReviewDue,
@@ -218,6 +220,7 @@ import {
 import {
   appendResponsibilityExecutionAssessment,
   appendResponsibilityFitAssessment,
+  createFounderRelationshipRecord,
   createResponsibilityDefinition,
   createPairIntelligenceRecords,
   createTrioIntelligenceRecord,
@@ -20477,9 +20480,62 @@ export default function Home() {
                   && !founderIntelligence.trioRecords.some((record) => record.id === trioScaffold.id));
                 const hasObservations = pairRecords.some((record) => record.observations.length > 0)
                   || trioRecords.some((record) => record.observations.length > 0);
+                const relationshipContext: FounderIntelligenceContext = {
+                  people,
+                  pairRecords: founderIntelligence.pairRecords,
+                  responsibilities: founderIntelligence.responsibilities,
+                  workItems: [
+                    ...actionRecords.map((record) => ({ objectType: "Action" as const, objectId: record.id })),
+                    ...problemRecords.map((record) => ({ objectType: "Problem" as const, objectId: record.id })),
+                    ...projects.map((record) => ({ objectType: "Project" as const, objectId: record.id })),
+                    ...leads.map((record) => ({ objectType: "Lead" as const, objectId: record.id })),
+                  ],
+                  operationalRecords: [
+                    ...actionRecords.map((record) => ({ recordType: "Action", recordId: record.id })),
+                    ...decisionRecords.map((record) => ({ recordType: "Decision", recordId: record.id })),
+                    ...problemRecords.map((record) => ({ recordType: "Problem", recordId: record.id })),
+                    ...projects.map((record) => ({ recordType: "Project", recordId: record.id })),
+                    ...leads.map((record) => ({ recordType: "Lead", recordId: record.id })),
+                  ],
+                  operationalEvidence: deriveActionOperationalOutcomeEvidence(actionRecords, people),
+                };
+                const relationshipWritable = operatingDataLoaded
+                  && founderIntelligenceWritableRef.current
+                  && peopleWritableRef.current
+                  && conversionsWritableRef.current;
+                const reviewedPairRecords = reviewFounderRelationshipEvidence(
+                  founderIntelligence,
+                  relationshipContext,
+                ).pairRecords.filter((record) => record.personIds.includes(personEditor.id));
 
                 return (
                   <div className="mt-3 space-y-3">
+                    <FounderRelationshipPanel
+                      key={personEditor.id}
+                      personId={personEditor.id}
+                      intelligence={founderIntelligence}
+                      context={relationshipContext}
+                      writable={relationshipWritable}
+                      personName={getPersonDisplayName}
+                      evidenceDetails={(reference, intelligence) =>
+                        getFounderIntelligenceEvidenceDetails(reference, people, intelligence)}
+                      newObservationKey={generateCaptureId}
+                      onRecord={(draft) => {
+                        if (!relationshipWritable) throw new Error("Founder relationship storage is not writable.");
+                        const next = recordFounderRelationshipDraft(founderIntelligence, draft, relationshipContext);
+                        const pairId = createFounderRelationshipRecord(draft.personIds, relationshipContext).id;
+                        const recorded = next.pairRecords.find((record) => record.id === pairId)?.observations.find(
+                          (observation) => observation.id === `${pairId}:relationship:${encodeURIComponent(draft.observationKey)}`,
+                        );
+                        if (!recorded) throw new Error("The relationship observation could not be recorded.");
+                        setFounderIntelligence(next);
+                        return { status: recorded.claim.status };
+                      }}
+                      onReview={() => {
+                        if (!relationshipWritable) throw new Error("Founder relationship storage is not writable.");
+                        setFounderIntelligence(reviewFounderRelationshipEvidence(founderIntelligence, relationshipContext));
+                      }}
+                    />
                     {delegationEvidenceReviews.length > 0 ? (
                       <div className="rounded-lg border border-[#d3cbc3] bg-white p-3">
                         <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#4d4944]">
@@ -20548,7 +20604,7 @@ export default function Home() {
                       </p>
                     ) : null}
 
-                    {pairRecords.flatMap((record) => record.observations.map((observation) => (
+                    {reviewedPairRecords.flatMap((record) => record.observations.map((observation) => (
                       <div key={`${record.id}-${observation.id}`} className="rounded-lg border border-[#d3cbc3] bg-white p-3">
                         <div className="text-[10px] uppercase tracking-[0.14em] text-[#4d4944]">
                           Pair: {getPersonDisplayName(record.personIds.find((id) => id !== personEditor.id) || "")}
@@ -20556,6 +20612,8 @@ export default function Home() {
                             ? ` • ${getPersonDisplayName(observation.direction.fromPersonId)} → ${getPersonDisplayName(observation.direction.toPersonId)}`
                             : ""}
                           {" • "}{observation.dimension} • {observation.claim.status}
+                          {observation.relationshipKind ? ` • ${observation.relationshipKind}` : ""}
+                          {observation.integrityStatus === "conflicting" ? " • conflicting" : ""}
                         </div>
                         <p className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-[#171717]">{observation.claim.statement}</p>
                         {observation.claim.evidence.flatMap((reference, index) =>
