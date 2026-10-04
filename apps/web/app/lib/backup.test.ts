@@ -4,6 +4,7 @@ import {
   BACKUP_VERSION,
   CASH_POSITION_STORAGE_KEY,
   CHANGE_HISTORY_STORAGE_KEY,
+  CONVERSION_STORAGE_KEY,
   EMPIRE_OS_BACKUP_STORAGE_KEYS,
   FOUNDER_INTELLIGENCE_STORAGE_KEY,
   PERSON_STORAGE_KEY,
@@ -131,6 +132,105 @@ describe("validateEmpireOsBackup", () => {
     }))).toThrow(`invalid object data for ${FOUNDER_INTELLIGENCE_STORAGE_KEY}`);
     expect(() => validateEmpireOsBackup(makeBackup())).not.toThrow();
   });
+
+  it("blocks malformed nested founder intelligence before a backup can be restored", () => {
+    for (const founderIntelligence of [
+      { pairRecords: [{ personIds: ["calum", "lewis"], observations: [{
+        id: "missing-claim", dimension: "communication",
+      }] }] },
+      { responsibilityFits: [{ id: "fit", title: "Delivery", assessments: [{
+        id: "missing-claim", personId: "emeka", responsibility: "Delivery",
+        contribution: "executor", fit: "demonstrated-capability",
+      }] }] },
+      { operationalOutcomes: [{ id: "outcome", personId: "emeka" }] },
+    ]) {
+      expect(() => validateEmpireOsBackup(makeBackup({}, {
+        [FOUNDER_INTELLIGENCE_STORAGE_KEY]: JSON.stringify(founderIntelligence),
+      }))).toThrow("Stored founder intelligence contains malformed");
+    }
+  });
+
+  it("preserves valid unresolved citations and legacy People and Action records without normalization", () => {
+    const founderIntelligence = {
+      pairRecords: [{
+        id: "pair:calum:lewis", personIds: ["calum", "lewis"],
+        observations: [{
+          id: "unresolved-expectation", dimension: "communication",
+          relationshipKind: "source-grounded-understanding",
+          claim: {
+            id: "unresolved-claim", status: "unresolved",
+            candidateStatus: "evidence-grounded-understanding",
+            statement: "A statement awaiting its recorded source.",
+            evidence: [{
+              type: "source-answer", personId: "calum",
+              sourceSubmissionId: "unavailable-source", answerIndex: 2,
+            }],
+          },
+        }],
+      }],
+    };
+    const input = makeBackup({}, {
+      [FOUNDER_INTELLIGENCE_STORAGE_KEY]: JSON.stringify(founderIntelligence),
+      [PERSON_STORAGE_KEY]: JSON.stringify([{ id: "emeka", accessLevel: "Team Member" }]),
+      [CONVERSION_STORAGE_KEY]: JSON.stringify([{ id: "legacy-action", targetType: "Convert to Action" }]),
+    });
+    const before = structuredClone(input);
+    expect(validateEmpireOsBackup(input).storage).toEqual(input.storage);
+    expect(input).toEqual(before);
+  });
+
+  it("blocks malformed individual understanding and Action outcome evidence in backups", () => {
+    expect(() => validateEmpireOsBackup(makeBackup({}, {
+      [PERSON_STORAGE_KEY]: JSON.stringify([{
+        id: "person", operatingProfile: { individualUnderstandings: [{ id: "malformed" }] },
+      }]),
+    }))).toThrow("An individual operating understanding has a malformed nested record.");
+    for (const evidence of [null, {}, [{ id: "missing-requirement" }]]) {
+      expect(() => validateEmpireOsBackup(makeBackup({}, {
+        [CONVERSION_STORAGE_KEY]: JSON.stringify([{
+          id: "action", targetType: "Convert to Action", responsibilityOutcomeEvidence: evidence,
+        }]),
+      }))).toThrow("malformed responsibility outcome evidence");
+    }
+  });
+
+  it("round-trips valid Phase 4 nested records verbatim without inferring governance or evidence status", () => {
+    const input = makeBackup({}, {
+      [PERSON_STORAGE_KEY]: JSON.stringify([{
+        id: "employee", accessLevel: "Team Member", authority: "Existing execution boundary",
+        operatingProfile: { individualUnderstandings: [{
+          id: "understanding", dimension: "standards",
+          understanding: {
+            id: "understanding-claim", status: "unresolved", statement: "Awaiting evidence.",
+            sourceSubmissionIds: ["unavailable-submission"],
+            sourceAnswerReferences: [{ sourceSubmissionId: "unavailable-submission", answerIndexes: [0] }],
+          },
+          interpretations: [],
+        }] },
+      }]),
+      [CONVERSION_STORAGE_KEY]: JSON.stringify([{
+        id: "action", targetType: "Convert to Action", status: "Completed",
+        responsibilityOutcomeEvidence: [{
+          id: "assertion", responsibilityId: "responsibility", requirementId: "requirement",
+          personId: "employee", contribution: "executor", outcomeId: "outcome",
+          outcome: "successful", observedResult: "Recorded execution result.",
+          evidenceStatus: "unreviewed",
+        }],
+      }]),
+      [FOUNDER_INTELLIGENCE_STORAGE_KEY]: JSON.stringify({
+        pairRecords: [], trioRecords: [], responsibilities: [], responsibilityFits: [],
+        developmentOpportunities: [], operationalOutcomes: [],
+      }),
+    });
+    const before = structuredClone(input);
+    const validated = validateEmpireOsBackup(input);
+    const storage = new MemoryStorage();
+    expect(runBackupRestoreTransaction(storage, validated)).toEqual({ ok: true });
+    for (const key of [PERSON_STORAGE_KEY, CONVERSION_STORAGE_KEY, FOUNDER_INTELLIGENCE_STORAGE_KEY]) {
+      expect(storage.getItem(key)).toBe(validated.storage[key]);
+    }
+    expect(input).toEqual(before);
+  });
 });
 
 describe("getBackupHealth", () => {
@@ -234,6 +334,27 @@ describe("buildFullBackup", () => {
 });
 
 describe("runBackupRestoreTransaction", () => {
+  it("rejects malformed Phase 4 records before safety callbacks or live storage writes", () => {
+    const storage = new MemoryStorage(initialLiveData);
+    let callbackCalled = false;
+    const malformed: EmpireOsBackup = {
+      ...restoreBackup,
+      storage: {
+        ...restoreBackup.storage,
+        [FOUNDER_INTELLIGENCE_STORAGE_KEY]: JSON.stringify({
+          pairRecords: [{ personIds: ["calum", "lewis"], observations: [{
+            id: "missing-claim", dimension: "communication",
+          }] }],
+        }),
+      },
+    };
+    const result = runBackupRestoreTransaction(storage, malformed, () => { callbackCalled = true; });
+    expect(result).toMatchObject({ ok: false, writesStarted: false, rollbackFailures: [] });
+    expect(callbackCalled).toBe(false);
+    expect(storage.writes).toEqual([]);
+    expect(storage.snapshot()).toEqual(initialLiveData);
+  });
+
   it("writes backup values and removes keys that are null or missing in the backup", () => {
     const storage = new MemoryStorage({ ...initialLiveData, [PERSON_STORAGE_KEY]: "[\"old-person\"]" });
     const result = runBackupRestoreTransaction(storage, restoreBackup);

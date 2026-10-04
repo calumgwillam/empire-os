@@ -85,6 +85,7 @@ export function runBackupRestoreTransaction(target: BackupStorage, backup: Empir
   let writesStarted = false;
 
   try {
+    validateEmpireOsBackup(backup);
     for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) previousStorage[key] = target.getItem(key);
     beforeWrites?.();
 
@@ -199,10 +200,39 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
 
   const founderIntelligence = storage[FOUNDER_INTELLIGENCE_STORAGE_KEY];
   if (typeof founderIntelligence === "string") {
+    let parsed: unknown;
     try {
-      if (!isPlainObject(JSON.parse(founderIntelligence))) throw new Error();
+      parsed = JSON.parse(founderIntelligence);
+      if (!isPlainObject(parsed)) throw new Error();
     } catch {
       throw new Error(`The backup contains invalid object data for ${FOUNDER_INTELLIGENCE_STORAGE_KEY}.`);
+    }
+    assertFounderIntelligenceDataStructure(parsed);
+  }
+
+  const storedPeople = storage[PERSON_STORAGE_KEY];
+  if (typeof storedPeople === "string") {
+    const people: unknown = JSON.parse(storedPeople);
+    if (Array.isArray(people)) {
+      people.forEach((person: unknown) => {
+        if (!isPlainObject(person) || !isPlainObject(person.operatingProfile)) return;
+        if (Object.prototype.hasOwnProperty.call(person.operatingProfile, "individualUnderstandings")) {
+          assertIndividualOperatingUnderstandingsDataStructure(person.operatingProfile.individualUnderstandings);
+        }
+      });
+    }
+  }
+
+  const storedConversions = storage[CONVERSION_STORAGE_KEY];
+  if (typeof storedConversions === "string") {
+    const conversions: unknown = JSON.parse(storedConversions);
+    if (Array.isArray(conversions)) {
+      conversions.forEach((record: unknown) => {
+        if (!isPlainObject(record) || record.targetType !== "Convert to Action") return;
+        if (Object.prototype.hasOwnProperty.call(record, "responsibilityOutcomeEvidence")) {
+          assertActionResponsibilityOutcomeEvidenceStructure(record.responsibilityOutcomeEvidence);
+        }
+      });
     }
   }
 
@@ -241,3 +271,6 @@ export function getBackupHealth(lastBackupAt: string, nowMs = Date.now()) {
   if (ageDays <= BACKUP_STALE_DAYS) return { label: "Getting stale", tone: "text-[#755520]" };
   return { label: "Stale", tone: "text-[#7a352b]" };
 }
+import { assertFounderIntelligenceDataStructure } from "./founder-intelligence";
+import { assertIndividualOperatingUnderstandingsDataStructure } from "./individual-operating-understanding";
+import { assertActionResponsibilityOutcomeEvidenceStructure } from "./responsibility-task-intelligence";
