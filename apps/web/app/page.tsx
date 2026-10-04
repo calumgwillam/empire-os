@@ -207,6 +207,7 @@ import {
 import { persistJsonArray, persistJsonValue } from "./lib/persistence";
 import {
   attachOperatingProfileSourceSubmission,
+  calumLeadershipReflectionSubmission,
   emekaLeadershipAlignmentSubmission,
   lewisLeadershipAlignmentSubmission,
   mergeOperatingProfileSourceSubmissions,
@@ -407,6 +408,7 @@ type CompatibilityConfidence = (typeof compatibilityConfidenceOptions)[number];
 type CompatibilityDimension = {
   value: string;
   evidence: string;
+  sourceSubmissionIds?: string[];
   evidenceStatus: CompatibilityEvidenceStatus;
   confidence: CompatibilityConfidence;
   lastReviewed?: string;
@@ -465,6 +467,9 @@ function normaliseCompatibilityDimension(value: unknown): CompatibilityDimension
   return {
     value: typeof source.value === "string" ? source.value : "",
     evidence: typeof source.evidence === "string" ? source.evidence : "",
+    ...(Array.isArray(source.sourceSubmissionIds)
+      ? { sourceSubmissionIds: source.sourceSubmissionIds.filter((id): id is string => typeof id === "string") }
+      : {}),
     evidenceStatus: compatibilityEvidenceStatusOptions.includes(source.evidenceStatus as CompatibilityEvidenceStatus)
       ? (source.evidenceStatus as CompatibilityEvidenceStatus)
       : "Needs Evidence",
@@ -8574,46 +8579,48 @@ export default function Home() {
         const parsedPeople = JSON.parse(storedPeople);
 
         if (Array.isArray(parsedPeople)) {
-          const lewisAttachment = attachOperatingProfileSourceSubmission(
-            parsedPeople,
+          const submissions = [
             lewisLeadershipAlignmentSubmission,
-            (person) => typeof person?.name === "string" ? person.name : "",
-            (person) => person?.operatingProfile?.sourceSubmissions,
-            (person, sourceSubmissions) => ({
-              ...person,
-              operatingProfile: {
-                ...normaliseOperatingProfile(person.operatingProfile),
-                sourceSubmissions,
-              },
-            }),
-          );
-          const emekaAttachment = attachOperatingProfileSourceSubmission(
-            lewisAttachment.people,
             emekaLeadershipAlignmentSubmission,
-            (person) => typeof person?.name === "string" ? person.name : "",
-            (person) => person?.operatingProfile?.sourceSubmissions,
-            (person, sourceSubmissions) => ({
-              ...person,
-              operatingProfile: {
-                ...normaliseOperatingProfile(person.operatingProfile),
-                sourceSubmissions,
-              },
-            }),
-          );
-          setPeople(emekaAttachment.people);
-          if (lewisAttachment.status !== "attached") {
+            calumLeadershipReflectionSubmission,
+          ];
+          let attachedPeople = parsedPeople;
+          const attachmentFailures: Array<{
+            respondentName: string;
+            status: "person-not-found" | "ambiguous-person";
+          }> = [];
+
+          submissions.forEach((submission) => {
+            const attachment = attachOperatingProfileSourceSubmission(
+              attachedPeople,
+              submission,
+              (person) => typeof person?.name === "string" ? person.name : "",
+              (person) => person?.operatingProfile?.sourceSubmissions,
+              (person, sourceSubmissions) => ({
+                ...person,
+                operatingProfile: {
+                  ...normaliseOperatingProfile(person.operatingProfile),
+                  sourceSubmissions,
+                },
+              }),
+            );
+            attachedPeople = attachment.people;
+            if (attachment.status !== "attached") {
+              attachmentFailures.push({
+                respondentName: submission.respondentName,
+                status: attachment.status,
+              });
+            }
+          });
+
+          setPeople(attachedPeople);
+          const attachmentFailure = attachmentFailures[0];
+          if (attachmentFailure) {
             setFeedback({
               type: "error",
-              message: lewisAttachment.status === "person-not-found"
-                ? "Lewis's submitted operating-profile evidence could not be attached because no matching People record exists."
-                : "Lewis's submitted operating-profile evidence could not be attached because multiple matching People records exist.",
-            });
-          } else if (emekaAttachment.status !== "attached") {
-            setFeedback({
-              type: "error",
-              message: emekaAttachment.status === "person-not-found"
-                ? "Emeka's submitted operating-profile evidence could not be attached because no matching People record exists."
-                : "Emeka's submitted operating-profile evidence could not be attached because multiple matching People records exist.",
+              message: attachmentFailure.status === "person-not-found"
+                ? `${attachmentFailure.respondentName}'s submitted operating-profile evidence could not be attached because no matching People record exists.`
+                : `${attachmentFailure.respondentName}'s submitted operating-profile evidence could not be attached because multiple matching People records exist.`,
             });
           }
         }
@@ -19629,6 +19636,11 @@ export default function Home() {
                         <summary className="cursor-pointer list-none text-[12px] font-medium text-[#171717]">
                           {submission.sourceTitle} • Submitted by {submission.respondentName} • {submission.answers.length} answers
                         </summary>
+                        {submission.sourceReference ? (
+                          <p className="mt-2 text-[11px] leading-5 text-[#4d4944]">
+                            Source: {submission.sourceReference}
+                          </p>
+                        ) : null}
                         <ol className="mt-3 space-y-3">
                           {submission.answers.map((answer, index) => (
                             <li key={`${submission.id}-${index}`} className="border-t border-[#eee9e3] pt-2.5">
