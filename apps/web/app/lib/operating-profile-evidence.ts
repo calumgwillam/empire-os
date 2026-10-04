@@ -185,7 +185,7 @@ export function normaliseOperatingProfileSourceSubmissions(
 ): OperatingProfileSourceSubmission[] {
   if (!Array.isArray(value)) return [];
 
-  const submissions: OperatingProfileSourceSubmission[] = [];
+  const submissionsById = new Map<string, OperatingProfileSourceSubmission>();
   value.forEach((entry: unknown) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
     const source = entry as Record<string, unknown>;
@@ -204,7 +204,7 @@ export function normaliseOperatingProfileSourceSubmissions(
       answers.push({ question: answerRecord.question, answer: answerRecord.answer });
     });
 
-    submissions.push({
+    submissionsById.set(source.id, {
       id: source.id,
       respondentName: source.respondentName,
       sourceTitle: source.sourceTitle,
@@ -213,7 +213,7 @@ export function normaliseOperatingProfileSourceSubmissions(
     });
   });
 
-  return submissions;
+  return [...submissionsById.values()];
 }
 
 export function mergeOperatingProfileSourceSubmissions(

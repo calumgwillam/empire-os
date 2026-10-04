@@ -206,11 +206,17 @@ import {
 } from "./lib/integrity-audit";
 import { persistJsonArray, persistJsonValue } from "./lib/persistence";
 import {
+  attachIndividualOperatingUnderstandings,
+  founderIndividualOperatingUnderstandings,
+  individualOperatingDimensions,
+  normaliseIndividualOperatingUnderstandings,
+  type IndividualOperatingUnderstanding,
+} from "./lib/individual-operating-understanding";
+import {
   attachOperatingProfileSourceSubmission,
   calumLeadershipReflectionSubmission,
   emekaLeadershipAlignmentSubmission,
   lewisLeadershipAlignmentSubmission,
-  mergeOperatingProfileSourceSubmissions,
   normaliseOperatingProfileSourceSubmissions,
   type OperatingProfileSourceSubmission,
 } from "./lib/operating-profile-evidence";
@@ -417,6 +423,7 @@ type CompatibilityDimension = {
 
 type OperatingProfile = {
   sourceSubmissions: OperatingProfileSourceSubmission[];
+  individualUnderstandings: IndividualOperatingUnderstanding[];
   communicationStyle: CompatibilityDimension;
   decisionStyle: CompatibilityDimension;
   riskTolerance: CompatibilityDimension;
@@ -489,6 +496,10 @@ function normaliseOperatingProfile(value: unknown): OperatingProfile {
     profile[key] = normaliseCompatibilityDimension(source[key]);
   });
   profile.sourceSubmissions = normaliseOperatingProfileSourceSubmissions(source.sourceSubmissions);
+  profile.individualUnderstandings = normaliseIndividualOperatingUnderstandings(
+    source.individualUnderstandings,
+    profile.sourceSubmissions,
+  );
   return profile;
 }
 
@@ -8608,6 +8619,30 @@ export default function Home() {
             if (attachment.status !== "attached") {
               attachmentFailures.push({
                 respondentName: submission.respondentName,
+                status: attachment.status,
+              });
+            }
+          });
+
+          founderIndividualOperatingUnderstandings.forEach((seed) => {
+            const attachment = attachIndividualOperatingUnderstandings(
+              attachedPeople,
+              seed,
+              (person) => typeof person?.name === "string" ? person.name : "",
+              (person) => person?.operatingProfile?.sourceSubmissions,
+              (person) => person?.operatingProfile?.individualUnderstandings,
+              (person, individualUnderstandings) => ({
+                ...person,
+                operatingProfile: {
+                  ...normaliseOperatingProfile(person.operatingProfile),
+                  individualUnderstandings,
+                },
+              }),
+            );
+            attachedPeople = attachment.people;
+            if (attachment.status !== "attached") {
+              attachmentFailures.push({
+                respondentName: seed.respondentName,
                 status: attachment.status,
               });
             }
@@ -19657,6 +19692,111 @@ export default function Home() {
                     ))}
                   </div>
                 )}
+              </div>
+
+              <div className="mt-4 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#2f2b28]">
+                Individual Operating Understanding
+              </div>
+              <p className="mt-1 text-[11px] leading-5 text-[#4d4944]">
+                These attributed statements structure what the person reported. They are separate from the submitted answers; broader interpretations are not established unless separately recorded with valid source links.
+              </p>
+              <div className="mt-3 space-y-2">
+                {personOperatingProfile.individualUnderstandings.length === 0 ? (
+                  <p className="rounded-xl border border-[#d3cbc3] bg-white p-3 text-[12px] text-[#4d4944]">
+                    No evidence-linked individual understanding recorded.
+                  </p>
+                ) : personOperatingProfile.individualUnderstandings.map((item) => {
+                  const dimensionLabel = individualOperatingDimensions.find(
+                    ({ key }) => key === item.dimension,
+                  )?.label ?? item.dimension;
+
+                  return (
+                    <details key={item.id} className="rounded-xl border border-[#d3cbc3] bg-white p-3">
+                      <summary className="cursor-pointer list-none text-[13px] font-medium text-[#171717]">
+                        {dimensionLabel}
+                      </summary>
+                      {item.understanding.status === "evidence-grounded-understanding" ? (
+                        <div className="mt-2">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#4d4944]">
+                            Evidence-grounded understanding — concise synthesis of direct self-report
+                          </div>
+                          <p className="mt-1 whitespace-pre-wrap text-[12px] leading-5 text-[#2f2b28]">
+                            {item.understanding.statement}
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-[12px] text-[#4d4944]">
+                          Understanding unresolved: no valid supporting source reference is available.
+                        </p>
+                      )}
+                      <div className="mt-3 space-y-2">
+                        {item.understanding.sourceAnswerReferences.flatMap((reference) => {
+                          const submission = personOperatingProfile.sourceSubmissions.find(
+                            ({ id }) => id === reference.sourceSubmissionId,
+                          );
+                          if (!submission) return [];
+                          return reference.answerIndexes.flatMap((answerIndex) => {
+                            const answer = submission.answers[answerIndex];
+                            if (!answer) return [];
+                            return [(
+                              <div
+                                key={`${item.id}-${reference.sourceSubmissionId}-${answerIndex}`}
+                                className="rounded-lg bg-[#f6f3ef] p-2.5"
+                              >
+                                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#4d4944]">
+                                  Source: {submission.sourceTitle} • Answer {answerIndex + 1}
+                                </div>
+                                {submission.sourceReference ? (
+                                  <p className="mt-1 text-[10px] leading-4 text-[#4d4944]">{submission.sourceReference}</p>
+                                ) : null}
+                                <p className="mt-1 text-[11px] font-medium text-[#2f2b28]">{answer.question}</p>
+                                <p className="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-[#4d4944]">{answer.answer}</p>
+                              </div>
+                            )];
+                          });
+                        })}
+                      </div>
+                      <div className="mt-3 border-t border-[#e3ddd6] pt-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#4d4944]">
+                          Derived interpretation
+                        </div>
+                        {item.interpretations.length === 0 ? (
+                          <p className="mt-1 text-[11px] text-[#4d4944]">
+                            Unresolved / not recorded. No broader interpretation is established.
+                          </p>
+                        ) : item.interpretations.map((interpretation) => (
+                          <div key={interpretation.id} className="mt-1">
+                            {interpretation.status === "supported-interpretation" ? (
+                              <>
+                                <p className="text-[11px] leading-5 text-[#2f2b28]">{interpretation.statement}</p>
+                                {interpretation.sourceAnswerReferences.flatMap((reference) => {
+                                  const submission = personOperatingProfile.sourceSubmissions.find(
+                                    ({ id }) => id === reference.sourceSubmissionId,
+                                  );
+                                  if (!submission) return [];
+                                  return reference.answerIndexes.flatMap((answerIndex) => {
+                                    const answer = submission.answers[answerIndex];
+                                    if (!answer) return [];
+                                    return [(
+                                      <p
+                                        key={`${interpretation.id}-${reference.sourceSubmissionId}-${answerIndex}`}
+                                        className="mt-1 whitespace-pre-wrap text-[10px] leading-4 text-[#4d4944]"
+                                      >
+                                        Supported by {submission.sourceTitle}, answer {answerIndex + 1}: {answer.question} — {answer.answer}
+                                      </p>
+                                    )];
+                                  });
+                                })}
+                              </>
+                            ) : (
+                              <p className="text-[11px] text-[#4d4944]">Interpretation unresolved.</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  );
+                })}
               </div>
 
               <div className="mt-4 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#2f2b28]">

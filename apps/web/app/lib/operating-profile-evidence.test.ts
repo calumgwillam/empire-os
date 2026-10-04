@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { persistJsonArray } from "./persistence";
 import {
+  attachIndividualOperatingUnderstandings,
+  founderIndividualOperatingUnderstandings,
+  individualOperatingDimensions,
+  mergeIndividualOperatingUnderstandings,
+  normaliseIndividualOperatingUnderstandings,
+  type IndividualOperatingUnderstanding,
+} from "./individual-operating-understanding";
+import {
   attachOperatingProfileSourceSubmission,
   calumLeadershipReflectionSubmission,
   emekaLeadershipAlignmentSubmission,
@@ -17,6 +25,7 @@ type TestPerson = {
   authority: string;
   operatingProfile?: {
     sourceSubmissions?: OperatingProfileSourceSubmission[];
+    individualUnderstandings?: IndividualOperatingUnderstanding[];
     communicationStyle?: { value: string; evidence: string; sourceSubmissionIds?: string[] };
   };
 };
@@ -245,6 +254,17 @@ describe("operating profile source evidence", () => {
     expect(legacyPerson.operatingProfile).toBeUndefined();
   });
 
+  it("normalises repeated source IDs without leaving duplicate evidence records", () => {
+    expect(normaliseOperatingProfileSourceSubmissions([
+      lewisLeadershipAlignmentSubmission,
+      emekaLeadershipAlignmentSubmission,
+      lewisLeadershipAlignmentSubmission,
+    ])).toEqual([
+      lewisLeadershipAlignmentSubmission,
+      emekaLeadershipAlignmentSubmission,
+    ]);
+  });
+
   it("adds submitted evidence to a legacy Lewis record without rewriting its formal fields", () => {
     const legacyLewis: TestPerson = {
       id: "person-lewis",
@@ -262,6 +282,438 @@ describe("operating profile source evidence", () => {
       authority: "Existing authority text",
       operatingProfile: { sourceSubmissions: [lewisLeadershipAlignmentSubmission] },
     });
+  });
+
+  const founderSubmissions = [
+        calumLeadershipReflectionSubmission,
+        lewisLeadershipAlignmentSubmission,
+        emekaLeadershipAlignmentSubmission,
+      ];
+
+      it("provides all twelve dimensions for Calum, Lewis and Emeka using deterministic evidence-linked records", () => {
+        expect(founderIndividualOperatingUnderstandings).toHaveLength(3);
+        founderIndividualOperatingUnderstandings.forEach((seed, index) => {
+          const submission = founderSubmissions[index];
+          expect(seed.respondentName).toBe(submission.respondentName);
+          expect(submission.id).toBe(index === 0
+            ? "fg-exterior-care-leadership-alignment-calum-2026-09-27"
+            : `fg-exterior-care-leadership-alignment-${seed.respondentName.toLowerCase()}`);
+          expect(seed.understandings).toHaveLength(12);
+          expect(seed.understandings.map(({ dimension }) => dimension)).toEqual(
+            individualOperatingDimensions.map(({ key }) => key),
+          );
+          seed.understandings.forEach((item, answerIndex) => {
+            expect(item.id).toBe(`${submission.id}:individual-understanding:${item.dimension}`);
+            expect(item.understanding).toMatchObject({
+              id: `${item.id}:grounded`,
+              status: "evidence-grounded-understanding",
+              sourceSubmissionIds: [submission.id],
+              sourceAnswerReferences: [{
+                sourceSubmissionId: submission.id,
+                answerIndexes: submission === calumLeadershipReflectionSubmission
+                  && item.dimension === "desired-future"
+                  ? [0, 1]
+                  : [answerIndex],
+              }],
+            });
+            expect(item.understanding.statement).not.toBe(
+              submission.answers[answerIndex].answer,
+            );
+            const reference = item.understanding.sourceAnswerReferences[0];
+            expect(reference.answerIndexes.every((sourceAnswerIndex) => (
+              Number.isInteger(sourceAnswerIndex) && sourceAnswerIndex >= 0
+                && sourceAnswerIndex < submission.answers.length
+            ))).toBe(true);
+            expect(item.interpretations).toEqual([]);
+            expect(item).not.toHaveProperty("score");
+            expect(item.understanding).not.toHaveProperty("score");
+          });
+
+          expect(calumLeadershipReflectionSubmission.answers.map(({ question }) => question)).toEqual([
+            "What do you ultimately want from building a business?",
+            "Where do you genuinely want to be in 5–10 years?",
+            "What level of time and commitment are you realistically prepared to give over the next 1–3 years?",
+            "What does sacrifice mean to you when building something ambitious, and what sacrifices are you willing or unwilling to make?",
+            "What does a high standard of work mean to you?",
+            "How should we handle disagreement and conflict between us?",
+            "What do you believe you are strongest at, and where could you create the most value?",
+            "What are your biggest weaknesses or development areas?",
+            "How do you normally behave under pressure or when something goes wrong?",
+            "What do you expect financially from your involvement if the business grows?",
+            "What behaviour from another person would make you no longer want to build a business with them?",
+            "What would need to be true for you to make a deeper long-term commitment to this business and team?",
+          ]);
+          expect(calumLeadershipReflectionSubmission.answers[0].answer).toContain(
+            "That desired lifestyle comes with a very high level of responsibility.",
+          );
+          expect(calumLeadershipReflectionSubmission.answers[11].answer).toContain(
+            "loyalty survives the difficult periods.",
+          );
+        });
+
+        expect(founderIndividualOperatingUnderstandings[0].understandings[1]
+          .understanding.sourceAnswerReferences).toEqual([{
+          sourceSubmissionId: calumLeadershipReflectionSubmission.id,
+          answerIndexes: [0, 1],
+        }]);
+      });
+
+      it("distinguishes evidence-grounded syntheses from supported interpretations", () => {
+        const understanding = founderIndividualOperatingUnderstandings[2].understandings[8];
+        const interpretation = {
+          id: "emeka-pressure-interpretation",
+          status: "supported-interpretation" as const,
+          statement: "A broader, cautiously framed conclusion.",
+          sourceSubmissionIds: [emekaLeadershipAlignmentSubmission.id],
+          sourceAnswerReferences: [{
+            sourceSubmissionId: emekaLeadershipAlignmentSubmission.id,
+            answerIndexes: [8],
+          }],
+        };
+        const [normalised] = normaliseIndividualOperatingUnderstandings(
+          [{
+            ...understanding,
+            interpretations: [interpretation],
+          }],
+          [emekaLeadershipAlignmentSubmission],
+        );
+
+        expect(normalised.understanding.status).toBe("evidence-grounded-understanding");
+        expect(normalised.understanding.statement).toBe(understanding.understanding.statement);
+        expect(normalised.interpretations).toEqual([interpretation]);
+        expect(normalised.interpretations[0].status).toBe("supported-interpretation");
+        expect(normalised.understanding.sourceAnswerReferences).toEqual([{
+          sourceSubmissionId: emekaLeadershipAlignmentSubmission.id,
+          answerIndexes: [8],
+        }]);
+      });
+
+      it("keeps Calum's document provenance attached to the exact source evidence", () => {
+        const calumSeed = founderIndividualOperatingUnderstandings[0];
+        const sourceSubmission = calumLeadershipReflectionSubmission;
+
+        expect(sourceSubmission.sourceReference).toContain(
+          "FG_Exterior_Care_Calum_Leadership_Reflection_27_Sep_2026.docx",
+        );
+        expect(sourceSubmission.sourceReference).toContain("tightened for clarity, but not softened");
+        calumSeed.understandings.forEach((item) => {
+          expect(item.understanding.sourceSubmissionIds).toEqual([sourceSubmission.id]);
+        });
+      });
+
+      it("leaves an unsupported statement unresolved when its source submission is missing", () => {
+        const unsupportedUnderstanding: IndividualOperatingUnderstanding = {
+          id: "unresolved-without-source",
+          dimension: "pressure-and-setbacks",
+          understanding: {
+            id: "claim-with-missing-source",
+            status: "evidence-grounded-understanding",
+            statement: "An unsupported assertion.",
+            sourceSubmissionIds: ["missing-source"],
+            sourceAnswerReferences: [{
+              sourceSubmissionId: "missing-source",
+              answerIndexes: [0],
+            }],
+          },
+          interpretations: [{
+            id: "interpretation-with-missing-source",
+            status: "supported-interpretation",
+            statement: "An unsupported interpretation.",
+            sourceSubmissionIds: ["missing-source"],
+            sourceAnswerReferences: [{
+              sourceSubmissionId: "missing-source",
+              answerIndexes: [0],
+            }],
+          }],
+        };
+
+        const unreferencedUnderstanding: IndividualOperatingUnderstanding = {
+          ...unsupportedUnderstanding,
+          id: "unreferenced-understanding",
+          understanding: {
+            ...unsupportedUnderstanding.understanding,
+            id: "claim-without-source",
+            sourceSubmissionIds: [],
+            sourceAnswerReferences: [],
+          },
+          interpretations: [],
+        };
+        const invalidAnswerReference: IndividualOperatingUnderstanding = {
+          ...unsupportedUnderstanding,
+          id: "invalid-answer-reference",
+          understanding: {
+            ...unsupportedUnderstanding.understanding,
+            id: "claim-with-invalid-answer",
+            sourceSubmissionIds: [calumLeadershipReflectionSubmission.id],
+            sourceAnswerReferences: [{
+              sourceSubmissionId: calumLeadershipReflectionSubmission.id,
+              answerIndexes: [99],
+            }],
+          },
+          interpretations: [],
+        };
+        const normalised = normaliseIndividualOperatingUnderstandings(
+          [unsupportedUnderstanding, unreferencedUnderstanding, invalidAnswerReference],
+          founderSubmissions,
+        );
+
+        expect(normalised.map(({ id, understanding, interpretations }) => ({
+          id,
+          understanding,
+          interpretations,
+        }))).toEqual([
+          {
+            id: "unresolved-without-source",
+            understanding: {
+              id: "claim-with-missing-source",
+              status: "unresolved",
+              statement: "",
+              sourceSubmissionIds: [],
+              sourceAnswerReferences: [],
+            },
+            interpretations: [{
+              id: "interpretation-with-missing-source",
+              status: "unresolved",
+              statement: "",
+              sourceSubmissionIds: [],
+              sourceAnswerReferences: [],
+            }],
+          },
+          {
+            id: "unreferenced-understanding",
+            understanding: {
+              id: "claim-without-source",
+              status: "unresolved",
+              statement: "",
+              sourceSubmissionIds: [],
+              sourceAnswerReferences: [],
+            },
+            interpretations: [],
+          },
+          {
+            id: "invalid-answer-reference",
+            understanding: {
+              id: "claim-with-invalid-answer",
+              status: "unresolved",
+              statement: "",
+              sourceSubmissionIds: [],
+              sourceAnswerReferences: [],
+            },
+            interpretations: [],
+          },
+        ]);
+      });
+
+      it("does not treat a literal-source status as an evidence-grounded synthesis", () => {
+        const item = founderIndividualOperatingUnderstandings[0].understandings[0];
+        const legacyLiteralClaim = {
+          ...item,
+          understanding: {
+            ...item.understanding,
+            status: "directly-stated",
+          },
+        };
+        const [normalised] = normaliseIndividualOperatingUnderstandings(
+          [legacyLiteralClaim],
+          [calumLeadershipReflectionSubmission],
+        );
+
+        expect(normalised.understanding).toEqual({
+          id: item.understanding.id,
+          status: "unresolved",
+          statement: "",
+          sourceSubmissionIds: [],
+          sourceAnswerReferences: [],
+        });
+      });
+
+      it("supports evidence from multiple submissions without replacing prior understandings", () => {
+        const laterCalumSubmission: OperatingProfileSourceSubmission = {
+          ...calumLeadershipReflectionSubmission,
+          id: "fg-exterior-care-leadership-alignment-calum-2027-09-27",
+          answers: [{ question: "Later evidence", answer: "A later self-report." }],
+        };
+        const updatedDimension: IndividualOperatingUnderstanding = {
+          id: "calum-updated-motivation",
+          dimension: "ultimate-motivation",
+          understanding: {
+            id: "calum-updated-motivation-direct",
+            status: "evidence-grounded-understanding",
+            statement: "A later source and the original source are both considered.",
+            sourceSubmissionIds: [
+              calumLeadershipReflectionSubmission.id,
+              laterCalumSubmission.id,
+            ],
+            sourceAnswerReferences: [
+              { sourceSubmissionId: calumLeadershipReflectionSubmission.id, answerIndexes: [0] },
+              { sourceSubmissionId: laterCalumSubmission.id, answerIndexes: [0] },
+            ],
+          },
+          interpretations: [{
+            id: "calum-supported-interpretation",
+            status: "supported-interpretation",
+            statement: "This cautious interpretation is separate from the first-hand statements.",
+            sourceSubmissionIds: [
+              calumLeadershipReflectionSubmission.id,
+              laterCalumSubmission.id,
+            ],
+            sourceAnswerReferences: [
+              { sourceSubmissionId: calumLeadershipReflectionSubmission.id, answerIndexes: [0] },
+              { sourceSubmissionId: laterCalumSubmission.id, answerIndexes: [0] },
+            ],
+          }],
+        };
+        const sources = [...founderSubmissions, laterCalumSubmission];
+        const merged = mergeIndividualOperatingUnderstandings(
+          founderIndividualOperatingUnderstandings[0].understandings,
+          [updatedDimension],
+          sources,
+        );
+
+        expect(merged).toHaveLength(13);
+        expect(merged[0]).toEqual(founderIndividualOperatingUnderstandings[0].understandings[0]);
+        expect(merged[merged.length - 1].understanding.sourceSubmissionIds).toEqual([
+          calumLeadershipReflectionSubmission.id,
+          laterCalumSubmission.id,
+        ]);
+        expect(merged[merged.length - 1].interpretations).toEqual(updatedDimension.interpretations);
+      });
+
+      it("preserves later derived interpretations when the initial understanding is reattached", () => {
+        const seed = founderIndividualOperatingUnderstandings[0];
+        const firstUnderstanding = seed.understandings[0];
+        const laterInterpretation = {
+          id: `${firstUnderstanding.id}:interpretation-1`,
+          status: "supported-interpretation" as const,
+          statement: "A separately recorded, evidence-linked interpretation.",
+          sourceSubmissionIds: [calumLeadershipReflectionSubmission.id],
+          sourceAnswerReferences: [{
+            sourceSubmissionId: calumLeadershipReflectionSubmission.id,
+            answerIndexes: [0],
+          }],
+        };
+        const existingUnderstandings = [
+          { ...firstUnderstanding, interpretations: [laterInterpretation] },
+          ...seed.understandings.slice(1),
+        ];
+        const merged = mergeIndividualOperatingUnderstandings(
+          existingUnderstandings,
+          seed.understandings,
+          [calumLeadershipReflectionSubmission],
+        );
+
+        expect(merged[0].understanding).toEqual(firstUnderstanding.understanding);
+        expect(merged[0].interpretations).toEqual([laterInterpretation]);
+        expect(merged).toHaveLength(12);
+      });
+
+      it("attaches shared understanding data without changing source answers or People fields", () => {
+        const person: TestPerson = {
+          id: "person-calum",
+          name: "Calum",
+          responsibilities: "Existing responsibilities",
+          authority: "Existing authority",
+          operatingProfile: {
+            sourceSubmissions: [calumLeadershipReflectionSubmission],
+          },
+        };
+        const personSnapshot = structuredClone(person);
+        const sourceSnapshot = structuredClone(calumLeadershipReflectionSubmission);
+        const seed = founderIndividualOperatingUnderstandings[0];
+        const result = attachIndividualOperatingUnderstandings(
+          [person],
+          seed,
+          (candidate) => candidate.name,
+          (candidate) => candidate.operatingProfile?.sourceSubmissions,
+          (candidate) => candidate.operatingProfile?.individualUnderstandings,
+          (candidate, individualUnderstandings) => ({
+            ...candidate,
+            operatingProfile: {
+              ...candidate.operatingProfile,
+              individualUnderstandings,
+            },
+          }),
+        );
+
+        expect(result.status).toBe("attached");
+        expect(result.people[0].responsibilities).toBe("Existing responsibilities");
+        expect(result.people[0].authority).toBe("Existing authority");
+        expect(result.people[0].operatingProfile?.sourceSubmissions).toEqual(
+          person.operatingProfile?.sourceSubmissions,
+        );
+        expect(result.people[0].operatingProfile?.individualUnderstandings).toEqual(seed.understandings);
+        expect(person).toEqual(personSnapshot);
+        expect(calumLeadershipReflectionSubmission).toEqual(sourceSnapshot);
+      });
+
+      it("reports missing and ambiguous people through the reusable understanding attachment helper", () => {
+        const seed = founderIndividualOperatingUnderstandings[0];
+        const noMatchPeople: TestPerson[] = [
+          { id: "person-lewis", name: "Lewis", responsibilities: "", authority: "" },
+        ];
+        const noMatch = attachIndividualOperatingUnderstandings(
+          noMatchPeople,
+          seed,
+          (person) => person.name,
+          (person) => person.operatingProfile?.sourceSubmissions,
+          (person) => person.operatingProfile?.individualUnderstandings,
+          (person, individualUnderstandings) => ({
+            ...person,
+            operatingProfile: { ...person.operatingProfile, individualUnderstandings },
+          }),
+        );
+        const ambiguousPeople: TestPerson[] = [
+          { id: "person-calum-one", name: "Calum", responsibilities: "", authority: "" },
+          { id: "person-calum-two", name: " calum ", responsibilities: "", authority: "" },
+        ];
+        const ambiguous = attachIndividualOperatingUnderstandings(
+          ambiguousPeople,
+          seed,
+          (person) => person.name,
+          (person) => person.operatingProfile?.sourceSubmissions,
+          (person) => person.operatingProfile?.individualUnderstandings,
+          (person, individualUnderstandings) => ({
+            ...person,
+            operatingProfile: { ...person.operatingProfile, individualUnderstandings },
+          }),
+        );
+
+        expect(noMatch.status).toBe("person-not-found");
+        expect(ambiguous.status).toBe("ambiguous-person");
+        expect(ambiguous.people).toEqual(ambiguousPeople);
+      });
+
+      it("is deterministic across repeated persistence and hydration", () => {
+        const storage = memoryStorage();
+        const calum: TestPerson = {
+          id: "person-calum",
+          name: "Calum",
+          responsibilities: "Unchanged",
+          authority: "Unchanged",
+          operatingProfile: { sourceSubmissions: [calumLeadershipReflectionSubmission] },
+        };
+        const seed = founderIndividualOperatingUnderstandings[0];
+        const attachSeed = (person: TestPerson) => attachIndividualOperatingUnderstandings(
+          [person],
+          seed,
+          (candidate) => candidate.name,
+          (candidate) => candidate.operatingProfile?.sourceSubmissions,
+          (candidate) => candidate.operatingProfile?.individualUnderstandings,
+          (candidate, individualUnderstandings) => ({
+            ...candidate,
+            operatingProfile: { ...candidate.operatingProfile, individualUnderstandings },
+          }),
+        );
+        const first = attachSeed(calum);
+        persistJsonArray(storage, "people", first.people);
+        const stored = JSON.parse(storage.getItem("people") || "[]") as TestPerson[];
+        const second = attachSeed(stored[0]);
+        const third = attachSeed(second.people[0]);
+
+        expect(second.people[0].operatingProfile?.individualUnderstandings)
+          .toEqual(first.people[0].operatingProfile?.individualUnderstandings);
+        expect(third.people[0].operatingProfile?.individualUnderstandings)
+          .toEqual(second.people[0].operatingProfile?.individualUnderstandings);
   });
 
   it("attaches Emeka's evidence to the matching People record without changing formal fields", () => {
