@@ -41,6 +41,7 @@ import {
   sopStatusOptions,
   systemStatusOptions,
   type ActionRecord,
+  type ActionResponsibilityOutcomeEvidence,
   type ActionReviewOutcome,
   type CaptureConversionRecord,
   type DecisionRecord,
@@ -215,6 +216,7 @@ import {
   type IndividualOperatingUnderstanding,
 } from "./lib/individual-operating-understanding";
 import {
+  appendResponsibilityExecutionAssessment,
   appendResponsibilityFitAssessment,
   createResponsibilityDefinition,
   createPairIntelligenceRecords,
@@ -228,8 +230,15 @@ import {
   type ResponsibilityContributionMode,
   type ResponsibilityFitKind,
   type ResponsibilityFitAssessment,
+  type ResponsibilityDefinition,
   type ResponsibilityWorkItemReference,
 } from "./lib/founder-intelligence";
+import {
+  assertActionResponsibilityOutcomeEvidenceStructure,
+  assessResponsibilityDelegationEvidence,
+  deriveActionOperationalOutcomeEvidence,
+  mergeActionResponsibilityOutcomeEvidence,
+} from "./lib/responsibility-task-intelligence";
 import {
   attachOperatingProfileSourceSubmission,
   calumLeadershipReflectionSubmission,
@@ -424,13 +433,14 @@ const responsibilityAssessmentFitOptions = [
   "stated-capability",
   "evidence-grounded-fit",
   "inferred-fit",
+  "demonstrated-capability",
 ] as const satisfies readonly ResponsibilityFitKind[];
 
 type PersonStatus = (typeof personStatusOptions)[number];
 type PersonAccessLevel = (typeof personAccessLevelOptions)[number];
 type ResponsibilityAssessmentSourceReference = Extract<
   FounderIntelligenceEvidenceReference,
-  { type: "source-answer" }
+  { type: "source-answer" | "operational-outcome" }
 >;
 
 const compatibilityEvidenceStatusOptions = [
@@ -6515,6 +6525,7 @@ function ProblemDetailPanel({ problem, people, linkedActions, linkedLessons, ups
 type ActionDetailPanelProps = {
   action: ActionRecord;
   people: PersonRecord[];
+  responsibilities: ResponsibilityDefinition[];
   problems: ProblemRecord[];
   decisions: DecisionRecord[];
   upstream: RelatedRecordItem[];
@@ -6522,15 +6533,24 @@ type ActionDetailPanelProps = {
   onClose: () => void;
   onChange: (field: keyof ActionRecord, value: string) => void;
   onOwnerChange: (personId: string) => void;
+  onAddResponsibilityOutcomeEvidence: (evidence: ActionResponsibilityOutcomeEvidence) => void;
   onSave: () => void;
   onReviewFollowThrough: () => void;
   onOpenRelatedProblem?: () => void;
   onOpenRelatedDecision?: () => void;
 };
 
-function ActionDetailPanel({ action, people, problems, decisions, upstream, downstream, onClose, onChange, onOwnerChange, onSave, onReviewFollowThrough, onOpenRelatedProblem, onOpenRelatedDecision }: ActionDetailPanelProps) {
+function ActionDetailPanel({ action, people, responsibilities, problems, decisions, upstream, downstream, onClose, onChange, onOwnerChange, onAddResponsibilityOutcomeEvidence, onSave, onReviewFollowThrough, onOpenRelatedProblem, onOpenRelatedDecision }: ActionDetailPanelProps) {
   const isCompleted = action.status === "Completed";
   const activePeople = people.filter((person) => person.status === "Active");
+  const [responsibilityId, setResponsibilityId] = useState("");
+  const selectedResponsibility = responsibilities.find((entry) => entry.id === responsibilityId);
+  const [requirementId, setRequirementId] = useState("");
+  const [contributorPersonId, setContributorPersonId] = useState("");
+  const [contribution, setContribution] = useState<ResponsibilityContributionMode | "">("");
+  const [outcome, setOutcome] = useState<ActionResponsibilityOutcomeEvidence["outcome"] | "">("");
+  const [observedResult, setObservedResult] = useState("");
+  const [reviewerPersonId, setReviewerPersonId] = useState("");
   const savedOwner = action.owner?.trim() ?? "";
   const savedOwnerMatchesActivePerson = activePeople.some(
     (person) => person.name.trim().toLowerCase() === savedOwner.toLowerCase(),
@@ -6775,6 +6795,168 @@ function ActionDetailPanel({ action, people, problems, decisions, upstream, down
                   onChange={(event) => onChange("completionDate", event.target.value ? new Date(event.target.value).toISOString() : "")}
                   className="w-full rounded-xl border border-[#beb3aa] bg-white px-3.5 py-3 text-[14px] text-[#171717] outline-none transition focus:border-[#171717] focus:ring-3 focus:ring-[#171717]/6"
                 />
+              </div>
+              <div className="md:col-span-2 rounded-xl border border-[#d3cbc3] bg-[#f6f3ef] p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#4d4944]">
+                  Responsibility execution evidence
+                </div>
+                <p className="mt-1 text-[11px] leading-5 text-[#4d4944]">
+                  Record who contributed to this completed Action and which requirement it tested. Action ownership alone is not evidence of capability. A separate active person must validate a successful outcome before it can support demonstrated capability or delegation review.
+                </p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <select
+                    aria-label="Execution evidence responsibility"
+                    value={responsibilityId}
+                    onChange={(event) => {
+                      setResponsibilityId(event.target.value);
+                      setRequirementId("");
+                    }}
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  >
+                    <option value="">Select responsibility</option>
+                    {responsibilities.map((responsibility) => (
+                      <option key={responsibility.id} value={responsibility.id}>{responsibility.title}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Execution evidence requirement"
+                    value={requirementId}
+                    onChange={(event) => setRequirementId(event.target.value)}
+                    disabled={!selectedResponsibility?.requirements.length}
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717] disabled:opacity-50"
+                  >
+                    <option value="">Select requirement</option>
+                    {selectedResponsibility?.requirements.map((requirement) => (
+                      <option key={requirement.id} value={requirement.id}>{requirement.capability}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Person who contributed"
+                    value={contributorPersonId}
+                    onChange={(event) => setContributorPersonId(event.target.value)}
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  >
+                    <option value="">Select contributor</option>
+                    {activePeople.map((person) => (
+                      <option key={person.id} value={person.id}>{person.name} • {person.accessLevel}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Execution contribution mode"
+                    value={contribution}
+                    onChange={(event) => {
+                      const mode = responsibilityContributionModes.find(
+                        (candidate) => candidate === event.target.value,
+                      );
+                      setContribution(mode ?? "");
+                    }}
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  >
+                    <option value="">Select contribution mode</option>
+                    {responsibilityContributionModes.map((mode) => (
+                      <option key={mode} value={mode}>{mode}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="Execution outcome"
+                    value={outcome}
+                    onChange={(event) => {
+                      const nextOutcome = ["successful", "mixed", "unsuccessful", "unassessed"]
+                        .find((candidate) => candidate === event.target.value);
+                      setOutcome((nextOutcome as ActionResponsibilityOutcomeEvidence["outcome"] | undefined) ?? "");
+                    }}
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  >
+                    <option value="">Select outcome</option>
+                    <option value="successful">Successful</option>
+                    <option value="mixed">Mixed</option>
+                    <option value="unsuccessful">Unsuccessful</option>
+                    <option value="unassessed">Unassessed</option>
+                  </select>
+                  <select
+                    aria-label="Independent outcome reviewer"
+                    value={reviewerPersonId}
+                    onChange={(event) => setReviewerPersonId(event.target.value)}
+                    className="rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717]"
+                  >
+                    <option value="">No independent review recorded</option>
+                    {activePeople.filter((person) => person.id !== contributorPersonId).map((person) => (
+                      <option key={person.id} value={person.id}>{person.name} • {person.accessLevel}</option>
+                    ))}
+                  </select>
+                  <textarea
+                    aria-label="Observed execution result"
+                    rows={3}
+                    value={observedResult}
+                    onChange={(event) => setObservedResult(event.target.value)}
+                    placeholder="Observed result relevant to the requirement"
+                    className="resize-y rounded-lg border border-[#beb3aa] bg-white px-3 py-2 text-[12px] text-[#171717] sm:col-span-2"
+                  />
+                </div>
+                <button
+                  type="button"
+                  disabled={!responsibilityId || !requirementId || !contributorPersonId
+                    || !contribution || !outcome || !observedResult.trim()}
+                  onClick={() => {
+                    const responsible = responsibilities.find((entry) => entry.id === responsibilityId);
+                    const requirement = responsible?.requirements.find((entry) => entry.id === requirementId);
+                    const person = activePeople.find((entry) => entry.id === contributorPersonId);
+                    const selectedContribution = responsibilityContributionModes.find(
+                      (entry) => entry === contribution,
+                    );
+                    const selectedOutcome = ["successful", "mixed", "unsuccessful", "unassessed"]
+                      .find((entry) => entry === outcome) as ActionResponsibilityOutcomeEvidence["outcome"] | undefined;
+                    const reviewer = activePeople.find((entry) => entry.id === reviewerPersonId);
+                    if (!responsible || !requirement || !person || !selectedContribution
+                      || !selectedOutcome || !observedResult.trim()) return;
+                    const outcomeId = [
+                      action.id,
+                      responsible.id,
+                      requirement.id,
+                      person.id,
+                      selectedContribution,
+                    ].map(encodeURIComponent).join(":");
+                    const isIndependentlyValidated = isCompleted
+                      && action.reviewOutcome === "Complete"
+                      && action.completionEvidence.trim().length > 0
+                      && selectedOutcome === "successful"
+                      && reviewer !== undefined
+                      && reviewer.id !== person.id;
+                    const evidence: ActionResponsibilityOutcomeEvidence = {
+                      id: [
+                        outcomeId,
+                        selectedOutcome,
+                        observedResult.trim(),
+                        reviewer?.id ?? "unreviewed",
+                      ].map(encodeURIComponent).join(":"),
+                      responsibilityId: responsible.id,
+                      requirementId: requirement.id,
+                      personId: person.id,
+                      contribution: selectedContribution,
+                      outcomeId,
+                      outcome: selectedOutcome,
+                      observedResult: observedResult.trim(),
+                      evidenceStatus: isIndependentlyValidated ? "validated" : "unreviewed",
+                      ...(isIndependentlyValidated && reviewer
+                        ? { reviewedByPersonId: reviewer.id, reviewedAt: new Date().toISOString() }
+                        : {}),
+                    };
+                    onAddResponsibilityOutcomeEvidence(evidence);
+                    setObservedResult("");
+                  }}
+                  className="mt-2 rounded-lg border border-[#171717] bg-white px-3 py-2 text-[10px] font-medium uppercase tracking-[0.12em] text-[#171717] disabled:opacity-40"
+                >
+                  Record execution evidence
+                </button>
+                {(action.responsibilityOutcomeEvidence ?? []).map((evidence) => (
+                  <p key={evidence.id} className="mt-2 text-[10px] leading-4 text-[#4d4944]">
+                    {evidence.evidenceStatus} • {activePeople.find((person) => person.id === evidence.personId)?.name || "Unresolved person"}
+                    {" • "}{evidence.outcome} • {evidence.observedResult}
+                    {evidence.reviewedByPersonId
+                      ? ` • Reviewed by ${activePeople.find((person) => person.id === evidence.reviewedByPersonId)?.name || "unresolved person"}`
+                      : " • Independent review not recorded"}
+                  </p>
+                ))}
               </div>
             </>
           ) : null}
@@ -8492,6 +8674,7 @@ export default function Home() {
   const [dailyPostureSnapshots, setDailyPostureSnapshots] = useState<DailyPostureSnapshot[]>([]);
   const [operatingDataLoaded, setOperatingDataLoaded] = useState(false);
   const peopleWritableRef = useRef(false);
+  const conversionsWritableRef = useRef(false);
   const founderIntelligenceWritableRef = useRef(false);
   const founderIntelligenceContextRef = useRef<FounderIntelligenceContext | null>(null);
   const [changeHistory, setChangeHistory] = useState<ChangeEvent[]>([]);
@@ -8600,6 +8783,7 @@ export default function Home() {
 
   useEffect(() => {
     peopleWritableRef.current = false;
+    conversionsWritableRef.current = false;
     try {
       const initialIntegrityStorage: Record<string, string | null> = {};
       for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) initialIntegrityStorage[key] = window.localStorage.getItem(key);
@@ -8712,6 +8896,7 @@ export default function Home() {
 
       const loadedWorkItems: ResponsibilityWorkItemReference[] = [];
       const loadedOperationalRecords: Array<{ recordType: string; recordId: string }> = [];
+      const loadedActionRecords: ActionRecord[] = [];
       const addOperationalRecord = (recordType: string, recordId: unknown) => {
         if (typeof recordId !== "string" || !recordId.trim()) return;
         if (!loadedOperationalRecords.some((record) =>
@@ -8746,6 +8931,12 @@ export default function Home() {
             const recordType = conversionRecordTypes[record.targetType];
             if (!recordType) return;
             addOperationalRecord(recordType, record.id);
+            if (recordType === "Action") {
+              if (Object.prototype.hasOwnProperty.call(record, "responsibilityOutcomeEvidence")) {
+                assertActionResponsibilityOutcomeEvidenceStructure(record.responsibilityOutcomeEvidence);
+              }
+              loadedActionRecords.push(normalizeActionRecord(record as CaptureConversionRecord));
+            }
             if (recordType === "Action" || recordType === "Problem") {
               addWorkItem(recordType, record.id);
             }
@@ -8897,6 +9088,7 @@ export default function Home() {
         people: loadedPeople,
         workItems: loadedWorkItems,
         operationalRecords: loadedOperationalRecords,
+        operationalEvidence: deriveActionOperationalOutcomeEvidence(loadedActionRecords, loadedPeople),
       };
       founderIntelligenceContextRef.current = loadedFounderIntelligenceContext;
       if (storedFounderIntelligence) {
@@ -9099,6 +9291,7 @@ export default function Home() {
           setDailyPostureSnapshots(normalised);
         }
       }
+      conversionsWritableRef.current = true;
     } catch (error) {
       setFeedback({
         type: "error",
@@ -9118,7 +9311,7 @@ export default function Home() {
   }, [captures, operatingDataLoaded]);
 
   useEffect(() => {
-    if (!operatingDataLoaded) {
+    if (!operatingDataLoaded || !conversionsWritableRef.current) {
       return;
     }
 
@@ -13101,6 +13294,21 @@ export default function Home() {
     });
   };
 
+  const handleAddActionResponsibilityOutcomeEvidence = (
+    evidence: ActionResponsibilityOutcomeEvidence,
+  ) => {
+    setActionEditor((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        responsibilityOutcomeEvidence: mergeActionResponsibilityOutcomeEvidence(
+          current.responsibilityOutcomeEvidence,
+          evidence,
+        ),
+      };
+    });
+  };
+
   const handleActionSave = () => {
     if (!selectedActionId || !actionEditor) {
       return;
@@ -14481,7 +14689,8 @@ export default function Home() {
   };
 
   const personOperatingProfile = normaliseOperatingProfile(personEditor?.operatingProfile);
-  const responsibilityAssessmentEvidenceOptions = personOperatingProfile.sourceSubmissions.flatMap(
+  const responsibilityAssessmentEvidenceOptions = [
+    ...personOperatingProfile.sourceSubmissions.flatMap(
     (submission) => submission.answers.map((answer, answerIndex) => {
       const reference: ResponsibilityAssessmentSourceReference = {
         type: "source-answer",
@@ -14495,7 +14704,26 @@ export default function Home() {
         reference,
       };
     }),
-  );
+    ),
+    ...deriveActionOperationalOutcomeEvidence(actionRecords, people)
+      .filter((outcome) => outcome.personId === personEditor?.id)
+      .map((outcome) => {
+        const reference: ResponsibilityAssessmentSourceReference = {
+          type: "operational-outcome",
+          personId: outcome.personId,
+          recordType: outcome.recordType,
+          recordId: outcome.recordId,
+          outcomeId: outcome.outcomeId,
+        };
+        const action = actionRecords.find((candidate) => candidate.id === outcome.recordId);
+        return {
+          value: JSON.stringify(reference),
+          label: `Validated Action outcome: ${action?.actionTitle || outcome.recordId} — ${outcome.observedResult}`,
+          reference,
+          outcome,
+        };
+      }),
+  ];
   const selectedAssessmentResponsibility = founderIntelligence.responsibilities.find(
     (responsibility) => responsibility.id === responsibilityAssessmentResponsibilityIdDraft,
   );
@@ -19320,6 +19548,7 @@ export default function Home() {
         <ActionDetailPanel
           action={actionEditor}
           people={people.filter((person) => person.status === "Active")}
+          responsibilities={founderIntelligence.responsibilities}
           problems={problemRecords}
           decisions={decisionRecords}
           upstream={[
@@ -19353,6 +19582,7 @@ export default function Home() {
           }}
           onChange={handleActionEditorChange}
           onOwnerChange={handleActionOwnerChange}
+          onAddResponsibilityOutcomeEvidence={handleAddActionResponsibilityOutcomeEvidence}
           onSave={handleActionSave}
           onReviewFollowThrough={() => setFollowThroughReviewActionId(actionEditor.id)}
           onOpenRelatedProblem={() => handleOpenRelatedProblem(actionEditor)}
@@ -20017,7 +20247,7 @@ export default function Home() {
                   Requirement-level capability assessment
                 </div>
                 <p className="mt-1 text-[11px] leading-5 text-[#4d4944]">
-                  Record a human-authored, evidence-linked assessment for one person and one requirement. An optional Action link references existing work only; it does not allocate ownership or change authority. Demonstrated capability requires independent successful operational evidence and cannot be recorded from questionnaire answers here.
+                  Record a human-authored, evidence-linked assessment for one person and one requirement. An optional Action link references existing work only; it does not allocate ownership or change authority. Demonstrated capability requires a separately validated successful Action outcome for the same person, contribution, responsibility and requirement.
                 </p>
                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
                   <select
@@ -20147,9 +20377,23 @@ export default function Home() {
                     const contribution = responsibilityContributionModes.find(
                       (candidate) => candidate === responsibilityAssessmentContributionDraft,
                     );
+                    const selectedEvidenceOption = responsibilityAssessmentEvidenceOptions.find(
+                      (option) => JSON.stringify(option.reference) === JSON.stringify(evidence),
+                    );
+                    const operationalEvidence = selectedEvidenceOption
+                      && "outcome" in selectedEvidenceOption
+                      ? selectedEvidenceOption.outcome
+                      : null;
                     const statement = responsibilityAssessmentStatementDraft.trim();
                     if (!responsibility || !requirement || !evidence
                       || evidence.personId !== personEditor.id || !fit || !contribution || !statement) return;
+                    if (fit === "demonstrated-capability"
+                      && (!operationalEvidence
+                        || operationalEvidence.outcome !== "successful"
+                        || operationalEvidence.responsibilityId !== responsibility.id
+                        || operationalEvidence.requirementId !== requirement.id
+                        || operationalEvidence.contribution !== contribution)) return;
+                    if (fit !== "demonstrated-capability" && evidence.type !== "source-answer") return;
 
                     const assessmentId = generateCaptureId();
                     const assessment: ResponsibilityFitAssessment = {
@@ -20175,11 +20419,14 @@ export default function Home() {
                         evidence: [evidence],
                       },
                     };
-                    setFounderIntelligence((current) => appendResponsibilityFitAssessment(
-                      current,
-                      responsibility,
-                      assessment,
-                    ));
+                    setFounderIntelligence((current) => operationalEvidence
+                      ? appendResponsibilityExecutionAssessment(
+                        current,
+                        responsibility,
+                        assessment,
+                        operationalEvidence,
+                      )
+                      : appendResponsibilityFitAssessment(current, responsibility, assessment));
                     setResponsibilityAssessmentStatementDraft("");
                     setResponsibilityAssessmentEvidenceDraft(null);
                   }}
@@ -20199,6 +20446,20 @@ export default function Home() {
                   .flatMap((record) => record.assessments
                     .filter((assessment) => assessment.personId === personEditor.id)
                     .map((assessment) => ({ record, assessment })));
+                const delegationEvidenceReviews = founderIntelligence.responsibilities.map((responsibility) => ({
+                  responsibility,
+                  assessment: assessResponsibilityDelegationEvidence(
+                    personEditor.id,
+                    responsibility.id,
+                    founderIntelligence.responsibilityFits,
+                    {
+                      people,
+                      responsibilities: founderIntelligence.responsibilities,
+                      actions: actionRecords,
+                      operationalOutcomeAssertions: founderIntelligence.operationalOutcomes,
+                    },
+                  ),
+                }));
                 const developmentOpportunities = founderIntelligence.developmentOpportunities.filter(
                   (opportunity) => opportunity.personId === personEditor.id,
                 );
@@ -20219,6 +20480,42 @@ export default function Home() {
 
                 return (
                   <div className="mt-3 space-y-3">
+                    {delegationEvidenceReviews.length > 0 ? (
+                      <div className="rounded-lg border border-[#d3cbc3] bg-white p-3">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#4d4944]">
+                          Delegation evidence review
+                        </div>
+                        <p className="mt-1 text-[11px] leading-5 text-[#4d4944]">
+                          This is evidence for human review, not an assignment, readiness approval or authority change. Founder status comes only from the existing People governance fields.
+                        </p>
+                        <div className="mt-2 space-y-2">
+                          {delegationEvidenceReviews.map(({ responsibility, assessment }) => (
+                            <div key={responsibility.id} className="rounded border border-[#eee9e3] p-2">
+                              <div className="text-[11px] font-medium text-[#171717]">
+                                {responsibility.title} • {assessment.status.replace(/-/g, " ")}
+                              </div>
+                              <div className="mt-1 text-[10px] text-[#4d4944]">
+                                Governance class: {assessment.governanceClass} • authority unchanged
+                              </div>
+                              {assessment.requirements.length === 0 ? (
+                                <p className="mt-1 text-[10px] text-[#4d4944]">
+                                  No requirements; delegation evidence is not established.
+                                </p>
+                              ) : assessment.requirements.map((requirement) => (
+                                <div key={requirement.requirementId} className="mt-1 text-[10px] text-[#4d4944]">
+                                  {responsibility.requirements.find((entry) => entry.id === requirement.requirementId)?.capability
+                                    || requirement.requirementId}
+                                  {" • "}{requirement.status}
+                                  {requirement.actionIds.length
+                                    ? ` • Actions: ${requirement.actionIds.join(", ")}`
+                                    : " • no validated execution evidence"}
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                     {activeFounders.length >= 2 && missingWorkspaceRecords ? (
                       <button
                         type="button"

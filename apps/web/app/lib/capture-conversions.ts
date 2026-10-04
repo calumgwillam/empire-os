@@ -144,6 +144,20 @@ export type ActionStatus = (typeof actionStatusOptions)[number];
 export const actionReviewOutcomeOptions = ["Continue", "Waiting on external dependency", "Blocked", "Reassign", "Complete", "Cancel"] as const;
 export type ActionReviewOutcome = (typeof actionReviewOutcomeOptions)[number];
 
+export type ActionResponsibilityOutcomeEvidence = {
+  id: string;
+  responsibilityId: string;
+  requirementId: string;
+  personId: string;
+  contribution: "owner" | "lead" | "executor" | "contributor" | "support" | "reviewer";
+  outcomeId: string;
+  outcome: "successful" | "mixed" | "unsuccessful" | "unassessed";
+  observedResult: string;
+  evidenceStatus: "unreviewed" | "validated" | "unresolved";
+  reviewedByPersonId?: string;
+  reviewedAt?: string;
+};
+
 export type ActionRecord = CaptureConversionRecord & {
   actionTitle: string;
   description: string;
@@ -161,6 +175,7 @@ export type ActionRecord = CaptureConversionRecord & {
   relatedPillar: string;
   completionEvidence: string;
   completionDate: string;
+  responsibilityOutcomeEvidence?: ActionResponsibilityOutcomeEvidence[];
   followUpDate?: string;
   followUpOwner?: string;
   followUpOwnerPersonId?: string;

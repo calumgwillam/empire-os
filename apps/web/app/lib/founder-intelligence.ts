@@ -132,6 +132,8 @@ export type OperationalOutcomeEvidence = {
   outcome: "successful" | "mixed" | "unsuccessful" | "unassessed";
   observedResult: string;
   evidenceStatus: "resolved" | "unresolved";
+  responsibilityId?: string;
+  requirementId?: string;
 };
 
 export type ResponsibilityAssessmentTarget =
@@ -218,10 +220,14 @@ export type FounderIntelligenceContext = {
   responsibilities?: readonly ResponsibilityDefinition[];
   workItems?: readonly ResponsibilityWorkItemReference[];
   operationalRecords?: readonly { recordType: string; recordId: string }[];
-  operationalEvidence?: readonly Pick<
+  operationalEvidence?: readonly (Pick<
     OperationalOutcomeEvidence,
     "personId" | "recordType" | "recordId" | "outcomeId" | "contribution" | "outcome"
-  >[];
+  > & {
+    observedResult?: string;
+    responsibilityId?: string;
+    requirementId?: string;
+  })[];
   operationalOutcomeAssertions?: readonly OperationalOutcomeEvidence[];
   operationalOutcomeAssertionsProvided?: boolean;
 };
@@ -360,7 +366,7 @@ function isValidFounderIntelligenceRecordStructure(value: unknown, key: string):
                 && observation.direction.fromPersonId !== observation.direction.toPersonId
                 && personIds.includes(observation.direction.fromPersonId)
                 && personIds.includes(observation.direction.toPersonId)))));
-        return (entry.id === undefined || nonEmptyString(entry.id))
+        return (entry.id === undefined || typeof entry.id === "string")
           && personIds.length === expectedPeople
           && personIds.every(nonEmptyString)
           && new Set(personIds).size === expectedPeople
@@ -411,7 +417,9 @@ function isValidFounderIntelligenceRecordStructure(value: unknown, key: string):
           && nonEmptyString(entry.outcomeId)
           && validContributionTypes.includes(entry.contribution as ResponsibilityContributionMode)
           && ["successful", "mixed", "unsuccessful", "unassessed"].includes(entry.outcome as string)
-          && nonEmptyString(entry.observedResult);
+          && nonEmptyString(entry.observedResult)
+          && (entry.responsibilityId === undefined || nonEmptyString(entry.responsibilityId))
+          && (entry.requirementId === undefined || nonEmptyString(entry.requirementId));
       default:
         return false;
     }
@@ -571,6 +579,41 @@ export function appendResponsibilityFitAssessment(
       ? intelligence.responsibilityFits.map((record) =>
         record.id === existingRecord.id ? fitRecord : record)
       : [...intelligence.responsibilityFits, fitRecord],
+  };
+}
+
+export function appendResponsibilityExecutionAssessment(
+  intelligence: FounderIntelligence,
+  responsibility: ResponsibilityDefinition,
+  assessment: ResponsibilityFitAssessment,
+  outcomeAssertion: OperationalOutcomeEvidence,
+): FounderIntelligence {
+  const assertion = {
+    ...outcomeAssertion,
+    responsibilityId: responsibility.id,
+  };
+  const existingOutcome = intelligence.operationalOutcomes.find(
+    (outcome) => outcome.id === assertion.id,
+  );
+  const operationalOutcomes = existingOutcome
+    ? intelligence.operationalOutcomes.map((outcome) => {
+      if (outcome.id !== assertion.id) return outcome;
+      const sameAssertion = outcome.personId === assertion.personId
+        && outcome.recordType === assertion.recordType
+        && outcome.recordId === assertion.recordId
+        && outcome.outcomeId === assertion.outcomeId
+        && outcome.contribution === assertion.contribution
+        && outcome.outcome === assertion.outcome
+        && outcome.observedResult === assertion.observedResult
+        && outcome.responsibilityId === assertion.responsibilityId
+        && outcome.requirementId === assertion.requirementId;
+      return sameAssertion ? outcome : { ...outcome, evidenceStatus: "unresolved" as const };
+    })
+    : [...intelligence.operationalOutcomes, assertion];
+
+  return {
+    ...appendResponsibilityFitAssessment(intelligence, responsibility, assessment),
+    operationalOutcomes,
   };
 }
 
@@ -810,7 +853,10 @@ function normaliseOperationalOutcome(
     && outcome.recordId === value.recordId
     && outcome.outcomeId === value.outcomeId
     && outcome.contribution === value.contribution
-    && outcome.outcome === value.outcome);
+    && outcome.outcome === value.outcome
+    && (outcome.observedResult === undefined || outcome.observedResult === value.observedResult)
+    && (value.responsibilityId === undefined || outcome.responsibilityId === value.responsibilityId)
+    && (value.requirementId === undefined || outcome.requirementId === value.requirementId));
   return {
     id: value.id,
     personId: value.personId,
@@ -821,7 +867,28 @@ function normaliseOperationalOutcome(
     outcome: value.outcome as OperationalOutcomeEvidence["outcome"],
     observedResult: value.observedResult,
     evidenceStatus: personExists && sourceRecordExists && independentOutcome ? "resolved" : "unresolved",
+    ...(nonEmptyString(value.responsibilityId) ? { responsibilityId: value.responsibilityId } : {}),
+    ...(nonEmptyString(value.requirementId) ? { requirementId: value.requirementId } : {}),
   };
+}
+
+function mergeOperationalOutcomeAssertions(
+  existing: OperationalOutcomeEvidence,
+  incoming: OperationalOutcomeEvidence,
+): OperationalOutcomeEvidence {
+  const sameAssertion = existing.personId === incoming.personId
+    && existing.recordType === incoming.recordType
+    && existing.recordId === incoming.recordId
+    && existing.outcomeId === incoming.outcomeId
+    && existing.contribution === incoming.contribution
+    && existing.outcome === incoming.outcome
+    && existing.observedResult === incoming.observedResult
+    && existing.responsibilityId === incoming.responsibilityId
+    && existing.requirementId === incoming.requirementId;
+  return sameAssertion
+    ? { ...existing, evidenceStatus: existing.evidenceStatus === "resolved"
+      && incoming.evidenceStatus === "resolved" ? "resolved" : "unresolved" }
+    : { ...existing, evidenceStatus: "unresolved" };
 }
 
 function normaliseDevelopmentOpportunity(
@@ -1046,17 +1113,45 @@ function normaliseResponsibilityFit(value: unknown, context: FounderIntelligence
       const hasSuccessfulOutcomeEvidence = claim.evidence.some((reference) => {
         if (reference.type !== "operational-outcome") return false;
         const outcome = getOperationalEvidence(reference, context);
-        const assertion = context.operationalOutcomeAssertions?.find((candidate) =>
+        const requirementScopeMatches = !outcome?.requirementId
+          || (Array.isArray(entry.requirementIds)
+            && entry.requirementIds.includes(outcome.requirementId));
+        const responsibilityScopeMatches = !outcome?.responsibilityId
+          || outcome.responsibilityId === responsibilityId;
+        const matchingAssertions = context.operationalOutcomeAssertions?.filter((candidate) =>
           candidate.personId === reference.personId
           && candidate.recordType === reference.recordType
           && candidate.recordId === reference.recordId
           && candidate.outcomeId === reference.outcomeId
-          && candidate.contribution === entry.contribution);
+          && candidate.contribution === entry.contribution
+          && (candidate.responsibilityId === undefined || candidate.responsibilityId === responsibilityId)
+          && (candidate.requirementId === undefined
+            || (Array.isArray(entry.requirementIds) && entry.requirementIds.includes(candidate.requirementId))));
+        const assertionsConflict = (matchingAssertions?.length ?? 0) > 1
+          && matchingAssertions?.some((candidate) =>
+            candidate.outcome !== matchingAssertions[0].outcome
+            || candidate.observedResult !== matchingAssertions[0].observedResult
+            || candidate.evidenceStatus !== matchingAssertions[0].evidenceStatus) === true;
+        const assertion = assertionsConflict ? undefined : matchingAssertions?.[0];
+        const hasConflictingAssertion = assertionsConflict
+          || (context.operationalOutcomeAssertions ?? []).some((candidate) =>
+            candidate.personId === reference.personId
+            && candidate.recordType === reference.recordType
+            && candidate.recordId === reference.recordId
+            && candidate.outcomeId === reference.outcomeId
+            && candidate.contribution === entry.contribution
+            && (candidate.outcome !== "successful"
+              || candidate.evidenceStatus !== "resolved"));
         const assertionSupportsOutcome = assertion
-          ? assertion.evidenceStatus === "resolved" && assertion.outcome === "successful"
-          : !context.operationalOutcomeAssertionsProvided
-            || (entry.fit === "unresolved" && entry.candidateFit === "demonstrated-capability");
-        return assertionSupportsOutcome
+          ? assertion.evidenceStatus === "resolved"
+            && assertion.outcome === "successful"
+            && (outcome?.observedResult === undefined
+              || assertion.observedResult === outcome.observedResult)
+          : !hasConflictingAssertion && (!context.operationalOutcomeAssertionsProvided
+            || (entry.fit === "unresolved" && entry.candidateFit === "demonstrated-capability"));
+        return requirementScopeMatches
+          && responsibilityScopeMatches
+          && assertionSupportsOutcome
           && outcome?.outcome === "successful"
           && outcome.personId === personId
           && outcome.contribution === entry.contribution;
@@ -1245,7 +1340,13 @@ export function normaliseFounderIntelligence(
   if (Array.isArray(value.operationalOutcomes)) {
     value.operationalOutcomes.forEach((entry) => {
       const outcome = normaliseOperationalOutcome(entry, context);
-      if (outcome) operationalOutcomes.set(outcome.id, outcome);
+      if (outcome) {
+        const existing = operationalOutcomes.get(outcome.id);
+        operationalOutcomes.set(
+          outcome.id,
+          existing ? mergeOperationalOutcomeAssertions(existing, outcome) : outcome,
+        );
+      }
     });
   }
   const contextWithOperationalOutcomes: FounderIntelligenceContext = {
