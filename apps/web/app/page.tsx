@@ -214,25 +214,18 @@ import { persistJsonArray, persistJsonValue } from "./lib/persistence";
 import {
   assertIcarusDataStructure,
   normaliseIcarusAssessmentData,
-  buildIcarusReview,
   getIcarusIdentityKey,
   ICARUS_STORAGE_KEY,
   parseIcarusAssessments,
   type IcarusAssessmentRecord,
   type IcarusSourceRecord,
 } from "./lib/icarus";
+import type { IcarusAttentionReference } from "./lib/icarus-strategic-attention";
 import {
-  buildIcarusFounderFocusRisks,
-  buildIcarusStrategicAttention,
-  type IcarusAttentionReference,
-  type IcarusStrategicObjectiveContext,
-} from "./lib/icarus-strategic-attention";
-import { buildIcarusClusterContributions, buildIcarusCorrelationSignals } from "./lib/icarus-correlation";
-import { buildIcarusSystemicExposure } from "./lib/icarus-systemic-exposure";
-import { attachIcarusAssuranceToSignals, buildIcarusAssurance } from "./lib/icarus-assurance";
-import { buildIcarusAssuranceRollup } from "./lib/icarus-assurance-rollup";
+  buildIcarusCorrelationIntelligence,
+  buildIcarusStrategicIntelligence,
+} from "./lib/icarus-intelligence-pipeline";
 import {
-  buildIcarusExposureSnapshot,
   normaliseIcarusExposureSnapshot,
   type IcarusExposureSnapshotEntry,
 } from "./lib/icarus-exposure-history";
@@ -341,7 +334,6 @@ const navigation = [
 
 const LAST_BACKUP_AT_STORAGE_KEY = "empire-os-last-backup-at";
   import { buildCommandAttention, resolveCommandStrategicRiskConvergence, type CommandAttentionItem } from "./lib/command-attention";
-import { resolveStrategicRiskConvergence } from "./lib/strategic-risk-resolution";
 const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
 
 const INTEGRITY_MATERIAL_ATTENTION_THRESHOLD = 3;
@@ -9909,24 +9901,6 @@ export default function Home() {
     ...pillarOptions.map((pillar) => ({ recordType: "Pillar" as const, recordId: pillar, title: pillar })),
     ...strategicObjectives.map((record) => ({ recordType: "Strategic Objective" as const, recordId: record.id, title: record.title })),
   ];
-  const icarusReviews = buildIcarusReview(icarusAssessments, icarusSourceRecords);
-  const icarusFounderAttention = icarusReviews
-    .filter((review) => icarusAssessments.find((assessment) => assessment.id === review.assessmentId)?.status !== "Closed")
-    .flatMap((review) => review.findings);
-  const icarusAttentionAssessmentCount = new Set(icarusFounderAttention.map((finding) => finding.assessmentId)).size;
-  const icarusStrategicObjectiveContext = new Map(strategicObjectives.map((objective): [string, IcarusStrategicObjectiveContext] => [objective.id, {
-    area: objective.pillar,
-    importance: objective.importance,
-    isLive: objective.status === "Active" || objective.status === "Watching",
-    linkedProjectIds: objective.linkedProjectIds,
-    linkedOpportunityIds: objective.linkedOpportunityIds,
-    linkedDecisionIds: objective.linkedDecisionIds,
-  }]));
-  const icarusBaseStrategicSignals = buildIcarusStrategicAttention({
-    assessments: icarusAssessments,
-    reviews: icarusReviews,
-    strategicObjectives: icarusStrategicObjectiveContext,
-  });
   const pillarSummaries = pillarOptions.map((pillar) => {
     const pillarProjects = projects.filter((project) => project.area === pillar && isProjectActive(project));
     const pillarActions = actionRecords.filter((action) => action.relatedPillar === pillar && isActionActive(action));
@@ -10059,20 +10033,20 @@ export default function Home() {
     delegationReadyPeopleCount: delegationReadyPeople.length,
     delegationReadinessGapPeopleCount: delegationReadinessGapPeople.length,
   });
-  // Assurance is derived after People/operational independence so ownership can be judged against founder dependency.
-  const icarusAssurance = buildIcarusAssurance({
+  const founderDependentWork = operationalIndependence.classifiedItems
+    .filter((item) => item.state === "Founder-only")
+    .map(({ objectType, id }) => ({ objectType, id }));
+  // Icarus Stage A (see icarus-intelligence-pipeline): after People/operational independence so ownership can be
+  // judged against founder dependency, and before Command Attention, which ranks the resulting strategic signals.
+  const icarusIntelligence = buildIcarusStrategicIntelligence({
     assessments: icarusAssessments,
-    reviews: icarusReviews,
-    signals: icarusBaseStrategicSignals,
+    sourceRecords: icarusSourceRecords,
+    strategicObjectives,
     people: people.map(({ id, status }) => ({ id, status })),
     actions: actionRecords.map(({ id, status, dueDate }) => ({ id, status, dueDate })),
     primaryFounderId: founderPerson?.id ?? null,
-    founderDependencyActive: operationalIndependence.classifiedItems.some((item) => item.state === "Founder-only"),
-    strategicObjectives: icarusStrategicObjectiveContext,
+    founderDependencyActive: founderDependentWork.length > 0,
   });
-  const icarusAssuranceRollup = buildIcarusAssuranceRollup(icarusAssurance.assessments);
-  const icarusStrategicSignals = attachIcarusAssuranceToSignals(icarusBaseStrategicSignals, icarusAssurance);
-  const icarusCorrelationSignals = buildIcarusCorrelationSignals({ signals: icarusStrategicSignals });
 
   const decisionTrackRecord = (() => {
     const validOutcomeRatings = new Set(["Worked", "Partially worked", "Failed"]);
@@ -11092,7 +11066,7 @@ export default function Home() {
     })),
     procurementQueue: capitalAllocation.procurementQueue,
     learning: commandLearningInput,
-    icarus: icarusStrategicSignals,
+    icarus: icarusIntelligence.strategicSignals,
     nowMs: Date.now(),
   });
   const toCommandAttentionItem = (item: CommandAttentionItem): AttentionItem => {
@@ -11495,55 +11469,36 @@ export default function Home() {
     sops: sopRecords.map(({ id, sourceCaptureId, relatedCapture, relatedSystem, relatedLesson }) => ({ id, sourceCaptureId, relatedCapture, relatedSystem, relatedLesson })),
     projects: projects.map(({ id, sourceCaptureId, relatedActionIds, relatedDecisionIds, relatedSystemIds, relatedSopIds }) => ({ id, sourceCaptureId, relatedActionIds, relatedDecisionIds, relatedSystemIds, relatedSopIds })),
     leads: leads.map(({ id }) => ({ id })),
-    strategicRisks: icarusCorrelationSignals,
+    strategicRisks: icarusIntelligence.correlationSignals,
     contextRecords: buildPeopleCorrelationContext({
       people: people.map(({ id, name, status }) => ({ id, name, status })),
       primaryFounderId: founderPerson?.id ?? null,
-      founderDependentWork: operationalIndependence.classifiedItems
-        .filter((item) => item.state === "Founder-only")
-        .map(({ objectType, id }) => ({ objectType, id })),
+      founderDependentWork,
       capabilityGaps: delegationReadinessGapPeople.map((person) => ({
         personId: person.id,
         missingFields: getDelegationReadinessMissingFields(person),
       })),
     }),
   });
-  const icarusClusterContributions = buildIcarusClusterContributions(correlationLayer, icarusCorrelationSignals);
-  const icarusSystemicExposure = (() => {
-    const recordPillars = new Map<string, string>();
-    const addRecordPillar = (objectType: string, id: string, pillar: string) => {
-      if (pillar) recordPillars.set(`${objectType}:${id}`, pillar);
-    };
-    projects.forEach((project) => addRecordPillar("Project", project.id, project.area));
-    actionRecords.forEach((action) => addRecordPillar("Action", action.id, getAreaText(action)));
-    problemRecords.forEach((problem) => addRecordPillar("Problem", problem.id, getAreaText(problem)));
-    decisionRecords.forEach((decision) => addRecordPillar("Decision", decision.id, getAreaText(decision)));
-    opportunityRecords.forEach((opportunity) => addRecordPillar("Opportunity", opportunity.id, getAreaText(opportunity)));
-    leads.forEach((lead) => addRecordPillar("Lead", lead.id, lead.relatedPillar || ""));
-    return buildIcarusSystemicExposure({
-      signals: icarusStrategicSignals,
-      pillars: pillarOptions,
-      recordPillars,
-      otherSignals: [...correlationLayer.signalled.values()]
-        .filter((record) => record.objectType !== "Icarus")
-        .map(({ recordKey, area, signals }) => ({ recordKey, area, signals: [...signals] })),
-      clusters: [...icarusClusterContributions.values()].map((contribution) => ({
-        clusterKey: contribution.clusterKey,
-        convergent: contribution.convergent,
-        assessmentIds: contribution.assessments.map((assessment) => assessment.assessmentId),
-      })),
-    });
-  })();
+  // Icarus Stage B: consumes the graph built from Stage A's correlation signals (verified by the pipeline).
+  const icarusCorrelation = buildIcarusCorrelationIntelligence(icarusIntelligence, {
+    graph: correlationLayer,
+    pillars: pillarOptions,
+    recordPillars: [
+      ...projects.map((project) => ({ objectType: "Project", id: project.id, pillar: project.area })),
+      ...actionRecords.map((action) => ({ objectType: "Action", id: action.id, pillar: getAreaText(action) })),
+      ...problemRecords.map((problem) => ({ objectType: "Problem", id: problem.id, pillar: getAreaText(problem) })),
+      ...decisionRecords.map((decision) => ({ objectType: "Decision", id: decision.id, pillar: getAreaText(decision) })),
+      ...opportunityRecords.map((opportunity) => ({ objectType: "Opportunity", id: opportunity.id, pillar: getAreaText(opportunity) })),
+      ...leads.map((lead) => ({ objectType: "Lead", id: lead.id, pillar: lead.relatedPillar || "" })),
+    ],
+  });
 
   // Command shows a strategic risk once: folded into a convergent situation's host when one is in Command,
   // otherwise standalone. Same resolution Founder Focus applies.
-  const icarusStrategicRiskConvergence = resolveStrategicRiskConvergence(
-    correlationLayer.convergentRisks,
-    icarusCorrelationSignals.map((signal) => signal.recordKey),
-  );
   const commandAttentionItemList: AttentionItem[] = resolveCommandStrategicRiskConvergence(
     commandAttentionPolicy.items,
-    icarusStrategicRiskConvergence,
+    icarusCorrelation.strategicRiskConvergence,
     // Finance items are hidden from the Command display, so they cannot host a folded risk.
     { isEligibleHost: (item) => item.objectType !== "Finance" },
   ).map(toCommandAttentionItem);
@@ -11591,7 +11546,7 @@ export default function Home() {
       rootRecordKey: cluster.rootRecordKey,
     })),
     recordFacts: founderFocusRecordFacts,
-    strategicRisks: buildIcarusFounderFocusRisks(icarusStrategicSignals),
+    strategicRisks: icarusIntelligence.founderFocusRisks,
   });
   const founderFocusList = founderFocusCandidates.slice(0, 3);
 
@@ -11869,7 +11824,7 @@ export default function Home() {
     avgOpenDecisionDays: organisationalHealth.avgOpenDecisionDays,
     selfSufficiencyPct: organisationalHealth.selfSufficiencyPct,
     outstandingKeys: todayBrief.outstandingKeys,
-    ...(icarusLoaded ? { icarusExposure: buildIcarusExposureSnapshot(icarusStrategicSignals) } : {}),
+    ...(icarusLoaded ? { icarusExposure: icarusIntelligence.exposureSnapshot } : {}),
   };
 
   const todaySnapshotJson = JSON.stringify(todaySnapshot);
@@ -12101,7 +12056,7 @@ export default function Home() {
         objectType: cluster.records[0].objectType,
         area: cluster.records[0].area,
       },
-      strategicRisks: icarusClusterContributions.get(cluster.clusterKey)?.assessments
+      strategicRisks: icarusCorrelation.clusterContributions.get(cluster.clusterKey)?.assessments
         .map(({ assessmentId, outcome, exposure }) => ({ assessmentId, outcome, exposure })),
     })),
     focusCandidates: founderFocusCandidates.map(({ key, objectType, id, title, area, reason }) => ({
@@ -12111,7 +12066,7 @@ export default function Home() {
     icarusExposure: icarusLoaded && todaySnapshot.icarusExposure
       ? {
         current: todaySnapshot.icarusExposure,
-        assessmentStatuses: new Map(icarusAssessments.map((assessment) => [assessment.id, assessment.status] as const)),
+        assessmentStatuses: icarusIntelligence.assessmentStatuses,
       }
       : undefined,
     founderReviewQueue: empireDecisionQueue.founderReviewQueue.map((item) => ({
@@ -13933,7 +13888,7 @@ export default function Home() {
 
   const handleOpenAttentionRecord = (objectType: string, id: string) => {
     if (objectType === "Icarus") {
-      const signal = icarusStrategicSignals.find((entry) => entry.assessmentId === id);
+      const signal = icarusIntelligence.strategicSignals.find((entry) => entry.assessmentId === id);
       openIcarusReference(signal?.primaryReference ?? { identityKey: getIcarusIdentityKey(id), assessmentId: id });
     } else if (objectType === "Decision") {
       const record = decisionRecords.find((item) => item.id === id);
@@ -16516,7 +16471,7 @@ export default function Home() {
                 </div>
               ) : null}
 
-              {icarusFounderAttention.length > 0 ? (
+              {icarusIntelligence.unresolvedFindings.length > 0 ? (
                 <button
                   type="button"
                   onClick={() => setActiveView("Icarus")}
@@ -16524,11 +16479,11 @@ export default function Home() {
                 >
                   <span className="text-[10px] font-medium uppercase tracking-[0.16em] text-[#51483e]">Icarus · unresolved failure intelligence</span>
                   <span className="mt-1 block text-[12px] leading-5 text-[#4d4944]">
-                    {icarusStrategicSignals.length} material strategic risk{icarusStrategicSignals.length === 1 ? " is" : "s are"} ranked in Command attention and Founder Focus. {icarusFounderAttention.length} unresolved finding{icarusFounderAttention.length === 1 ? "" : "s"} across {icarusAttentionAssessmentCount} active assessment{icarusAttentionAssessmentCount === 1 ? "" : "s"} remain reviewable in Icarus.
+                    {icarusIntelligence.strategicSignals.length} material strategic risk{icarusIntelligence.strategicSignals.length === 1 ? " is" : "s are"} ranked in Command attention and Founder Focus. {icarusIntelligence.unresolvedFindings.length} unresolved finding{icarusIntelligence.unresolvedFindings.length === 1 ? "" : "s"} across {icarusIntelligence.unresolvedFindingAssessmentCount} active assessment{icarusIntelligence.unresolvedFindingAssessmentCount === 1 ? "" : "s"} remain reviewable in Icarus.
                   </span>
-                  {icarusSystemicExposure.pillars.some((pillar) => pillar.state === "Material exposure" || pillar.state === "Systemic exposure") ? (
+                  {icarusCorrelation.systemicExposure.pillars.some((pillar) => pillar.state === "Material exposure" || pillar.state === "Systemic exposure") ? (
                     <span className="mt-1 block text-[12px] leading-5 text-[#4d4944]">
-                      Pillar exposure: {icarusSystemicExposure.pillars
+                      Pillar exposure: {icarusCorrelation.systemicExposure.pillars
                         .filter((pillar) => pillar.state === "Material exposure" || pillar.state === "Systemic exposure")
                         .map((pillar) => `${pillar.pillar} (${pillar.state.toLowerCase()})`)
                         .join(", ")}.
@@ -17443,7 +17398,7 @@ export default function Home() {
                             </div>
                           )}
                           {(() => {
-                            const contribution = icarusClusterContributions.get(cluster.clusterKey);
+                            const contribution = icarusCorrelation.clusterContributions.get(cluster.clusterKey);
                             if (!contribution) return null;
                             return (
                               <div className="mt-2 rounded-lg border border-[#c9b8a3] bg-[#f5efe6] px-2.5 py-2">
@@ -19686,9 +19641,11 @@ export default function Home() {
               onChange={setIcarusAssessments}
               createId={generateCaptureId}
               focusTarget={icarusFocusTarget}
-              systemicExposure={icarusSystemicExposure}
-              assurance={icarusAssurance}
-              assuranceRollup={icarusAssuranceRollup}
+              reviews={icarusIntelligence.reviews}
+              unresolvedFindings={icarusIntelligence.unresolvedFindings}
+              systemicExposure={icarusCorrelation.systemicExposure}
+              assurance={icarusIntelligence.assurance}
+              assuranceRollup={icarusIntelligence.assuranceRollup}
               people={people.map(({ id, name, status }) => ({ id, name, status }))}
               actions={actionRecords.map(({ id, actionTitle, status }) => ({ id, title: actionTitle, status }))}
             />

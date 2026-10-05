@@ -1,0 +1,242 @@
+// Composition root for Icarus intelligence. Orchestrates the existing pure Icarus adapters in one explicit order;
+// it owns sequencing only — every derivation rule stays in its own module.
+//
+// The pipeline is staged because the Empire correlation graph is a generic, Empire-wide system that sits between
+// Icarus stages and also consumes Command Attention:
+//
+//   Stage A  buildIcarusStrategicIntelligence
+//            reviews -> exposure signals (materiality) -> assurance -> assured signals
+//              -> correlation signals / Founder Focus risks / exposure+assurance snapshot / assurance rollup
+//   (caller) Command Attention base items  <- Stage A strategicSignals
+//   (caller) generic correlation graph     <- Command base items (operational priority) + Stage A correlationSignals
+//   Stage B  buildIcarusCorrelationIntelligence
+//            graph (verified against Stage A) -> cluster contributions -> systemic exposure
+//              -> strategic-risk convergence resolution
+//   (caller) final Command presentation    <- resolveCommandStrategicRiskConvergence(base items, Stage B convergence)
+//
+// There is no cycle: Command's *base* items feed the graph and only the graph's convergence feeds Command's *final*
+// presentation. Stage B refuses a graph that was not built from Stage A's correlation signals, so no downstream stage
+// can be computed from stale upstream data.
+import {
+  buildIcarusReview,
+  type IcarusAssessmentRecord,
+  type IcarusAssessmentStatus,
+  type IcarusReview,
+  type IcarusReviewFinding,
+  type IcarusSourceRecord,
+} from "./icarus";
+import {
+  buildIcarusFounderFocusRisks,
+  buildIcarusStrategicAttention,
+  type IcarusFounderFocusRisk,
+  type IcarusStrategicObjectiveContext,
+  type IcarusStrategicSignal,
+} from "./icarus-strategic-attention";
+import {
+  attachIcarusAssuranceToSignals,
+  buildIcarusAssurance,
+  type IcarusAssuranceAction,
+  type IcarusAssurancePerson,
+  type IcarusAssuranceResult,
+} from "./icarus-assurance";
+import { buildIcarusAssuranceRollup, type IcarusAssuranceRollup } from "./icarus-assurance-rollup";
+import {
+  buildIcarusClusterContributions,
+  buildIcarusCorrelationSignals,
+  type IcarusClusterContribution,
+  type IcarusClusterGraphInput,
+  type IcarusCorrelationSignal,
+} from "./icarus-correlation";
+import { buildIcarusSystemicExposure, type IcarusSystemicExposure } from "./icarus-systemic-exposure";
+import { buildIcarusExposureSnapshot, type IcarusExposureSnapshotEntry } from "./icarus-exposure-history";
+import type { IcarusObjectiveImportance } from "./icarus-materiality-policy";
+import {
+  resolveStrategicRiskConvergence,
+  type ConvergentSituationInput,
+  type StrategicRiskConvergence,
+} from "./strategic-risk-resolution";
+
+// Only live objectives confer strategic consequence (see IcarusStrategicObjectiveContext.isLive).
+const LIVE_OBJECTIVE_STATUSES: ReadonlySet<string> = new Set(["Active", "Watching"]);
+
+export type IcarusPipelineObjective = {
+  id: string;
+  // Stored objective pillar value (operating pillar or strategic theme; resolved downstream, never coerced).
+  pillar: string;
+  importance: IcarusObjectiveImportance;
+  status: string;
+  linkedProjectIds?: readonly string[];
+  linkedOpportunityIds?: readonly string[];
+  linkedDecisionIds?: readonly string[];
+};
+
+export type IcarusStrategicIntelligenceInput = {
+  assessments: readonly IcarusAssessmentRecord[];
+  // Every Empire record an Icarus reference may legitimately resolve to.
+  sourceRecords: readonly IcarusSourceRecord[];
+  strategicObjectives: readonly IcarusPipelineObjective[];
+  people: readonly IcarusAssurancePerson[];
+  actions: readonly IcarusAssuranceAction[];
+  primaryFounderId: string | null;
+  // True when existing People intelligence shows active founder-dependent work.
+  founderDependencyActive: boolean;
+  // One clock for every time-dependent stage. Defaults to the current time.
+  nowMs?: number;
+};
+
+export type IcarusStrategicIntelligence = {
+  nowMs: number;
+  // One review per assessment, aligned to stored assessment order (a per-record projection for display).
+  reviews: IcarusReview[];
+  // Findings on assessments that are not Closed.
+  unresolvedFindings: IcarusReviewFinding[];
+  unresolvedFindingAssessmentCount: number;
+  // Stored status per assessment id (first record wins for a duplicated id).
+  assessmentStatuses: ReadonlyMap<string, IcarusAssessmentStatus>;
+  assurance: IcarusAssuranceResult;
+  assuranceRollup: IcarusAssuranceRollup;
+  // Authoritative material strategic signals with assurance attached: the single input for Command, Founder Focus,
+  // correlation, systemic exposure and history.
+  strategicSignals: IcarusStrategicSignal[];
+  correlationSignals: IcarusCorrelationSignal[];
+  founderFocusRisks: IcarusFounderFocusRisk[];
+  exposureSnapshot: IcarusExposureSnapshotEntry[];
+};
+
+export function buildIcarusObjectiveContext(
+  objectives: readonly IcarusPipelineObjective[],
+): Map<string, IcarusStrategicObjectiveContext> {
+  return new Map(objectives.map((objective): [string, IcarusStrategicObjectiveContext] => [objective.id, {
+    area: objective.pillar,
+    importance: objective.importance,
+    isLive: LIVE_OBJECTIVE_STATUSES.has(objective.status),
+    linkedProjectIds: objective.linkedProjectIds,
+    linkedOpportunityIds: objective.linkedOpportunityIds,
+    linkedDecisionIds: objective.linkedDecisionIds,
+  }]));
+}
+
+export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntelligenceInput): IcarusStrategicIntelligence {
+  const nowMs = input.nowMs ?? Date.now();
+  const assessmentStatuses = new Map<string, IcarusAssessmentStatus>();
+  input.assessments.forEach((assessment) => {
+    if (!assessmentStatuses.has(assessment.id)) assessmentStatuses.set(assessment.id, assessment.status);
+  });
+
+  const reviews = buildIcarusReview(input.assessments, input.sourceRecords, nowMs);
+  const unresolvedFindings = reviews
+    .filter((review) => assessmentStatuses.get(review.assessmentId) !== "Closed")
+    .flatMap((review) => review.findings);
+  const strategicObjectives = buildIcarusObjectiveContext(input.strategicObjectives);
+
+  // Materiality is decided here, before (and independently of) assurance.
+  const exposureSignals = buildIcarusStrategicAttention({
+    assessments: input.assessments,
+    reviews,
+    strategicObjectives,
+  });
+  const assurance = buildIcarusAssurance({
+    assessments: input.assessments,
+    reviews,
+    signals: exposureSignals,
+    people: input.people,
+    actions: input.actions,
+    primaryFounderId: input.primaryFounderId,
+    founderDependencyActive: input.founderDependencyActive,
+    strategicObjectives,
+    nowMs,
+  });
+  // Assurance only annotates signals (placement within bounds + reasons); exposure and materiality are unchanged.
+  const strategicSignals = attachIcarusAssuranceToSignals(exposureSignals, assurance);
+
+  return {
+    nowMs,
+    reviews,
+    unresolvedFindings,
+    unresolvedFindingAssessmentCount: new Set(unresolvedFindings.map((finding) => finding.assessmentId)).size,
+    assessmentStatuses,
+    assurance,
+    assuranceRollup: buildIcarusAssuranceRollup(assurance.assessments),
+    strategicSignals,
+    correlationSignals: buildIcarusCorrelationSignals({ signals: strategicSignals }),
+    founderFocusRisks: buildIcarusFounderFocusRisks(strategicSignals),
+    exposureSnapshot: buildIcarusExposureSnapshot(strategicSignals),
+  };
+}
+
+// Structural view of the generic correlation graph result that Stage B needs (satisfied by CorrelationGraphResult).
+export type IcarusCorrelationGraphView = Omit<IcarusClusterGraphInput, "convergentRisks"> & {
+  convergentRisks: readonly ConvergentSituationInput[];
+  signalled: ReadonlyMap<string, { recordKey: string; objectType: string; area: string; signals: ReadonlySet<string> }>;
+};
+
+export type IcarusRecordPillar = { objectType: string; id: string; pillar: string };
+
+export type IcarusCorrelationIntelligenceInput = {
+  // Must be built with Stage A's correlationSignals as its strategic risks.
+  graph: IcarusCorrelationGraphView;
+  // Operating pillars to roll up (defaults to every operating pillar).
+  pillars?: readonly string[];
+  // Stored pillar/area of Empire records an assessment may link instead of a pillar.
+  recordPillars?: readonly IcarusRecordPillar[];
+};
+
+export type IcarusCorrelationIntelligence = {
+  clusterContributions: ReadonlyMap<string, IcarusClusterContribution>;
+  systemicExposure: IcarusSystemicExposure;
+  // Strategic risks already represented by a convergent situation; consumed by final Command presentation.
+  strategicRiskConvergence: ReadonlyMap<string, StrategicRiskConvergence>;
+};
+
+const ICARUS_GRAPH_OBJECT_TYPE = "Icarus";
+
+// Record keys that differ between the graph's Icarus records and Stage A's correlation signals. Empty => consistent.
+export function findIcarusCorrelationGraphMismatch(
+  graph: Pick<IcarusCorrelationGraphView, "signalled">,
+  intelligence: Pick<IcarusStrategicIntelligence, "correlationSignals">,
+): string[] {
+  const expected = new Set(intelligence.correlationSignals.map((signal) => signal.recordKey));
+  const present = new Set(
+    [...graph.signalled.values()]
+      .filter((record) => record.objectType === ICARUS_GRAPH_OBJECT_TYPE)
+      .map((record) => record.recordKey),
+  );
+  return [...new Set([...expected, ...present])]
+    .filter((recordKey) => expected.has(recordKey) !== present.has(recordKey))
+    .sort();
+}
+
+export function buildIcarusCorrelationIntelligence(
+  intelligence: IcarusStrategicIntelligence,
+  input: IcarusCorrelationIntelligenceInput,
+): IcarusCorrelationIntelligence {
+  const mismatch = findIcarusCorrelationGraphMismatch(input.graph, intelligence);
+  if (mismatch.length > 0) {
+    throw new Error(`Icarus correlation graph is out of sequence with strategic intelligence: ${mismatch.join(", ")}`);
+  }
+
+  const clusterContributions = buildIcarusClusterContributions(input.graph, intelligence.correlationSignals);
+  const recordPillars = new Map<string, string>();
+  (input.recordPillars ?? []).forEach(({ objectType, id, pillar }) => {
+    if (pillar) recordPillars.set(`${objectType}:${id}`, pillar);
+  });
+  const systemicExposure = buildIcarusSystemicExposure({
+    signals: intelligence.strategicSignals,
+    ...(input.pillars ? { pillars: input.pillars } : {}),
+    recordPillars,
+    otherSignals: [...input.graph.signalled.values()]
+      .filter((record) => record.objectType !== ICARUS_GRAPH_OBJECT_TYPE)
+      .map(({ recordKey, area, signals }) => ({ recordKey, area, signals: [...signals] })),
+    clusters: [...clusterContributions.values()].map((contribution) => ({
+      clusterKey: contribution.clusterKey,
+      convergent: contribution.convergent,
+      assessmentIds: contribution.assessments.map((assessment) => assessment.assessmentId),
+    })),
+  });
+  const strategicRiskConvergence = resolveStrategicRiskConvergence(
+    input.graph.convergentRisks,
+    intelligence.correlationSignals.map((signal) => signal.recordKey),
+  );
+
+  return { clusterContributions, systemicExposure, strategicRiskConvergence };
+}

@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  buildIcarusReview,
   getIcarusReferenceKey,
   type IcarusAssessmentRecord,
   type IcarusAssessmentStatus,
@@ -13,6 +12,8 @@ import {
   type IcarusEvidenceReview,
   type IcarusFailureMode,
   type IcarusRecordReference,
+  type IcarusReview,
+  type IcarusReviewFinding,
   type IcarusSourceRecord,
 } from "../lib/icarus";
 import type { IcarusAttentionReference } from "../lib/icarus-strategic-attention";
@@ -32,6 +33,9 @@ type IcarusPanelProps = {
   writable: boolean;
   onChange: (assessments: IcarusAssessmentRecord[]) => void;
   createId: () => string;
+  // Derived once by the Icarus intelligence pipeline; the panel never re-derives reviews.
+  reviews: readonly IcarusReview[];
+  unresolvedFindings: readonly IcarusReviewFinding[];
   focusTarget?: (IcarusAttentionReference & { requestId: number }) | null;
   systemicExposure?: IcarusSystemicExposure;
   assurance?: IcarusAssuranceResult;
@@ -93,6 +97,8 @@ export default function IcarusPanel({
   writable,
   onChange,
   createId,
+  reviews,
+  unresolvedFindings: openFindings,
   focusTarget = null,
   systemicExposure,
   assurance,
@@ -127,10 +133,6 @@ export default function IcarusPanel({
   const [controlDrafts, setControlDrafts] = useState<Record<string, string>>({});
   const [controlReferences, setControlReferences] = useState<Record<string, string>>({});
   const [controlReviewers, setControlReviewers] = useState<Record<string, string>>({});
-  const reviews = useMemo(() => buildIcarusReview(assessments, sources), [assessments, sources]);
-  const openFindings = reviews
-    .filter((review) => assessments.find((assessment) => assessment.id === review.assessmentId)?.status !== "Closed")
-    .flatMap((review) => review.findings);
 
   const updateAssessment = (id: string, update: (assessment: IcarusAssessmentRecord) => IcarusAssessmentRecord) => {
     onChange(assessments.map((assessment) => assessment.id === id

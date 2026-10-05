@@ -125,9 +125,9 @@ function projectPageInput(overrides: Partial<PageInputs> = {}): FounderFocusInpu
     correlationLayer: { signalled: new Map(), convergentRisks: [] },
     empireDecisionQueue: { founderReviewQueue: [] },
     strategicDataConfidence: { limitations: [] },
-    icarusStrategicSignals: [],
     ...overrides,
-    buildIcarusFounderFocusRisks,
+    // Mirrors the pipeline contract: founderFocusRisks = buildIcarusFounderFocusRisks(strategicSignals).
+    icarusIntelligence: { founderFocusRisks: buildIcarusFounderFocusRisks(overrides.icarusStrategicSignals ?? []) },
     buildFounderFocus: (value: FounderFocusInput) => {
       projected = value;
       return [];
