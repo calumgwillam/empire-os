@@ -6,6 +6,7 @@
 //
 //   Stage A  buildIcarusStrategicIntelligence
 //            reviews -> exposure signals (materiality) -> assurance -> assured signals
+//              -> failure chains (dependency graph, barriers, SPOFs, cut points) -> chain-annotated signals
 //              -> correlation signals / Founder Focus risks / exposure+assurance snapshot / assurance rollup
 //   (caller) Command Attention base items  <- Stage A strategicSignals
 //   (caller) generic correlation graph     <- Command base items (operational priority) + Stage A correlationSignals
@@ -40,6 +41,11 @@ import {
   type IcarusAssuranceResult,
 } from "./icarus-assurance";
 import { buildIcarusAssuranceRollup, type IcarusAssuranceRollup } from "./icarus-assurance-rollup";
+import {
+  attachIcarusFailureChainToSignals,
+  buildIcarusFailureChainIntelligence,
+  type IcarusFailureChainIntelligence,
+} from "./icarus-failure-chain-analysis";
 import {
   buildIcarusClusterContributions,
   buildIcarusCorrelationSignals,
@@ -95,6 +101,8 @@ export type IcarusStrategicIntelligence = {
   assessmentStatuses: ReadonlyMap<string, IcarusAssessmentStatus>;
   assurance: IcarusAssuranceResult;
   assuranceRollup: IcarusAssuranceRollup;
+  // Failure-chain / dependency intelligence derived from the same signals and final assurance state.
+  failureChains: IcarusFailureChainIntelligence;
   // Authoritative material strategic signals with assurance attached: the single input for Command, Founder Focus,
   // correlation, systemic exposure and history.
   strategicSignals: IcarusStrategicSignal[];
@@ -147,7 +155,18 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     nowMs,
   });
   // Assurance only annotates signals (placement within bounds + reasons); exposure and materiality are unchanged.
-  const strategicSignals = attachIcarusAssuranceToSignals(exposureSignals, assurance);
+  const assuredSignals = attachIcarusAssuranceToSignals(exposureSignals, assurance);
+  // Failure chains need final assurance (barrier state) but not the correlation graph, so they belong in Stage A;
+  // they annotate signals before any consumer (Command, Focus, correlation, snapshot) reads them.
+  const failureChains = buildIcarusFailureChainIntelligence({
+    assessments: input.assessments,
+    signals: assuredSignals,
+    assurance,
+    strategicObjectives,
+    primaryFounderId: input.primaryFounderId,
+    founderDependencyActive: input.founderDependencyActive,
+  });
+  const strategicSignals = attachIcarusFailureChainToSignals(assuredSignals, failureChains);
 
   return {
     nowMs,
@@ -157,6 +176,7 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     assessmentStatuses,
     assurance,
     assuranceRollup: buildIcarusAssuranceRollup(assurance.assessments),
+    failureChains,
     strategicSignals,
     correlationSignals: buildIcarusCorrelationSignals({ signals: strategicSignals }),
     founderFocusRisks: buildIcarusFounderFocusRisks(strategicSignals),

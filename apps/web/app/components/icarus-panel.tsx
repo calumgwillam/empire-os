@@ -25,6 +25,8 @@ import IcarusAssuranceSection, {
   type IcarusAssuranceActionOption,
   type IcarusAssurancePersonOption,
 } from "./icarus-assurance-section";
+import IcarusFailureChainSection from "./icarus-failure-chain-section";
+import type { IcarusFailureChainIntelligence } from "../lib/icarus-failure-chain-analysis";
 
 type IcarusPanelProps = {
   assessments: readonly IcarusAssessmentRecord[];
@@ -40,6 +42,7 @@ type IcarusPanelProps = {
   systemicExposure?: IcarusSystemicExposure;
   assurance?: IcarusAssuranceResult;
   assuranceRollup?: IcarusAssuranceRollup;
+  failureChains?: IcarusFailureChainIntelligence;
   people?: readonly IcarusAssurancePersonOption[];
   actions?: readonly IcarusAssuranceActionOption[];
 };
@@ -103,6 +106,7 @@ export default function IcarusPanel({
   systemicExposure,
   assurance,
   assuranceRollup,
+  failureChains,
   people = [],
   actions = [],
 }: IcarusPanelProps) {
@@ -336,6 +340,8 @@ export default function IcarusPanel({
           </ul>
         </section>
       ) : null}
+
+      <IcarusFailureChainSection intelligence={failureChains} referenceTitle={(reference) => referenceTitle(reference, sources)} />
 
       <IcarusAssuranceRollupSection
         rollup={assuranceRollup}

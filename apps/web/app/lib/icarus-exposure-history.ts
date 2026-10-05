@@ -9,6 +9,13 @@ import {
   type IcarusAssuranceState,
   type IcarusEscalationLevel,
 } from "./icarus-assurance-policy";
+import {
+  ICARUS_BLAST_RADII,
+  ICARUS_CHAIN_PRIORITIES,
+  getIcarusBlastRadiusRank,
+  type IcarusBlastRadius,
+  type IcarusChainPriority,
+} from "./icarus-failure-chain-policy";
 
 // Optional assurance state captured alongside exposure. Absent on legacy snapshots and when assurance was not derived.
 export type IcarusAssuranceSnapshot = {
@@ -17,6 +24,15 @@ export type IcarusAssuranceSnapshot = {
   riskOwnerPersonId?: string;
   acceptance: "None" | IcarusAcceptanceValidity;
   failedControlIds: string[];
+};
+
+// Optional failure-chain structure captured alongside exposure. Absent on legacy snapshots and when not derived.
+export type IcarusFailureChainSnapshot = {
+  priority: IcarusChainPriority;
+  blastRadius: IcarusBlastRadius;
+  spofKeys: string[];
+  sharedDependencyKeys: string[];
+  weakBarrierControlIds: string[];
 };
 
 // Compact, persisted representation of material Icarus exposure at a point in time.
@@ -28,6 +44,36 @@ export type IcarusExposureSnapshotEntry = {
   failureModeIds: string[];
   riskScore: number;
   assurance?: IcarusAssuranceSnapshot;
+  failureChain?: IcarusFailureChainSnapshot;
+};
+
+export const ICARUS_STRUCTURAL_CHANGE_KINDS = [
+  "Single point of failure appeared",
+  "Became cross-pillar",
+  "Blast radius increased",
+  "Shared concentration increased",
+  "Single point of failure removed",
+  "Blast radius decreased",
+  "Barrier restored",
+] as const;
+export type IcarusStructuralChangeKind = (typeof ICARUS_STRUCTURAL_CHANGE_KINDS)[number];
+export const ICARUS_STRUCTURAL_DETERIORATIONS: readonly IcarusStructuralChangeKind[] = [
+  "Single point of failure appeared", "Became cross-pillar", "Blast radius increased", "Shared concentration increased",
+];
+
+// Structural change keyed either by risk (blast/barrier) or by a SPOF / shared-dependency key (Empire-wide).
+export type IcarusStructuralChange = {
+  key: string;
+  change: IcarusStructuralChangeKind;
+  // Risks (snapshot keys) carrying the structure in the relevant snapshot; stable for navigation.
+  riskKeys: string[];
+  assessmentIds: string[];
+  previousBlastRadius?: IcarusBlastRadius;
+  blastRadius?: IcarusBlastRadius;
+  // Barrier controls no longer weak/failed/unknown (only for "Barrier restored").
+  controlIds: string[];
+  previousCount?: number;
+  count?: number;
 };
 
 export const ICARUS_ASSURANCE_CHANGE_KINDS = [
@@ -77,6 +123,10 @@ export type IcarusExposureTrajectory = {
   hasAssuranceBaseline: boolean;
   assuranceChanges: IcarusAssuranceChange[];
   assuranceCounts: Record<IcarusAssuranceChangeKind, number>;
+  // Failure-chain structure is only compared where the previous snapshot carried it.
+  hasStructuralBaseline: boolean;
+  structuralChanges: IcarusStructuralChange[];
+  structuralCounts: Record<IcarusStructuralChangeKind, number>;
 };
 
 const changeOrder: readonly IcarusExposureChangeKind[] = ["Worsened", "New", "Persistent", "Improved", "Resolved"];
@@ -97,6 +147,15 @@ export function buildIcarusExposureSnapshot(signals: readonly IcarusStrategicSig
           ...(signal.assurance.riskOwnerPersonId ? { riskOwnerPersonId: signal.assurance.riskOwnerPersonId } : {}),
           acceptance: signal.assurance.acceptance,
           failedControlIds: [...signal.assurance.failedControlIds].sort(),
+        },
+      } : {}),
+      ...(signal.failureChain ? {
+        failureChain: {
+          priority: signal.failureChain.priority,
+          blastRadius: signal.failureChain.blastRadius,
+          spofKeys: [...signal.failureChain.spofKeys].sort(),
+          sharedDependencyKeys: [...signal.failureChain.sharedDependencyKeys].sort(),
+          weakBarrierControlIds: [...signal.failureChain.weakBarrierControlIds].sort(),
         },
       } : {}),
     }))
@@ -123,6 +182,7 @@ export function normaliseIcarusExposureSnapshot(value: unknown): IcarusExposureS
         : [],
       riskScore: typeof record.riskScore === "number" && Number.isFinite(record.riskScore) ? record.riskScore : 0,
       ...normaliseAssuranceSnapshot(record.assurance),
+      ...normaliseFailureChainSnapshot(record.failureChain),
     });
   });
   return [...entries.values()].sort((left, right) => left.key.localeCompare(right.key));
@@ -149,6 +209,98 @@ function normaliseAssuranceSnapshot(value: unknown): { assurance?: IcarusAssuran
         : [],
     },
   };
+}
+
+const uniqueStrings = (value: unknown): string[] => Array.isArray(value)
+  ? [...new Set(value.filter((id): id is string => typeof id === "string"))].sort()
+  : [];
+
+// Malformed structure is dropped (never guessed); the exposure entry itself is still kept.
+function normaliseFailureChainSnapshot(value: unknown): { failureChain?: IcarusFailureChainSnapshot } {
+  if (!value || typeof value !== "object") return {};
+  const record = value as Record<string, unknown>;
+  if (!ICARUS_CHAIN_PRIORITIES.includes(record.priority as IcarusChainPriority)) return {};
+  if (!ICARUS_BLAST_RADII.includes(record.blastRadius as IcarusBlastRadius)) return {};
+  return {
+    failureChain: {
+      priority: record.priority as IcarusChainPriority,
+      blastRadius: record.blastRadius as IcarusBlastRadius,
+      spofKeys: uniqueStrings(record.spofKeys),
+      sharedDependencyKeys: uniqueStrings(record.sharedDependencyKeys),
+      weakBarrierControlIds: uniqueStrings(record.weakBarrierControlIds),
+    },
+  };
+}
+
+function holdersByKey(
+  entries: readonly IcarusExposureSnapshotEntry[],
+  select: (chain: IcarusFailureChainSnapshot) => readonly string[],
+): Map<string, IcarusExposureSnapshotEntry[]> {
+  const holders = new Map<string, IcarusExposureSnapshotEntry[]>();
+  entries.forEach((entry) => {
+    if (!entry.failureChain) return;
+    select(entry.failureChain).forEach((key) => holders.set(key, [...(holders.get(key) ?? []), entry]));
+  });
+  return holders;
+}
+
+const holderIds = (entries: readonly IcarusExposureSnapshotEntry[]) => ({
+  riskKeys: [...new Set(entries.map((entry) => entry.key))].sort(),
+  assessmentIds: [...new Set(entries.map((entry) => entry.assessmentId))].sort(),
+});
+
+function compareStructure(
+  previous: readonly IcarusExposureSnapshotEntry[],
+  current: readonly IcarusExposureSnapshotEntry[],
+): IcarusStructuralChange[] {
+  const changes: IcarusStructuralChange[] = [];
+  const previousByKey = new Map(previous.map((entry) => [entry.key, entry] as const));
+
+  current.forEach((entry) => {
+    const before = previousByKey.get(entry.key)?.failureChain;
+    const after = entry.failureChain;
+    if (!before || !after) return;
+    const base = { key: entry.key, riskKeys: [entry.key], assessmentIds: [entry.assessmentId], controlIds: [] };
+    const delta = getIcarusBlastRadiusRank(after.blastRadius) - getIcarusBlastRadiusRank(before.blastRadius);
+    const crossPillar = getIcarusBlastRadiusRank("Cross-pillar");
+    if (delta > 0) {
+      const becameCrossPillar = getIcarusBlastRadiusRank(before.blastRadius) < crossPillar
+        && getIcarusBlastRadiusRank(after.blastRadius) >= crossPillar;
+      changes.push({
+        ...base, change: becameCrossPillar ? "Became cross-pillar" : "Blast radius increased",
+        previousBlastRadius: before.blastRadius, blastRadius: after.blastRadius,
+      });
+    }
+    if (delta < 0) {
+      changes.push({ ...base, change: "Blast radius decreased", previousBlastRadius: before.blastRadius, blastRadius: after.blastRadius });
+    }
+    const stillWeak = new Set(after.weakBarrierControlIds);
+    const restored = before.weakBarrierControlIds.filter((id) => !stillWeak.has(id));
+    if (restored.length > 0) changes.push({ ...base, change: "Barrier restored", controlIds: restored });
+  });
+
+  // SPOFs and shared dependencies are Empire-wide structures: compared by key across all carrying risks, so one
+  // SPOF carried by several risks is one change, not several.
+  const previousSpofs = holdersByKey(previous, (chain) => chain.spofKeys);
+  const currentSpofs = holdersByKey(current, (chain) => chain.spofKeys);
+  currentSpofs.forEach((holders, key) => {
+    if (!previousSpofs.has(key)) changes.push({ key, change: "Single point of failure appeared", ...holderIds(holders), controlIds: [] });
+  });
+  previousSpofs.forEach((holders, key) => {
+    if (!currentSpofs.has(key)) changes.push({ key, change: "Single point of failure removed", ...holderIds(holders), controlIds: [] });
+  });
+  const previousShared = holdersByKey(previous, (chain) => chain.sharedDependencyKeys);
+  holdersByKey(current, (chain) => chain.sharedDependencyKeys).forEach((holders, key) => {
+    const count = holderIds(holders).assessmentIds.length;
+    const previousCount = holderIds(previousShared.get(key) ?? []).assessmentIds.length;
+    if (count >= 2 && count > previousCount) {
+      changes.push({ key, change: "Shared concentration increased", ...holderIds(holders), controlIds: [], previousCount, count });
+    }
+  });
+
+  return changes.sort((left, right) =>
+    ICARUS_STRUCTURAL_CHANGE_KINDS.indexOf(left.change) - ICARUS_STRUCTURAL_CHANGE_KINDS.indexOf(right.change)
+    || left.key.localeCompare(right.key));
 }
 
 function compareAssurance(
@@ -186,8 +338,12 @@ export function compareIcarusExposure(input: {
 }): IcarusExposureTrajectory {
   const counts: Record<IcarusExposureChangeKind, number> = { New: 0, Worsened: 0, Persistent: 0, Improved: 0, Resolved: 0 };
   const assuranceCounts = emptyAssuranceCounts();
+  const structuralCounts = Object.fromEntries(ICARUS_STRUCTURAL_CHANGE_KINDS.map((kind) => [kind, 0])) as Record<IcarusStructuralChangeKind, number>;
   if (!input.previous) {
-    return { hasBaseline: false, changes: [], counts, hasAssuranceBaseline: false, assuranceChanges: [], assuranceCounts };
+    return {
+      hasBaseline: false, changes: [], counts, hasAssuranceBaseline: false, assuranceChanges: [], assuranceCounts,
+      hasStructuralBaseline: false, structuralChanges: [], structuralCounts,
+    };
   }
 
   const previousByKey = new Map(input.previous.map((entry) => [entry.key, entry] as const));
@@ -235,6 +391,9 @@ export function compareIcarusExposure(input: {
     ICARUS_ASSURANCE_CHANGE_KINDS.indexOf(left.change) - ICARUS_ASSURANCE_CHANGE_KINDS.indexOf(right.change)
     || left.key.localeCompare(right.key));
   assuranceChanges.forEach((entry) => { assuranceCounts[entry.change] += 1; });
+  const hasStructuralBaseline = input.previous.some((entry) => entry.failureChain !== undefined);
+  const structuralChanges = hasStructuralBaseline ? compareStructure(input.previous, input.current) : [];
+  structuralChanges.forEach((entry) => { structuralCounts[entry.change] += 1; });
   return {
     hasBaseline: true,
     changes,
@@ -242,5 +401,8 @@ export function compareIcarusExposure(input: {
     hasAssuranceBaseline: input.previous.some((entry) => entry.assurance !== undefined),
     assuranceChanges,
     assuranceCounts,
+    hasStructuralBaseline,
+    structuralChanges,
+    structuralCounts,
   };
 }

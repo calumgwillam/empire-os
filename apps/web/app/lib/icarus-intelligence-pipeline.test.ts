@@ -15,6 +15,7 @@ import {
 import { buildIcarusFounderFocusRisks, buildIcarusStrategicAttention } from "./icarus-strategic-attention";
 import { attachIcarusAssuranceToSignals, buildIcarusAssurance } from "./icarus-assurance";
 import { buildIcarusAssuranceRollup } from "./icarus-assurance-rollup";
+import { attachIcarusFailureChainToSignals, buildIcarusFailureChainIntelligence } from "./icarus-failure-chain-analysis";
 import { buildIcarusClusterContributions, buildIcarusCorrelationSignals } from "./icarus-correlation";
 import { buildIcarusSystemicExposure } from "./icarus-systemic-exposure";
 import { buildIcarusExposureSnapshot } from "./icarus-exposure-history";
@@ -199,10 +200,12 @@ function runEmpire(assessments: readonly IcarusAssessmentRecord[], options: Opti
 }
 
 const keysOf = (items: readonly { objectType: string; id: string }[]) => items.map((entry) => `${entry.objectType}:${entry.id}`);
+// Strips the annotation overlays (assurance + failure chain) to compare underlying exposure/materiality.
 const withoutAssurance = (signals: IcarusStrategicIntelligence["strategicSignals"]) =>
   signals.map((signal) => {
     const copy = { ...signal };
     delete copy.assurance;
+    delete copy.failureChain;
     return copy;
   });
 
@@ -228,8 +231,13 @@ describe("Icarus intelligence pipeline — composition", () => {
       assessments, reviews, signals: base, people: input.people, actions: input.actions, primaryFounderId: "founder",
       founderDependencyActive: false, strategicObjectives: objectives, nowMs: NOW,
     });
-    const signals = attachIcarusAssuranceToSignals(base, assurance);
+    const assured = attachIcarusAssuranceToSignals(base, assurance);
+    const failureChains = buildIcarusFailureChainIntelligence({
+      assessments, signals: assured, assurance, strategicObjectives: objectives, primaryFounderId: "founder", founderDependencyActive: false,
+    });
+    const signals = attachIcarusFailureChainToSignals(assured, failureChains);
     const correlationSignals = buildIcarusCorrelationSignals({ signals });
+    expect(result.intelligence.failureChains).toEqual(failureChains);
     expect(result.intelligence.reviews).toEqual(reviews);
     expect(result.intelligence.assurance).toEqual(assurance);
     expect(result.intelligence.assuranceRollup).toEqual(buildIcarusAssuranceRollup(assurance.assessments));

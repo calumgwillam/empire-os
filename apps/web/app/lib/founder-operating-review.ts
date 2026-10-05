@@ -292,6 +292,35 @@ export function buildFounderOperatingReview(
       if (counts[kind] > 0) improved.push({ metric, changeText: `${counts[kind]} ${text}`, explanation: `${prefix}${assuranceOutcomes(kind)}.` });
     });
   }
+  if (strategicRiskTrajectory?.hasStructuralBaseline && input.icarusExposure) {
+    // Failure-chain structure is separate again: a risk can be equally exposed and assured yet newly depend on a
+    // single point of failure, or reach further across the Empire.
+    const outcomeByKey = new Map<string, string>();
+    [...(baselineSnapshot?.icarusExposure ?? []), ...input.icarusExposure.current]
+      .forEach((entry) => outcomeByKey.set(entry.key, entry.outcome));
+    const structuralOutcomes = (kind: string) => [...new Set(strategicRiskTrajectory.structuralChanges
+      .filter((change) => change.change === kind)
+      .flatMap((change) => change.riskKeys.map((key) => outcomeByKey.get(key) ?? key)))]
+      .join("; ");
+    const counts = strategicRiskTrajectory.structuralCounts;
+    const deterioratedKinds = [
+      ["Single point of failure appeared", "Strategic single points of failure", "new", "Material risks now depend on a single point of failure: "],
+      ["Became cross-pillar", "Failure-chain blast radius", "now cross-pillar", "A failure chain now reaches more than one operating pillar: "],
+      ["Blast radius increased", "Failure-chain blast radius", "wider", "A failure chain now reaches further across the Empire: "],
+      ["Shared concentration increased", "Common-cause concentration", "increased", "More material risks now share one dependency: "],
+    ] as const;
+    const improvedKinds = [
+      ["Single point of failure removed", "Strategic single points of failure", "removed", "No longer a single point of failure for material risk: "],
+      ["Blast radius decreased", "Failure-chain blast radius", "narrower", "A failure chain now reaches less of the Empire: "],
+      ["Barrier restored", "Failure-chain barriers", "restored", "A weak, failed or unverified barrier is now effective: "],
+    ] as const;
+    deterioratedKinds.forEach(([kind, metric, text, prefix]) => {
+      if (counts[kind] > 0) deteriorated.push({ metric, changeText: `${counts[kind]} ${text}`, explanation: `${prefix}${structuralOutcomes(kind)}.` });
+    });
+    improvedKinds.forEach(([kind, metric, text, prefix]) => {
+      if (counts[kind] > 0) improved.push({ metric, changeText: `${counts[kind]} ${text}`, explanation: `${prefix}${structuralOutcomes(kind)}.` });
+    });
+  }
 
   const recurring: FounderOperatingReviewItem[] = [];
   const usedRecurringKeys = new Set<string>();

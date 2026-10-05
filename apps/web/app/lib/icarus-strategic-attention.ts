@@ -38,6 +38,11 @@ import {
 } from "./icarus-assurance-policy";
 import { deriveIcarusRelationships, type IcarusRelationship } from "./icarus-relationships";
 import {
+  adjustIcarusCommandRankForFailureChain,
+  adjustIcarusFounderFocusBandForFailureChain,
+  type IcarusSignalFailureChain,
+} from "./icarus-failure-chain-policy";
+import {
   compareOperatingPillars,
   resolveOperatingPillar,
   resolveStrategicTheme,
@@ -132,6 +137,8 @@ export type IcarusStrategicSignal = {
   summary: string;
   // Attached by attachIcarusAssuranceToSignals (icarus-assurance). Absent => pre-assurance behaviour.
   assurance?: IcarusSignalAssurance;
+  // Attached by attachIcarusFailureChainToSignals (icarus-failure-chain-analysis). Absent => pre-failure-chain behaviour.
+  failureChain?: IcarusSignalFailureChain;
 };
 
 export type IcarusStrategicAttentionInput = {
@@ -447,9 +454,12 @@ export type IcarusCommandPlacement = {
 // Command placement deliberately sits below blocked/overdue execution (ranks 1–2).
 export function getIcarusCommandPlacement(signal: IcarusStrategicSignal): IcarusCommandPlacement {
   // Assurance may lift an Icarus item by one step (assurance failure) but never into execution ranks 1–2.
-  const attentionRank = adjustIcarusCommandRankForAssurance(
-    getIcarusCommandRank(signal.exposure, signal.hasOverdueControlReview),
-    signal.assurance,
+  const baseRank = getIcarusCommandRank(signal.exposure, signal.hasOverdueControlReview);
+  // A Critical systemic failure chain may lift one step, but never on top of an assurance lift.
+  const attentionRank = adjustIcarusCommandRankForFailureChain(
+    adjustIcarusCommandRankForAssurance(baseRank, signal.assurance),
+    baseRank,
+    signal.failureChain,
   );
   const reasons = [commandExposureReason[signal.exposure]];
   if (signal.scope === "Strategic objective") {
@@ -460,6 +470,7 @@ export function getIcarusCommandPlacement(signal: IcarusStrategicSignal): Icarus
   if (signal.materialFailureModes.length > 1) reasons.push(`${signal.materialFailureModes.length} MATERIAL FAILURE MODES`);
   if (signal.weaknesses.includes("Weak evidence")) reasons.push("EVIDENCE WEAK");
   reasons.push(...getIcarusAssuranceCommandReasons(signal.assurance));
+  if (signal.failureChain?.commandReason) reasons.push(signal.failureChain.commandReason);
   const modeCount = signal.materialFailureModes.length;
   return {
     attentionRank,
@@ -488,21 +499,24 @@ export type IcarusFounderFocusRisk = {
 function describeFounderFocusReason(signal: IcarusStrategicSignal, scopeText: string): string {
   const assurance = signal.assurance;
   const gaps = (assurance?.escalationCategories ?? []).map((category) => ICARUS_OBLIGATION_LABEL[category].toLowerCase());
+  const chain = signal.failureChain?.focusReason ? ` ${signal.failureChain.focusReason}` : "";
   if (assurance?.escalation === "Assurance failure") {
-    return `Icarus assurance failure${scopeText} — ${gaps.join("; ")}. Underlying risk: ${signal.summary}`;
+    return `Icarus assurance failure${scopeText} — ${gaps.join("; ")}. Underlying risk: ${signal.summary}${chain}`;
   }
   const base = `Icarus strategic risk${scopeText} — ${signal.summary}`;
   const governance = assurance?.escalation === "Governance gap" ? ` Governance gap: ${gaps.join("; ")}.` : "";
   const accepted = assurance?.materialModesAccepted && assurance.acceptance === "Active" ? " Exposure is formally accepted and under review." : "";
-  return `${base}${governance}${accepted}`;
+  return `${base}${governance}${accepted}${chain}`;
 }
 
 // Founder Focus bands: 1 authority, 2 blocked/overdue/review due, 3 material, 4–5 structural.
 export function buildIcarusFounderFocusRisks(signals: readonly IcarusStrategicSignal[]): IcarusFounderFocusRisk[] {
   return signals.map((signal) => {
-    const band = adjustIcarusFounderFocusBandForAssurance(
-      getIcarusFounderFocusBand(signal.exposure, signal.hasOverdueControlReview),
-      signal.assurance,
+    const baseBand = getIcarusFounderFocusBand(signal.exposure, signal.hasOverdueControlReview);
+    const band = adjustIcarusFounderFocusBandForFailureChain(
+      adjustIcarusFounderFocusBandForAssurance(baseBand, signal.assurance),
+      baseBand,
+      signal.failureChain,
     );
     const scopeText = signal.scope === "Operational"
       ? ""

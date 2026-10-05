@@ -19646,6 +19646,7 @@ export default function Home() {
               systemicExposure={icarusCorrelation.systemicExposure}
               assurance={icarusIntelligence.assurance}
               assuranceRollup={icarusIntelligence.assuranceRollup}
+              failureChains={icarusIntelligence.failureChains}
               people={people.map(({ id, name, status }) => ({ id, name, status }))}
               actions={actionRecords.map(({ id, actionTitle, status }) => ({ id, title: actionTitle, status }))}
             />
