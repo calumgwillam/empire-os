@@ -4,6 +4,9 @@ import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import { describe, expect, it } from "vitest";
 import { buildOrganisationalLearning, type OrganisationalLearningInput } from "./organisational-learning";
 import type { LearningAttentionInput } from "./learning-attention";
+import { buildIcarusReview, type IcarusAssessmentRecord, type IcarusRecordReference } from "./icarus";
+import { buildIcarusStrategicAttention, type IcarusStrategicSignal } from "./icarus-strategic-attention";
+import { resolveStrategicRiskConvergence } from "./strategic-risk-resolution";
 import {
   buildCommandAttention,
   compareAttentionItems,
@@ -15,6 +18,7 @@ import {
   getSopPriorityScore,
   getSystemPriorityScore,
   orderAttentionReasons,
+  resolveCommandStrategicRiskConvergence,
   type CommandAttentionInput,
   type CommandAttentionItem,
 } from "./command-attention";
@@ -735,5 +739,330 @@ describe("Command learning pipeline integration", () => {
     expect(buildCommandAttention(source)).toEqual(first);
     first.items[0].reasons.push("Changed output");
     expect(source).toEqual(before);
+  });
+});
+
+const icarusTimestamp = "2025-04-01T12:00:00.000Z";
+
+function icarusAssessment(overrides: Partial<IcarusAssessmentRecord> = {}): IcarusAssessmentRecord {
+  return {
+    id: "icarus-1",
+    outcome: "Excavation margin collapses",
+    status: "Open",
+    createdAt: icarusTimestamp,
+    updatedAt: icarusTimestamp,
+    linkedRecords: [],
+    failureModes: [{
+      id: "mode-1",
+      mechanism: "Fuel costs are not repriced into quotes.",
+      vulnerability: "No repricing trigger.",
+      evidence: [{
+        id: "evidence-1",
+        statement: "Two jobs lost money last month.",
+        origin: "Direct observation",
+        recordedAt: icarusTimestamp,
+        recordedBy: "Founder",
+        review: "Supports",
+        reviewedAt: icarusTimestamp,
+        reviewedBy: "Founder",
+      }],
+    }],
+    controls: [],
+    ...overrides,
+  };
+}
+
+function icarusSignals(assessments: readonly IcarusAssessmentRecord[]): IcarusStrategicSignal[] {
+  const links: IcarusRecordReference[] = assessments.flatMap((entry) => entry.linkedRecords);
+  return buildIcarusStrategicAttention({
+    assessments,
+    reviews: buildIcarusReview(assessments, links.map((link) => ({ ...link, title: link.recordId })), NOW),
+  });
+}
+
+describe("Command Icarus strategic attention integration", () => {
+  const pillarLink: IcarusRecordReference = { recordType: "Pillar", recordId: "Excavation" };
+
+  it("leaves Command output unchanged when Icarus input is absent, empty or entirely non-material", () => {
+    const source = input({
+      problems: [problem({ severity: "High" })],
+      actions: [action({ status: "Blocked" })],
+    });
+    const baseline = buildCommandAttention(source);
+    expect(buildCommandAttention({ ...source, icarus: [] })).toEqual(baseline);
+    const controlled = icarusAssessment({
+      linkedRecords: [{ recordType: "Problem", recordId: "problem-1" }],
+      failureModes: [{
+        ...icarusAssessment().failureModes[0],
+        evidence: [icarusAssessment().failureModes[0].evidence[0], { ...icarusAssessment().failureModes[0].evidence[0], id: "control-evidence" }],
+      }],
+      controls: [{
+        id: "control-1",
+        failureModeId: "mode-1",
+        intervention: "Monthly repricing",
+        lifecycle: "Active",
+        effectiveness: "Evidence supports",
+        effectivenessReviewedAt: icarusTimestamp,
+        effectivenessReviewedBy: "Founder",
+        evidenceIds: ["control-evidence"],
+        linkedRecords: [],
+        nextReviewAt: "2025-12-31",
+      }],
+    });
+    const signals = icarusSignals([controlled]);
+    expect(signals).toEqual([]);
+    expect(buildCommandAttention({ ...source, icarus: signals })).toEqual(baseline);
+  });
+
+  it("adds an unanchored material risk as a single traceable Icarus item", () => {
+    const signals = icarusSignals([icarusAssessment({ linkedRecords: [pillarLink] })]);
+    const result = buildCommandAttention(input({ icarus: signals }));
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      id: "icarus-1",
+      objectType: "Icarus",
+      title: "Excavation margin collapses",
+      reasons: ["ICARUS: EXPOSED FAILURE MODE", "PILLAR LINKED"],
+      area: "Excavation",
+      attentionRank: 3,
+      tieWeight: 1,
+      priorityScore: signals[0].riskScore,
+      navigationMode: "record-handler",
+      strategicRisk: {
+        summary: signals[0].summary,
+        references: [{
+          identityKey: "icarus-assessment:icarus-1",
+          assessmentId: "icarus-1",
+          failureModeId: "mode-1",
+          evidenceId: "evidence-1",
+        }],
+      },
+    });
+    expect(result.groups["ICARUS: EXPOSED FAILURE MODE"]).toEqual([result.items[0]]);
+  });
+
+  it("enriches the existing anchored Command item instead of adding a duplicate strategic item", () => {
+    const source = input({ problems: [problem({ severity: "High" })] });
+    const baseline = buildCommandAttention(source);
+    expect(baseline.items).toHaveLength(1);
+    const signals = icarusSignals([icarusAssessment({
+      linkedRecords: [pillarLink, { recordType: "Problem", recordId: "problem-1" }],
+    })]);
+    const result = buildCommandAttention({ ...source, icarus: signals });
+    expect(result.items).toHaveLength(1);
+    const [enriched] = result.items;
+    const [original] = baseline.items;
+    expect(enriched).toMatchObject({
+      id: original.id,
+      objectType: "Problem",
+      title: original.title,
+      statusText: original.statusText,
+      area: original.area,
+      navigationMode: original.navigationMode,
+      sortDate: original.sortDate,
+      attentionRank: Math.min(original.attentionRank, 3),
+      tieWeight: Math.max(original.tieWeight, 1),
+      priorityScore: Math.max(original.priorityScore, signals[0].riskScore),
+    });
+    expect(enriched.reasons).toEqual(orderAttentionReasons([
+      ...original.reasons,
+      "ICARUS RISK: Excavation margin collapses (exposed)",
+    ]));
+    expect(enriched.strategicRisk?.references.map((reference) => reference.identityKey)).toEqual(["icarus-assessment:icarus-1"]);
+    expect(result.items.some((entry) => entry.objectType === "Icarus")).toBe(false);
+  });
+
+  it("does not let an Icarus risk weaken a stronger existing anchor", () => {
+    const source = input({ actions: [action({ status: "Blocked", priority: "Critical" })] });
+    const [original] = buildCommandAttention(source).items;
+    const signals = icarusSignals([icarusAssessment({ linkedRecords: [{ recordType: "Action", recordId: "action-1" }] })]);
+    const [enriched] = buildCommandAttention({ ...source, icarus: signals }).items;
+    expect(enriched.attentionRank).toBe(original.attentionRank);
+    expect(enriched.attentionRank).toBeLessThan(3);
+    expect(enriched.tieWeight).toBe(original.tieWeight);
+    expect(enriched.reasons[0]).toBe(original.reasons[0]);
+  });
+
+  it("merges multiple assessments on the same anchor with one traceable reference each", () => {
+    const source = input({ problems: [problem({ severity: "High" })] });
+    const link: IcarusRecordReference = { recordType: "Problem", recordId: "problem-1" };
+    const signals = icarusSignals([
+      icarusAssessment({ id: "icarus-a", outcome: "Outcome A", linkedRecords: [link] }),
+      icarusAssessment({ id: "icarus-b", outcome: "Outcome B", linkedRecords: [link] }),
+    ]);
+    const result = buildCommandAttention({ ...source, icarus: [...signals, signals[0]] });
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].strategicRisk?.references.map((reference) => reference.assessmentId)).toEqual(["icarus-a", "icarus-b"]);
+    expect(result.items[0].reasons.filter((reason) => reason.startsWith("ICARUS RISK"))).toEqual([
+      "ICARUS RISK: Outcome A (exposed)",
+      "ICARUS RISK: Outcome B (exposed)",
+    ]);
+  });
+
+  it("anchors to the strongest existing linked item and falls back to standalone when no link is in Command", () => {
+    const source = input({
+      problems: [problem({ severity: "High" })],
+      actions: [action({ status: "Blocked" }), action({ id: "quiet-action" })],
+    });
+    const baselineKeys = buildCommandAttention(source).items.map((entry) => `${entry.objectType}:${entry.id}`);
+    expect(baselineKeys).not.toContain("Action:quiet-action");
+    expect(baselineKeys).toEqual(expect.arrayContaining(["Problem:problem-1", "Action:action-1"]));
+    const result = buildCommandAttention({
+      ...source,
+      icarus: icarusSignals([
+        icarusAssessment({ id: "multi", outcome: "Multi", linkedRecords: [
+          { recordType: "Problem", recordId: "problem-1" },
+          { recordType: "Action", recordId: "action-1" },
+        ] }),
+        icarusAssessment({ id: "quiet", outcome: "Quiet", linkedRecords: [{ recordType: "Action", recordId: "quiet-action" }] }),
+      ]),
+    });
+    const byKey = new Map(result.items.map((entry) => [`${entry.objectType}:${entry.id}`, entry]));
+    expect(byKey.get("Action:action-1")?.strategicRisk?.references[0].assessmentId).toBe("multi");
+    expect(byKey.get("Problem:problem-1")?.strategicRisk).toBeUndefined();
+    expect(byKey.get("Icarus:quiet")).toMatchObject({ objectType: "Icarus", navigationMode: "record-handler" });
+    expect(byKey.has("Action:quiet-action")).toBe(false);
+  });
+
+  it("competes below blocked/overdue execution and above routine follow-ups", () => {
+    const result = buildCommandAttention(input({
+      actions: [action({ status: "Blocked", priority: "Critical" })],
+      outreach: [outreach({ status: "No Response", nextFollowUpDate: day(0) })],
+      icarus: icarusSignals([icarusAssessment()]),
+    }));
+    expect(result.items.map((entry) => entry.objectType)).toEqual(["Action", "Icarus", "Outreach"]);
+  });
+
+  it("orders multiple standalone Icarus items by materiality and stays deterministic without mutating inputs", () => {
+    const signals = icarusSignals([
+      icarusAssessment({ id: "unverified", outcome: "Unverified", controls: [{
+        id: "control-1", failureModeId: "mode-1", intervention: "Check", lifecycle: "Active",
+        effectiveness: "Unknown", evidenceIds: [], linkedRecords: [], nextReviewAt: "2025-12-31",
+      }] }),
+      icarusAssessment({ id: "exposed-pillar", outcome: "Pillar", linkedRecords: [pillarLink] }),
+      icarusAssessment({ id: "exposed", outcome: "Plain" }),
+    ]);
+    const source = input({ icarus: signals });
+    const before = structuredClone(source);
+    const first = buildCommandAttention(source);
+    expect(first.items.map((entry) => entry.id)).toEqual(["exposed-pillar", "exposed", "unverified"]);
+    expect(first.items.map((entry) => entry.attentionRank)).toEqual([3, 3, 6]);
+    expect(buildCommandAttention(source)).toEqual(first);
+    first.items[0].strategicRisk?.references.push({ identityKey: "x", assessmentId: "x" });
+    expect(source).toEqual(before);
+  });
+});
+
+describe("Command strategic-risk convergence resolution", () => {
+  const riskItem = (overrides: Partial<CommandAttentionItem> = {}) => item({
+    id: "icarus-1",
+    objectType: "Icarus",
+    title: "Margin collapses",
+    reason: "STRATEGIC RISK",
+    reasons: ["STRATEGIC RISK"],
+    attentionRank: 3,
+    tieWeight: 2,
+    priorityScore: 400,
+    navigationMode: "record-handler",
+    strategicRisk: {
+      summary: "Exposed failure mechanism",
+      references: [{ identityKey: "icarus:icarus-1", assessmentId: "icarus-1", failureModeId: "mode-1" }],
+      anchoredReason: "STRATEGIC RISK EXPOSURE",
+    },
+    ...overrides,
+  });
+  const host = (overrides: Partial<CommandAttentionItem> = {}) => item({
+    id: "action-1",
+    reason: "BLOCKED",
+    reasons: ["BLOCKED"],
+    attentionRank: 1,
+    priorityScore: 120,
+    ...overrides,
+  });
+  const convergence = (riskKeys: string[], members: string[]) => resolveStrategicRiskConvergence(
+    [{ clusterKey: "cluster:Action:action-1", rootRecordKey: "Action:action-1", records: members.map((recordKey) => ({ recordKey })) }],
+    riskKeys,
+  );
+
+  it("folds a standalone risk into its convergent host, preserving provenance and navigation references", () => {
+    const items = [host(), riskItem()];
+    const result = resolveCommandStrategicRiskConvergence(items, convergence(["Icarus:icarus-1"], ["Action:action-1", "Icarus:icarus-1"]));
+    expect(result.map((entry) => `${entry.objectType}:${entry.id}`)).toEqual(["Action:action-1"]);
+    expect(result[0]).toMatchObject({
+      reasons: ["BLOCKED", "STRATEGIC RISK EXPOSURE"],
+      attentionRank: 1,
+      tieWeight: 2,
+      priorityScore: 400,
+      operationalPriorityScore: 120,
+      strategicRisk: { summary: "Exposed failure mechanism", references: [{ identityKey: "icarus:icarus-1", assessmentId: "icarus-1", failureModeId: "mode-1" }] },
+      convergentStrategicRisk: { clusterKey: "cluster:Action:action-1", rootRecordKey: "Action:action-1", riskRecordKeys: ["Icarus:icarus-1"] },
+    });
+  });
+
+  it("restores the standalone risk when the convergent situation disappears", () => {
+    const items = [host(), riskItem()];
+    expect(resolveCommandStrategicRiskConvergence(items, new Map())).toEqual([...items].sort(compareAttentionItems));
+  });
+
+  it("keeps the risk standalone when no eligible host is present in Command", () => {
+    const finance = host({ id: "commitment-1", objectType: "Finance" });
+    const resolution = resolveStrategicRiskConvergence(
+      [{ clusterKey: "c", rootRecordKey: "Finance:commitment-1", records: [{ recordKey: "Finance:commitment-1" }, { recordKey: "Icarus:icarus-1" }, { recordKey: "Project:not-in-command" }] }],
+      ["Icarus:icarus-1"],
+    );
+    const result = resolveCommandStrategicRiskConvergence([finance, riskItem()], resolution, { isEligibleHost: (entry) => entry.objectType !== "Finance" });
+    expect(result.map((entry) => entry.objectType)).toContain("Icarus");
+    expect(result.find((entry) => entry.objectType === "Finance")!.convergentStrategicRisk).toBeUndefined();
+  });
+
+  it("does not hide a distinct risk that merely shares a pillar/area with a convergent situation", () => {
+    const other = riskItem({ id: "icarus-2", area: "Operations", strategicRisk: { summary: "Other", references: [{ identityKey: "icarus:icarus-2", assessmentId: "icarus-2" }] } });
+    const result = resolveCommandStrategicRiskConvergence(
+      [host(), riskItem(), other],
+      convergence(["Icarus:icarus-1", "Icarus:icarus-2"], ["Action:action-1", "Icarus:icarus-1"]),
+    );
+    expect(result.map((entry) => `${entry.objectType}:${entry.id}`).sort()).toEqual(["Action:action-1", "Icarus:icarus-2"]);
+  });
+
+  it("folds several risks into one host without duplicating references", () => {
+    const shared = { identityKey: "icarus:icarus-1", assessmentId: "icarus-1" };
+    const anchoredHost = host({ strategicRisk: { summary: "Anchored", references: [shared] } });
+    const second = riskItem({ id: "icarus-2", strategicRisk: { summary: "Second", references: [{ identityKey: "icarus:icarus-2", assessmentId: "icarus-2" }], anchoredReason: "STRATEGIC RISK EXPOSURE" } });
+    const result = resolveCommandStrategicRiskConvergence(
+      [anchoredHost, riskItem(), second],
+      convergence(["Icarus:icarus-1", "Icarus:icarus-2"], ["Action:action-1", "Icarus:icarus-1", "Icarus:icarus-2"]),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].strategicRisk!.summary).toBe("Anchored");
+    expect(result[0].strategicRisk!.references.map((reference) => reference.identityKey)).toEqual(["icarus:icarus-1", "icarus:icarus-2"]);
+    expect(result[0].convergentStrategicRisk!.riskRecordKeys).toEqual(["Icarus:icarus-1", "Icarus:icarus-2"]);
+    expect(result[0].reasons.filter((reason) => reason === "STRATEGIC RISK EXPOSURE")).toHaveLength(1);
+  });
+
+  it("picks the highest-priority host deterministically and never mutates input", () => {
+    const weaker = host({ id: "action-2", attentionRank: 2 });
+    const items = [riskItem(), weaker, host()];
+    const before = JSON.stringify(items);
+    const resolution = convergence(["Icarus:icarus-1"], ["Action:action-2", "Action:action-1", "Icarus:icarus-1"]);
+    const forward = resolveCommandStrategicRiskConvergence(items, resolution);
+    const reversed = resolveCommandStrategicRiskConvergence([...items].reverse(), resolution);
+    expect(forward).toEqual(reversed);
+    expect(forward.find((entry) => entry.convergentStrategicRisk)!.id).toBe("action-1");
+    expect(JSON.stringify(items)).toBe(before);
+  });
+
+  it("integrates with buildCommandAttention output: a pillar-only Icarus risk folds into a convergent blocked action", () => {
+    const signals = icarusSignals([icarusAssessment({ linkedRecords: [{ recordType: "Pillar", recordId: "Excavation" }] })]);
+    const command = buildCommandAttention(input({ actions: [action({ status: "Blocked" })], icarus: signals }));
+    const icarusKey = `Icarus:${signals[0].assessmentId}`;
+    const actionItem = command.items.find((entry) => entry.objectType === "Action")!;
+    expect(command.items.map((entry) => `${entry.objectType}:${entry.id}`)).toContain(icarusKey);
+    const resolved = resolveCommandStrategicRiskConvergence(command.items, resolveStrategicRiskConvergence(
+      [{ clusterKey: `cluster:Action:${actionItem.id}`, rootRecordKey: `Action:${actionItem.id}`, records: [{ recordKey: `Action:${actionItem.id}` }, { recordKey: icarusKey }] }],
+      [icarusKey],
+    ));
+    expect(resolved.map((entry) => `${entry.objectType}:${entry.id}`)).not.toContain(icarusKey);
+    expect(resolved.find((entry) => entry.id === actionItem.id)!.strategicRisk!.references[0].assessmentId).toBe(signals[0].assessmentId);
+    expect(resolveCommandStrategicRiskConvergence(command.items, new Map())).toEqual(command.items);
   });
 });

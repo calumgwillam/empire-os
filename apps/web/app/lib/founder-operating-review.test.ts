@@ -153,6 +153,7 @@ describe("Founder Operating Review policy", () => {
         detail: "At least 2 daily posture snapshots are required to establish a historical 7-day trend.",
       },
       next7Days: [],
+      strategicRiskTrajectory: null,
     });
   });
 

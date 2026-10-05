@@ -1,3 +1,5 @@
+import { indexConvergentSituationMembers } from "./strategic-risk-resolution";
+
 export type FounderFocusSignalInput = {
   recordKey: string;
   objectType: string;
@@ -36,11 +38,27 @@ export type FounderFocusClusterInput = {
   }[];
   categories: readonly string[];
   recordCount: number;
+  // When supplied, the correlation graph's stable root; otherwise the highest-scoring record.
+  rootRecordKey?: string;
 };
 
 export type FounderFocusRecordFact = {
   urgencyTime: number | null;
   isWaitingAction: boolean;
+};
+
+// A derived strategic risk (e.g. Icarus) that either enriches an anchored candidate or stands alone.
+export type FounderFocusStrategicRiskInput = {
+  key: string;
+  objectType: string;
+  id: string;
+  title: string;
+  area: string;
+  band: number;
+  score: number;
+  reason: string;
+  anchorRecordKeys: readonly string[];
+  referenceKey: string;
 };
 
 export type FounderFocusInput = {
@@ -49,6 +67,7 @@ export type FounderFocusInput = {
   limitations: readonly FounderFocusLimitationInput[];
   convergentRisks: readonly FounderFocusClusterInput[];
   recordFacts: ReadonlyMap<string, FounderFocusRecordFact>;
+  strategicRisks?: readonly FounderFocusStrategicRiskInput[];
 };
 
 export type FounderFocusCandidate = {
@@ -61,7 +80,15 @@ export type FounderFocusCandidate = {
   band: number;
   urgencyTime: number | null;
   reason: string;
+  strategicRiskKeys?: string[];
 };
+
+function compareFounderFocusCandidates(left: FounderFocusCandidate, right: FounderFocusCandidate): number {
+  return left.band - right.band ||
+    right.score - left.score ||
+    (left.urgencyTime ?? Number.POSITIVE_INFINITY) - (right.urgencyTime ?? Number.POSITIVE_INFINITY) ||
+    left.key.localeCompare(right.key);
+}
 
 export function buildFounderFocus(input: FounderFocusInput): FounderFocusCandidate[] {
   const signalBand = (signals: readonly string[]) => {
@@ -151,7 +178,8 @@ export function buildFounderFocus(input: FounderFocusInput): FounderFocusCandida
     const constituentCandidates = cluster.records
       .map((record) => candidatesByRecord.get(record.recordKey))
       .filter((candidate): candidate is FounderFocusCandidate => Boolean(candidate));
-    const root = cluster.records.reduce((best, item) => (item.baseScore > best.baseScore ? item : best), cluster.records[0]);
+    const root = cluster.records.find((record) => record.recordKey === cluster.rootRecordKey)
+      ?? cluster.records.reduce((best, item) => (item.baseScore > best.baseScore ? item : best), cluster.records[0]);
     const strongestScore = Math.max(...constituentCandidates.map((candidate) => candidate.score), 0);
     const strongestBand = Math.min(...constituentCandidates.map((candidate) => candidate.band), 3);
     const urgencyTimes = constituentCandidates
@@ -171,10 +199,41 @@ export function buildFounderFocus(input: FounderFocusInput): FounderFocusCandida
     });
   });
 
-  return [...candidatesByRecord.values()].sort((left, right) =>
-    left.band - right.band ||
-    right.score - left.score ||
-    (left.urgencyTime ?? Number.POSITIVE_INFINITY) - (right.urgencyTime ?? Number.POSITIVE_INFINITY) ||
-    left.key.localeCompare(right.key),
-  );
+  const clusterKeyByRecordKey = indexConvergentSituationMembers(input.convergentRisks);
+  input.strategicRisks?.forEach((risk) => {
+    // The strategic-risk input is authoritative for its own identity; drop any generic signalled duplicate.
+    const ownClusterKey = clusterKeyByRecordKey.get(risk.key);
+    if (!ownClusterKey) candidatesByRecord.delete(risk.key);
+    const anchored = [...(ownClusterKey ? [ownClusterKey] : []), ...risk.anchorRecordKeys]
+      .map((recordKey) => candidatesByRecord.get(clusterKeyByRecordKey.get(recordKey) ?? recordKey))
+      .filter((candidate): candidate is FounderFocusCandidate => Boolean(candidate))
+      .sort(compareFounderFocusCandidates)[0];
+    if (anchored) {
+      const strategicRiskKeys = anchored.strategicRiskKeys ?? [];
+      if (strategicRiskKeys.includes(risk.referenceKey)) return;
+      candidatesByRecord.set(anchored.key, {
+        ...anchored,
+        band: Math.min(anchored.band, risk.band),
+        score: Math.max(anchored.score, risk.score),
+        reason: `${anchored.reason} Also: ${risk.reason}`,
+        strategicRiskKeys: [...strategicRiskKeys, risk.referenceKey],
+      });
+      return;
+    }
+    if (candidatesByRecord.has(risk.key)) return;
+    candidatesByRecord.set(risk.key, {
+      key: risk.key,
+      objectType: risk.objectType,
+      id: risk.id,
+      title: risk.title,
+      area: risk.area,
+      score: risk.score,
+      band: risk.band,
+      urgencyTime: null,
+      reason: risk.reason,
+      strategicRiskKeys: [risk.referenceKey],
+    });
+  });
+
+  return [...candidatesByRecord.values()].sort(compareFounderFocusCandidates);
 }

@@ -10,12 +10,78 @@ export type CorrelationSignalledRecord = {
 
 export type CorrelationCluster = {
   clusterKey: string;
+  rootRecordKey: string;
   title: string;
   records: CorrelationSignalledRecord[];
   categories: Set<string>;
   recordCount: number;
   contributingRecordCount: number;
   topScore: number;
+  // Resolved identity links that connected a strategic-risk signal into this situation.
+  strategicRiskLinks: CorrelationStrategicRiskClusterLink[];
+  // Non-transitive context records (e.g. a Person) attached through explicit strategic-risk links.
+  contextRecords: CorrelationContextClusterRecord[];
+};
+
+export const CORRELATION_CONVERGENCE_MIN_CATEGORIES = 3;
+export const CORRELATION_CONVERGENCE_MIN_RECORDS = 2;
+
+// "material" signals count toward convergence; "corroborating" signals join and strengthen a
+// situation but can never create convergence on their own.
+export type CorrelationStrategicRiskWeight = "material" | "corroborating";
+
+export type CorrelationStrategicRiskLink = {
+  recordKey: string;
+  via: string;
+};
+
+export type CorrelationStrategicRiskInput = {
+  recordKey: string;
+  objectType: string;
+  id: string;
+  title: string;
+  area: string;
+  signal: string;
+  baseScore: number;
+  weight: CorrelationStrategicRiskWeight;
+  links: readonly CorrelationStrategicRiskLink[];
+};
+
+export type CorrelationStrategicRiskClusterLink = {
+  riskRecordKey: string;
+  sharedRecordKey: string;
+};
+
+// A context record carries signals about a stable identity that is not part of the record graph
+// (e.g. a Person's founder dependency or capability gap). It is deliberately non-transitive: it never
+// joins two situations together, it only attaches to a situation whose strategic-risk signal explicitly
+// links to it. Its categories strengthen that situation but it never counts as a contributing record,
+// and its categories only count toward convergence when a material strategic risk links to it.
+export type CorrelationContextRecordInput = {
+  recordKey: string;
+  objectType: string;
+  id: string;
+  title: string;
+  area: string;
+  signals: readonly string[];
+  // Records whose state produced a signal. When every one of them is already in the situation, the signal is a
+  // second representation of evidence already counted and adds no category.
+  evidenceRecordKeysBySignal?: Readonly<Record<string, readonly string[]>>;
+};
+
+export type CorrelationContextClusterRecord = {
+  recordKey: string;
+  objectType: string;
+  id: string;
+  title: string;
+  area: string;
+  signals: string[];
+  // Signals backed by evidence not already represented in the situation; only these add categories.
+  independentSignals: string[];
+  // Strategic-risk records in this situation that explicitly reference the context record.
+  linkedByRiskRecordKeys: string[];
+  // True when at least one linking strategic risk is material, so the context counts toward convergence.
+  material: boolean;
 };
 
 type CaptureRelationshipInput = {
@@ -93,6 +159,10 @@ export type CorrelationGraphInput = {
     relatedSopIds?: readonly string[];
   })[];
   leads: readonly { id: string }[];
+  // Derived strategic-risk signals (e.g. Icarus) that correlate only through stable record identities.
+  strategicRisks?: readonly CorrelationStrategicRiskInput[];
+  // Context identities that strategic risks may reference; see CorrelationContextRecordInput.
+  contextRecords?: readonly CorrelationContextRecordInput[];
 };
 
 export type CorrelationGraphResult = {
@@ -108,13 +178,18 @@ function getAreaText(record: { relatedArea?: string; relatedPillar?: string; are
 
 export function buildCorrelationGraph(input: CorrelationGraphInput): CorrelationGraphResult {
   const signalled = new Map<string, CorrelationSignalledRecord>();
-  const addSignal = (recordKey: string, objectType: string, id: string, title: string, area: string, signal: string, baseScore: number) => {
+  const materialSignals = new Map<string, Set<string>>();
+  const addSignal = (recordKey: string, objectType: string, id: string, title: string, area: string, signal: string, baseScore: number, material = true) => {
     const existing = signalled.get(recordKey);
     if (existing) {
       existing.signals.add(signal);
       existing.baseScore = Math.max(existing.baseScore, baseScore);
     } else {
       signalled.set(recordKey, { recordKey, objectType, id, title, area, signals: new Set([signal]), baseScore });
+    }
+    if (material) {
+      if (!materialSignals.has(recordKey)) materialSignals.set(recordKey, new Set());
+      materialSignals.get(recordKey)!.add(signal);
     }
   };
 
@@ -160,6 +235,15 @@ export function buildCorrelationGraph(input: CorrelationGraphInput): Correlation
     addSignal(`Finance:commitment:${item.id}`, "Finance", `commitment:${item.id}`, item.title, "Finance", "overdue commitment", 310));
   input.overdueExpectedIncome.forEach((item) =>
     addSignal(`Finance:income:${item.id}`, "Finance", `income:${item.id}`, item.title, "Finance", "expected income overdue", 260));
+
+  // Added last so existing records always start (and root) their own situations.
+  const strategicRiskKeys = new Set<string>();
+  const materialStrategicRiskKeys = new Set<string>();
+  (input.strategicRisks ?? []).forEach((risk) => {
+    strategicRiskKeys.add(risk.recordKey);
+    if (risk.weight === "material") materialStrategicRiskKeys.add(risk.recordKey);
+    addSignal(risk.recordKey, risk.objectType, risk.id, risk.title, risk.area, risk.signal, risk.baseScore, risk.weight === "material");
+  });
 
   const adjacency = new Map<string, Set<string>>();
   const recordKeys = new Set<string>([
@@ -229,8 +313,49 @@ export function buildCorrelationGraph(input: CorrelationGraphInput): Correlation
     (project.relatedSopIds || []).forEach((sopId) => link(`Project:${project.id}`, `SOP:${sopId}`));
   });
 
+  // Context records already present as signalled graph records participate natively instead (no double count).
+  const contextByKey = new Map<string, CorrelationContextRecordInput>();
+  (input.contextRecords ?? []).forEach((context) => {
+    if (signalled.has(context.recordKey) || recordKeys.has(context.recordKey) || context.signals.length === 0) return;
+    const existing = contextByKey.get(context.recordKey);
+    if (!existing) {
+      contextByKey.set(context.recordKey, { ...context, signals: [...new Set(context.signals)] });
+      return;
+    }
+    const evidence: Record<string, readonly string[]> = { ...existing.evidenceRecordKeysBySignal };
+    Object.entries(context.evidenceRecordKeysBySignal ?? {}).forEach(([signal, keys]) => {
+      evidence[signal] = [...new Set([...(evidence[signal] ?? []), ...keys])];
+    });
+    contextByKey.set(context.recordKey, {
+      ...existing,
+      signals: [...new Set([...existing.signals, ...context.signals])],
+      evidenceRecordKeysBySignal: evidence,
+    });
+  });
+  const contextLinksByRisk = new Map<string, Set<string>>();
+
+  // Strategic risks may link to any graph record, or to a signalled record outside the record graph (e.g. Finance).
+  const resolvedRiskLinks = new Map<string, Set<string>>();
+  (input.strategicRisks ?? []).forEach((risk) => {
+    recordKeys.add(risk.recordKey);
+    risk.links.forEach(({ recordKey }) => {
+      if (recordKey === risk.recordKey) return;
+      if (contextByKey.has(recordKey)) {
+        if (!contextLinksByRisk.has(risk.recordKey)) contextLinksByRisk.set(risk.recordKey, new Set());
+        contextLinksByRisk.get(risk.recordKey)!.add(recordKey);
+        return;
+      }
+      if (!recordKeys.has(recordKey) && !signalled.has(recordKey)) return;
+      recordKeys.add(recordKey);
+      link(risk.recordKey, recordKey);
+      if (!resolvedRiskLinks.has(risk.recordKey)) resolvedRiskLinks.set(risk.recordKey, new Set());
+      resolvedRiskLinks.get(risk.recordKey)!.add(recordKey);
+    });
+  });
+
   const assignedSignalledRecords = new Set<string>();
   const clusters: CorrelationCluster[] = [];
+  const convergenceByCluster = new Map<CorrelationCluster, number>();
 
   signalled.forEach((record, recordKey) => {
     if (assignedSignalledRecords.has(recordKey)) return;
@@ -259,22 +384,78 @@ export function buildCorrelationGraph(input: CorrelationGraphInput): Correlation
 
     const categories = new Set<string>();
     component.forEach((item) => item.signals.forEach((signal) => categories.add(signal)));
+    const materialCategories = new Set<string>();
+    component.forEach((item) => materialSignals.get(item.recordKey)?.forEach((signal) => materialCategories.add(signal)));
+    const materialRecordCount = component.filter((item) => (materialSignals.get(item.recordKey)?.size ?? 0) > 0).length;
 
-    const root = component.reduce((best, item) => (item.baseScore > best.baseScore ? item : best), component[0]);
+    const contextLinks = new Map<string, Set<string>>();
+    component
+      .filter((item) => strategicRiskKeys.has(item.recordKey))
+      .forEach((item) => contextLinksByRisk.get(item.recordKey)?.forEach((contextKey) => {
+        if (!contextLinks.has(contextKey)) contextLinks.set(contextKey, new Set());
+        contextLinks.get(contextKey)!.add(item.recordKey);
+      }));
+    const contextRecords: CorrelationContextClusterRecord[] = [...contextLinks.entries()]
+      .map(([contextKey, riskKeys]) => {
+        const context = contextByKey.get(contextKey)!;
+        const linkedByRiskRecordKeys = [...riskKeys].sort();
+        const signals = [...context.signals].sort();
+        const independentSignals = signals.filter((signal) => {
+          const evidence = context.evidenceRecordKeysBySignal?.[signal];
+          return !evidence || evidence.length === 0 || evidence.some((recordKey) => !visitedGraphNodes.has(recordKey));
+        });
+        return {
+          recordKey: context.recordKey,
+          objectType: context.objectType,
+          id: context.id,
+          title: context.title,
+          area: context.area,
+          signals,
+          independentSignals,
+          linkedByRiskRecordKeys,
+          material: linkedByRiskRecordKeys.some((riskKey) => materialStrategicRiskKeys.has(riskKey)),
+        };
+      })
+      .sort((left, right) => left.recordKey.localeCompare(right.recordKey));
+    contextRecords.forEach((context) => context.independentSignals.forEach((signal) => {
+      categories.add(signal);
+      if (context.material) materialCategories.add(signal);
+    }));
 
-    clusters.push({
+    // Strategic-risk signals strengthen a situation but never rename it while an operational record is present.
+    const operationalRecords = component.filter((item) => !strategicRiskKeys.has(item.recordKey));
+    const rootPool = operationalRecords.length > 0 ? operationalRecords : component;
+    const root = rootPool.reduce((best, item) => (item.baseScore > best.baseScore ? item : best), rootPool[0]);
+
+    const strategicRiskLinks: CorrelationStrategicRiskClusterLink[] = component
+      .filter((item) => strategicRiskKeys.has(item.recordKey))
+      .flatMap((item) => [...(resolvedRiskLinks.get(item.recordKey) ?? [])]
+        .filter((sharedRecordKey) => visitedGraphNodes.has(sharedRecordKey))
+        .map((sharedRecordKey) => ({ riskRecordKey: item.recordKey, sharedRecordKey })))
+      .sort((left, right) =>
+        left.riskRecordKey.localeCompare(right.riskRecordKey) || left.sharedRecordKey.localeCompare(right.sharedRecordKey));
+
+    const cluster: CorrelationCluster = {
       clusterKey: `cluster:${root.recordKey}`,
+      rootRecordKey: root.recordKey,
       title: root.title,
       records: component,
       categories,
       recordCount: component.length,
-      contributingRecordCount: component.filter((item) => item.signals.size > 0).length,
+      contributingRecordCount: materialRecordCount,
       topScore: root.baseScore,
-    });
+      strategicRiskLinks,
+      contextRecords,
+    };
+    clusters.push(cluster);
+    convergenceByCluster.set(cluster, materialCategories.size);
   });
 
   const convergentRisks = clusters
-    .filter((cluster) => cluster.categories.size >= 3 && cluster.recordCount >= 2 && cluster.contributingRecordCount >= 2)
+    .filter((cluster) =>
+      (convergenceByCluster.get(cluster) ?? 0) >= CORRELATION_CONVERGENCE_MIN_CATEGORIES
+      && cluster.recordCount >= CORRELATION_CONVERGENCE_MIN_RECORDS
+      && cluster.contributingRecordCount >= CORRELATION_CONVERGENCE_MIN_RECORDS)
     .sort((a, b) => b.categories.size - a.categories.size || b.recordCount - a.recordCount || b.topScore - a.topScore);
 
   const clusterByRecordKey = new Map<string, CorrelationCluster>();

@@ -1,3 +1,10 @@
+import {
+  compareIcarusExposure,
+  type IcarusExposureSnapshotEntry,
+  type IcarusExposureTrajectory,
+} from "./icarus-exposure-history";
+import type { IcarusAssessmentStatus } from "./icarus";
+
 export type FounderOperatingReviewSnapshot = {
   date: string;
   ownershipGapCount: number;
@@ -16,6 +23,8 @@ export type FounderOperatingReviewSnapshot = {
     objectType: string;
     category: string;
   }[];
+  // Absent on snapshots recorded before Icarus history existed.
+  icarusExposure?: readonly IcarusExposureSnapshotEntry[];
 };
 
 export type FounderOperatingReviewNavigation =
@@ -70,6 +79,7 @@ export type FounderOperatingReviewInput = {
     categoryCount: number;
     recordCount: number;
     root: { id: string; objectType: string; area: string };
+    strategicRisks?: readonly { assessmentId: string; outcome: string; exposure: string }[];
   }[];
   focusCandidates: readonly {
     key: string;
@@ -96,6 +106,10 @@ export type FounderOperatingReviewInput = {
     why: string;
     sourceIndex: number;
   }[];
+  icarusExposure?: {
+    current: readonly IcarusExposureSnapshotEntry[];
+    assessmentStatuses: ReadonlyMap<string, IcarusAssessmentStatus>;
+  };
 };
 
 export type FounderOperatingReviewResult = {
@@ -108,6 +122,7 @@ export type FounderOperatingReviewResult = {
   recurring: FounderOperatingReviewItem[];
   founderDependency: { status: string; summary: string; detail: string };
   next7Days: FounderOperatingReviewItem[];
+  strategicRiskTrajectory: IcarusExposureTrajectory | null;
 };
 
 export function buildFounderOperatingReview(
@@ -209,6 +224,50 @@ export function buildFounderOperatingReview(
       "Available operating cash balance decreased.");
   }
 
+  const strategicRiskTrajectory = input.icarusExposure
+    ? compareIcarusExposure({
+      previous: baselineSnapshot?.icarusExposure,
+      current: input.icarusExposure.current,
+      assessmentStatuses: input.icarusExposure.assessmentStatuses,
+    })
+    : null;
+  if (strategicRiskTrajectory?.hasBaseline) {
+    // Reported per change kind so churn (one new, one resolved) is never hidden by an unchanged net count.
+    const outcomes = (kind: string) => strategicRiskTrajectory.changes
+      .filter((change) => change.change === kind)
+      .map((change) => change.outcome)
+      .join("; ");
+    const { counts } = strategicRiskTrajectory;
+    if (counts.New > 0) {
+      deteriorated.push({
+        metric: "New strategic risks",
+        changeText: `+${counts.New} material Icarus exposure${counts.New === 1 ? "" : "s"}`,
+        explanation: `Newly material Icarus exposure: ${outcomes("New")}.`,
+      });
+    }
+    if (counts.Worsened > 0) {
+      deteriorated.push({
+        metric: "Strategic risk severity",
+        changeText: `${counts.Worsened} worsened`,
+        explanation: `Icarus exposure moved to a more severe tier, gained an exposed failure mode or rose in strategic consequence: ${outcomes("Worsened")}.`,
+      });
+    }
+    if (counts.Resolved > 0) {
+      improved.push({
+        metric: "Resolved strategic risks",
+        changeText: `-${counts.Resolved} material Icarus exposure${counts.Resolved === 1 ? "" : "s"}`,
+        explanation: `Icarus exposure was closed or is no longer material: ${outcomes("Resolved")}.`,
+      });
+    }
+    if (counts.Improved > 0) {
+      improved.push({
+        metric: "Strategic risk severity",
+        changeText: `${counts.Improved} improved`,
+        explanation: `Icarus exposure moved to a less severe tier, lost exposed failure modes or fell in strategic consequence: ${outcomes("Improved")}.`,
+      });
+    }
+  }
+
   const recurring: FounderOperatingReviewItem[] = [];
   const usedRecurringKeys = new Set<string>();
 
@@ -235,7 +294,9 @@ export function buildFounderOperatingReview(
       objectType: root.objectType,
       title: cluster.title,
       area: root.area,
-      why: `Convergent risk generating ${cluster.categoryCount} signal categories across ${cluster.recordCount} linked records`,
+      why: `Convergent risk generating ${cluster.categoryCount} signal categories across ${cluster.recordCount} linked records${cluster.strategicRisks && cluster.strategicRisks.length > 0
+        ? `; Icarus: ${cluster.strategicRisks.map((risk) => `${risk.exposure.toLowerCase()} in "${risk.outcome}"`).join("; ")}`
+        : ""}`,
       navigation: { type: "record", objectType: root.objectType, id: root.id },
     });
     usedRecurringKeys.add(cluster.clusterKey);
@@ -400,5 +461,6 @@ export function buildFounderOperatingReview(
       detail: dependencyDetail,
     },
     next7Days,
+    strategicRiskTrajectory,
   };
 }

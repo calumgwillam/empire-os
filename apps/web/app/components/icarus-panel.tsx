@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   buildIcarusReview,
   getIcarusReferenceKey,
@@ -15,6 +15,8 @@ import {
   type IcarusRecordReference,
   type IcarusSourceRecord,
 } from "../lib/icarus";
+import type { IcarusAttentionReference } from "../lib/icarus-strategic-attention";
+import type { IcarusSystemicExposure } from "../lib/icarus-systemic-exposure";
 
 type IcarusPanelProps = {
   assessments: readonly IcarusAssessmentRecord[];
@@ -23,7 +25,11 @@ type IcarusPanelProps = {
   writable: boolean;
   onChange: (assessments: IcarusAssessmentRecord[]) => void;
   createId: () => string;
+  focusTarget?: (IcarusAttentionReference & { requestId: number }) | null;
+  systemicExposure?: IcarusSystemicExposure;
 };
+
+const focusRingClass = " ring-2 ring-[#755520] ring-offset-2";
 
 const assessmentStatuses: readonly IcarusAssessmentStatus[] = ["Open", "Monitoring", "Closed"];
 const evidenceReviews: readonly IcarusEvidenceReview[] = ["Unreviewed", "Supports", "Contradicts", "Unresolved"];
@@ -76,7 +82,22 @@ export default function IcarusPanel({
   writable,
   onChange,
   createId,
+  focusTarget = null,
+  systemicExposure,
 }: IcarusPanelProps) {
+  useEffect(() => {
+    if (!focusTarget || typeof document === "undefined") return;
+    const elementIds = [
+      focusTarget.controlId ? `icarus-control-${focusTarget.controlId}` : null,
+      focusTarget.failureModeId ? `icarus-failure-mode-${focusTarget.failureModeId}` : null,
+      `icarus-assessment-${focusTarget.assessmentId}`,
+    ];
+    const element = elementIds
+      .map((id) => (id ? document.getElementById(id) : null))
+      .find((candidate): candidate is HTMLElement => Boolean(candidate));
+    element?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [focusTarget]);
+
   const [outcomeDraft, setOutcomeDraft] = useState("");
   const [modeDrafts, setModeDrafts] = useState<Record<string, { mechanism: string; vulnerability: string }>>({});
   const [evidenceDrafts, setEvidenceDrafts] = useState<Record<string, {
@@ -272,6 +293,33 @@ export default function IcarusPanel({
         )}
       </section>
 
+      {systemicExposure && (systemicExposure.pillars.some((pillar) => pillar.state !== "No material exposure") || systemicExposure.objectives.some((objective) => objective.concentrated)) ? (
+        <section aria-label="Systemic exposure" className="mt-4 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] p-4">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#51483e]">Systemic exposure · pillars and objectives</h2>
+          <ul className="mt-2 space-y-1.5">
+            {systemicExposure.pillars.filter((pillar) => pillar.state !== "No material exposure").map((pillar) => (
+              <li key={pillar.pillar} className="text-[12px] leading-5 text-[#4d4944]">
+                <span className="font-medium text-[#171717]">{pillar.pillar}: {pillar.state}</span>
+                {` — ${pillar.assessmentCount} material assessment${pillar.assessmentCount === 1 ? "" : "s"}, ${pillar.exposedFailureModeCount} exposed mechanism${pillar.exposedFailureModeCount === 1 ? "" : "s"}, ${pillar.failingControlCount} failing / ${pillar.unverifiedControlCount} unverified control${pillar.unverifiedControlCount === 1 ? "" : "s"}, ${pillar.unexaminedFailureModeCount} unexamined`}
+                {pillar.pattern === "Multi-signal" ? `; corroborated by ${pillar.otherSignalCategories.length > 0 ? pillar.otherSignalCategories.join(", ") : "a convergent situation"}` : "; isolated to Icarus"}
+                {pillar.highest ? (
+                  <>
+                    {". Highest: "}
+                    <a href={`#icarus-assessment-${pillar.highest.assessmentId}`} className="underline">{pillar.highest.outcome}</a>
+                  </>
+                ) : null}
+              </li>
+            ))}
+            {systemicExposure.objectives.filter((objective) => objective.concentrated).map((objective) => (
+              <li key={objective.objectiveId} className="text-[12px] leading-5 text-[#4d4944]">
+                <span className="font-medium text-[#171717]">{referenceTitle({ recordType: "Strategic Objective", recordId: objective.objectiveId }, sources)}:</span>
+                {` ${objective.materialFailureModeCount} material failure modes across ${objective.assessmentIds.length} assessment${objective.assessmentIds.length === 1 ? "" : "s"} threaten this objective (strongest: ${objective.strongestExposure.toLowerCase()}).`}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <div className="mt-6 space-y-4">
         {assessments.length === 0 ? (
           <div className="rounded-xl border border-dashed border-[#cfc8c1] p-6 text-center text-[12px] text-[#6a625d]">No failure assessments recorded.</div>
@@ -282,7 +330,11 @@ export default function IcarusPanel({
           }));
           const assessmentFindings = reviews.find((review) => review.assessmentId === assessment.id)?.findings || [];
           return (
-            <article key={assessment.id} className="rounded-xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
+            <article
+              key={assessment.id}
+              id={`icarus-assessment-${assessment.id}`}
+              className={`rounded-xl border border-[#d3cbc3] bg-[#f9f7f4] p-4${focusTarget?.assessmentId === assessment.id && !focusTarget.failureModeId ? focusRingClass : ""}`}
+            >
               {assessment.status === "Closed" && assessmentFindings.length > 0 ? (
                 <p className="mb-3 rounded-md border border-[#c9b8a3] bg-[#f5efe6] px-3 py-2 text-[11px] leading-5 text-[#51483e]">
                   Closed assessments retain unresolved findings; closure does not imply that a control worked or uncertainty was resolved:
@@ -345,7 +397,11 @@ export default function IcarusPanel({
                   const evidenceInput = evidenceDraft(draftKey);
                   const controls = assessment.controls.filter((control) => control.failureModeId === mode.id);
                   return (
-                    <section key={mode.id} className="mt-3 rounded-lg border border-[#d3cbc3] bg-white p-3">
+                    <section
+                      key={mode.id}
+                      id={`icarus-failure-mode-${mode.id}`}
+                      className={`mt-3 rounded-lg border border-[#d3cbc3] bg-white p-3${focusTarget?.failureModeId === mode.id ? focusRingClass : ""}`}
+                    >
                       <div className="grid gap-3 sm:grid-cols-2">
                         <label className={labelClass}>Failure mechanism
                           <textarea rows={2} className={inputClass} value={mode.mechanism} disabled={!writable} onChange={(event) => updateAssessment(assessment.id, (current) => ({ ...current, failureModes: current.failureModes.map((entry) => entry.id === mode.id ? { ...entry, mechanism: event.target.value } : entry) }))} />
@@ -441,7 +497,7 @@ export default function IcarusPanel({
                       <div className="mt-4 border-t border-[#e3ddd7] pt-3">
                         <h4 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#5e5953]">Controls & interventions</h4>
                         {controls.map((control) => (
-                          <div key={control.id} className="mt-2 rounded-md bg-[#f7f4f1] p-2">
+                          <div key={control.id} id={`icarus-control-${control.id}`} className="mt-2 rounded-md bg-[#f7f4f1] p-2">
                             <p className="text-[11px] font-medium text-[#171717]">{control.intervention}</p>
                             <div className="mt-2 grid gap-2 sm:grid-cols-2">
                               <label className={labelClass}>Lifecycle

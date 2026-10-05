@@ -10,7 +10,10 @@ import {
   type FounderFocusRecordFact,
   type FounderFocusReviewInput,
   type FounderFocusSignalInput,
+  type FounderFocusStrategicRiskInput,
 } from "./founder-focus";
+import { buildFounderOperatingBrief } from "./founder-operating-brief";
+import { buildIcarusFounderFocusRisks, type IcarusStrategicSignal } from "./icarus-strategic-attention";
 
 function input(overrides: Partial<FounderFocusInput> = {}): FounderFocusInput {
   return {
@@ -90,6 +93,7 @@ type PageInputs = {
     founderReviewQueue: (FounderFocusReviewInput & { kind?: string })[];
   };
   strategicDataConfidence: { limitations: FounderFocusLimitationInput[] };
+  icarusStrategicSignals?: IcarusStrategicSignal[];
 };
 
 // Exercise the actual page adapter and authoritative helpers without importing the client component.
@@ -121,7 +125,9 @@ function projectPageInput(overrides: Partial<PageInputs> = {}): FounderFocusInpu
     correlationLayer: { signalled: new Map(), convergentRisks: [] },
     empireDecisionQueue: { founderReviewQueue: [] },
     strategicDataConfidence: { limitations: [] },
+    icarusStrategicSignals: [],
     ...overrides,
+    buildIcarusFounderFocusRisks,
     buildFounderFocus: (value: FounderFocusInput) => {
       projected = value;
       return [];
@@ -754,5 +760,226 @@ describe("Founder Focus page fact projection", () => {
       ["Last review", "Review due: Last evidence"],
       ["Last limitation", "Strategic data confidence material — Last limitation."],
     ]);
+  });
+});
+
+function strategicRisk(overrides: Partial<FounderFocusStrategicRiskInput> = {}): FounderFocusStrategicRiskInput {
+  return {
+    key: "Icarus:risk-1",
+    objectType: "Icarus",
+    id: "risk-1",
+    title: "Excavation margin collapses",
+    area: "Excavation",
+    band: 3,
+    score: 320,
+    reason: "Icarus strategic risk (pillar linked) — Fuel costs are not repriced.",
+    anchorRecordKeys: [],
+    referenceKey: "icarus-assessment:risk-1",
+    ...overrides,
+  };
+}
+
+describe("Founder Focus strategic (Icarus) risk integration", () => {
+  it("leaves existing output unchanged when strategic risks are absent or empty", () => {
+    const source = input({ signalledRecords: [signal(), signal({ recordKey: "Project:p", objectType: "Project", id: "p", signals: ["no execution path"] })] });
+    const baseline = buildFounderFocus(source);
+    expect(buildFounderFocus({ ...source, strategicRisks: [] })).toEqual(baseline);
+    baseline.forEach((candidate) => expect(candidate).not.toHaveProperty("strategicRiskKeys"));
+  });
+
+  it("adds an unanchored strategic risk as its own traceable candidate without urgency", () => {
+    expect(buildFounderFocus(input({ strategicRisks: [strategicRisk()] }))).toEqual([{
+      key: "Icarus:risk-1",
+      objectType: "Icarus",
+      id: "risk-1",
+      title: "Excavation margin collapses",
+      area: "Excavation",
+      score: 320,
+      band: 3,
+      urgencyTime: null,
+      reason: "Icarus strategic risk (pillar linked) — Fuel costs are not repriced.",
+      strategicRiskKeys: ["icarus-assessment:risk-1"],
+    }]);
+  });
+
+  it("enriches an anchored candidate rather than duplicating it, keeping the stronger band and score", () => {
+    const source = input({
+      signalledRecords: [signal({ signals: ["blocked"], baseScore: 200 })],
+      recordFacts: new Map([["Action:a", fact(5)]]),
+    });
+    const [original] = buildFounderFocus(source);
+    const result = buildFounderFocus({ ...source, strategicRisks: [strategicRisk({ anchorRecordKeys: ["Action:a"] })] });
+    expect(result).toEqual([{
+      ...original,
+      band: 2,
+      score: 320,
+      reason: `${original.reason} Also: Icarus strategic risk (pillar linked) — Fuel costs are not repriced.`,
+      strategicRiskKeys: ["icarus-assessment:risk-1"],
+    }]);
+  });
+
+  it("raises a structural candidate's band to the risk band when the risk is more material", () => {
+    const result = buildFounderFocus(input({
+      signalledRecords: [signal({ signals: ["no execution path"], baseScore: 400 })],
+      strategicRisks: [strategicRisk({ anchorRecordKeys: ["Action:a"] })],
+    }));
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ key: "Action:a", band: 3, score: 400 });
+  });
+
+  it("resolves anchors absorbed into a convergent cluster onto the cluster candidate", () => {
+    const result = buildFounderFocus(input({
+      convergentRisks: [cluster()],
+      strategicRisks: [strategicRisk({ anchorRecordKeys: ["Project:p"] })],
+    }));
+    expect(result.map((candidate) => candidate.key)).toEqual(["cluster:Action:a"]);
+    expect(result[0].strategicRiskKeys).toEqual(["icarus-assessment:risk-1"]);
+  });
+
+  it("chooses the strongest anchored candidate when a risk links several records", () => {
+    const result = buildFounderFocus(input({
+      signalledRecords: [
+        signal({ recordKey: "Problem:x", objectType: "Problem", id: "x", signals: ["no execution path"], baseScore: 100 }),
+        signal({ signals: ["overdue"], baseScore: 50 }),
+      ],
+      strategicRisks: [strategicRisk({ anchorRecordKeys: ["Problem:x", "Action:a"] })],
+    }));
+    expect(result.find((candidate) => candidate.key === "Action:a")?.strategicRiskKeys).toEqual(["icarus-assessment:risk-1"]);
+    expect(result.find((candidate) => candidate.key === "Problem:x")?.strategicRiskKeys).toBeUndefined();
+  });
+
+  it("suppresses duplicate references while accumulating distinct risks on the same anchor", () => {
+    const first = strategicRisk({ anchorRecordKeys: ["Action:a"] });
+    const second = strategicRisk({ key: "Icarus:risk-2", id: "risk-2", referenceKey: "icarus-assessment:risk-2", reason: "Second risk.", anchorRecordKeys: ["Action:a"] });
+    const result = buildFounderFocus(input({ signalledRecords: [signal()], strategicRisks: [first, first, second] }));
+    expect(result).toHaveLength(1);
+    expect(result[0].strategicRiskKeys).toEqual(["icarus-assessment:risk-1", "icarus-assessment:risk-2"]);
+    expect(result[0].reason.match(/Also:/g)).toHaveLength(2);
+    expect(buildFounderFocus(input({ strategicRisks: [strategicRisk(), strategicRisk()] }))).toHaveLength(1);
+  });
+
+  it("competes below founder authority and blocked work, above structural gaps, deterministically", () => {
+    const source = input({
+      signalledRecords: [
+        signal({ recordKey: "Decision:d", objectType: "Decision", id: "d", signals: ["founder authority"], baseScore: 100 }),
+        signal({ signals: ["blocked"], baseScore: 100 }),
+        signal({ recordKey: "Project:p", objectType: "Project", id: "p", signals: ["no execution path"], baseScore: 900 }),
+      ],
+      strategicRisks: [
+        strategicRisk({ key: "Icarus:unverified", id: "unverified", referenceKey: "icarus-assessment:unverified", band: 5, score: 240 }),
+        strategicRisk(),
+      ],
+    });
+    const first = buildFounderFocus(source);
+    expect(first.map((candidate) => candidate.key)).toEqual(["Decision:d", "Action:a", "Icarus:risk-1", "Project:p", "Icarus:unverified"]);
+    expect(buildFounderFocus({ ...source, strategicRisks: [...(source.strategicRisks ?? [])].reverse() })).toEqual(first);
+  });
+
+  it("flows into the Founder Operating Brief so strategic risks can reach Do now", () => {
+    const candidates = buildFounderFocus(input({ strategicRisks: [strategicRisk()] }));
+    const brief = buildFounderOperatingBrief({
+      focusCandidates: candidates,
+      delegateItems: [],
+      reviewItems: [],
+      actions: [],
+      projects: [],
+      activeLeads: [],
+      decisions: [],
+      opportunities: [],
+      nowMs: 0,
+      startOfTodayMs: 0,
+    });
+    expect(brief.doNow).toEqual([{
+      id: "risk-1",
+      objectType: "Icarus",
+      title: "Excavation margin collapses",
+      area: "Excavation",
+      why: "Icarus strategic risk (pillar linked) — Fuel costs are not repriced.",
+    }]);
+  });
+});
+
+describe("Founder Focus page projection of Icarus strategic risks", () => {
+  it("projects the page's Icarus strategic signals through the shared adapter", () => {
+    const signal: IcarusStrategicSignal = {
+      key: "icarus-assessment:a1",
+      assessmentId: "a1",
+      outcome: "Outcome",
+      status: "Open",
+      exposure: "Exposed",
+      materialityTier: "Material",
+      scope: "Pillar",
+      area: "Excavation",
+      operatingPillars: [{ id: "excavation", label: "Excavation" }],
+      strategicThemes: [],
+      strategicLinks: [{ recordType: "Pillar", recordId: "Excavation" }],
+      relationships: [],
+      anchors: [{ objectType: "Action", id: "a" }],
+      materialFailureModes: [],
+      weaknesses: [],
+      hasOverdueControlReview: false,
+      riskScore: 170,
+      primaryReference: { identityKey: "icarus-assessment:a1", assessmentId: "a1" },
+      summary: "Summary",
+    };
+    expect(projectPageInput().strategicRisks).toEqual([]);
+    expect(projectPageInput({ icarusStrategicSignals: [signal] }).strategicRisks).toEqual(buildIcarusFounderFocusRisks([signal]));
+  });
+});
+
+describe("Founder Focus correlation-native Icarus risks", () => {
+  const icarusRecord = signal({
+    recordKey: "Icarus:risk-1",
+    objectType: "Icarus",
+    id: "risk-1",
+    title: "Excavation margin collapses",
+    area: "Excavation",
+    signals: ["icarus exposed failure mechanism"],
+    baseScore: 900,
+  });
+
+  it("keeps the graph's operational root even when a higher-scoring Icarus record joins the cluster", () => {
+    const withRoot = buildFounderFocus(input({
+      convergentRisks: [cluster({ records: [signal(), icarusRecord], rootRecordKey: "Action:a" })],
+    }));
+    expect(withRoot.map(({ key, objectType, id }) => [key, objectType, id])).toEqual([["cluster:Action:a", "Action", "a"]]);
+    const legacy = buildFounderFocus(input({ convergentRisks: [cluster({ records: [signal(), icarusRecord] })] }));
+    expect(legacy[0]).toMatchObject({ objectType: "Icarus", id: "risk-1" });
+  });
+
+  it("attaches an Icarus risk that is part of a convergent cluster onto that cluster without anchors", () => {
+    const result = buildFounderFocus(input({
+      signalledRecords: [signal(), icarusRecord],
+      convergentRisks: [cluster({ records: [signal(), icarusRecord], rootRecordKey: "Action:a" })],
+      strategicRisks: [strategicRisk({ score: 1000 })],
+    }));
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      key: "cluster:Action:a",
+      band: 2,
+      score: 1000,
+      strategicRiskKeys: ["icarus-assessment:risk-1"],
+    });
+    expect(result[0].reason).toContain("Also: Icarus strategic risk");
+  });
+
+  it("replaces the generic signalled candidate for a non-convergent Icarus record with the authoritative risk", () => {
+    const result = buildFounderFocus(input({
+      signalledRecords: [icarusRecord],
+      strategicRisks: [strategicRisk()],
+    }));
+    expect(result).toEqual(buildFounderFocus(input({ strategicRisks: [strategicRisk()] })));
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ key: "Icarus:risk-1", band: 3, strategicRiskKeys: ["icarus-assessment:risk-1"] });
+  });
+
+  it("projects the graph root key from the page adapter", () => {
+    const projected = projectPageInput({
+      correlationLayer: {
+        signalled: new Map(),
+        convergentRisks: [{ ...cluster({ rootRecordKey: "Project:p" }), categories: new Set(["blocked"]) }],
+      },
+    });
+    expect(projected.convergentRisks[0].rootRecordKey).toBe("Project:p");
   });
 });

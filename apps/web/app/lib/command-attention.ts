@@ -1,3 +1,4 @@
+import type { StrategicRiskConvergence } from "./strategic-risk-resolution";
 import type {
   ActionRecord,
   DecisionRecord,
@@ -13,6 +14,11 @@ import type { ProjectRecord } from "./projects";
 import { buildLearningAttention, type LearningAttentionInput } from "./learning-attention";
 import { buildLearningCommandAdapter } from "./learning-command-adapter";
 import {
+  getIcarusCommandPlacement,
+  type IcarusAttentionReference,
+  type IcarusStrategicSignal,
+} from "./icarus-strategic-attention";
+import {
   getActionDependencyBlocker,
   type HandoffObjectType,
   type HandoffReviewState,
@@ -23,7 +29,7 @@ import {
   isProjectReviewFuture,
 } from "./projects";
 
-type AttentionObjectType = "Problem" | "Action" | "Decision" | "Opportunity" | "Project" | "Lead" | "Lesson" | "System" | "SOP" | "Outreach" | "Finance";
+type AttentionObjectType = "Problem" | "Action" | "Decision" | "Opportunity" | "Project" | "Lead" | "Lesson" | "System" | "SOP" | "Outreach" | "Finance" | "Icarus";
 type AttentionNavigationMode = "direct" | "record-handler";
 
 type AttentionTarget =
@@ -49,6 +55,21 @@ export type CommandAttentionItem = {
   dependencyAction?: {
     label: string;
     target: AttentionTarget;
+  };
+  strategicRisk?: {
+    summary: string;
+    references: IcarusAttentionReference[];
+    // On a standalone strategic-risk item: the reason a host item carries if the risk is folded into it.
+    anchoredReason?: string;
+  };
+  // The operational priority before any strategic-risk enrichment; correlation uses this so that enrichment
+  // cannot change which record roots a situation.
+  operationalPriorityScore?: number;
+  // Set when a standalone strategic risk was folded into this item because both belong to one convergent situation.
+  convergentStrategicRisk?: {
+    clusterKey: string;
+    rootRecordKey: string;
+    riskRecordKeys: string[];
   };
 };
 
@@ -91,6 +112,7 @@ export type CommandAttentionInput = {
   handoffs: readonly CommandAttentionHandoffInput[];
   procurementQueue: readonly CommandAttentionProcurementInput[];
   learning?: readonly LearningAttentionInput[];
+  icarus?: readonly IcarusStrategicSignal[];
   nowMs?: number;
 };
 
@@ -200,6 +222,7 @@ export function orderAttentionReasons(reasons: readonly string[]): string[] {
     if (reason.startsWith("PROCUREMENT BLOCKED")) return 1;
     if (reason.startsWith("OVERDUE BY ")) return 2;
     if (reason.includes("SEVERITY")) return 3;
+    if (reason.startsWith("ICARUS")) return 3;
     if (reason.startsWith("REVIEW ")) return 4;
     if (reason.startsWith("PROCUREMENT READY")) return 4;
     if (reason === "CRITICAL PRIORITY" || reason === "HIGH PRIORITY") return 5;
@@ -676,9 +699,119 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
     });
   }
 
+  if (input.icarus) {
+    // Signals arrive in deterministic materiality order; anchor resolution uses the current Command order.
+    input.icarus.forEach((signal) => {
+      const placement = getIcarusCommandPlacement(signal);
+      const anchored = signal.anchors
+        .map((anchor) => uniqueByKey.get(`${anchor.objectType}:${anchor.id}`))
+        .filter((item): item is CommandAttentionItem => Boolean(item))
+        .sort(compareAttentionItems)[0];
+
+      if (anchored) {
+        // Same underlying issue already in Command: enrich it instead of adding a duplicate item.
+        addAttentionItem(placement.anchoredReason, {
+          ...anchored,
+          reason: placement.anchoredReason,
+          reasons: [placement.anchoredReason],
+        });
+        anchored.attentionRank = Math.min(anchored.attentionRank, placement.attentionRank);
+        anchored.tieWeight = Math.max(anchored.tieWeight, placement.tieWeight);
+        if (anchored.operationalPriorityScore === undefined) anchored.operationalPriorityScore = anchored.priorityScore;
+        anchored.priorityScore = Math.max(anchored.priorityScore, placement.priorityScore);
+        const references = anchored.strategicRisk?.references ?? [];
+        anchored.strategicRisk = {
+          summary: anchored.strategicRisk?.summary ?? signal.summary,
+          references: references.some((reference) => reference.identityKey === signal.key)
+            ? references
+            : [...references, { ...signal.primaryReference }],
+        };
+        return;
+      }
+
+      addAttentionItem(placement.reasons[0], {
+        id: signal.assessmentId,
+        objectType: "Icarus",
+        title: signal.outcome,
+        reason: placement.reasons.join(" • "),
+        reasons: placement.reasons,
+        statusText: placement.statusText,
+        area: signal.area,
+        attentionRank: placement.attentionRank,
+        tieWeight: placement.tieWeight,
+        priorityScore: placement.priorityScore,
+        sortDate: 0,
+        sortDateAscending: false,
+        navigationMode: "record-handler",
+        strategicRisk: {
+          summary: signal.summary,
+          references: [{ ...signal.primaryReference }],
+          anchoredReason: placement.anchoredReason,
+        },
+      });
+    });
+  }
+
   const sortedGroups = Object.fromEntries(Object.entries(groups).map(([reason, items]) => [reason, [...items].sort(compareAttentionItems)]));
   const items = Array.from(new Map(
     Object.values(sortedGroups).flat().map((item) => [`${item.objectType}:${item.id}`, item]),
   ).values()).sort(compareAttentionItems);
   return { groups, items };
+}
+
+// Folds standalone strategic-risk items (e.g. Icarus) into an operational host already in Command when both belong
+// to the same convergent situation (see strategic-risk-resolution). The risk stays navigable through the host's
+// strategicRisk references. Risks with no eligible host in Command, or no convergent situation, remain standalone.
+// Pure: returns new items and never mutates the input.
+export function resolveCommandStrategicRiskConvergence(
+  items: readonly CommandAttentionItem[],
+  convergence: ReadonlyMap<string, StrategicRiskConvergence>,
+  options: { isEligibleHost?: (item: CommandAttentionItem) => boolean } = {},
+): CommandAttentionItem[] {
+  const keyOf = (item: CommandAttentionItem) => `${item.objectType}:${item.id}`;
+  const byKey = new Map(items.map((item) => [keyOf(item), item] as const));
+  const merged = new Map<string, CommandAttentionItem>();
+  const removed = new Set<string>();
+  const isEligibleHost = options.isEligibleHost ?? (() => true);
+
+  items
+    .filter((item) => item.strategicRisk && convergence.has(keyOf(item)))
+    .sort(compareAttentionItems)
+    .forEach((riskItem) => {
+      const riskKey = keyOf(riskItem);
+      const resolution = convergence.get(riskKey)!;
+      const host = resolution.hostRecordKeys
+        .map((recordKey) => merged.get(recordKey) ?? byKey.get(recordKey))
+        .filter((candidate): candidate is CommandAttentionItem =>
+          Boolean(candidate) && !removed.has(keyOf(candidate!)) && !convergence.has(keyOf(candidate!)) && isEligibleHost(candidate!))
+        .sort(compareAttentionItems)[0];
+      if (!host) return;
+
+      const riskReferences = riskItem.strategicRisk!.references;
+      const hostReferences = host.strategicRisk?.references ?? [];
+      const references = [
+        ...hostReferences,
+        ...riskReferences.filter((reference) => !hostReferences.some((existing) => existing.identityKey === reference.identityKey)),
+      ];
+      const anchoredReason = riskItem.strategicRisk!.anchoredReason;
+      const reasons = anchoredReason ? orderAttentionReasons([...new Set([...host.reasons, anchoredReason])]) : [...host.reasons];
+      const riskRecordKeys = [...new Set([...(host.convergentStrategicRisk?.riskRecordKeys ?? []), riskKey])].sort();
+      merged.set(keyOf(host), {
+        ...host,
+        reasons,
+        reason: reasons.join(" • "),
+        attentionRank: Math.min(host.attentionRank, riskItem.attentionRank),
+        tieWeight: Math.max(host.tieWeight, riskItem.tieWeight),
+        priorityScore: Math.max(host.priorityScore, riskItem.priorityScore),
+        operationalPriorityScore: host.operationalPriorityScore ?? host.priorityScore,
+        strategicRisk: { summary: host.strategicRisk?.summary ?? riskItem.strategicRisk!.summary, references },
+        convergentStrategicRisk: { clusterKey: resolution.clusterKey, rootRecordKey: resolution.rootRecordKey, riskRecordKeys },
+      });
+      removed.add(riskKey);
+    });
+
+  return items
+    .filter((item) => !removed.has(keyOf(item)))
+    .map((item) => merged.get(keyOf(item)) ?? item)
+    .sort(compareAttentionItems);
 }

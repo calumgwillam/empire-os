@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCorrelationGraph, type CorrelationGraphInput } from "./correlation-graph";
+import { buildCorrelationGraph, type CorrelationGraphInput, type CorrelationStrategicRiskInput } from "./correlation-graph";
 
 function makeInput(overrides: Partial<CorrelationGraphInput> = {}): CorrelationGraphInput {
   return {
@@ -521,5 +521,233 @@ describe("correlation graph clusters", () => {
 
     expect(input).toEqual(before);
     expect(snapshot(first)).toEqual(snapshot(second));
+  });
+});
+describe("correlation graph strategic-risk signals", () => {
+  const operational = () => makeInput({
+    projects: [{ id: "p", relatedActionIds: ["a"] }],
+    actions: [{ id: "a" }],
+    commandAttentionItems: [{ objectType: "Action", id: "a", title: "Action", area: "Ops", reasons: ["BLOCKED"], priorityScore: 4 }],
+    staleRecords: [{ objectType: "Project", id: "p", title: "Project", area: "Ops" }],
+  });
+  const risk = (overrides: Partial<CorrelationStrategicRiskInput> = {}): CorrelationStrategicRiskInput => ({
+    recordKey: "Risk:r",
+    objectType: "Risk",
+    id: "r",
+    title: "Strategic risk",
+    area: "Ops",
+    signal: "strategic risk",
+    baseScore: 900,
+    weight: "material",
+    links: [{ recordKey: "Project:p", via: "link" }],
+    ...overrides,
+  });
+
+  it("leaves existing results unchanged when no strategic risks are supplied", () => {
+    const without = buildCorrelationGraph(operational());
+    const withEmpty = buildCorrelationGraph({ ...operational(), strategicRisks: [] });
+    expect(withEmpty.clusters.map((cluster) => [cluster.clusterKey, cluster.recordCount, [...cluster.categories]]))
+      .toEqual(without.clusters.map((cluster) => [cluster.clusterKey, cluster.recordCount, [...cluster.categories]]));
+    expect(without.convergentRisks).toEqual([]);
+    expect(without.clusters[0].strategicRiskLinks).toEqual([]);
+  });
+
+  it("lets a material strategic risk complete convergence through a shared record identity", () => {
+    const result = buildCorrelationGraph({ ...operational(), strategicRisks: [risk()] });
+    const cluster = result.clusterByRecordKey.get("Risk:r")!;
+    expect(cluster).toBe(result.clusterByRecordKey.get("Action:a"));
+    expect(result.convergentRisks.map((entry) => entry.clusterKey)).toEqual([cluster.clusterKey]);
+    expect(cluster.contributingRecordCount).toBe(3);
+    expect(cluster.strategicRiskLinks).toEqual([{ riskRecordKey: "Risk:r", sharedRecordKey: "Project:p" }]);
+  });
+
+  it("never lets a corroborating strategic risk create convergence on its own", () => {
+    const result = buildCorrelationGraph({ ...operational(), strategicRisks: [risk({ weight: "corroborating" })] });
+    const cluster = result.clusterByRecordKey.get("Risk:r")!;
+    expect(cluster.records.map((record) => record.recordKey)).toContain("Action:a");
+    expect(cluster.categories.has("strategic risk")).toBe(true);
+    expect(cluster.contributingRecordCount).toBe(2);
+    expect(result.convergentRisks).toEqual([]);
+  });
+
+  it("does not correlate a strategic risk without a shared stable identity", () => {
+    const result = buildCorrelationGraph({
+      ...operational(),
+      strategicRisks: [risk({ links: [{ recordKey: "Project:missing", via: "link" }, { recordKey: "Pillar:Ops", via: "link" }] })],
+    });
+    const cluster = result.clusterByRecordKey.get("Risk:r")!;
+    expect(cluster.records.map((record) => record.recordKey)).toEqual(["Risk:r"]);
+    expect(cluster.strategicRiskLinks).toEqual([]);
+    expect(result.convergentRisks).toEqual([]);
+  });
+
+  it("keeps the operational root and cluster key stable when a higher-scoring strategic risk joins", () => {
+    const before = buildCorrelationGraph(operational()).clusterByRecordKey.get("Action:a")!;
+    const after = buildCorrelationGraph({ ...operational(), strategicRisks: [risk({ baseScore: 5000 })] }).clusterByRecordKey.get("Action:a")!;
+    expect(after.clusterKey).toBe(before.clusterKey);
+    expect(after.rootRecordKey).toBe(before.rootRecordKey);
+    expect(after.records[0].recordKey).toBe(before.records[0].recordKey);
+  });
+
+  it("links to signalled records outside the record graph such as finance signals", () => {
+    const result = buildCorrelationGraph(makeInput({
+      overdueCommitments: [{ id: "c", title: "Loan" }],
+      strategicRisks: [risk({ links: [{ recordKey: "Finance:commitment:c", via: "link" }] })],
+    }));
+    expect(result.clusterByRecordKey.get("Risk:r")).toBe(result.clusterByRecordKey.get("Finance:commitment:c"));
+    expect(result.clusterByRecordKey.get("Risk:r")!.strategicRiskLinks).toEqual([
+      { riskRecordKey: "Risk:r", sharedRecordKey: "Finance:commitment:c" },
+    ]);
+  });
+
+  it("joins two strategic risks through a shared record without double counting their category", () => {
+    const result = buildCorrelationGraph({
+      ...operational(),
+      strategicRisks: [risk(), risk({ recordKey: "Risk:s", id: "s", links: [{ recordKey: "Action:a", via: "link" }] })],
+    });
+    const cluster = result.clusterByRecordKey.get("Risk:r")!;
+    expect(cluster).toBe(result.clusterByRecordKey.get("Risk:s"));
+    expect([...cluster.categories].filter((category) => category === "strategic risk")).toHaveLength(1);
+    expect(cluster.strategicRiskLinks).toEqual([
+      { riskRecordKey: "Risk:r", sharedRecordKey: "Project:p" },
+      { riskRecordKey: "Risk:s", sharedRecordKey: "Action:a" },
+    ]);
+  });
+});
+
+describe("correlation graph context records (People)", () => {
+  const operational = () => makeInput({
+    projects: [{ id: "p", relatedActionIds: ["a"] }],
+    actions: [{ id: "a" }, { id: "elsewhere" }],
+    commandAttentionItems: [{ objectType: "Action", id: "a", title: "Action", area: "Ops", reasons: ["BLOCKED"], priorityScore: 4 }],
+  });
+  const risk = (overrides: Partial<CorrelationStrategicRiskInput> = {}): CorrelationStrategicRiskInput => ({
+    recordKey: "Risk:r",
+    objectType: "Risk",
+    id: "r",
+    title: "Strategic risk",
+    area: "Ops",
+    signal: "strategic risk",
+    baseScore: 900,
+    weight: "material",
+    links: [{ recordKey: "Project:p", via: "link" }, { recordKey: "Person:x", via: "control" }],
+    ...overrides,
+  });
+  const founderDependency = (personId = "x", evidence: string[] = ["Action:elsewhere"]) => ({
+    recordKey: `Person:${personId}`,
+    objectType: "Person",
+    id: personId,
+    title: `Person ${personId}`,
+    area: "People",
+    signals: ["founder dependency"],
+    evidenceRecordKeysBySignal: { "founder dependency": evidence },
+  });
+  const capabilityGap = (personId = "x") => ({
+    recordKey: `Person:${personId}`,
+    objectType: "Person",
+    id: personId,
+    title: `Person ${personId}`,
+    area: "People",
+    signals: ["capability gap"],
+  });
+
+  it("does not converge on blocked execution plus a strategic risk alone", () => {
+    expect(buildCorrelationGraph({ ...operational(), strategicRisks: [risk()] }).convergentRisks).toEqual([]);
+  });
+
+  it("lets an explicitly linked founder dependency complete convergence with provenance", () => {
+    const result = buildCorrelationGraph({ ...operational(), strategicRisks: [risk()], contextRecords: [founderDependency()] });
+    const cluster = result.clusterByRecordKey.get("Risk:r")!;
+    expect(result.convergentRisks).toEqual([cluster]);
+    expect([...cluster.categories].sort()).toEqual(["blocked", "founder dependency", "strategic risk"]);
+    expect(cluster.contextRecords).toEqual([{
+      recordKey: "Person:x",
+      objectType: "Person",
+      id: "x",
+      title: "Person x",
+      area: "People",
+      signals: ["founder dependency"],
+      independentSignals: ["founder dependency"],
+      linkedByRiskRecordKeys: ["Risk:r"],
+      material: true,
+    }]);
+    expect(cluster.recordCount).toBe(2);
+    expect(result.clusterByRecordKey.has("Person:x")).toBe(false);
+  });
+
+  it("lets an explicitly linked capability gap complete convergence", () => {
+    const result = buildCorrelationGraph({ ...operational(), strategicRisks: [risk()], contextRecords: [capabilityGap()] });
+    expect(result.convergentRisks).toHaveLength(1);
+    expect(result.convergentRisks[0].categories.has("capability gap")).toBe(true);
+  });
+
+  it("ignores an unrelated Person", () => {
+    const result = buildCorrelationGraph({ ...operational(), strategicRisks: [risk()], contextRecords: [founderDependency("y"), capabilityGap("y")] });
+    expect(result.convergentRisks).toEqual([]);
+    expect(result.clusterByRecordKey.get("Risk:r")!.contextRecords).toEqual([]);
+  });
+
+  it("does not inflate convergence through duplicate Person paths", () => {
+    const result = buildCorrelationGraph({
+      ...operational(),
+      strategicRisks: [risk({ links: [{ recordKey: "Project:p", via: "link" }, { recordKey: "Person:x", via: "control" }, { recordKey: "Person:x", via: "evidence" }] })],
+      contextRecords: [founderDependency(), founderDependency()],
+    });
+    const cluster = result.clusterByRecordKey.get("Risk:r")!;
+    expect(cluster.contextRecords).toHaveLength(1);
+    expect(cluster.categories.size).toBe(3);
+    expect(cluster.recordCount).toBe(2);
+  });
+
+  it("breaks the correlation when the Person link is removed", () => {
+    const result = buildCorrelationGraph({
+      ...operational(),
+      strategicRisks: [risk({ links: [{ recordKey: "Project:p", via: "link" }] })],
+      contextRecords: [founderDependency()],
+    });
+    expect(result.convergentRisks).toEqual([]);
+    expect(result.clusterByRecordKey.get("Risk:r")!.contextRecords).toEqual([]);
+  });
+
+  it("lets a corroborating risk add context categories without creating convergence", () => {
+    const result = buildCorrelationGraph({ ...operational(), strategicRisks: [risk({ weight: "corroborating" })], contextRecords: [founderDependency()] });
+    const cluster = result.clusterByRecordKey.get("Risk:r")!;
+    expect(cluster.categories.has("founder dependency")).toBe(true);
+    expect(cluster.contextRecords[0].material).toBe(false);
+    expect(result.convergentRisks).toEqual([]);
+  });
+
+  it("does not count a founder dependency whose evidence is already in the situation", () => {
+    const result = buildCorrelationGraph({ ...operational(), strategicRisks: [risk()], contextRecords: [founderDependency("x", ["Action:a"])] });
+    const cluster = result.clusterByRecordKey.get("Risk:r")!;
+    expect(cluster.contextRecords[0].independentSignals).toEqual([]);
+    expect(cluster.categories.has("founder dependency")).toBe(false);
+    expect(result.convergentRisks).toEqual([]);
+  });
+
+  it("never converges a single risk with only a Person behind it", () => {
+    const result = buildCorrelationGraph(makeInput({
+      strategicRisks: [risk({ links: [{ recordKey: "Person:x", via: "control" }] })],
+      contextRecords: [{ ...founderDependency(), signals: ["founder dependency", "capability gap"] }],
+    }));
+    expect(result.clusterByRecordKey.get("Risk:r")!.categories.size).toBe(3);
+    expect(result.convergentRisks).toEqual([]);
+  });
+
+  it("is non-transitive: a shared Person never joins two separate situations", () => {
+    const result = buildCorrelationGraph({
+      ...operational(),
+      strategicRisks: [risk(), risk({ recordKey: "Risk:s", id: "s", links: [{ recordKey: "Person:x", via: "control" }] })],
+      contextRecords: [founderDependency()],
+    });
+    expect(result.clusterByRecordKey.get("Risk:r")).not.toBe(result.clusterByRecordKey.get("Risk:s"));
+    expect(result.clusterByRecordKey.get("Risk:s")!.records.map((record) => record.recordKey)).toEqual(["Risk:s"]);
+  });
+
+  it("leaves results unchanged when context records are supplied but nothing links to them", () => {
+    const without = buildCorrelationGraph(operational());
+    const withContext = buildCorrelationGraph({ ...operational(), contextRecords: [founderDependency(), capabilityGap("y")] });
+    expect(withContext.clusters.map((cluster) => [cluster.clusterKey, [...cluster.categories], cluster.contextRecords]))
+      .toEqual(without.clusters.map((cluster) => [cluster.clusterKey, [...cluster.categories], []]));
   });
 });

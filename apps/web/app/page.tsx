@@ -59,6 +59,7 @@ import {
 import { isValidCalendarDateInput } from "./lib/dates";
 import { buildCapitalAllocation, type CashSnapshotFreshness, type ProcurementReadinessState } from "./lib/capital-allocation";
 import { buildCorrelationGraph } from "./lib/correlation-graph";
+import { buildPeopleCorrelationContext } from "./lib/people-correlation-context";
 import {
   buildDecisionExecutionControl,
   type DecisionExecutionControlItem,
@@ -213,11 +214,25 @@ import { persistJsonArray, persistJsonValue } from "./lib/persistence";
 import {
   assertIcarusDataStructure,
   buildIcarusReview,
+  getIcarusIdentityKey,
   ICARUS_STORAGE_KEY,
   parseIcarusAssessments,
   type IcarusAssessmentRecord,
   type IcarusSourceRecord,
 } from "./lib/icarus";
+import {
+  buildIcarusFounderFocusRisks,
+  buildIcarusStrategicAttention,
+  type IcarusAttentionReference,
+  type IcarusStrategicObjectiveContext,
+} from "./lib/icarus-strategic-attention";
+import { buildIcarusClusterContributions, buildIcarusCorrelationSignals } from "./lib/icarus-correlation";
+import { buildIcarusSystemicExposure } from "./lib/icarus-systemic-exposure";
+import {
+  buildIcarusExposureSnapshot,
+  normaliseIcarusExposureSnapshot,
+  type IcarusExposureSnapshotEntry,
+} from "./lib/icarus-exposure-history";
 import {
   attachIndividualOperatingUnderstandings,
   assertIndividualOperatingUnderstandingsDataStructure,
@@ -322,7 +337,8 @@ const navigation = [
 ];
 
 const LAST_BACKUP_AT_STORAGE_KEY = "empire-os-last-backup-at";
-  import { buildCommandAttention } from "./lib/command-attention";
+  import { buildCommandAttention, resolveCommandStrategicRiskConvergence, type CommandAttentionItem } from "./lib/command-attention";
+import { resolveStrategicRiskConvergence } from "./lib/strategic-risk-resolution";
 const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
 
 const INTEGRITY_MATERIAL_ATTENTION_THRESHOLD = 3;
@@ -810,6 +826,8 @@ type DailyPostureSnapshot = {
   avgOpenDecisionDays?: number | null;
   selfSufficiencyPct?: number | null;
   outstandingKeys?: Array<{ key: string; title: string; objectType: string; category: string }>;
+  // Absent on legacy snapshots and before Icarus data has loaded; never read as "no exposure".
+  icarusExposure?: IcarusExposureSnapshotEntry[];
 };
 
 // Personal tax planning context for Calum's current self-employed corporate job.
@@ -8620,6 +8638,7 @@ export default function Home() {
   const [icarusAssessments, setIcarusAssessments] = useState<IcarusAssessmentRecord[]>([]);
   const [icarusLoaded, setIcarusLoaded] = useState(false);
   const icarusWritableRef = useRef(false);
+  const [icarusFocusTarget, setIcarusFocusTarget] = useState<(IcarusAttentionReference & { requestId: number }) | null>(null);
   const [delegationHandoffs, setDelegationHandoffs] = useState<DelegationHandoffRecord[]>([]);
   const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<ReviewOutcome>("Keep as Capture");
@@ -9321,6 +9340,7 @@ export default function Home() {
                       category: typeof k.category === "string" ? k.category : "attention",
                     }))
                 : [],
+              icarusExposure: normaliseIcarusExposureSnapshot(entry.icarusExposure),
             }))
             .sort((a, b) => a.date.localeCompare(b.date));
           setDailyPostureSnapshots(normalised);
@@ -9754,7 +9774,7 @@ export default function Home() {
 
   type AttentionItem = {
     id: string;
-    objectType: "Problem" | "Action" | "Decision" | "Opportunity" | "Project" | "Lead" | "Lesson" | "System" | "SOP" | "Outreach" | "Finance";
+    objectType: "Problem" | "Action" | "Decision" | "Opportunity" | "Project" | "Lead" | "Lesson" | "System" | "SOP" | "Outreach" | "Finance" | "Icarus";
     title: string;
     reason: string;
     reasons: string[];
@@ -9768,6 +9788,20 @@ export default function Home() {
     targetCompletionDate?: string;
     onOpen: () => void;
     dependencyAction?: {
+      label: string;
+      onOpen: () => void;
+    };
+    strategicRisk?: {
+      summary: string;
+      references: IcarusAttentionReference[];
+    };
+    operationalPriorityScore?: number;
+    convergentStrategicRisk?: {
+      clusterKey: string;
+      rootRecordKey: string;
+      riskRecordKeys: string[];
+    };
+    strategicRiskAction?: {
       label: string;
       onOpen: () => void;
     };
@@ -9877,6 +9911,19 @@ export default function Home() {
     .filter((review) => icarusAssessments.find((assessment) => assessment.id === review.assessmentId)?.status !== "Closed")
     .flatMap((review) => review.findings);
   const icarusAttentionAssessmentCount = new Set(icarusFounderAttention.map((finding) => finding.assessmentId)).size;
+  const icarusStrategicSignals = buildIcarusStrategicAttention({
+    assessments: icarusAssessments,
+    reviews: icarusReviews,
+    strategicObjectives: new Map(strategicObjectives.map((objective): [string, IcarusStrategicObjectiveContext] => [objective.id, {
+      area: objective.pillar,
+      importance: objective.importance,
+      isLive: objective.status === "Active" || objective.status === "Watching",
+      linkedProjectIds: objective.linkedProjectIds,
+      linkedOpportunityIds: objective.linkedOpportunityIds,
+      linkedDecisionIds: objective.linkedDecisionIds,
+    }])),
+  });
+  const icarusCorrelationSignals = buildIcarusCorrelationSignals({ signals: icarusStrategicSignals });
   const pillarSummaries = pillarOptions.map((pillar) => {
     const pillarProjects = projects.filter((project) => project.area === pillar && isProjectActive(project));
     const pillarActions = actionRecords.filter((action) => action.relatedPillar === pillar && isActionActive(action));
@@ -10793,6 +10840,10 @@ export default function Home() {
   const formatMetricPercent = (value: number) => `${value.toFixed(0)}%`;
 
   const getAttentionSummary = (item: AttentionItem) => {
+    if (item.objectType === "Icarus" && item.strategicRisk) {
+      return item.strategicRisk.summary;
+    }
+
     const delegationInterventionReason = item.reasons.find((reason) => reason.startsWith("DELEGATION INTERVENTION REQUIRED"));
     if (delegationInterventionReason) {
       return delegationInterventionReason.includes(": ")
@@ -11024,14 +11075,18 @@ export default function Home() {
     })),
     procurementQueue: capitalAllocation.procurementQueue,
     learning: commandLearningInput,
+    icarus: icarusStrategicSignals,
     nowMs: Date.now(),
   });
-  const commandAttentionItemList: AttentionItem[] = commandAttentionPolicy.items.map((item) => {
+  const toCommandAttentionItem = (item: CommandAttentionItem): AttentionItem => {
     const dependencyAction = item.dependencyAction;
+    const strategicRiskReference = item.strategicRisk?.references[0];
     return {
       ...item,
       onOpen: () => {
-        if (item.navigationMode === "record-handler") {
+        if (item.objectType === "Icarus" && strategicRiskReference) {
+          openIcarusReference(strategicRiskReference);
+        } else if (item.navigationMode === "record-handler") {
           handleOpenAttentionRecord(item.objectType, item.id);
         } else if (item.objectType === "Problem") {
           const record = problemRecords[item.sourceIndex ?? -1];
@@ -11094,8 +11149,16 @@ export default function Home() {
           }
         },
       } : undefined,
+      strategicRiskAction: item.objectType !== "Icarus" && strategicRiskReference ? {
+        label: `${item.strategicRisk && item.strategicRisk.references.length > 1
+          ? `Open Icarus risks (${item.strategicRisk.references.length})`
+          : "Open Icarus risk"}${item.convergentStrategicRisk ? " · convergent risk" : ""}`,
+        onOpen: () => openIcarusReference(strategicRiskReference),
+      } : undefined,
     };
-  });
+  };
+  // Pre-correlation Command list: feeds the correlation graph and other inputs computed before convergence is known.
+  const baseCommandAttentionItemList: AttentionItem[] = commandAttentionPolicy.items.map(toCommandAttentionItem);
 
   type FounderCapitalAttentionItem = {
     key: string;
@@ -11294,7 +11357,7 @@ export default function Home() {
     );
   })();
 
-  const staleRecords = commandAttentionItemList.filter((item) =>
+  const staleRecords = baseCommandAttentionItemList.filter((item) =>
     item.reasons.some((reason) => reason === "STALE PROJECT" || reason === "STALE PROJECT • TARGET APPROACHING" || reason === "STALE IN-PROGRESS ACTION"),
   );
 
@@ -11314,10 +11377,10 @@ export default function Home() {
     actionRecords
       .filter((action) => isActionActive(action) && action.status === "Blocked")
       .forEach((action) => addAreaSignal(action.relatedPillar, "Blocked actions", "Action", action.id));
-    commandAttentionItemList
+    baseCommandAttentionItemList
       .filter((item) => item.objectType === "Action" && item.reasons.some((reason) => reason.startsWith("OVERDUE BY ")))
       .forEach((item) => addAreaSignal(item.area, "Overdue actions", item.objectType, item.id));
-    commandAttentionItemList
+    baseCommandAttentionItemList
       .filter((item) => item.objectType === "Project")
       .forEach((item) => {
         if (item.reasons.includes("BLOCKED PROJECT")) addAreaSignal(item.area, "Blocked projects", item.objectType, item.id);
@@ -11392,7 +11455,8 @@ export default function Home() {
 
   const correlationLayer = buildCorrelationGraph({
     founderAuthorityItems: empireDecisionQueue.founderAuthorityItems.map(({ objectType, id, title, pillar }) => ({ objectType, id, title, pillar })),
-    commandAttentionItems: commandAttentionItemList.map(({ objectType, id, title, area, reasons, priorityScore }) => ({ objectType, id, title, area, reasons, priorityScore })),
+    // Operational priority only: strategic-risk enrichment must not change which record roots a situation.
+    commandAttentionItems: baseCommandAttentionItemList.map(({ objectType, id, title, area, reasons, priorityScore, operationalPriorityScore }) => ({ objectType, id, title, area, reasons, priorityScore: operationalPriorityScore ?? priorityScore })),
     decisionReviewsDue: decisionTrackRecord.reviewsDue.map(({ id, decisionTitle, title, relatedArea, relatedPillar, area }) => ({ id, decisionTitle, title, relatedArea, relatedPillar, area })),
     decisionsWithoutExecution: decisionsWithoutExecution.map(({ id, title, area }) => ({ id, title, area })),
     learningGaps: recurringProblemLearning.gaps.map(({ id, title, area }) => ({ id, title, area })),
@@ -11414,7 +11478,58 @@ export default function Home() {
     sops: sopRecords.map(({ id, sourceCaptureId, relatedCapture, relatedSystem, relatedLesson }) => ({ id, sourceCaptureId, relatedCapture, relatedSystem, relatedLesson })),
     projects: projects.map(({ id, sourceCaptureId, relatedActionIds, relatedDecisionIds, relatedSystemIds, relatedSopIds }) => ({ id, sourceCaptureId, relatedActionIds, relatedDecisionIds, relatedSystemIds, relatedSopIds })),
     leads: leads.map(({ id }) => ({ id })),
+    strategicRisks: icarusCorrelationSignals,
+    contextRecords: buildPeopleCorrelationContext({
+      people: people.map(({ id, name, status }) => ({ id, name, status })),
+      primaryFounderId: founderPerson?.id ?? null,
+      founderDependentWork: operationalIndependence.classifiedItems
+        .filter((item) => item.state === "Founder-only")
+        .map(({ objectType, id }) => ({ objectType, id })),
+      capabilityGaps: delegationReadinessGapPeople.map((person) => ({
+        personId: person.id,
+        missingFields: getDelegationReadinessMissingFields(person),
+      })),
+    }),
   });
+  const icarusClusterContributions = buildIcarusClusterContributions(correlationLayer, icarusCorrelationSignals);
+  const icarusSystemicExposure = (() => {
+    const recordPillars = new Map<string, string>();
+    const addRecordPillar = (objectType: string, id: string, pillar: string) => {
+      if (pillar) recordPillars.set(`${objectType}:${id}`, pillar);
+    };
+    projects.forEach((project) => addRecordPillar("Project", project.id, project.area));
+    actionRecords.forEach((action) => addRecordPillar("Action", action.id, getAreaText(action)));
+    problemRecords.forEach((problem) => addRecordPillar("Problem", problem.id, getAreaText(problem)));
+    decisionRecords.forEach((decision) => addRecordPillar("Decision", decision.id, getAreaText(decision)));
+    opportunityRecords.forEach((opportunity) => addRecordPillar("Opportunity", opportunity.id, getAreaText(opportunity)));
+    leads.forEach((lead) => addRecordPillar("Lead", lead.id, lead.relatedPillar || ""));
+    return buildIcarusSystemicExposure({
+      signals: icarusStrategicSignals,
+      pillars: pillarOptions,
+      recordPillars,
+      otherSignals: [...correlationLayer.signalled.values()]
+        .filter((record) => record.objectType !== "Icarus")
+        .map(({ recordKey, area, signals }) => ({ recordKey, area, signals: [...signals] })),
+      clusters: [...icarusClusterContributions.values()].map((contribution) => ({
+        clusterKey: contribution.clusterKey,
+        convergent: contribution.convergent,
+        assessmentIds: contribution.assessments.map((assessment) => assessment.assessmentId),
+      })),
+    });
+  })();
+
+  // Command shows a strategic risk once: folded into a convergent situation's host when one is in Command,
+  // otherwise standalone. Same resolution Founder Focus applies.
+  const icarusStrategicRiskConvergence = resolveStrategicRiskConvergence(
+    correlationLayer.convergentRisks,
+    icarusCorrelationSignals.map((signal) => signal.recordKey),
+  );
+  const commandAttentionItemList: AttentionItem[] = resolveCommandStrategicRiskConvergence(
+    commandAttentionPolicy.items,
+    icarusStrategicRiskConvergence,
+    // Finance items are hidden from the Command display, so they cannot host a folded risk.
+    { isEligibleHost: (item) => item.objectType !== "Finance" },
+  ).map(toCommandAttentionItem);
 
   const founderFocusRecordFacts = new Map<string, FounderFocusRecordFact>();
   const addFounderFocusRecordFact = (objectType: string, id: string, dateValue?: string, isWaitingAction = false) => {
@@ -11456,8 +11571,10 @@ export default function Home() {
       })),
       categories: [...cluster.categories],
       recordCount: cluster.recordCount,
+      rootRecordKey: cluster.rootRecordKey,
     })),
     recordFacts: founderFocusRecordFacts,
+    strategicRisks: buildIcarusFounderFocusRisks(icarusStrategicSignals),
   });
   const founderFocusList = founderFocusCandidates.slice(0, 3);
 
@@ -11735,6 +11852,7 @@ export default function Home() {
     avgOpenDecisionDays: organisationalHealth.avgOpenDecisionDays,
     selfSufficiencyPct: organisationalHealth.selfSufficiencyPct,
     outstandingKeys: todayBrief.outstandingKeys,
+    ...(icarusLoaded ? { icarusExposure: buildIcarusExposureSnapshot(icarusStrategicSignals) } : {}),
   };
 
   const todaySnapshotJson = JSON.stringify(todaySnapshot);
@@ -11751,11 +11869,15 @@ export default function Home() {
 
       if (existingTodayIndex >= 0) {
         const existing = current[existingTodayIndex];
-        if (JSON.stringify(existing) === todaySnapshotJson) {
+        // Before Icarus hydrates, keep today's recorded exposure rather than erasing it.
+        const replacement = todaySnapshot.icarusExposure === undefined && existing.icarusExposure !== undefined
+          ? { ...todaySnapshot, icarusExposure: existing.icarusExposure }
+          : todaySnapshot;
+        if (JSON.stringify(existing) === JSON.stringify(replacement)) {
           return current;
         }
         const next = [...current];
-        next[existingTodayIndex] = todaySnapshot;
+        next[existingTodayIndex] = replacement;
         window.localStorage.setItem(DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, JSON.stringify(next));
         return next;
       }
@@ -11962,11 +12084,19 @@ export default function Home() {
         objectType: cluster.records[0].objectType,
         area: cluster.records[0].area,
       },
+      strategicRisks: icarusClusterContributions.get(cluster.clusterKey)?.assessments
+        .map(({ assessmentId, outcome, exposure }) => ({ assessmentId, outcome, exposure })),
     })),
     focusCandidates: founderFocusCandidates.map(({ key, objectType, id, title, area, reason }) => ({
       key, objectType, id, title, area, reason,
     })),
     unassignedCarriedCount: unassignedAccountability.carriedCount,
+    icarusExposure: icarusLoaded && todaySnapshot.icarusExposure
+      ? {
+        current: todaySnapshot.icarusExposure,
+        assessmentStatuses: new Map(icarusAssessments.map((assessment) => [assessment.id, assessment.status] as const)),
+      }
+      : undefined,
     founderReviewQueue: empireDecisionQueue.founderReviewQueue.map((item) => ({
       kind: item.kind,
       id: item.id,
@@ -12662,6 +12792,10 @@ export default function Home() {
       return "Opportunities";
     }
 
+    if (item.objectType === "Icarus") {
+      return "Strategic Risk";
+    }
+
     if (item.objectType === "Lead") {
       return "Other Attention";
     }
@@ -12676,7 +12810,7 @@ export default function Home() {
 
     return "Other Attention";
   };
-  const commandAttentionGroups = ["Blocked / Waiting", "Urgent / Overdue", "Problems", "Actions", "Projects", "Opportunities", "Outreach", "Other Attention"]
+  const commandAttentionGroups = ["Blocked / Waiting", "Urgent / Overdue", "Strategic Risk", "Problems", "Actions", "Projects", "Opportunities", "Outreach", "Other Attention"]
     .map((label) => ({
       label,
       items: commandAttentionItemList.filter((item) => item.objectType !== "Finance" && getAttentionGroup(item) === label),
@@ -13775,8 +13909,16 @@ export default function Home() {
     setOpportunityEditor(opportunity);
   };
 
+  const openIcarusReference = (reference: IcarusAttentionReference) => {
+    setActiveView("Icarus");
+    setIcarusFocusTarget((current) => ({ ...reference, requestId: (current?.requestId ?? 0) + 1 }));
+  };
+
   const handleOpenAttentionRecord = (objectType: string, id: string) => {
-    if (objectType === "Decision") {
+    if (objectType === "Icarus") {
+      const signal = icarusStrategicSignals.find((entry) => entry.assessmentId === id);
+      openIcarusReference(signal?.primaryReference ?? { identityKey: getIcarusIdentityKey(id), assessmentId: id });
+    } else if (objectType === "Decision") {
       const record = decisionRecords.find((item) => item.id === id);
       if (record) handleDecisionEditOpen(record);
     } else if (objectType === "Action") {
@@ -16365,8 +16507,16 @@ export default function Home() {
                 >
                   <span className="text-[10px] font-medium uppercase tracking-[0.16em] text-[#51483e]">Icarus · unresolved failure intelligence</span>
                   <span className="mt-1 block text-[12px] leading-5 text-[#4d4944]">
-                    {icarusFounderAttention.length} unresolved signal{icarusFounderAttention.length === 1 ? "" : "s"} across {icarusAttentionAssessmentCount} active assessment{icarusAttentionAssessmentCount === 1 ? "" : "s"}. Open Icarus to review the evidence and controls; signals are not scored or ranked.
+                    {icarusStrategicSignals.length} material strategic risk{icarusStrategicSignals.length === 1 ? " is" : "s are"} ranked in Command attention and Founder Focus. {icarusFounderAttention.length} unresolved finding{icarusFounderAttention.length === 1 ? "" : "s"} across {icarusAttentionAssessmentCount} active assessment{icarusAttentionAssessmentCount === 1 ? "" : "s"} remain reviewable in Icarus.
                   </span>
+                  {icarusSystemicExposure.pillars.some((pillar) => pillar.state === "Material exposure" || pillar.state === "Systemic exposure") ? (
+                    <span className="mt-1 block text-[12px] leading-5 text-[#4d4944]">
+                      Pillar exposure: {icarusSystemicExposure.pillars
+                        .filter((pillar) => pillar.state === "Material exposure" || pillar.state === "Systemic exposure")
+                        .map((pillar) => `${pillar.pillar} (${pillar.state.toLowerCase()})`)
+                        .join(", ")}.
+                    </span>
+                  ) : null}
                 </button>
               ) : null}
 
@@ -16617,6 +16767,18 @@ export default function Home() {
                                     className="rounded-full border border-[#6a3328] bg-[#f8efeb] px-2 py-1 text-[#6a3328] hover:bg-[#f1dfd8]"
                                   >
                                     {item.dependencyAction.label}
+                                  </button>
+                                ) : null}
+                                {item.strategicRiskAction ? (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      item.strategicRiskAction?.onOpen();
+                                    }}
+                                    className="rounded-full border border-[#755520] bg-[#f5efe6] px-2 py-1 text-[#755520] hover:bg-[#ece2d3]"
+                                  >
+                                    {item.strategicRiskAction.label}
                                   </button>
                                 ) : null}
                               </div>
@@ -17255,6 +17417,38 @@ export default function Home() {
                           <div className="mt-2 text-[12px] leading-5 text-[#524d49]">
                             <span className="font-medium text-[#171717]">Why this is systemic:</span> one linked situation is producing {[...cluster.categories].join(", ")} at the same time, so fixing one symptom will not clear it.
                           </div>
+                          {cluster.contextRecords.some((context) => context.independentSignals.length > 0) && (
+                            <div className="mt-1 text-[11px] leading-5 text-[#4d4944]">
+                              {cluster.contextRecords
+                                .filter((context) => context.independentSignals.length > 0)
+                                .map((context) => `${context.objectType}: ${context.title} — ${context.independentSignals.join(", ")}${context.material ? "" : " (corroborating)"}`)
+                                .join("; ")}
+                            </div>
+                          )}
+                          {(() => {
+                            const contribution = icarusClusterContributions.get(cluster.clusterKey);
+                            if (!contribution) return null;
+                            return (
+                              <div className="mt-2 rounded-lg border border-[#c9b8a3] bg-[#f5efe6] px-2.5 py-2">
+                                <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#51483e]">Icarus · {contribution.role.toLowerCase()}</div>
+                                <div className="mt-1 space-y-1">
+                                  {contribution.assessments.map((assessment) => (
+                                    <button
+                                      key={assessment.recordKey}
+                                      type="button"
+                                      onClick={() => openIcarusReference(assessment.reference)}
+                                      className="block w-full text-left text-[12px] leading-5 text-[#4d4944] transition hover:text-[#171717]"
+                                    >
+                                      <span className="font-medium text-[#171717]">{assessment.exposure}</span> in &ldquo;{assessment.outcome}&rdquo;
+                                      {assessment.sharedRecords.length > 0
+                                        ? ` — shares ${assessment.sharedRecords.map((shared) => `${shared.recordKey} (${[...new Set(shared.links.map((link) => link.via.toLowerCase()))].join(", ")})`).join("; ")}`
+                                        : " — linked through another assessment in this situation"}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })()}
                           <div className="mt-2.5 space-y-1">
                             {cluster.records.map((record) => (
                               <button
@@ -19474,6 +19668,8 @@ export default function Home() {
               writable={icarusLoaded && icarusWritableRef.current}
               onChange={setIcarusAssessments}
               createId={generateCaptureId}
+              focusTarget={icarusFocusTarget}
+              systemicExposure={icarusSystemicExposure}
             />
           ) : activeDestination ? (
             <ConvertedDestinationView
