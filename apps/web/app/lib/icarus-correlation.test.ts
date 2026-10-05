@@ -16,6 +16,7 @@ import {
   getIcarusCorrelationTargets,
 } from "./icarus-correlation";
 import { buildIcarusStrategicAttention, type IcarusStrategicObjectiveContext } from "./icarus-strategic-attention";
+import { attachIcarusAssuranceToSignals, buildIcarusAssurance } from "./icarus-assurance";
 
 const NOW = Date.parse("2026-10-04T12:00:00.000Z");
 const timestamp = "2026-10-01T12:00:00.000Z";
@@ -300,5 +301,60 @@ describe("Icarus correlation signals", () => {
     const contribution = first.contributions.get(first.graph.clusterByRecordKey.get("Action:a")!.clusterKey)!;
     expect(contribution.assessments.map((entry) => entry.assessmentId)).toEqual(["a-exposed", "z-exposed", "b-unverified"]);
     expect([...second.contributions.values()]).toEqual([...first.contributions.values()]);
+  });
+});
+
+describe("Icarus correlation governance provenance", () => {
+  function correlateWithAssurance(assessments: readonly IcarusAssessmentRecord[], contextRecords: CorrelationGraphInput["contextRecords"] = []) {
+    const reviews = buildIcarusReview(assessments, sourcesFor(assessments), NOW);
+    const base = buildIcarusStrategicAttention({ assessments, reviews });
+    const assurance = buildIcarusAssurance({
+      assessments, reviews, signals: base, people: [{ id: "founder", status: "Active" }, { id: "other", status: "Active" }],
+      actions: [], primaryFounderId: "founder", founderDependencyActive: true, nowMs: NOW,
+    });
+    const signals = attachIcarusAssuranceToSignals(base, assurance);
+    const plain = buildIcarusCorrelationSignals({ signals: base });
+    const governed = buildIcarusCorrelationSignals({ signals });
+    const graph = buildCorrelationGraph({ ...operationalGraph(), contextRecords, strategicRisks: governed });
+    const plainGraph = buildCorrelationGraph({ ...operationalGraph(), contextRecords, strategicRisks: plain });
+    return { plain, governed, graph, plainGraph, contributions: buildIcarusClusterContributions(graph, governed) };
+  }
+
+  const founderDependency = [{
+    recordKey: "Person:founder", objectType: "Person", id: "founder", title: "Founder", area: "People",
+    signals: ["founder dependency"],
+  }];
+
+  it("carries governance as provenance without changing categories, weight or convergence", () => {
+    const { plain, governed, graph, plainGraph, contributions } = correlateWithAssurance([assessment({ linkedRecords: [projectLink] })]);
+    expect(governed[0].governance).toEqual({ state: "Weak", escalation: "Governance gap", categories: expect.any(Array) });
+    expect(plain[0].governance).toBeUndefined();
+    expect({ ...governed[0], governance: undefined }).toEqual({ ...plain[0], governance: undefined });
+    expect(graph.convergentRisks.map((risk) => [risk.clusterKey, [...risk.categories].sort()]))
+      .toEqual(plainGraph.convergentRisks.map((risk) => [risk.clusterKey, [...risk.categories].sort()]));
+    const contribution = [...contributions.values()][0];
+    expect(contribution.strongestEscalation).toBe("Governance gap");
+    expect(contribution.assessments[0].governance?.escalation).toBe("Governance gap");
+  });
+
+  it("reports no escalation when assurance is absent", () => {
+    const assessments = [assessment({ linkedRecords: [projectLink] })];
+    const signals = buildIcarusStrategicAttention({ assessments, reviews: buildIcarusReview(assessments, sourcesFor(assessments), NOW) });
+    const correlationSignals = buildIcarusCorrelationSignals({ signals });
+    const graph = buildCorrelationGraph({ ...operationalGraph(), strategicRisks: correlationSignals });
+    expect([...buildIcarusClusterContributions(graph, correlationSignals).values()][0].strongestEscalation).toBe("None");
+  });
+
+  it("correlates a founder-owned risk with founder dependency through the explicit owner Person id", () => {
+    const { graph, governed } = correlateWithAssurance([assessment({ accountableOwnerPersonId: "founder" })], founderDependency);
+    expect(governed[0].links).toContainEqual({ recordKey: "Person:founder", via: "Risk owner", kind: "Direct" });
+    const cluster = graph.clusterByRecordKey.get("Icarus:assessment-1")!;
+    expect(cluster.contextRecords.map((record) => record.recordKey)).toEqual(["Person:founder"]);
+  });
+
+  it("does not correlate a risk owned by an unrelated Person", () => {
+    const { graph, governed } = correlateWithAssurance([assessment({ accountableOwnerPersonId: "other" })], founderDependency);
+    expect(governed[0].links.map((link) => link.recordKey)).toEqual(["Person:other"]);
+    expect(graph.clusterByRecordKey.get("Icarus:assessment-1")!.contextRecords).toEqual([]);
   });
 });

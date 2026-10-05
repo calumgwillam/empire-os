@@ -70,6 +70,22 @@ export type IcarusControlEffectiveness =
   | "Evidence contradicts"
   | "Unresolved";
 
+export const ICARUS_CONTROL_TEST_RESULTS = ["Passed", "Failed", "Inconclusive"] as const;
+
+export type IcarusControlTestResult = (typeof ICARUS_CONTROL_TEST_RESULTS)[number];
+
+// A recorded test of whether a control actually works. Tests are dated, attributed to a stable Person id
+// (never a name) and cite the failure mode's evidence they relied on. A "Passed" test only assures the
+// control when that cited evidence is current and reviewed as supporting.
+export type IcarusControlTest = {
+  id: string;
+  testedAt: string;
+  testedByPersonId: string;
+  result: IcarusControlTestResult;
+  evidenceIds: string[];
+  note?: string;
+};
+
 export type IcarusControl = {
   id: string;
   failureModeId: string;
@@ -81,6 +97,32 @@ export type IcarusControl = {
   evidenceIds: string[];
   linkedRecords: IcarusRecordReference[];
   nextReviewAt?: string;
+  // Phase 3 assurance (optional; legacy controls omit them).
+  ownerPersonId?: string;
+  // Test requirement: the control must be re-tested within this many days of its last assurance event.
+  testCadenceDays?: number;
+  assuranceTests?: IcarusControlTest[];
+};
+
+// A deliberate, attributable decision to tolerate specific failure modes for a bounded period. It never
+// removes or controls the failure mechanism; it only records who owns the decision to live with it.
+export type IcarusExposureAcceptance = {
+  id: string;
+  failureModeIds: string[];
+  acceptedByPersonId: string;
+  rationale: string;
+  acceptedAt: string;
+  reviewBy: string;
+  conditions?: string;
+  revokedAt?: string;
+};
+
+// Links a derived assurance obligation (by its stable id) to an existing Action. Completion of the Action
+// never discharges the obligation; only the underlying assurance state can.
+export type IcarusAssuranceActionLink = {
+  obligationId: string;
+  actionId: string;
+  linkedAt: string;
 };
 
 export type IcarusAssessmentStatus = "Open" | "Monitoring" | "Closed";
@@ -94,6 +136,13 @@ export type IcarusAssessmentRecord = {
   linkedRecords: IcarusRecordReference[];
   failureModes: IcarusFailureMode[];
   controls: IcarusControl[];
+  // Phase 3 assurance (optional; legacy assessments omit them). Ownership is a stable Person id only.
+  accountableOwnerPersonId?: string;
+  reviewedAt?: string;
+  reviewedByPersonId?: string;
+  nextReviewBy?: string;
+  acceptances?: IcarusExposureAcceptance[];
+  assuranceActionLinks?: IcarusAssuranceActionLink[];
 };
 
 export type IcarusSourceRecord = IcarusRecordReference & {
@@ -126,7 +175,11 @@ export type IcarusReviewFindingCode =
   | "invalid-control-review"
   | "invalid-control-assessment"
   | "ineffective-control"
-  | "contradicted-control";
+  | "contradicted-control"
+  | "failed-control-test"
+  | "inconclusive-control-test"
+  | "unsupported-control-test"
+  | "overdue-control-test";
 
 export type IcarusReviewFinding = {
   code: IcarusReviewFindingCode;
@@ -256,10 +309,170 @@ export function isIcarusAssessmentRecord(value: unknown): value is IcarusAssessm
       && control.evidenceIds.every(isNonEmptyString)
       && Array.isArray(control.linkedRecords)
       && control.linkedRecords.every(isIcarusRecordReference)
-      && (control.nextReviewAt === undefined || typeof control.nextReviewAt === "string"))) {
+      && (control.nextReviewAt === undefined || typeof control.nextReviewAt === "string")
+      && isOptionalNonEmptyString(control.ownerPersonId)
+      && (control.testCadenceDays === undefined || isValidTestCadence(control.testCadenceDays))
+      && (control.assuranceTests === undefined
+        || (Array.isArray(control.assuranceTests) && control.assuranceTests.every(isIcarusControlTest))))) {
+    return false;
+  }
+  if (!isOptionalNonEmptyString(value.accountableOwnerPersonId)
+    || !isOptionalValidDate(value.reviewedAt)
+    || !isOptionalNonEmptyString(value.reviewedByPersonId)
+    || (value.reviewedAt === undefined) !== (value.reviewedByPersonId === undefined)
+    || !isOptionalValidDate(value.nextReviewBy)
+    || (value.acceptances !== undefined
+      && (!Array.isArray(value.acceptances) || !value.acceptances.every(isIcarusExposureAcceptance)))
+    || (value.assuranceActionLinks !== undefined
+      && (!Array.isArray(value.assuranceActionLinks) || !value.assuranceActionLinks.every(isIcarusAssuranceActionLink)))) {
     return false;
   }
   return true;
+}
+
+function isOptionalNonEmptyString(value: unknown): boolean {
+  return value === undefined || isNonEmptyString(value);
+}
+
+function isOptionalValidDate(value: unknown): boolean {
+  return value === undefined || (isNonEmptyString(value) && isValidIcarusDate(value));
+}
+
+export const ICARUS_MAX_TEST_CADENCE_DAYS = 3660;
+
+function isValidTestCadence(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= ICARUS_MAX_TEST_CADENCE_DAYS;
+}
+
+function isIcarusControlTest(value: unknown): value is IcarusControlTest {
+  return isPlainObject(value)
+    && isNonEmptyString(value.id)
+    && isNonEmptyString(value.testedAt)
+    && isValidIcarusDate(value.testedAt)
+    && isNonEmptyString(value.testedByPersonId)
+    && ICARUS_CONTROL_TEST_RESULTS.includes(value.result as IcarusControlTestResult)
+    && Array.isArray(value.evidenceIds)
+    && value.evidenceIds.every(isNonEmptyString)
+    && (value.note === undefined || typeof value.note === "string");
+}
+
+function isIcarusExposureAcceptance(value: unknown): value is IcarusExposureAcceptance {
+  return isPlainObject(value)
+    && isNonEmptyString(value.id)
+    && Array.isArray(value.failureModeIds)
+    && value.failureModeIds.length > 0
+    && value.failureModeIds.every(isNonEmptyString)
+    && isNonEmptyString(value.acceptedByPersonId)
+    && typeof value.rationale === "string"
+    && isNonEmptyString(value.acceptedAt)
+    && isNonEmptyString(value.reviewBy)
+    && (value.conditions === undefined || typeof value.conditions === "string")
+    && isOptionalValidDate(value.revokedAt);
+}
+
+function isIcarusAssuranceActionLink(value: unknown): value is IcarusAssuranceActionLink {
+  return isPlainObject(value)
+    && isNonEmptyString(value.obligationId)
+    && isNonEmptyString(value.actionId)
+    && isNonEmptyString(value.linkedAt);
+}
+
+function filterUniqueById<T>(entries: readonly T[], idOf: (entry: T) => string): T[] {
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    const id = idOf(entry);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+// Recovers the optional Phase 3 assurance fields only: a malformed optional field is dropped (or its malformed
+// entries filtered) so one bad assurance value cannot make all Icarus data unreadable. Core Icarus fields stay
+// strictly validated by assertIcarusDataStructure. Records without assurance fields are returned unchanged.
+export function normaliseIcarusAssessmentData(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  return value.map((assessment: unknown) => {
+    if (!isPlainObject(assessment)) return assessment;
+    const next: Record<string, unknown> = { ...assessment };
+    const modeEvidenceIds = new Map<string, Set<string>>();
+    if (Array.isArray(next.failureModes)) {
+      next.failureModes.forEach((mode: unknown) => {
+        if (!isPlainObject(mode) || !isNonEmptyString(mode.id) || !Array.isArray(mode.evidence)) return;
+        modeEvidenceIds.set(mode.id, new Set(mode.evidence
+          .map((evidence: unknown) => (isPlainObject(evidence) ? evidence.id : undefined))
+          .filter(isNonEmptyString)));
+      });
+    }
+    const dropIfInvalid = (key: string, valid: (candidate: unknown) => boolean) => {
+      if (key in next && !valid(next[key])) delete next[key];
+    };
+    dropIfInvalid("accountableOwnerPersonId", isNonEmptyString);
+    dropIfInvalid("nextReviewBy", (candidate) => isNonEmptyString(candidate) && isValidIcarusDate(candidate));
+    dropIfInvalid("reviewedAt", (candidate) => isNonEmptyString(candidate) && isValidIcarusDate(candidate));
+    dropIfInvalid("reviewedByPersonId", isNonEmptyString);
+    if (("reviewedAt" in next) !== ("reviewedByPersonId" in next)) {
+      delete next.reviewedAt;
+      delete next.reviewedByPersonId;
+    }
+    if ("acceptances" in next) {
+      if (!Array.isArray(next.acceptances)) delete next.acceptances;
+      else {
+        const acceptances = next.acceptances
+          .map((acceptance: unknown) => {
+            if (!isPlainObject(acceptance) || !Array.isArray(acceptance.failureModeIds)) return acceptance;
+            const failureModeIds = [...new Set(acceptance.failureModeIds
+              .filter((id: unknown): id is string => isNonEmptyString(id) && modeEvidenceIds.has(id)))];
+            const normalised: Record<string, unknown> = { ...acceptance, failureModeIds };
+            if ("revokedAt" in normalised && !isOptionalValidDate(normalised.revokedAt)) delete normalised.revokedAt;
+            if ("conditions" in normalised && typeof normalised.conditions !== "string") delete normalised.conditions;
+            return normalised;
+          })
+          .filter(isIcarusExposureAcceptance);
+        next.acceptances = filterUniqueById(acceptances, (acceptance) => acceptance.id);
+      }
+    }
+    if ("assuranceActionLinks" in next) {
+      if (!Array.isArray(next.assuranceActionLinks)) delete next.assuranceActionLinks;
+      else {
+        next.assuranceActionLinks = filterUniqueById(
+          next.assuranceActionLinks.filter(isIcarusAssuranceActionLink),
+          (link) => `${link.obligationId}|${link.actionId}`,
+        );
+      }
+    }
+    if (Array.isArray(next.controls)) {
+      next.controls = next.controls.map((control: unknown) => {
+        if (!isPlainObject(control)) return control;
+        const nextControl: Record<string, unknown> = { ...control };
+        if ("ownerPersonId" in nextControl && !isNonEmptyString(nextControl.ownerPersonId)) delete nextControl.ownerPersonId;
+        if ("testCadenceDays" in nextControl && !isValidTestCadence(nextControl.testCadenceDays)) delete nextControl.testCadenceDays;
+        if ("assuranceTests" in nextControl) {
+          if (!Array.isArray(nextControl.assuranceTests)) delete nextControl.assuranceTests;
+          else {
+            const allowedEvidence = isNonEmptyString(nextControl.failureModeId)
+              ? modeEvidenceIds.get(nextControl.failureModeId) ?? new Set<string>()
+              : new Set<string>();
+            const tests = nextControl.assuranceTests
+              .map((test: unknown) => {
+                if (!isPlainObject(test) || !Array.isArray(test.evidenceIds)) return test;
+                const normalised: Record<string, unknown> = {
+                  ...test,
+                  evidenceIds: [...new Set(test.evidenceIds.filter((id: unknown): id is string =>
+                    isNonEmptyString(id) && allowedEvidence.has(id)))],
+                };
+                if ("note" in normalised && typeof normalised.note !== "string") delete normalised.note;
+                return normalised;
+              })
+              .filter(isIcarusControlTest);
+            nextControl.assuranceTests = filterUniqueById(tests, (test) => test.id);
+          }
+        }
+        return nextControl;
+      });
+    }
+    return next;
+  });
 }
 
 function assertUniqueIds(ids: readonly string[], label: string): void {
@@ -296,9 +509,21 @@ export function assertIcarusDataStructure(value: unknown): asserts value is Icar
         throw new Error(`Icarus control ${control.id} references evidence outside its failure mode.`);
       }
       assertUniqueIds(control.evidenceIds, `control evidence for ${control.id}`);
+      (control.assuranceTests ?? []).forEach((test) => {
+        if (test.evidenceIds.some((id) => !modeEvidenceIds.has(id))) {
+          throw new Error(`Icarus control test ${test.id} references evidence outside its failure mode.`);
+        }
+      });
+      assertUniqueIds((control.assuranceTests ?? []).map((test) => test.id), `test for control ${control.id}`);
       assertUniqueIds(control.linkedRecords.map(getIcarusReferenceKey), `linked record for control ${control.id}`);
     }
     assertUniqueIds(assessment.linkedRecords.map(getIcarusReferenceKey), `linked record for assessment ${assessment.id}`);
+    (assessment.acceptances ?? []).forEach((acceptance) => {
+      if (acceptance.failureModeIds.some((id) => !modes.has(id))) {
+        throw new Error(`Icarus acceptance ${acceptance.id} references a missing failure mode.`);
+      }
+    });
+    assertUniqueIds((assessment.acceptances ?? []).map((acceptance) => acceptance.id), `acceptance for assessment ${assessment.id}`);
   }
 
   assertUniqueIds(failureModeIds, "failure mode");
@@ -307,7 +532,7 @@ export function assertIcarusDataStructure(value: unknown): asserts value is Icar
 }
 
 export function parseIcarusAssessments(storedValue: string | null): IcarusAssessmentRecord[] {
-  const parsed: unknown = storedValue === null ? [] : JSON.parse(storedValue);
+  const parsed: unknown = normaliseIcarusAssessmentData(storedValue === null ? [] : JSON.parse(storedValue));
   assertIcarusDataStructure(parsed);
   return parsed;
 }
@@ -322,6 +547,69 @@ export function classifyIcarusEvidenceFreshness(
   if (dates.some((date) => !isValidIcarusDate(date))) return "Invalid";
   if (evidence.validUntil === undefined) return "Not time-bounded";
   return parseReviewDeadline(evidence.validUntil) < nowMs ? "Stale" : "Current";
+}
+
+export type IcarusControlAssuranceEvent = {
+  source: "Control test" | "Effectiveness review";
+  testId?: string;
+  at: string;
+  result: IcarusControlTestResult;
+  evidenceIds: string[];
+  byPersonId?: string;
+  by?: string;
+};
+
+const effectivenessReviewResult: Partial<Record<IcarusControlEffectiveness, IcarusControlTestResult>> = {
+  "Evidence supports": "Passed",
+  "Weak": "Failed",
+  "Evidence contradicts": "Failed",
+  "Unresolved": "Inconclusive",
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function eventTime(value: string): number {
+  return isValidIcarusDate(value) ? parseReviewDeadline(value) : Number.NEGATIVE_INFINITY;
+}
+
+// Every dated judgement about whether a control works, newest first. A legacy effectiveness review is an
+// assurance event (it is a named, dated human assessment); "Unknown"/"Untested" effectiveness is not.
+// Ties prefer an explicit control test over an effectiveness review.
+export function getIcarusControlAssuranceEvents(control: IcarusControl): IcarusControlAssuranceEvent[] {
+  const events: IcarusControlAssuranceEvent[] = (control.assuranceTests ?? []).map((test) => ({
+    source: "Control test",
+    testId: test.id,
+    at: test.testedAt,
+    result: test.result,
+    evidenceIds: [...test.evidenceIds],
+    byPersonId: test.testedByPersonId,
+  }));
+  const reviewResult = effectivenessReviewResult[control.effectiveness];
+  if (reviewResult && control.effectivenessReviewedAt) {
+    events.push({
+      source: "Effectiveness review",
+      at: control.effectivenessReviewedAt,
+      result: reviewResult,
+      evidenceIds: [...control.evidenceIds],
+      ...(control.effectivenessReviewedBy ? { by: control.effectivenessReviewedBy } : {}),
+    });
+  }
+  return events.sort((left, right) =>
+    eventTime(right.at) - eventTime(left.at)
+    || (left.source === right.source ? 0 : left.source === "Control test" ? -1 : 1)
+    || (right.testId ?? "").localeCompare(left.testId ?? ""));
+}
+
+export function getIcarusLatestControlAssuranceEvent(control: IcarusControl): IcarusControlAssuranceEvent | undefined {
+  return getIcarusControlAssuranceEvents(control)[0];
+}
+
+// When the control's next test falls due under its cadence (undefined without a cadence or a dated event).
+export function getIcarusControlTestDueAt(control: IcarusControl): number | undefined {
+  if (!control.testCadenceDays) return undefined;
+  const latest = getIcarusLatestControlAssuranceEvent(control);
+  if (!latest || !isValidIcarusDate(latest.at)) return undefined;
+  return parseReviewDeadline(latest.at) + control.testCadenceDays * DAY_MS;
 }
 
 export function buildIcarusReview(
@@ -417,6 +705,33 @@ export function buildIcarusReview(
         const controlEvidence = usableEvidence.filter((evidence) => control.evidenceIds.includes(evidence.id));
         const hasSupportingEvidence = controlEvidence.some((evidence) => evidence.review === "Supports");
         const hasContradictingEvidence = controlEvidence.some((evidence) => evidence.review === "Contradicts");
+        const latestEvent = getIcarusLatestControlAssuranceEvent(control);
+        const operating = control.lifecycle === "Active" || control.lifecycle === "Monitoring";
+        const testDueAt = operating ? getIcarusControlTestDueAt(control) : undefined;
+        if (testDueAt !== undefined && testDueAt < nowMs) {
+          addFinding("overdue-control-test", { failureModeId: mode.id, controlId: control.id }, `This control's ${control.testCadenceDays}-day test cadence has lapsed since its last assurance event.`);
+        }
+        if (latestEvent?.source === "Control test") {
+          // The most recent explicit test supersedes the earlier effectiveness assessment for this control.
+          const testEvidence = usableEvidence.filter((evidence) => latestEvent.evidenceIds.includes(evidence.id));
+          const testSupports = testEvidence.some((evidence) => evidence.review === "Supports");
+          const testContradicts = testEvidence.some((evidence) => evidence.review === "Contradicts");
+          if (control.lifecycle === "Ineffective") {
+            addFinding("ineffective-control", { failureModeId: mode.id, controlId: control.id }, "This control is recorded as ineffective.");
+          } else if (latestEvent.result === "Failed") {
+            addFinding("failed-control-test", { failureModeId: mode.id, controlId: control.id }, "The most recent test of this control failed.");
+          } else if (control.lifecycle === "Planned") {
+            addFinding("planned-control", { failureModeId: mode.id, controlId: control.id }, "This control is planned but is not recorded as operating.");
+          } else if (control.lifecycle !== "Retired" && latestEvent.result === "Inconclusive") {
+            addFinding("inconclusive-control-test", { failureModeId: mode.id, controlId: control.id }, "The most recent test of this control was inconclusive.");
+          } else if (control.lifecycle !== "Retired" && latestEvent.result === "Passed" && !testSupports) {
+            addFinding("unsupported-control-test", { failureModeId: mode.id, controlId: control.id }, "The most recent test passed but cites no current, reviewed supporting evidence.");
+          }
+          if ((hasSupportingEvidence || testSupports) && (hasContradictingEvidence || testContradicts)) {
+            addFinding("conflicting-evidence", { failureModeId: mode.id, controlId: control.id }, "Evidence linked to this control both supports and contradicts its effectiveness.");
+          }
+          return;
+        }
         if (control.lifecycle === "Ineffective") {
           addFinding("ineffective-control", { failureModeId: mode.id, controlId: control.id }, "This control is recorded as ineffective.");
         } else if (control.effectiveness === "Weak") {

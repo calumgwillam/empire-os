@@ -62,11 +62,15 @@ describe("Icarus exposure snapshot", () => {
 
 describe("Icarus exposure comparison", () => {
   it("reports no baseline when no earlier Icarus snapshot exists", () => {
-    expect(compareIcarusExposure({ previous: undefined, current: [entry("a")] })).toEqual({
+    const result = compareIcarusExposure({ previous: undefined, current: [entry("a")] });
+    expect(result).toMatchObject({
       hasBaseline: false,
       changes: [],
       counts: { New: 0, Worsened: 0, Persistent: 0, Improved: 0, Resolved: 0 },
+      hasAssuranceBaseline: false,
+      assuranceChanges: [],
     });
+    expect(Object.values(result.assuranceCounts).every((count) => count === 0)).toBe(true);
   });
 
   it("distinguishes new, persistent, worsened, improved and resolved exposure", () => {
@@ -222,5 +226,106 @@ describe("Founder Operating Review strategic-risk trajectory", () => {
     }));
     const item = result.recurring.find((entry) => entry.title === "Blocked action")!;
     expect(item.why).toBe('Convergent risk generating 3 signal categories across 3 linked records; Icarus: exposed in "Margin holds"');
+  });
+});
+
+describe("Icarus assurance history", () => {
+  const assured = (overrides: Partial<NonNullable<IcarusExposureSnapshotEntry["assurance"]>> = {}) => ({
+    state: "Weak" as const, escalation: "None" as const, acceptance: "None" as const, failedControlIds: [], ...overrides,
+  });
+
+  it("captures assurance on snapshots only when the signal carries it", () => {
+    const withAssurance = {
+      ...signal("a", "Exposed", ["m1"], 500),
+      assurance: { state: "Weak", escalation: "Assurance failure", riskOwnerPersonId: "p1", acceptance: "None", failedControlIds: ["c2", "c1"] },
+    } as unknown as IcarusStrategicSignal;
+    const [entryA, entryB] = buildIcarusExposureSnapshot([withAssurance, signal("b", "Exposed", ["m1"], 400)]);
+    expect(entryA.assurance).toEqual({ state: "Weak", escalation: "Assurance failure", riskOwnerPersonId: "p1", acceptance: "None", failedControlIds: ["c1", "c2"] });
+    expect(entryB).not.toHaveProperty("assurance");
+  });
+
+  it("keeps the exposure entry but drops malformed assurance", () => {
+    const [kept, repaired] = normaliseIcarusExposureSnapshot([
+      { ...entry("a"), assurance: { state: "Superb", escalation: "None" } },
+      { ...entry("b"), assurance: { state: "Weak", escalation: "None", riskOwnerPersonId: " ", acceptance: "Maybe", failedControlIds: ["c", 3, "c"] } },
+    ])!;
+    expect(kept).toEqual(entry("a"));
+    expect(repaired.assurance).toEqual({ state: "Weak", escalation: "None", acceptance: "None", failedControlIds: ["c"] });
+  });
+
+  it("reports no assurance baseline when earlier snapshots predate assurance", () => {
+    const result = compareIcarusExposure({ previous: [entry("a")], current: [entry("a", { assurance: assured() })] });
+    expect(result.hasBaseline).toBe(true);
+    expect(result.hasAssuranceBaseline).toBe(false);
+    expect(result.assuranceChanges).toEqual([]);
+  });
+
+  it("detects every assurance change kind in a deterministic order", () => {
+    const result = compareIcarusExposure({
+      previous: [
+        entry("worse", { assurance: assured({ state: "Partially assured", riskOwnerPersonId: "p" }) }),
+        entry("better", { assurance: assured({ state: "Weak", failedControlIds: ["c1", "c2"] }) }),
+        entry("expired", { assurance: assured({ state: "Accepted exposure", acceptance: "Active", riskOwnerPersonId: "p" }) }),
+        entry("accepted", { assurance: assured({ state: "Unassured", riskOwnerPersonId: "p" }) }),
+      ],
+      current: [
+        entry("worse", { assurance: assured({ state: "Weak" }) }),
+        entry("better", { assurance: assured({ state: "Partially assured", riskOwnerPersonId: "q", failedControlIds: ["c2"] }) }),
+        entry("expired", { assurance: assured({ state: "Weak", acceptance: "Expired", riskOwnerPersonId: "p" }) }),
+        entry("accepted", { assurance: assured({ state: "Accepted exposure", acceptance: "Active", riskOwnerPersonId: "p" }) }),
+      ],
+    });
+    expect(result.hasAssuranceBaseline).toBe(true);
+    expect(result.assuranceChanges.map((change) => [change.change, change.assessmentId])).toEqual([
+      ["Assurance deteriorated", "expired"],
+      ["Assurance deteriorated", "worse"],
+      ["Acceptance expired", "expired"],
+      ["Owner removed", "worse"],
+      ["Owner assigned", "better"],
+      ["Acceptance created", "accepted"],
+      ["Failed control remediated", "better"],
+      ["Assurance improved", "accepted"],
+      ["Assurance improved", "better"],
+    ]);
+    expect(result.assuranceChanges.find((change) => change.change === "Failed control remediated")?.controlIds).toEqual(["c1"]);
+    expect(result.assuranceCounts["Assurance deteriorated"]).toBe(2);
+  });
+
+  it("does not report assurance change for new or resolved exposure", () => {
+    const result = compareIcarusExposure({
+      previous: [entry("gone", { assurance: assured() })],
+      current: [entry("fresh", { assurance: assured({ state: "Assured" }) })],
+    });
+    expect(result.assuranceChanges).toEqual([]);
+  });
+
+  it("feeds assurance changes into the Founder Operating Review separately from exposure change", () => {
+    const result = buildFounderOperatingReview(reviewInput({
+      snapshots: [{
+        date: "2026-10-01",
+        ...baseSnapshot,
+        icarusExposure: [
+          entry("a", { assurance: assured({ state: "Partially assured", riskOwnerPersonId: "p" }) }),
+          entry("b", { assurance: assured({ failedControlIds: ["c1"] }) }),
+        ],
+      }],
+      icarusExposure: {
+        current: [
+          entry("a", { assurance: assured({ state: "Weak" }) }),
+          entry("b", { assurance: assured({ riskOwnerPersonId: "p" }) }),
+        ],
+        assessmentStatuses: new Map(),
+      },
+    }));
+    expect(result.strategicRiskTrajectory?.counts.Persistent).toBe(2);
+    expect(result.deteriorated.map((item) => [item.metric, item.changeText])).toEqual([
+      ["Strategic risk assurance", "1 weaker"],
+      ["Strategic risk ownership", "1 owner removed"],
+    ]);
+    expect(result.deteriorated[0].explanation).toContain("Outcome a");
+    expect(result.improved.map((item) => [item.metric, item.changeText])).toEqual([
+      ["Failed controls remediated", "1 remediated"],
+      ["Strategic risk ownership", "1 owner assigned"],
+    ]);
   });
 });

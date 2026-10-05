@@ -17,6 +17,13 @@ import {
 } from "../lib/icarus";
 import type { IcarusAttentionReference } from "../lib/icarus-strategic-attention";
 import type { IcarusSystemicExposure } from "../lib/icarus-systemic-exposure";
+import type { IcarusAssuranceResult } from "../lib/icarus-assurance";
+import type { IcarusAssuranceRollup } from "../lib/icarus-assurance-rollup";
+import IcarusAssuranceSection, {
+  IcarusAssuranceRollupSection,
+  type IcarusAssuranceActionOption,
+  type IcarusAssurancePersonOption,
+} from "./icarus-assurance-section";
 
 type IcarusPanelProps = {
   assessments: readonly IcarusAssessmentRecord[];
@@ -27,6 +34,10 @@ type IcarusPanelProps = {
   createId: () => string;
   focusTarget?: (IcarusAttentionReference & { requestId: number }) | null;
   systemicExposure?: IcarusSystemicExposure;
+  assurance?: IcarusAssuranceResult;
+  assuranceRollup?: IcarusAssuranceRollup;
+  people?: readonly IcarusAssurancePersonOption[];
+  actions?: readonly IcarusAssuranceActionOption[];
 };
 
 const focusRingClass = " ring-2 ring-[#755520] ring-offset-2";
@@ -84,6 +95,10 @@ export default function IcarusPanel({
   createId,
   focusTarget = null,
   systemicExposure,
+  assurance,
+  assuranceRollup,
+  people = [],
+  actions = [],
 }: IcarusPanelProps) {
   useEffect(() => {
     if (!focusTarget || typeof document === "undefined") return;
@@ -320,6 +335,11 @@ export default function IcarusPanel({
         </section>
       ) : null}
 
+      <IcarusAssuranceRollupSection
+        rollup={assuranceRollup}
+        objectiveTitle={(objectiveId) => referenceTitle({ recordType: "Strategic Objective", recordId: objectiveId }, sources)}
+      />
+
       <div className="mt-6 space-y-4">
         {assessments.length === 0 ? (
           <div className="rounded-xl border border-dashed border-[#cfc8c1] p-6 text-center text-[12px] text-[#6a625d]">No failure assessments recorded.</div>
@@ -389,6 +409,16 @@ export default function IcarusPanel({
                   </ul>
                 ) : null}
               </div>
+
+              <IcarusAssuranceSection
+                assessment={assessment}
+                assurance={assurance?.byAssessmentId.get(assessment.id)}
+                people={people}
+                actions={actions}
+                writable={writable}
+                createId={createId}
+                onUpdate={(update) => updateAssessment(assessment.id, update)}
+              />
 
               <div className="mt-5 border-t border-[#d3cbc3] pt-4">
                 <h3 className="text-[11px] font-semibold uppercase tracking-[0.15em] text-[#4d4944]">Failure mechanisms & vulnerabilities</h3>

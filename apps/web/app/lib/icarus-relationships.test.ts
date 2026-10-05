@@ -179,3 +179,29 @@ describe("deriveIcarusRelationships", () => {
     expect(JSON.stringify(record)).toBe(snapshot);
   });
 });
+
+describe("deriveIcarusRelationships ownership", () => {
+  it("adds explicit risk and control owners as direct Person identities with provenance", () => {
+    const relationships = deriveIcarusRelationships({
+      assessment: assessment({
+        accountableOwnerPersonId: " person-1 ",
+        controls: [
+          control({ id: "c-material", failureModeId: "mode-1", ownerPersonId: "person-2" }),
+          control({ id: "c-retired", failureModeId: "mode-1", lifecycle: "Retired", ownerPersonId: "person-3" }),
+          control({ id: "c-other", failureModeId: "mode-2", ownerPersonId: "person-4" }),
+        ],
+      }),
+      failureModes: [{ failureModeId: "mode-1", supportingEvidenceIds: [] }],
+    });
+    const people = relationships.filter((entry) => entry.reference.recordType === "Person");
+    expect(people.map((entry) => [entry.identity, entry.origin, entry.kind, entry.controlId])).toEqual([
+      ["Person:person-1", "Risk owner", "Direct", undefined],
+      ["Person:person-2", "Control owner", "Direct", "c-material"],
+    ]);
+  });
+
+  it("adds no Person identity when ownership is absent", () => {
+    const relationships = deriveIcarusRelationships({ assessment: assessment(), failureModes: [{ failureModeId: "mode-1", supportingEvidenceIds: [] }] });
+    expect(relationships.some((entry) => entry.reference.recordType === "Person")).toBe(false);
+  });
+});

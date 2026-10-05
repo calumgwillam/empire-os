@@ -17,6 +17,20 @@ import {
   type IcarusRelationshipOrigin,
 } from "./icarus-relationships";
 import type { IcarusAttentionReference, IcarusStrategicSignal } from "./icarus-strategic-attention";
+import {
+  getIcarusEscalationRank,
+  type IcarusAssuranceState,
+  type IcarusEscalationLevel,
+  type IcarusObligationCategory,
+} from "./icarus-assurance-policy";
+
+// Governance/assurance failure is carried as a distinct, provenance-only dimension. It never adds a second
+// correlation category or weight for the same assessment, so one exposure cannot be counted twice.
+export type IcarusCorrelationGovernance = {
+  state: IcarusAssuranceState;
+  escalation: IcarusEscalationLevel;
+  categories: IcarusObligationCategory[];
+};
 
 // How an Icarus assessment is legitimately connected to another Empire OS record identity.
 // Mirrors the authoritative relationship origins so correlation provenance never diverges from them.
@@ -39,6 +53,7 @@ export type IcarusCorrelationSignal = Omit<CorrelationStrategicRiskInput, "links
   exposure: IcarusExposure;
   reference: IcarusAttentionReference;
   links: IcarusCorrelationLink[];
+  governance?: IcarusCorrelationGovernance;
 };
 
 export type IcarusCorrelationInput = {
@@ -133,6 +148,13 @@ export function buildIcarusCorrelationSignals(input: IcarusCorrelationInput): Ic
       exposure: signal.exposure,
       reference: { ...signal.primaryReference },
       links: [...links.values()].sort(compareLinks),
+      ...(signal.assurance ? {
+        governance: {
+          state: signal.assurance.state,
+          escalation: signal.assurance.escalation,
+          categories: [...signal.assurance.escalationCategories],
+        },
+      } : {}),
     };
   });
 }
@@ -146,6 +168,7 @@ export type IcarusClusterAssessmentContribution = {
   exposure: IcarusExposure;
   weight: CorrelationStrategicRiskWeight;
   reference: IcarusAttentionReference;
+  governance?: IcarusCorrelationGovernance;
   // The shared record identities (with Icarus-side provenance) that placed this assessment in the situation.
   sharedRecords: { recordKey: string; links: IcarusCorrelationLink[] }[];
 };
@@ -156,6 +179,8 @@ export type IcarusClusterContribution = {
   convergent: boolean;
   role: IcarusClusterRole;
   strongestExposure: IcarusExposure;
+  // Strongest assurance escalation among contributing assessments ("None" when absent or not derived).
+  strongestEscalation: IcarusEscalationLevel;
   assessments: IcarusClusterAssessmentContribution[];
   otherContributors: { recordKey: string; objectType: string; id: string; title: string; signals: string[] }[];
   // Context identities (e.g. a Person) attached because an Icarus assessment explicitly references them.
@@ -242,6 +267,7 @@ export function buildIcarusClusterContributions(
           exposure: signal.exposure,
           weight: signal.weight,
           reference: { ...signal.reference },
+          ...(signal.governance ? { governance: { ...signal.governance, categories: [...signal.governance.categories] } } : {}),
           sharedRecords: [
             ...sharedKeys,
             ...contextContributors
@@ -267,6 +293,9 @@ export function buildIcarusClusterContributions(
       convergent,
       role: !convergent ? "Correlated" : convergentWithoutIcarus ? "Strengthens convergence" : "Completes convergence",
       strongestExposure: assessments[0].exposure,
+      strongestEscalation: assessments
+        .map((assessment) => assessment.governance?.escalation ?? "None")
+        .sort((left, right) => getIcarusEscalationRank(left) - getIcarusEscalationRank(right))[0] ?? "None",
       assessments,
       otherContributors,
       contextContributors,

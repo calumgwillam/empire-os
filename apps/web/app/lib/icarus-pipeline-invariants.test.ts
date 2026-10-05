@@ -25,6 +25,7 @@ import { buildFounderFocus } from "./founder-focus";
 import { resolveStrategicRiskConvergence } from "./strategic-risk-resolution";
 import { buildPeopleCorrelationContext } from "./people-correlation-context";
 import { resolveOperatingPillar } from "./pillar-identity";
+import { attachIcarusAssuranceToSignals, buildIcarusAssurance } from "./icarus-assurance";
 
 const NOW = new Date(2025, 3, 10, 12, 0, 0, 0).getTime();
 const timestamp = "2025-04-01T12:00:00.000Z";
@@ -361,5 +362,87 @@ describe("Icarus pipeline invariants", () => {
     expect(reversed.focus).toEqual(forward.focus);
     expect(reversed.exposure).toEqual(forward.exposure);
     expect(reversed.snapshot).toEqual(forward.snapshot);
+  });
+});
+
+describe("Icarus Phase 3 assurance invariants", () => {
+  const live: IcarusStrategicObjectiveContext = { area: "Operating Business", importance: "Critical", isLive: true };
+  const objectives = new Map([["objective-1", live]]);
+  const objectiveRef: IcarusRecordReference = { recordType: "Strategic Objective", recordId: "objective-1" };
+  const failedControl = {
+    id: "control-1", failureModeId: "mode-1", intervention: "Control.", lifecycle: "Active" as const,
+    effectiveness: "Unknown" as const, evidenceIds: [], linkedRecords: [], nextReviewAt: "2025-12-31",
+    assuranceTests: [{ id: "test-1", testedAt: timestamp, testedByPersonId: "founder", result: "Failed" as const, evidenceIds: ["evidence-1"] }],
+  };
+
+  function assured(assessments: readonly IcarusAssessmentRecord[], actions: Action[] = [action()], withAssurance = true) {
+    const reviews = buildIcarusReview(assessments, sourcesFor(assessments), NOW);
+    const base = buildIcarusStrategicAttention({ assessments, reviews, strategicObjectives: objectives });
+    const assurance = buildIcarusAssurance({
+      assessments, reviews, signals: base, people: [{ id: "founder", status: "Active" }],
+      actions: [], primaryFounderId: "founder", founderDependencyActive: false, strategicObjectives: objectives, nowMs: NOW,
+    });
+    const signals = withAssurance ? attachIcarusAssuranceToSignals(base, assurance) : base;
+    const command = buildCommandAttention({
+      problems: [], actions, outreach: [], projects: [], decisions: [], opportunities: [], lessons: [], systems: [],
+      sops: [], handoffs: [], procurementQueue: [], nowMs: NOW, icarus: signals,
+    });
+    return { assurance, signals, command, focus: buildIcarusFounderFocusRisks(signals) };
+  }
+
+  const failing = (id: string) => assessment(id, { linkedRecords: [objectiveRef], controls: [failedControl] });
+
+  it("never lets an assurance failure outrank blocked or overdue execution in Command", () => {
+    const result = assured([failing("a1")], [
+      action(),
+      action({ id: "action-2", status: "Open", dueDate: "2025-04-01", actionTitle: "Overdue action", title: "Overdue action" }),
+    ]);
+    expect(result.assurance.byAssessmentId.get("a1")?.escalation).toBe("Assurance failure");
+    const items = result.command.items;
+    const icarusIndex = items.findIndex((entry) => entry.objectType === "Icarus");
+    expect(icarusIndex).toBeGreaterThan(-1);
+    expect(items[icarusIndex].attentionRank).toBeGreaterThanOrEqual(3);
+    expect(keysOf(items.slice(0, icarusIndex))).toEqual(["Action:action-1", "Action:action-2"]);
+  });
+
+  it("ranks an assurance failure above the same exposure without assurance, within bounds", () => {
+    const withAssurance = assured([failing("a1")], []).command.items.find((entry) => entry.objectType === "Icarus")!;
+    const without = assured([failing("a1")], [], false).command.items.find((entry) => entry.objectType === "Icarus")!;
+    expect(withAssurance.attentionRank).toBe(Math.max(3, without.attentionRank - 1));
+    expect(withAssurance.reasons.length).toBeGreaterThan(without.reasons.length);
+  });
+
+  it("never removes an accepted exposure from Command or Founder Focus", () => {
+    const accepted = assessment("a1", {
+      linkedRecords: [objectiveRef],
+      accountableOwnerPersonId: "founder",
+      acceptances: [{
+        id: "acceptance-1", failureModeIds: ["mode-1"], acceptedByPersonId: "founder", rationale: "Tolerable for now.",
+        acceptedAt: timestamp, reviewBy: "2025-06-01",
+      }],
+    });
+    const result = assured([accepted], []);
+    expect(result.assurance.byAssessmentId.get("a1")?.signal.acceptance).toBe("Active");
+    expect(keysOf(result.command.items)).toEqual(["Icarus:a1"]);
+    expect(result.focus.map((entry) => entry.id)).toEqual(["a1"]);
+    expect(result.focus[0].reason).toContain("formally accepted");
+  });
+
+  it("leaves pre-assurance Command and Focus output unchanged when assurance is not attached", () => {
+    const pipeline = runPipeline([failing("a1")], { objectives });
+    const result = assured([failing("a1")], [action()], false);
+    expect(result.signals.every((signal) => signal.assurance === undefined)).toBe(true);
+    expect(result.command.items).toEqual(pipeline.command.items);
+    expect(result.focus).toEqual(buildIcarusFounderFocusRisks(pipeline.signals));
+  });
+
+  it("is deterministic regardless of assessment order", () => {
+    const records = [failing("a1"), assessment("a2", { linkedRecords: [objectiveRef] })];
+    const forward = assured(records);
+    const reversed = assured([...records].reverse());
+    expect(reversed.command.items).toEqual(forward.command.items);
+    expect(reversed.focus).toEqual(forward.focus);
+    expect([...reversed.assurance.byAssessmentId.keys()].sort()).toEqual([...forward.assurance.byAssessmentId.keys()].sort());
+    expect(reversed.assurance.assessments).toEqual(forward.assurance.assessments);
   });
 });

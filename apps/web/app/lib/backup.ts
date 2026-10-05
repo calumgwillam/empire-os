@@ -1,4 +1,4 @@
-import { assertIcarusDataStructure, ICARUS_STORAGE_KEY } from "./icarus";
+import { assertIcarusDataStructure, ICARUS_STORAGE_KEY, normaliseIcarusAssessmentData } from "./icarus";
 
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
@@ -233,7 +233,7 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
   const storedIcarus = storage[ICARUS_STORAGE_KEY];
   if (typeof storedIcarus === "string") {
     try {
-      assertIcarusDataStructure(JSON.parse(storedIcarus));
+      assertIcarusDataStructure(normaliseIcarusAssessmentData(JSON.parse(storedIcarus)));
     } catch (error) {
       throw new Error(
         error instanceof Error

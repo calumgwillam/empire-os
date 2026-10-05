@@ -213,6 +213,7 @@ import {
 import { persistJsonArray, persistJsonValue } from "./lib/persistence";
 import {
   assertIcarusDataStructure,
+  normaliseIcarusAssessmentData,
   buildIcarusReview,
   getIcarusIdentityKey,
   ICARUS_STORAGE_KEY,
@@ -228,6 +229,8 @@ import {
 } from "./lib/icarus-strategic-attention";
 import { buildIcarusClusterContributions, buildIcarusCorrelationSignals } from "./lib/icarus-correlation";
 import { buildIcarusSystemicExposure } from "./lib/icarus-systemic-exposure";
+import { attachIcarusAssuranceToSignals, buildIcarusAssurance } from "./lib/icarus-assurance";
+import { buildIcarusAssuranceRollup } from "./lib/icarus-assurance-rollup";
 import {
   buildIcarusExposureSnapshot,
   normaliseIcarusExposureSnapshot,
@@ -9911,19 +9914,19 @@ export default function Home() {
     .filter((review) => icarusAssessments.find((assessment) => assessment.id === review.assessmentId)?.status !== "Closed")
     .flatMap((review) => review.findings);
   const icarusAttentionAssessmentCount = new Set(icarusFounderAttention.map((finding) => finding.assessmentId)).size;
-  const icarusStrategicSignals = buildIcarusStrategicAttention({
+  const icarusStrategicObjectiveContext = new Map(strategicObjectives.map((objective): [string, IcarusStrategicObjectiveContext] => [objective.id, {
+    area: objective.pillar,
+    importance: objective.importance,
+    isLive: objective.status === "Active" || objective.status === "Watching",
+    linkedProjectIds: objective.linkedProjectIds,
+    linkedOpportunityIds: objective.linkedOpportunityIds,
+    linkedDecisionIds: objective.linkedDecisionIds,
+  }]));
+  const icarusBaseStrategicSignals = buildIcarusStrategicAttention({
     assessments: icarusAssessments,
     reviews: icarusReviews,
-    strategicObjectives: new Map(strategicObjectives.map((objective): [string, IcarusStrategicObjectiveContext] => [objective.id, {
-      area: objective.pillar,
-      importance: objective.importance,
-      isLive: objective.status === "Active" || objective.status === "Watching",
-      linkedProjectIds: objective.linkedProjectIds,
-      linkedOpportunityIds: objective.linkedOpportunityIds,
-      linkedDecisionIds: objective.linkedDecisionIds,
-    }])),
+    strategicObjectives: icarusStrategicObjectiveContext,
   });
-  const icarusCorrelationSignals = buildIcarusCorrelationSignals({ signals: icarusStrategicSignals });
   const pillarSummaries = pillarOptions.map((pillar) => {
     const pillarProjects = projects.filter((project) => project.area === pillar && isProjectActive(project));
     const pillarActions = actionRecords.filter((action) => action.relatedPillar === pillar && isActionActive(action));
@@ -10056,6 +10059,20 @@ export default function Home() {
     delegationReadyPeopleCount: delegationReadyPeople.length,
     delegationReadinessGapPeopleCount: delegationReadinessGapPeople.length,
   });
+  // Assurance is derived after People/operational independence so ownership can be judged against founder dependency.
+  const icarusAssurance = buildIcarusAssurance({
+    assessments: icarusAssessments,
+    reviews: icarusReviews,
+    signals: icarusBaseStrategicSignals,
+    people: people.map(({ id, status }) => ({ id, status })),
+    actions: actionRecords.map(({ id, status, dueDate }) => ({ id, status, dueDate })),
+    primaryFounderId: founderPerson?.id ?? null,
+    founderDependencyActive: operationalIndependence.classifiedItems.some((item) => item.state === "Founder-only"),
+    strategicObjectives: icarusStrategicObjectiveContext,
+  });
+  const icarusAssuranceRollup = buildIcarusAssuranceRollup(icarusAssurance.assessments);
+  const icarusStrategicSignals = attachIcarusAssuranceToSignals(icarusBaseStrategicSignals, icarusAssurance);
+  const icarusCorrelationSignals = buildIcarusCorrelationSignals({ signals: icarusStrategicSignals });
 
   const decisionTrackRecord = (() => {
     const validOutcomeRatings = new Set(["Worked", "Partially worked", "Failed"]);
@@ -16090,7 +16107,7 @@ export default function Home() {
       }
 
       const storedIcarus = storage[ICARUS_STORAGE_KEY];
-      if (typeof storedIcarus === "string") assertIcarusDataStructure(JSON.parse(storedIcarus));
+      if (typeof storedIcarus === "string") assertIcarusDataStructure(normaliseIcarusAssessmentData(JSON.parse(storedIcarus)));
 
       const cashValue = storage[CASH_POSITION_STORAGE_KEY];
 
@@ -19670,6 +19687,10 @@ export default function Home() {
               createId={generateCaptureId}
               focusTarget={icarusFocusTarget}
               systemicExposure={icarusSystemicExposure}
+              assurance={icarusAssurance}
+              assuranceRollup={icarusAssuranceRollup}
+              people={people.map(({ id, name, status }) => ({ id, name, status }))}
+              actions={actionRecords.map(({ id, actionTitle, status }) => ({ id, title: actionTitle, status }))}
             />
           ) : activeDestination ? (
             <ConvertedDestinationView

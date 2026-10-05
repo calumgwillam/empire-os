@@ -14,7 +14,10 @@ export type IcarusRelationshipOrigin =
   | "Assessment link"
   | "Strategic objective"
   | "Control link"
-  | "Evidence source";
+  | "Evidence source"
+  // Explicit Phase 3 ownership: the assessment's accountable owner / a material control's owner (Person id).
+  | "Risk owner"
+  | "Control owner";
 
 export type IcarusRelationship = {
   identity: string;
@@ -47,7 +50,7 @@ export type IcarusRelationshipInput = {
 };
 
 const kindOrder: readonly IcarusRelationshipKind[] = ["Direct", "Expanded"];
-export const ICARUS_RELATIONSHIP_ORIGINS: readonly IcarusRelationshipOrigin[] = ["Assessment link", "Strategic objective", "Control link", "Evidence source"];
+export const ICARUS_RELATIONSHIP_ORIGINS: readonly IcarusRelationshipOrigin[] = ["Assessment link", "Strategic objective", "Control link", "Evidence source", "Risk owner", "Control owner"];
 
 export function getIcarusRelationshipIdentity(reference: IcarusRecordReference): string {
   return `${reference.recordType}:${reference.recordId}`;
@@ -103,17 +106,35 @@ export function deriveIcarusRelationships(input: IcarusRelationshipInput): Icaru
     expand("Decision", objective.linkedDecisionIds);
   });
 
+  const riskOwnerId = assessment.accountableOwnerPersonId?.trim();
+  if (riskOwnerId) {
+    add({ identity: `Person:${riskOwnerId}`, reference: { recordType: "Person", recordId: riskOwnerId }, kind: "Direct", origin: "Risk owner" });
+  }
+
   input.failureModes.forEach((mode) => {
     assessment.controls
       .filter((control) => control.failureModeId === mode.failureModeId && control.lifecycle !== "Retired")
-      .forEach((control) => control.linkedRecords.forEach((reference) => add({
-        identity: getIcarusRelationshipIdentity(reference),
-        reference: { ...reference },
-        kind: "Direct",
-        origin: "Control link",
-        failureModeId: mode.failureModeId,
-        controlId: control.id,
-      })));
+      .forEach((control) => {
+        control.linkedRecords.forEach((reference) => add({
+          identity: getIcarusRelationshipIdentity(reference),
+          reference: { ...reference },
+          kind: "Direct",
+          origin: "Control link",
+          failureModeId: mode.failureModeId,
+          controlId: control.id,
+        }));
+        const controlOwnerId = control.ownerPersonId?.trim();
+        if (controlOwnerId) {
+          add({
+            identity: `Person:${controlOwnerId}`,
+            reference: { recordType: "Person", recordId: controlOwnerId },
+            kind: "Direct",
+            origin: "Control owner",
+            failureModeId: mode.failureModeId,
+            controlId: control.id,
+          });
+        }
+      });
     const failureMode = assessment.failureModes.find((entry) => entry.id === mode.failureModeId);
     mode.supportingEvidenceIds.forEach((evidenceId) => {
       const reference = failureMode?.evidence.find((evidence) => evidence.id === evidenceId)?.reference;

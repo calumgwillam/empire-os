@@ -267,6 +267,31 @@ export function buildFounderOperatingReview(
       });
     }
   }
+  if (strategicRiskTrajectory?.hasAssuranceBaseline) {
+    // Assurance changes are separate from exposure changes: a risk can be equally exposed but less (or more) assured.
+    const assuranceOutcomes = (kind: string) => strategicRiskTrajectory.assuranceChanges
+      .filter((change) => change.change === kind)
+      .map((change) => change.outcome)
+      .join("; ");
+    const counts = strategicRiskTrajectory.assuranceCounts;
+    const deterioratedKinds = [
+      ["Assurance deteriorated", "Strategic risk assurance", "weaker", "Assurance weakened (failed, overdue or unverified controls): "],
+      ["Acceptance expired", "Accepted strategic exposure", "expired", "Accepted exposure passed its review date without the mechanism being removed: "],
+      ["Owner removed", "Strategic risk ownership", "owner removed", "Material strategic risk lost its accountable owner: "],
+    ] as const;
+    const improvedKinds = [
+      ["Assurance improved", "Strategic risk assurance", "stronger", "Assurance strengthened by tested, evidenced controls: "],
+      ["Failed control remediated", "Failed controls remediated", "remediated", "A previously failing control is no longer failing: "],
+      ["Owner assigned", "Strategic risk ownership", "owner assigned", "Material strategic risk now has an accountable owner: "],
+      ["Acceptance created", "Accepted strategic exposure", "accepted", "Exposure formally accepted with a rationale and review date: "],
+    ] as const;
+    deterioratedKinds.forEach(([kind, metric, text, prefix]) => {
+      if (counts[kind] > 0) deteriorated.push({ metric, changeText: `${counts[kind]} ${text}`, explanation: `${prefix}${assuranceOutcomes(kind)}.` });
+    });
+    improvedKinds.forEach(([kind, metric, text, prefix]) => {
+      if (counts[kind] > 0) improved.push({ metric, changeText: `${counts[kind]} ${text}`, explanation: `${prefix}${assuranceOutcomes(kind)}.` });
+    });
+  }
 
   const recurring: FounderOperatingReviewItem[] = [];
   const usedRecurringKeys = new Set<string>();

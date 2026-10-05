@@ -1,5 +1,6 @@
 import {
   getIcarusIdentityKey,
+  getIcarusLatestControlAssuranceEvent,
   type IcarusAssessmentRecord,
   type IcarusAssessmentStatus,
   type IcarusRecordReference,
@@ -28,6 +29,13 @@ import {
   type IcarusObjectiveImportance,
   type IcarusStrategicScope,
 } from "./icarus-materiality-policy";
+import {
+  adjustIcarusCommandRankForAssurance,
+  adjustIcarusFounderFocusBandForAssurance,
+  getIcarusAssuranceCommandReasons,
+  ICARUS_OBLIGATION_LABEL,
+  type IcarusSignalAssurance,
+} from "./icarus-assurance-policy";
 import { deriveIcarusRelationships, type IcarusRelationship } from "./icarus-relationships";
 import {
   compareOperatingPillars,
@@ -122,6 +130,8 @@ export type IcarusStrategicSignal = {
   riskScore: number;
   primaryReference: IcarusAttentionReference;
   summary: string;
+  // Attached by attachIcarusAssuranceToSignals (icarus-assurance). Absent => pre-assurance behaviour.
+  assurance?: IcarusSignalAssurance;
 };
 
 export type IcarusStrategicAttentionInput = {
@@ -152,6 +162,10 @@ const weaknessByCode: Partial<Record<IcarusReviewFindingCode, IcarusWeakness>> =
   "invalid-control-assessment": "Unverified control",
   "invalid-control-review": "Unverified control",
   "stale-control-review": "Control review overdue",
+  "failed-control-test": "Failing control",
+  "inconclusive-control-test": "Unverified control",
+  "unsupported-control-test": "Unverified control",
+  "overdue-control-test": "Control review overdue",
   "no-evidence": "Weak evidence",
   "unreviewed-evidence": "Weak evidence",
   "unresolved-evidence": "Weak evidence",
@@ -161,7 +175,8 @@ const weaknessByCode: Partial<Record<IcarusReviewFindingCode, IcarusWeakness>> =
   "incomplete-failure-mode": "Incomplete mechanism",
 };
 
-const failingControlCodes: readonly IcarusReviewFindingCode[] = ["ineffective-control", "contradicted-control", "weak-control"];
+const failingControlCodes: readonly IcarusReviewFindingCode[] = ["ineffective-control", "contradicted-control", "weak-control", "failed-control-test"];
+const overdueControlCodes: readonly IcarusReviewFindingCode[] = ["stale-control-review", "overdue-control-test"];
 // Findings that mean an operating control cannot currently be relied on as the verified control.
 const controlVerificationBlockers: readonly IcarusReviewFindingCode[] = [
   "untested-control",
@@ -172,6 +187,10 @@ const controlVerificationBlockers: readonly IcarusReviewFindingCode[] = [
   "invalid-control-review",
   "invalid-control-assessment",
   "conflicting-evidence",
+  "failed-control-test",
+  "inconclusive-control-test",
+  "unsupported-control-test",
+  "overdue-control-test",
 ];
 const unusableEvidenceCodes: readonly IcarusReviewFindingCode[] = ["invalid-evidence", "stale-evidence", "missing-source"];
 
@@ -211,7 +230,8 @@ function classifyFailureMode(
 
   const verifiedControl = controls.some((control) =>
     (control.lifecycle === "Active" || control.lifecycle === "Monitoring")
-    && control.effectiveness === "Evidence supports"
+    // The latest assurance event (explicit test, or the legacy effectiveness review) must be a pass.
+    && getIcarusLatestControlAssuranceEvent(control)?.result === "Passed"
     && !controlFindingCodes(control.id).some((code) => controlVerificationBlockers.includes(code)));
   if (verifiedControl) return null;
 
@@ -244,7 +264,7 @@ function classifyFailureMode(
   });
   if (controlGap === "Uncontrolled") weaknessSet.add("No operating control");
   const overdueControlIds = controls
-    .filter((control) => controlFindingCodes(control.id).includes("stale-control-review"))
+    .filter((control) => controlFindingCodes(control.id).some((code) => overdueControlCodes.includes(code)))
     .map((control) => control.id);
 
   return {
@@ -426,7 +446,11 @@ export type IcarusCommandPlacement = {
 
 // Command placement deliberately sits below blocked/overdue execution (ranks 1–2).
 export function getIcarusCommandPlacement(signal: IcarusStrategicSignal): IcarusCommandPlacement {
-  const attentionRank = getIcarusCommandRank(signal.exposure, signal.hasOverdueControlReview);
+  // Assurance may lift an Icarus item by one step (assurance failure) but never into execution ranks 1–2.
+  const attentionRank = adjustIcarusCommandRankForAssurance(
+    getIcarusCommandRank(signal.exposure, signal.hasOverdueControlReview),
+    signal.assurance,
+  );
   const reasons = [commandExposureReason[signal.exposure]];
   if (signal.scope === "Strategic objective") {
     reasons.push(signal.objectiveImportance ? `${signal.objectiveImportance.toUpperCase()} OBJECTIVE LINKED` : "STRATEGIC OBJECTIVE LINKED");
@@ -435,6 +459,7 @@ export function getIcarusCommandPlacement(signal: IcarusStrategicSignal): Icarus
   if (signal.hasOverdueControlReview) reasons.push("CONTROL REVIEW OVERDUE");
   if (signal.materialFailureModes.length > 1) reasons.push(`${signal.materialFailureModes.length} MATERIAL FAILURE MODES`);
   if (signal.weaknesses.includes("Weak evidence")) reasons.push("EVIDENCE WEAK");
+  reasons.push(...getIcarusAssuranceCommandReasons(signal.assurance));
   const modeCount = signal.materialFailureModes.length;
   return {
     attentionRank,
@@ -442,7 +467,7 @@ export function getIcarusCommandPlacement(signal: IcarusStrategicSignal): Icarus
     priorityScore: signal.riskScore,
     reasons,
     anchoredReason: `ICARUS RISK: ${signal.outcome} (${signal.exposure.toLowerCase()})`,
-    statusText: `${signal.status} assessment / ${signal.exposure} / ${modeCount} material failure mode${modeCount === 1 ? "" : "s"} / ${signal.scope}`,
+    statusText: `${signal.status} assessment / ${signal.exposure} / ${modeCount} material failure mode${modeCount === 1 ? "" : "s"} / ${signal.scope}${signal.assurance ? ` / Assurance: ${signal.assurance.state}` : ""}`,
   };
 }
 
@@ -459,10 +484,26 @@ export type IcarusFounderFocusRisk = {
   referenceKey: string;
 };
 
+// Founder Focus distinguishes "a material risk exists" from "the assurance/governance around it has failed".
+function describeFounderFocusReason(signal: IcarusStrategicSignal, scopeText: string): string {
+  const assurance = signal.assurance;
+  const gaps = (assurance?.escalationCategories ?? []).map((category) => ICARUS_OBLIGATION_LABEL[category].toLowerCase());
+  if (assurance?.escalation === "Assurance failure") {
+    return `Icarus assurance failure${scopeText} — ${gaps.join("; ")}. Underlying risk: ${signal.summary}`;
+  }
+  const base = `Icarus strategic risk${scopeText} — ${signal.summary}`;
+  const governance = assurance?.escalation === "Governance gap" ? ` Governance gap: ${gaps.join("; ")}.` : "";
+  const accepted = assurance?.materialModesAccepted && assurance.acceptance === "Active" ? " Exposure is formally accepted and under review." : "";
+  return `${base}${governance}${accepted}`;
+}
+
 // Founder Focus bands: 1 authority, 2 blocked/overdue/review due, 3 material, 4–5 structural.
 export function buildIcarusFounderFocusRisks(signals: readonly IcarusStrategicSignal[]): IcarusFounderFocusRisk[] {
   return signals.map((signal) => {
-    const band = getIcarusFounderFocusBand(signal.exposure, signal.hasOverdueControlReview);
+    const band = adjustIcarusFounderFocusBandForAssurance(
+      getIcarusFounderFocusBand(signal.exposure, signal.hasOverdueControlReview),
+      signal.assurance,
+    );
     const scopeText = signal.scope === "Operational"
       ? ""
       : ` (${signal.objectiveImportance ? `${signal.objectiveImportance.toLowerCase()} ` : ""}${signal.scope.toLowerCase()} linked)`;
@@ -474,7 +515,7 @@ export function buildIcarusFounderFocusRisks(signals: readonly IcarusStrategicSi
       area: signal.area,
       band,
       score: getIcarusAttentionScore(signal.riskScore),
-      reason: `Icarus strategic risk${scopeText} — ${signal.summary}`,
+      reason: describeFounderFocusReason(signal, scopeText),
       anchorRecordKeys: signal.anchors.map((anchor) => `${anchor.objectType}:${anchor.id}`),
       referenceKey: signal.key,
     };

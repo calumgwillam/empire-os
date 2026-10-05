@@ -359,3 +359,127 @@ describe("Icarus persistence and backup", () => {
     expect(target.storage.getItem(ICARUS_STORAGE_KEY)).toBe(previous);
   });
 });
+
+describe("Icarus Phase 3 assurance schema", () => {
+  const nowMs = Date.parse(timestamp);
+  const day = 24 * 60 * 60 * 1000;
+  const iso = (offsetDays: number) => new Date(nowMs + offsetDays * day).toISOString();
+
+  function withControl(overrides: Partial<IcarusAssessmentRecord["controls"][number]>): IcarusAssessmentRecord {
+    const base = makeAssessment();
+    return { ...base, controls: [{ ...base.controls[0], ...overrides }] };
+  }
+
+  function codesFor(assessment: IcarusAssessmentRecord) {
+    const sources = [
+      { recordType: "Problem" as const, recordId: "problem-1", title: "Missed close" },
+      { recordType: "Action" as const, recordId: "action-1", title: "Close checklist" },
+    ];
+    return buildIcarusReview([assessment], sources, nowMs)[0].findings.map((finding) => finding.code);
+  }
+
+  it("reads legacy assessments without assurance fields unchanged", () => {
+    const legacy = makeAssessment();
+    const stored = JSON.stringify([legacy]);
+    expect(parseIcarusAssessments(stored)).toEqual([legacy]);
+    expect(JSON.stringify(parseIcarusAssessments(stored))).toBe(stored);
+  });
+
+  it("round-trips every Phase 3 field through persistence", () => {
+    const assessment: IcarusAssessmentRecord = {
+      ...withControl({
+        ownerPersonId: "person-2",
+        testCadenceDays: 30,
+        assuranceTests: [{ id: "test-1", testedAt: iso(-1), testedByPersonId: "person-2", result: "Passed", evidenceIds: ["evidence-1"], note: "Checked" }],
+      }),
+      accountableOwnerPersonId: "person-1",
+      reviewedAt: iso(-2),
+      reviewedByPersonId: "person-1",
+      nextReviewBy: iso(60),
+      acceptances: [{ id: "acc-1", failureModeIds: ["mode-1"], acceptedByPersonId: "person-1", rationale: "Tolerable", acceptedAt: iso(-3), reviewBy: iso(30), conditions: "Revisit after season" }],
+      assuranceActionLinks: [{ obligationId: "assessment-1:no-risk-owner", actionId: "action-9", linkedAt: iso(-1) }],
+    };
+    const stored = JSON.stringify([assessment]);
+    const parsed = parseIcarusAssessments(stored);
+    expect(parsed).toEqual([assessment]);
+    expect(JSON.stringify(parsed)).toBe(stored);
+  });
+
+  it("drops invalid optional assurance fields without discarding the assessment", () => {
+    const stored = JSON.stringify([{
+      ...makeAssessment(),
+      accountableOwnerPersonId: "",
+      nextReviewBy: "not-a-date",
+      // A review without its reviewer is dropped as a pair.
+      reviewedAt: iso(-1),
+      acceptances: [
+        { id: "acc-1", failureModeIds: ["mode-1", "mode-unknown", "mode-1"], acceptedByPersonId: "p", rationale: "r", acceptedAt: iso(-1), reviewBy: iso(10), revokedAt: "bad" },
+        { id: "acc-1", failureModeIds: ["mode-1"], acceptedByPersonId: "p", rationale: "dup", acceptedAt: iso(-1), reviewBy: iso(10) },
+        { id: "broken" },
+      ],
+      assuranceActionLinks: "nope",
+      controls: [{
+        ...makeAssessment().controls[0],
+        ownerPersonId: 4,
+        testCadenceDays: -3,
+        assuranceTests: [
+          { id: "t1", testedAt: iso(-1), testedByPersonId: "p", result: "Passed", evidenceIds: ["evidence-1", "foreign-evidence"] },
+          { id: "t2", testedAt: "bad", testedByPersonId: "p", result: "Passed", evidenceIds: [] },
+          { id: "t3", testedAt: iso(-1), testedByPersonId: "p", result: "Maybe", evidenceIds: [] },
+        ],
+      }],
+    }]);
+    const [assessment] = parseIcarusAssessments(stored);
+    expect(assessment.accountableOwnerPersonId).toBeUndefined();
+    expect(assessment.nextReviewBy).toBeUndefined();
+    expect(assessment.reviewedAt).toBeUndefined();
+    expect(assessment.reviewedByPersonId).toBeUndefined();
+    expect(assessment.assuranceActionLinks).toBeUndefined();
+    expect(assessment.acceptances).toEqual([
+      { id: "acc-1", failureModeIds: ["mode-1"], acceptedByPersonId: "p", rationale: "r", acceptedAt: iso(-1), reviewBy: iso(10) },
+    ]);
+    const [control] = assessment.controls;
+    expect(control.ownerPersonId).toBeUndefined();
+    expect(control.testCadenceDays).toBeUndefined();
+    expect(control.assuranceTests).toEqual([
+      { id: "t1", testedAt: iso(-1), testedByPersonId: "p", result: "Passed", evidenceIds: ["evidence-1"] },
+    ]);
+  });
+
+  it("still rejects structurally broken core records", () => {
+    expect(() => parseIcarusAssessments(JSON.stringify([{ ...makeAssessment(), acceptances: [{ id: "x" }], status: "Bogus" }]))).toThrow("valid assessment records");
+  });
+
+  it("validates Phase 3 data in full backups using the same normaliser and keeps the raw value", () => {
+    const raw = JSON.stringify([{ ...makeAssessment(), nextReviewBy: "not-a-date" }]);
+    const backup: EmpireOsBackup = { format: BACKUP_FORMAT, version: BACKUP_VERSION, createdAt: timestamp, storage: { [ICARUS_STORAGE_KEY]: raw } };
+    expect(validateEmpireOsBackup(backup).storage[ICARUS_STORAGE_KEY]).toBe(raw);
+    const target = makeStorage({ [ICARUS_STORAGE_KEY]: "[]" });
+    expect(runBackupRestoreTransaction(target.storage, backup).ok).toBe(true);
+    expect(parseIcarusAssessments(target.storage.getItem(ICARUS_STORAGE_KEY))[0].nextReviewBy).toBeUndefined();
+  });
+
+  it("classifies the latest control test", () => {
+    const test = (result: "Passed" | "Failed" | "Inconclusive", evidenceIds: string[] = ["evidence-1"]) =>
+      withControl({ assuranceTests: [{ id: "t", testedAt: iso(-1), testedByPersonId: "p", result, evidenceIds }] });
+    expect(codesFor(test("Failed"))).toContain("failed-control-test");
+    expect(codesFor(test("Inconclusive"))).toContain("inconclusive-control-test");
+    expect(codesFor(test("Passed", []))).toContain("unsupported-control-test");
+    const supported = codesFor(test("Passed"));
+    expect(supported).not.toContain("unsupported-control-test");
+    expect(supported).not.toContain("untested-control");
+  });
+
+  it("flags lapsed test cadence for operating controls only", () => {
+    const lapsed = withControl({ testCadenceDays: 7, assuranceTests: [{ id: "t", testedAt: iso(-10), testedByPersonId: "p", result: "Passed", evidenceIds: ["evidence-1"] }] });
+    expect(codesFor(lapsed)).toContain("overdue-control-test");
+    expect(codesFor({ ...lapsed, controls: [{ ...lapsed.controls[0], lifecycle: "Retired" }] })).not.toContain("overdue-control-test");
+    const current = withControl({ testCadenceDays: 30, assuranceTests: [{ id: "t", testedAt: iso(-10), testedByPersonId: "p", result: "Passed", evidenceIds: ["evidence-1"] }] });
+    expect(codesFor(current)).not.toContain("overdue-control-test");
+  });
+
+  it("leaves legacy control review findings unchanged when no test exists", () => {
+    expect(codesFor(makeAssessment())).toContain("untested-control");
+    expect(codesFor(withControl({ effectiveness: "Weak", effectivenessReviewedAt: timestamp, effectivenessReviewedBy: "Founder" }))).toContain("weak-control");
+  });
+});
