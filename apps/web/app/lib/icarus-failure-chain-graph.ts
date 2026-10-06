@@ -121,6 +121,7 @@ export type IcarusFailureModeChainState =
   | "Material exposure"
   | "Corroborating exposure"
   | "Dependency health affected"
+  | "Scenario affected"
   | "Barrier-held"
   | "Not current";
 
@@ -189,6 +190,7 @@ export type IcarusDependencyGraphInput = {
   assurance: IcarusAssuranceResult;
   strategicObjectives: ReadonlyMap<string, IcarusStrategicObjectiveContext>;
   dependencyHealth?: IcarusDependencyHealthRegistry;
+  controlAssuranceOverrides?: ReadonlyMap<string, IcarusControlAssuranceStatus>;
 };
 
 export function getIcarusFailureModeNodeId(assessmentId: string, failureModeId: string): string {
@@ -234,9 +236,11 @@ function getModeState(
   exposure: IcarusExposure | undefined,
   activeBarriers: number,
   dependencyHealthAffected: boolean,
+  scenarioAffected: boolean,
 ): IcarusFailureModeChainState {
   if (material && exposure) return getIcarusMaterialityTier(exposure) === "Material" ? "Material exposure" : "Corroborating exposure";
   if (dependencyHealthAffected) return "Dependency health affected";
+  if (scenarioAffected) return "Scenario affected";
   return activeBarriers > 0 ? "Barrier-held" : "Not current";
 }
 
@@ -327,11 +331,15 @@ export function buildIcarusDependencyGraph(input: IcarusDependencyGraphInput): I
       const activeBarrierNodeIds: string[] = [];
       const capableBarrierNodeIds: string[] = [];
       let dependencyHealthAffected = false;
+      let scenarioAffected = false;
       const barrierStates: IcarusBarrierState[] = [];
 
       modeControls.forEach((control) => {
-        const status = controlAssurance.get(control.id)?.status ?? "Not operating";
+        const status = input.controlAssuranceOverrides?.get(getIcarusControlNodeId(assessmentId, control.id))
+          ?? controlAssurance.get(control.id)?.status
+          ?? "Not operating";
         const controlNodeId = getIcarusControlNodeId(assessmentId, control.id);
+        if (input.controlAssuranceOverrides?.has(controlNodeId)) scenarioAffected = true;
         controlNodeIds.push(controlNodeId);
         addNode({
           id: controlNodeId,
@@ -409,7 +417,9 @@ export function buildIcarusDependencyGraph(input: IcarusDependencyGraphInput): I
         });
       });
 
-      const state = getModeState(modeAssurance.material, modeAssurance.exposure, activeBarrierNodeIds.length, dependencyHealthAffected);
+      const state = getModeState(
+        modeAssurance.material, modeAssurance.exposure, activeBarrierNodeIds.length, dependencyHealthAffected, scenarioAffected,
+      );
       addNode({
         id: modeNodeId,
         kind: "Failure mode",

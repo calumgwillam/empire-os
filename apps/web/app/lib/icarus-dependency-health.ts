@@ -10,7 +10,7 @@ export const ICARUS_DEPENDENCY_HEALTH_STATES = [
 ] as const;
 
 export type IcarusDependencyHealthState = (typeof ICARUS_DEPENDENCY_HEALTH_STATES)[number];
-export type IcarusDependencyHealthSource = "Explicit" | "Derived";
+export type IcarusDependencyHealthSource = "Explicit" | "Derived" | "Scenario override";
 
 export type IcarusDependencyHealthBasis =
   | "active-person"
@@ -32,7 +32,8 @@ export type IcarusDependencyHealthBasis =
   | "unsupported-project-state"
   | "no-operational-health-evidence"
   | "missing-source-record"
-  | "conflicting-record-state";
+  | "conflicting-record-state"
+  | "scenario-override";
 
 export type IcarusDependencyHealth = {
   reference: IcarusRecordReference;

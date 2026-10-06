@@ -35,6 +35,9 @@ import type {
   IcarusDependencyResilience,
   IcarusResilienceIntervention,
 } from "../lib/icarus-dependency-resilience";
+import type { IcarusStrategicIntelligence } from "../lib/icarus-intelligence-pipeline";
+import type { IcarusStressTestingInput } from "../lib/icarus-stress-testing";
+import IcarusStressLab from "./icarus-stress-lab";
 
 type IcarusPanelProps = {
   assessments: readonly IcarusAssessmentRecord[];
@@ -55,6 +58,8 @@ type IcarusPanelProps = {
   criticalDependencies?: readonly IcarusDependencyHealth[];
   dependencyResilience?: readonly IcarusDependencyResilience[];
   resilienceInterventions?: readonly IcarusResilienceIntervention[];
+  stressTestingInput?: IcarusStressTestingInput;
+  stressBaseline?: IcarusStrategicIntelligence;
   people?: readonly IcarusAssurancePersonOption[];
   actions?: readonly IcarusAssuranceActionOption[];
 };
@@ -123,6 +128,8 @@ export default function IcarusPanel({
   criticalDependencies = [],
   dependencyResilience = [],
   resilienceInterventions = [],
+  stressTestingInput,
+  stressBaseline,
   people = [],
   actions = [],
 }: IcarusPanelProps) {
@@ -365,6 +372,9 @@ export default function IcarusPanel({
         resilienceInterventions={resilienceInterventions}
         referenceTitle={(reference) => referenceTitle(reference, sources)}
       />
+      {stressTestingInput && stressBaseline ? (
+        <IcarusStressLab input={stressTestingInput} baseline={stressBaseline} />
+      ) : null}
 
       <IcarusAssuranceRollupSection
         rollup={assuranceRollup}

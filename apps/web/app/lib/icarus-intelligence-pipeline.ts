@@ -62,6 +62,7 @@ import {
   type IcarusExposureSnapshotEntry,
 } from "./icarus-exposure-history";
 import type { IcarusObjectiveImportance } from "./icarus-materiality-policy";
+import type { IcarusControlAssuranceStatus } from "./icarus-assurance-policy";
 import {
   buildIcarusDependencyHealthRegistry,
   type IcarusDependencyHealth,
@@ -105,6 +106,10 @@ export type IcarusStrategicIntelligenceInput = {
   founderDependencyActive: boolean;
   // One clock for every time-dependent stage. Defaults to the current time.
   nowMs?: number;
+  // Transient hooks used only by the isolated Icarus stress-test engine.
+  dependencyHealthOverrides?: ReadonlyMap<string, IcarusDependencyHealth>;
+  controlAssuranceOverrides?: ReadonlyMap<string, IcarusControlAssuranceStatus>;
+  includeExposureSnapshot?: boolean;
 };
 
 export type IcarusStrategicIntelligence = {
@@ -150,12 +155,14 @@ export function buildIcarusObjectiveContext(
 
 export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntelligenceInput): IcarusStrategicIntelligence {
   const nowMs = input.nowMs ?? Date.now();
-  const dependencyHealth = buildIcarusDependencyHealthRegistry({
+  const derivedDependencyHealth = buildIcarusDependencyHealthRegistry({
     sourceRecords: input.sourceRecords,
     people: input.people,
     actions: input.actions,
     nowMs,
   });
+  const dependencyHealth = new Map(derivedDependencyHealth);
+  input.dependencyHealthOverrides?.forEach((health, key) => dependencyHealth.set(key, health));
   const assessmentStatuses = new Map<string, IcarusAssessmentStatus>();
   input.assessments.forEach((assessment) => {
     if (!assessmentStatuses.has(assessment.id)) assessmentStatuses.set(assessment.id, assessment.status);
@@ -196,6 +203,7 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     primaryFounderId: input.primaryFounderId,
     founderDependencyActive: input.founderDependencyActive,
     dependencyHealth,
+    controlAssuranceOverrides: input.controlAssuranceOverrides,
   });
   const dependencyResilience = buildIcarusDependencyResilience(failureChains.dependencyGraph);
   const resilienceInterventions = buildIcarusResilienceInterventions(dependencyResilience);
@@ -255,7 +263,9 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     strategicSignals,
     correlationSignals: buildIcarusCorrelationSignals({ signals: strategicSignals }),
     founderFocusRisks: buildIcarusFounderFocusRisks(strategicSignals),
-    exposureSnapshot: buildIcarusExposureSnapshot(strategicSignals, dependencyHistorySnapshots),
+    exposureSnapshot: input.includeExposureSnapshot === false
+      ? []
+      : buildIcarusExposureSnapshot(strategicSignals, dependencyHistorySnapshots),
   };
 }
 

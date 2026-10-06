@@ -10069,6 +10069,24 @@ export default function Home() {
     primaryFounderId: founderPerson?.id ?? null,
     founderDependencyActive: founderDependentWork.length > 0,
   });
+  const icarusStressTestingInput = {
+    assessments: icarusAssessments,
+    sourceRecords: icarusSourceRecords,
+    strategicObjectives,
+    people: people.map(({ id, status }) => ({ id, status })),
+    actions: actionRecords.map(({ id, status, dueDate }) => ({ id, status, dueDate })),
+    primaryFounderId: founderPerson?.id ?? null,
+    founderDependencyActive: founderDependentWork.length > 0,
+    founderDependentWork,
+    operationalIndependenceWork: operationalIndependence.classifiedItems.map(({ objectType, id, title, pillar, state }) => ({
+      objectType,
+      id,
+      title,
+      pillar,
+      state,
+    })),
+    nowMs: icarusIntelligence.nowMs,
+  };
 
   const decisionTrackRecord = (() => {
     const validOutcomeRatings = new Set(["Worked", "Partially worked", "Failed"]);
@@ -19671,6 +19689,8 @@ export default function Home() {
               criticalDependencies={icarusIntelligence.criticalDependencies}
               dependencyResilience={icarusIntelligence.dependencyResilience}
               resilienceInterventions={icarusIntelligence.resilienceInterventions}
+              stressTestingInput={icarusStressTestingInput}
+              stressBaseline={icarusIntelligence}
               failureChains={icarusIntelligence.failureChains}
               healthTriggeredChains={icarusIntelligence.healthTriggeredChains}
               people={people.map(({ id, name, status }) => ({ id, name, status }))}
