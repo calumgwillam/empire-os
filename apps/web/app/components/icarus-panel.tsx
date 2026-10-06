@@ -22,7 +22,6 @@ import type { IcarusAssuranceResult } from "../lib/icarus-assurance";
 import type { IcarusAssuranceRollup } from "../lib/icarus-assurance-rollup";
 import IcarusAssuranceSection, {
   IcarusAssuranceRollupSection,
-  type IcarusAssuranceActionOption,
   type IcarusAssurancePersonOption,
 } from "./icarus-assurance-section";
 import IcarusFailureChainSection from "./icarus-failure-chain-section";
@@ -38,6 +37,12 @@ import type {
 import type { IcarusStrategicIntelligence } from "../lib/icarus-intelligence-pipeline";
 import type { IcarusStressTestingInput } from "../lib/icarus-stress-testing";
 import IcarusStressLab from "./icarus-stress-lab";
+import IcarusTreatmentSection from "./icarus-treatment-section";
+import {
+  createIcarusStressTreatmentTarget,
+  type IcarusTreatmentExecution,
+  type IcarusTreatmentIndex,
+} from "../lib/icarus-treatment";
 
 type IcarusPanelProps = {
   assessments: readonly IcarusAssessmentRecord[];
@@ -60,8 +65,11 @@ type IcarusPanelProps = {
   resilienceInterventions?: readonly IcarusResilienceIntervention[];
   stressTestingInput?: IcarusStressTestingInput;
   stressBaseline?: IcarusStrategicIntelligence;
+  treatmentIndex?: IcarusTreatmentIndex;
   people?: readonly IcarusAssurancePersonOption[];
-  actions?: readonly IcarusAssuranceActionOption[];
+  actions?: readonly IcarusTreatmentExecution[];
+  projects?: readonly IcarusTreatmentExecution[];
+  onOpenRecord?: (recordType: string, recordId: string) => void;
 };
 
 const focusRingClass = " ring-2 ring-[#755520] ring-offset-2";
@@ -130,8 +138,11 @@ export default function IcarusPanel({
   resilienceInterventions = [],
   stressTestingInput,
   stressBaseline,
+  treatmentIndex,
   people = [],
   actions = [],
+  projects = [],
+  onOpenRecord = () => undefined,
 }: IcarusPanelProps) {
   useEffect(() => {
     if (!focusTarget || typeof document === "undefined") return;
@@ -165,6 +176,26 @@ export default function IcarusPanel({
     onChange(assessments.map((assessment) => assessment.id === id
       ? { ...update(assessment), updatedAt: new Date().toISOString() }
       : assessment));
+  };
+
+  const promoteStressFinding = (
+    assessmentId: string,
+    finding: string,
+    affectedAssessmentIds: readonly string[],
+    failureModeIds: readonly string[],
+  ) => {
+    const target = createIcarusStressTreatmentTarget(
+      assessmentId,
+      finding,
+      affectedAssessmentIds,
+      failureModeIds,
+      new Date().toISOString(),
+    );
+    if (assessments.some((assessment) => assessment.treatmentTargets?.some((entry) => entry.id === target.id))) return;
+    updateAssessment(assessmentId, (current) => ({
+      ...current,
+      treatmentTargets: [...(current.treatmentTargets ?? []), target],
+    }));
   };
 
   const addAssessment = () => {
@@ -372,8 +403,19 @@ export default function IcarusPanel({
         resilienceInterventions={resilienceInterventions}
         referenceTitle={(reference) => referenceTitle(reference, sources)}
       />
+      {loaded && treatmentIndex ? (
+        <IcarusTreatmentSection
+          assessments={assessments}
+          index={treatmentIndex}
+          actions={actions}
+          projects={projects}
+          writable={writable}
+          onChange={onChange}
+          onOpenRecord={onOpenRecord}
+        />
+      ) : null}
       {stressTestingInput && stressBaseline ? (
-        <IcarusStressLab input={stressTestingInput} baseline={stressBaseline} />
+        <IcarusStressLab input={stressTestingInput} baseline={stressBaseline} onPromote={promoteStressFinding} />
       ) : null}
 
       <IcarusAssuranceRollupSection
@@ -455,7 +497,7 @@ export default function IcarusPanel({
                 assessment={assessment}
                 assurance={assurance?.byAssessmentId.get(assessment.id)}
                 people={people}
-                actions={actions}
+                actions={actions.map(({ recordId: id, title, status }) => ({ id, title, status }))}
                 writable={writable}
                 createId={createId}
                 onUpdate={(update) => updateAssessment(assessment.id, update)}

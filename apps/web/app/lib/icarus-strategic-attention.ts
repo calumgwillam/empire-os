@@ -139,6 +139,11 @@ export type IcarusStrategicSignal = {
   assurance?: IcarusSignalAssurance;
   // Attached by attachIcarusFailureChainToSignals (icarus-failure-chain-analysis). Absent => pre-failure-chain behaviour.
   failureChain?: IcarusSignalFailureChain;
+  treatment?: {
+    attentionReasons: readonly string[];
+    founderOwnedCount: number;
+    delegatedCount: number;
+  };
 };
 
 export type IcarusStrategicAttentionInput = {

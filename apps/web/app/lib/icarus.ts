@@ -125,6 +125,34 @@ export type IcarusAssuranceActionLink = {
   linkedAt: string;
 };
 
+export type IcarusTreatmentExecutionLink = {
+  recordType: "Action" | "Project";
+  recordId: string;
+  linkedAt: string;
+};
+
+export type IcarusTreatmentTargetRecord = {
+  id: string;
+  sourceKind: "Assurance obligation" | "Dependency / resilience intervention" | "Failure-chain restoration" | "Stress discovery";
+  sourceId: string;
+  assessmentId: string;
+  failureModeId?: string;
+  controlId?: string;
+  dependencyReference?: IcarusRecordReference;
+  treatmentKind: string;
+  reason: string;
+  basis: string[];
+  affectedAssessmentIds: string[];
+  objectiveIds: string[];
+  pillarIds: string[];
+  provenance: {
+    kind: "Assurance obligation" | "Dependency / resilience recommendation" | "Failure-chain recommendation" | "Stress discovery";
+    finding: string;
+  };
+  executionLinks: IcarusTreatmentExecutionLink[];
+  promotedAt: string;
+};
+
 export type IcarusAssessmentStatus = "Open" | "Monitoring" | "Closed";
 
 export type IcarusAssessmentRecord = {
@@ -143,6 +171,8 @@ export type IcarusAssessmentRecord = {
   nextReviewBy?: string;
   acceptances?: IcarusExposureAcceptance[];
   assuranceActionLinks?: IcarusAssuranceActionLink[];
+  // Derived treatment candidates remain separate from these explicitly promoted, persisted targets.
+  treatmentTargets?: IcarusTreatmentTargetRecord[];
 };
 
 export type IcarusSourceRecord = IcarusRecordReference & {
@@ -250,6 +280,10 @@ export function getIcarusReferenceKey(reference: IcarusRecordReference): string 
   return `${reference.recordType}:${reference.recordId}`;
 }
 
+export function getIcarusTreatmentTargetId(sourceKind: string, sourceId: string): string {
+  return `icarus-treatment:${encodeURIComponent(sourceKind)}:${encodeURIComponent(sourceId)}`;
+}
+
 export function isIcarusRecordReference(value: unknown): value is IcarusRecordReference {
   return isPlainObject(value)
     && ICARUS_SOURCE_TYPES.includes(value.recordType as IcarusSourceType)
@@ -327,7 +361,9 @@ export function isIcarusAssessmentRecord(value: unknown): value is IcarusAssessm
     || (value.acceptances !== undefined
       && (!Array.isArray(value.acceptances) || !value.acceptances.every(isIcarusExposureAcceptance)))
     || (value.assuranceActionLinks !== undefined
-      && (!Array.isArray(value.assuranceActionLinks) || !value.assuranceActionLinks.every(isIcarusAssuranceActionLink)))) {
+      && (!Array.isArray(value.assuranceActionLinks) || !value.assuranceActionLinks.every(isIcarusAssuranceActionLink)))
+    || (value.treatmentTargets !== undefined
+      && (!Array.isArray(value.treatmentTargets) || !value.treatmentTargets.every(isIcarusTreatmentTargetRecord)))) {
     return false;
   }
   return true;
@@ -380,6 +416,42 @@ function isIcarusAssuranceActionLink(value: unknown): value is IcarusAssuranceAc
     && isNonEmptyString(value.linkedAt);
 }
 
+function isIcarusTreatmentExecutionLink(value: unknown): value is IcarusTreatmentExecutionLink {
+  return isPlainObject(value)
+    && (value.recordType === "Action" || value.recordType === "Project")
+    && isNonEmptyString(value.recordId)
+    && isNonEmptyString(value.linkedAt);
+}
+
+function isIcarusTreatmentTargetRecord(value: unknown): value is IcarusTreatmentTargetRecord {
+  return isPlainObject(value)
+    && isNonEmptyString(value.id)
+    && ["Assurance obligation", "Dependency / resilience intervention", "Failure-chain restoration", "Stress discovery"].includes(String(value.sourceKind))
+    && isNonEmptyString(value.sourceId)
+    && value.id === getIcarusTreatmentTargetId(String(value.sourceKind), value.sourceId)
+    && isNonEmptyString(value.assessmentId)
+    && isOptionalNonEmptyString(value.failureModeId)
+    && isOptionalNonEmptyString(value.controlId)
+    && (value.dependencyReference === undefined || isIcarusRecordReference(value.dependencyReference))
+    && isNonEmptyString(value.treatmentKind)
+    && typeof value.reason === "string"
+    && Array.isArray(value.basis)
+    && value.basis.every(isNonEmptyString)
+    && Array.isArray(value.affectedAssessmentIds)
+    && value.affectedAssessmentIds.every(isNonEmptyString)
+    && Array.isArray(value.objectiveIds)
+    && value.objectiveIds.every(isNonEmptyString)
+    && Array.isArray(value.pillarIds)
+    && value.pillarIds.every(isNonEmptyString)
+    && isPlainObject(value.provenance)
+    && ["Assurance obligation", "Dependency / resilience recommendation", "Failure-chain recommendation", "Stress discovery"].includes(String(value.provenance.kind))
+    && typeof value.provenance.finding === "string"
+    && Array.isArray(value.executionLinks)
+    && value.executionLinks.every(isIcarusTreatmentExecutionLink)
+    && isNonEmptyString(value.promotedAt)
+    && isValidIcarusDate(value.promotedAt);
+}
+
 function filterUniqueById<T>(entries: readonly T[], idOf: (entry: T) => string): T[] {
   const seen = new Set<string>();
   return entries.filter((entry) => {
@@ -390,9 +462,9 @@ function filterUniqueById<T>(entries: readonly T[], idOf: (entry: T) => string):
   });
 }
 
-// Recovers the optional Phase 3 assurance fields only: a malformed optional field is dropped (or its malformed
-// entries filtered) so one bad assurance value cannot make all Icarus data unreadable. Core Icarus fields stay
-// strictly validated by assertIcarusDataStructure. Records without assurance fields are returned unchanged.
+// Recovers optional assurance and treatment fields: malformed optional entries are dropped so one bad value cannot
+// make all Icarus data unreadable. Core Icarus fields stay strictly validated by assertIcarusDataStructure.
+// Legacy records without these optional fields remain unchanged.
 export function normaliseIcarusAssessmentData(value: unknown): unknown {
   if (!Array.isArray(value)) return value;
   return value.map((assessment: unknown) => {
@@ -433,6 +505,15 @@ export function normaliseIcarusAssessmentData(value: unknown): unknown {
           })
           .filter(isIcarusExposureAcceptance);
         next.acceptances = filterUniqueById(acceptances, (acceptance) => acceptance.id);
+      }
+    }
+    if ("treatmentTargets" in next) {
+      if (!Array.isArray(next.treatmentTargets)) delete next.treatmentTargets;
+      else {
+        next.treatmentTargets = filterUniqueById(
+          next.treatmentTargets.filter(isIcarusTreatmentTargetRecord),
+          (target) => target.id,
+        );
       }
     }
     if ("assuranceActionLinks" in next) {

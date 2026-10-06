@@ -94,6 +94,11 @@ type PageInputs = {
   };
   strategicDataConfidence: { limitations: FounderFocusLimitationInput[] };
   icarusStrategicSignals?: IcarusStrategicSignal[];
+  icarusTreatmentSummaries?: Map<string, {
+    attentionReasons: readonly string[];
+    founderOwnedCount: number;
+    delegatedCount: number;
+  }>;
 };
 
 // Exercise the actual page adapter and authoritative helpers without importing the client component.
@@ -126,6 +131,7 @@ function projectPageInput(overrides: Partial<PageInputs> = {}): FounderFocusInpu
     empireDecisionQueue: { founderReviewQueue: [] },
     strategicDataConfidence: { limitations: [] },
     ...overrides,
+    icarusTreatmentIndex: { summaries: overrides.icarusTreatmentSummaries ?? new Map() },
     // Mirrors the pipeline contract: founderFocusRisks = buildIcarusFounderFocusRisks(strategicSignals).
     icarusIntelligence: { founderFocusRisks: buildIcarusFounderFocusRisks(overrides.icarusStrategicSignals ?? []) },
     buildFounderFocus: (value: FounderFocusInput) => {
@@ -924,6 +930,21 @@ describe("Founder Focus page projection of Icarus strategic risks", () => {
     };
     expect(projectPageInput().strategicRisks).toEqual([]);
     expect(projectPageInput({ icarusStrategicSignals: [signal] }).strategicRisks).toEqual(buildIcarusFounderFocusRisks([signal]));
+    const treatedRisks = projectPageInput({
+      icarusStrategicSignals: [signal],
+      icarusTreatmentSummaries: new Map([["a1", {
+        attentionReasons: ["1 treatment is blocked"],
+        founderOwnedCount: 1,
+        delegatedCount: 0,
+      }]]),
+    }).strategicRisks;
+    if (!treatedRisks) throw new Error("Expected projected strategic risks to be available");
+    expect(treatedRisks).toHaveLength(1);
+    expect(treatedRisks[0]).toMatchObject({
+      treatmentReasons: ["1 treatment is blocked"],
+      founderOwnedTreatmentCount: 1,
+      delegatedTreatmentCount: 0,
+    });
   });
 });
 

@@ -59,6 +59,9 @@ export type FounderFocusStrategicRiskInput = {
   reason: string;
   anchorRecordKeys: readonly string[];
   referenceKey: string;
+  treatmentReasons?: readonly string[];
+  founderOwnedTreatmentCount?: number;
+  delegatedTreatmentCount?: number;
 };
 
 export type FounderFocusInput = {
@@ -201,6 +204,19 @@ export function buildFounderFocus(input: FounderFocusInput): FounderFocusCandida
 
   const clusterKeyByRecordKey = indexConvergentSituationMembers(input.convergentRisks);
   input.strategicRisks?.forEach((risk) => {
+    const treatmentReason = risk.treatmentReasons?.length
+      ? ` Treatment accountability: ${risk.treatmentReasons.join("; ")}.`
+      : "";
+    const founderTreatmentReason = risk.founderOwnedTreatmentCount
+      ? ` ${risk.founderOwnedTreatmentCount} treatment${risk.founderOwnedTreatmentCount === 1 ? " is" : "s are"} owned by the primary founder.`
+      : "";
+    const delegatedTreatmentReason = risk.delegatedTreatmentCount
+      ? ` ${risk.delegatedTreatmentCount} treatment${risk.delegatedTreatmentCount === 1 ? " is" : "s are"} assigned to non-founder owners.`
+      : "";
+    const treatmentBand = treatmentReason || founderTreatmentReason
+      ? Math.min(risk.band, 3)
+      : risk.band;
+    const treatmentText = `${treatmentReason}${founderTreatmentReason}${delegatedTreatmentReason}`;
     // The strategic-risk input is authoritative for its own identity; drop any generic signalled duplicate.
     const ownClusterKey = clusterKeyByRecordKey.get(risk.key);
     if (!ownClusterKey) candidatesByRecord.delete(risk.key);
@@ -213,9 +229,9 @@ export function buildFounderFocus(input: FounderFocusInput): FounderFocusCandida
       if (strategicRiskKeys.includes(risk.referenceKey)) return;
       candidatesByRecord.set(anchored.key, {
         ...anchored,
-        band: Math.min(anchored.band, risk.band),
+        band: Math.min(anchored.band, treatmentBand),
         score: Math.max(anchored.score, risk.score),
-        reason: `${anchored.reason} Also: ${risk.reason}`,
+        reason: `${anchored.reason} Also: ${risk.reason}${treatmentText}`,
         strategicRiskKeys: [...strategicRiskKeys, risk.referenceKey],
       });
       return;
@@ -228,9 +244,9 @@ export function buildFounderFocus(input: FounderFocusInput): FounderFocusCandida
       title: risk.title,
       area: risk.area,
       score: risk.score,
-      band: risk.band,
+      band: treatmentBand,
       urgencyTime: null,
-      reason: risk.reason,
+      reason: `${risk.reason}${treatmentText}`,
       strategicRiskKeys: [risk.referenceKey],
     });
   });

@@ -703,6 +703,13 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
     // Signals arrive in deterministic materiality order; anchor resolution uses the current Command order.
     input.icarus.forEach((signal) => {
       const placement = getIcarusCommandPlacement(signal);
+      const treatmentReasons = signal.treatment?.attentionReasons ?? [];
+      const treatmentAnnotation = treatmentReasons.length > 0
+        ? ` Treatment routing: ${treatmentReasons.join("; ")}.`
+        : "";
+      const treatmentRank = treatmentReasons.length > 0
+        ? Math.max(3, placement.attentionRank - 1)
+        : placement.attentionRank;
       const anchored = signal.anchors
         .map((anchor) => uniqueByKey.get(`${anchor.objectType}:${anchor.id}`))
         .filter((item): item is CommandAttentionItem => Boolean(item))
@@ -712,10 +719,10 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
         // Same underlying issue already in Command: enrich it instead of adding a duplicate item.
         addAttentionItem(placement.anchoredReason, {
           ...anchored,
-          reason: placement.anchoredReason,
-          reasons: [placement.anchoredReason],
+          reason: `${placement.anchoredReason}${treatmentAnnotation}`,
+          reasons: [`${placement.anchoredReason}${treatmentAnnotation}`],
         });
-        anchored.attentionRank = Math.min(anchored.attentionRank, placement.attentionRank);
+        anchored.attentionRank = Math.min(anchored.attentionRank, treatmentRank);
         anchored.tieWeight = Math.max(anchored.tieWeight, placement.tieWeight);
         if (anchored.operationalPriorityScore === undefined) anchored.operationalPriorityScore = anchored.priorityScore;
         anchored.priorityScore = Math.max(anchored.priorityScore, placement.priorityScore);
@@ -729,15 +736,16 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
         return;
       }
 
+      const placementReasons = [...placement.reasons, ...treatmentReasons];
       addAttentionItem(placement.reasons[0], {
         id: signal.assessmentId,
         objectType: "Icarus",
         title: signal.outcome,
-        reason: placement.reasons.join(" • "),
-        reasons: placement.reasons,
+        reason: placementReasons.join(" • "),
+        reasons: placementReasons,
         statusText: placement.statusText,
         area: signal.area,
-        attentionRank: placement.attentionRank,
+        attentionRank: treatmentRank,
         tieWeight: placement.tieWeight,
         priorityScore: placement.priorityScore,
         sortDate: 0,

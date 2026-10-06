@@ -224,30 +224,11 @@ export default function IcarusAssuranceSection({
                     {obligation.actionIds.map((actionId) => (
                       <span key={actionId} className="rounded border border-[#d3cbc3] bg-white px-2 py-0.5 text-[10px]">
                         {actionTitle(actionId)}
-                        {writable ? <button type="button" className="ml-2 font-medium text-[#6a3328]" onClick={() => onUpdate((current) => ({
-                          ...current,
-                          assuranceActionLinks: (current.assuranceActionLinks ?? []).filter((link) => !(link.obligationId === obligation.id && link.actionId === actionId)),
-                        }))}>Unlink</button> : null}
                       </span>
                     ))}
                   </div>
                 ) : null}
-                {writable ? (
-                  <label className={`${labelClass} mt-1 max-w-sm`}>Link an existing Action as remediation
-                    <select className={inputClass} value="" onChange={(event) => {
-                      const actionId = event.target.value;
-                      if (!actionId) return;
-                      onUpdate((current) => (current.assuranceActionLinks ?? []).some((link) => link.obligationId === obligation.id && link.actionId === actionId)
-                        ? current
-                        : { ...current, assuranceActionLinks: [...(current.assuranceActionLinks ?? []), { obligationId: obligation.id, actionId, linkedAt: new Date().toISOString() }] });
-                    }}>
-                      <option value="">Select an existing Action</option>
-                      {actions.filter((action) => !obligation.actionIds.includes(action.id)).map((action) => (
-                        <option key={action.id} value={action.id}>{action.title} ({action.status})</option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
+                <a className="mt-1 inline-block text-[10px] underline" href="#icarus-treatment-routing">Route or update execution in Treatment status</a>
               </li>
             ))}
           </ul>

@@ -953,6 +953,28 @@ describe("Command Icarus strategic attention integration", () => {
   });
 });
 
+it("enriches the existing Icarus issue with treatment routing without crossing Command priority caps", () => {
+  const [signal] = icarusSignals([icarusAssessment({
+    linkedRecords: [{ recordType: "Pillar", recordId: "Excavation" }],
+  })]);
+  const ordinary = buildCommandAttention(input({ icarus: [signal] })).items[0];
+  const treated = buildCommandAttention(input({
+    icarus: [{
+      ...signal,
+      treatment: {
+        attentionReasons: ["1 material treatment target is unrouted"],
+        founderOwnedCount: 0,
+        delegatedCount: 0,
+      },
+    }],
+  })).items[0];
+
+  expect(treated.objectType).toBe("Icarus");
+  expect(treated.reason).toContain("1 material treatment target is unrouted");
+  expect(treated.attentionRank).toBe(Math.max(3, ordinary.attentionRank - 1));
+  expect(treated.attentionRank).toBeGreaterThanOrEqual(3);
+});
+
 describe("Command strategic-risk convergence resolution", () => {
   const riskItem = (overrides: Partial<CommandAttentionItem> = {}) => item({
     id: "icarus-1",

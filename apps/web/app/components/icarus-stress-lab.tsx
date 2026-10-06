@@ -21,6 +21,12 @@ type Target =
 type Props = {
   input: IcarusStressTestingInput;
   baseline: IcarusStrategicIntelligence;
+  onPromote?: (
+    assessmentId: string,
+    finding: string,
+    affectedAssessmentIds: readonly string[],
+    failureModeIds: readonly string[],
+  ) => void;
 };
 
 const sectionClass = "mt-4 rounded-xl border border-[#9b896d] bg-[#f8f4ed] p-4";
@@ -119,7 +125,7 @@ function displayLabel(key: string, input: IcarusStressTestingInput): string {
   return source ? `${source.recordType}: ${source.title} · ${source.recordId}` : key;
 }
 
-export default function IcarusStressLab({ input, baseline }: Props) {
+export default function IcarusStressLab({ input, baseline, onPromote }: Props) {
   const targets = buildTargets(input, baseline);
   const recommendations = buildIcarusRecommendedStressScenarios(input, baseline);
   const [firstTargetKey, setFirstTargetKey] = useState("");
@@ -144,7 +150,7 @@ export default function IcarusStressLab({ input, baseline }: Props) {
     <section aria-label="Icarus Stress Lab" className={sectionClass}>
       <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#51483e]">Icarus · Stress tests</h2>
       <p className={`${itemClass} mt-1`}>
-        Explore deterministic one- or two-node counterfactuals using explicit causal links. Scenario results never enter live Command or Empire OS records.
+        Explore deterministic one- or two-node counterfactuals using explicit causal links. Scenario states stay hypothetical; only a structural finding can enter treatment after explicit promotion.
       </p>
 
       {recommendations.length > 0 ? (
@@ -264,6 +270,23 @@ export default function IcarusStressLab({ input, baseline }: Props) {
                   <li key={assessment.assessmentId} className={itemClass}>
                     <a className="underline" href={`#icarus-assessment-${assessment.assessmentId}`}>{assessment.outcome}</a>
                     {` · failure modes ${assessment.failureModeIds.join(", ")}`}
+                    {onPromote ? (
+                      <>
+                        {" · "}
+                        <button
+                          type="button"
+                          className="underline"
+                          onClick={() => onPromote(
+                            assessment.assessmentId,
+                            `Stress testing identified new exposure for ${assessment.outcome}; failure modes: ${assessment.failureModeIds.join(", ")}.`,
+                            result.delta.newlyExposedAssessments.map((entry) => entry.assessmentId),
+                            assessment.failureModeIds,
+                          )}
+                        >
+                          Promote finding to treatment
+                        </button>
+                      </>
+                    ) : null}
                   </li>
                 ))}
               </ul>

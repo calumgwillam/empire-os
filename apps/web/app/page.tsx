@@ -229,6 +229,7 @@ import {
   normaliseIcarusExposureSnapshot,
   type IcarusExposureSnapshotEntry,
 } from "./lib/icarus-exposure-history";
+import { buildIcarusTreatmentIndex } from "./lib/icarus-treatment";
 import {
   attachIndividualOperatingUnderstandings,
   assertIndividualOperatingUnderstandingsDataStructure,
@@ -10069,6 +10070,50 @@ export default function Home() {
     primaryFounderId: founderPerson?.id ?? null,
     founderDependencyActive: founderDependentWork.length > 0,
   });
+  const icarusTreatmentActions = actionRecords.map((action) => ({
+    recordType: "Action" as const,
+    recordId: action.id,
+    title: action.actionTitle || action.title,
+    status: action.status,
+    owner: action.owner,
+    ownerPersonId: action.ownerPersonId,
+    dueDate: action.dueDate,
+    priority: action.priority,
+    context: getAreaText(action),
+  }));
+  const icarusTreatmentProjects = projects.map((project) => ({
+    recordType: "Project" as const,
+    recordId: project.id,
+    title: project.projectName,
+    status: project.status,
+    owner: project.owner,
+    dueDate: project.targetCompletionDate,
+    blocked: project.health === "Blocked" || project.status === "Blocked",
+    context: project.area,
+  }));
+  // One pure treatment index feeds Icarus, Command and Founder from authoritative Action/Project records.
+  const icarusTreatmentIndex = buildIcarusTreatmentIndex({
+    assessments: icarusAssessments,
+    assurance: icarusIntelligence.assurance,
+    resilience: icarusIntelligence.dependencyResilience,
+    recommendations: icarusIntelligence.resilienceInterventions,
+    barrierRestorations: icarusIntelligence.failureChains.barrierWeaknesses,
+    actions: icarusTreatmentActions,
+    projects: icarusTreatmentProjects,
+    founderPersonId: founderPerson?.id ?? null,
+    nowMs: icarusIntelligence.nowMs,
+  });
+  const icarusSignalsWithTreatment = icarusIntelligence.strategicSignals.map((signal) => {
+    const treatment = icarusTreatmentIndex.summaries.get(signal.assessmentId);
+    return treatment ? {
+      ...signal,
+      treatment: {
+        attentionReasons: treatment.attentionReasons,
+        founderOwnedCount: treatment.founderOwnedCount,
+        delegatedCount: treatment.delegatedCount,
+      },
+    } : signal;
+  });
   const icarusStressTestingInput = {
     assessments: icarusAssessments,
     sourceRecords: icarusSourceRecords,
@@ -11106,7 +11151,7 @@ export default function Home() {
     })),
     procurementQueue: capitalAllocation.procurementQueue,
     learning: commandLearningInput,
-    icarus: icarusIntelligence.strategicSignals,
+    icarus: icarusSignalsWithTreatment,
     nowMs: Date.now(),
   });
   const toCommandAttentionItem = (item: CommandAttentionItem): AttentionItem => {
@@ -11586,7 +11631,15 @@ export default function Home() {
       rootRecordKey: cluster.rootRecordKey,
     })),
     recordFacts: founderFocusRecordFacts,
-    strategicRisks: icarusIntelligence.founderFocusRisks,
+    strategicRisks: icarusIntelligence.founderFocusRisks.map((risk) => {
+      const treatment = icarusTreatmentIndex.summaries.get(risk.id);
+      return treatment ? {
+        ...risk,
+        treatmentReasons: treatment.attentionReasons,
+        founderOwnedTreatmentCount: treatment.founderOwnedCount,
+        delegatedTreatmentCount: treatment.delegatedCount,
+      } : risk;
+    }),
   });
   const founderFocusList = founderFocusCandidates.slice(0, 3);
 
@@ -19691,10 +19744,13 @@ export default function Home() {
               resilienceInterventions={icarusIntelligence.resilienceInterventions}
               stressTestingInput={icarusStressTestingInput}
               stressBaseline={icarusIntelligence}
+              treatmentIndex={icarusTreatmentIndex}
               failureChains={icarusIntelligence.failureChains}
               healthTriggeredChains={icarusIntelligence.healthTriggeredChains}
               people={people.map(({ id, name, status }) => ({ id, name, status }))}
-              actions={actionRecords.map(({ id, actionTitle, status }) => ({ id, title: actionTitle, status }))}
+              actions={icarusTreatmentActions}
+              projects={icarusTreatmentProjects}
+              onOpenRecord={handleOpenAttentionRecord}
             />
           ) : activeDestination ? (
             <ConvertedDestinationView
