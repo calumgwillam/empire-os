@@ -5,7 +5,7 @@
 // Icarus stages and also consumes Command Attention:
 //
 //   Stage A  buildIcarusStrategicIntelligence
-//            reviews -> exposure signals (materiality) -> assurance -> assured signals
+//            dependency health -> reviews -> exposure signals (materiality) -> assurance -> assured signals
 //              -> failure chains (dependency graph, barriers, SPOFs, cut points) -> chain-annotated signals
 //              -> correlation signals / Founder Focus risks / exposure+assurance snapshot / assurance rollup
 //   (caller) Command Attention base items  <- Stage A strategicSignals
@@ -20,6 +20,7 @@
 // can be computed from stale upstream data.
 import {
   buildIcarusReview,
+  getIcarusReferenceKey,
   type IcarusAssessmentRecord,
   type IcarusAssessmentStatus,
   type IcarusReview,
@@ -45,6 +46,7 @@ import {
   attachIcarusFailureChainToSignals,
   buildIcarusFailureChainIntelligence,
   type IcarusFailureChainIntelligence,
+  type IcarusHealthTriggeredChain,
 } from "./icarus-failure-chain-analysis";
 import {
   buildIcarusClusterContributions,
@@ -54,8 +56,23 @@ import {
   type IcarusCorrelationSignal,
 } from "./icarus-correlation";
 import { buildIcarusSystemicExposure, type IcarusSystemicExposure } from "./icarus-systemic-exposure";
-import { buildIcarusExposureSnapshot, type IcarusExposureSnapshotEntry } from "./icarus-exposure-history";
+import {
+  buildIcarusExposureSnapshot,
+  type IcarusDependencyHealthSnapshot,
+  type IcarusExposureSnapshotEntry,
+} from "./icarus-exposure-history";
 import type { IcarusObjectiveImportance } from "./icarus-materiality-policy";
+import {
+  buildIcarusDependencyHealthRegistry,
+  type IcarusDependencyHealth,
+  type IcarusDependencyHealthRegistry,
+} from "./icarus-dependency-health";
+import {
+  buildIcarusDependencyResilience,
+  buildIcarusResilienceInterventions,
+  type IcarusDependencyResilience,
+  type IcarusResilienceIntervention,
+} from "./icarus-dependency-resilience";
 import {
   resolveStrategicRiskConvergence,
   type ConvergentSituationInput,
@@ -101,8 +118,15 @@ export type IcarusStrategicIntelligence = {
   assessmentStatuses: ReadonlyMap<string, IcarusAssessmentStatus>;
   assurance: IcarusAssuranceResult;
   assuranceRollup: IcarusAssuranceRollup;
+  dependencyHealth: IcarusDependencyHealthRegistry;
+  dependencyResilience: IcarusDependencyResilience[];
+  resilienceInterventions: IcarusResilienceIntervention[];
+  criticalDependencies: IcarusDependencyHealth[];
+  unhealthyCriticalDependencies: IcarusDependencyHealth[];
+  unknownCriticalDependencies: IcarusDependencyHealth[];
   // Failure-chain / dependency intelligence derived from the same signals and final assurance state.
   failureChains: IcarusFailureChainIntelligence;
+  healthTriggeredChains: IcarusHealthTriggeredChain[];
   // Authoritative material strategic signals with assurance attached: the single input for Command, Founder Focus,
   // correlation, systemic exposure and history.
   strategicSignals: IcarusStrategicSignal[];
@@ -126,6 +150,12 @@ export function buildIcarusObjectiveContext(
 
 export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntelligenceInput): IcarusStrategicIntelligence {
   const nowMs = input.nowMs ?? Date.now();
+  const dependencyHealth = buildIcarusDependencyHealthRegistry({
+    sourceRecords: input.sourceRecords,
+    people: input.people,
+    actions: input.actions,
+    nowMs,
+  });
   const assessmentStatuses = new Map<string, IcarusAssessmentStatus>();
   input.assessments.forEach((assessment) => {
     if (!assessmentStatuses.has(assessment.id)) assessmentStatuses.set(assessment.id, assessment.status);
@@ -165,8 +195,46 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     strategicObjectives,
     primaryFounderId: input.primaryFounderId,
     founderDependencyActive: input.founderDependencyActive,
+    dependencyHealth,
   });
+  const dependencyResilience = buildIcarusDependencyResilience(failureChains.dependencyGraph);
+  const resilienceInterventions = buildIcarusResilienceInterventions(dependencyResilience);
   const strategicSignals = attachIcarusFailureChainToSignals(assuredSignals, failureChains);
+  const criticalAssessmentIds = new Set(failureChains.dependencyGraph.assessments
+    .filter((assessment) => assessment.material || assessment.objectiveImportance === "Critical")
+    .map((assessment) => assessment.assessmentId));
+  const criticalDependencyKeys = new Set(failureChains.dependencyGraph.controls
+    .filter((control) => criticalAssessmentIds.has(control.assessmentId))
+    .flatMap((control) => control.dependencyNodeIds));
+  const criticalDependencyHealth = new Map<string, IcarusDependencyHealth>();
+  failureChains.dependencyGraph.controls
+    .filter((control) => criticalAssessmentIds.has(control.assessmentId))
+    .forEach((control) => control.dependencyHealth.forEach((health) => {
+      const key = getIcarusReferenceKey(health.reference);
+      if (criticalDependencyKeys.has(key)) criticalDependencyHealth.set(key, health);
+    }));
+  const unhealthyCriticalDependencies = [...criticalDependencyHealth.values()]
+    .filter((health) => health.health === "Failed" || health.health === "Degraded" || health.health === "Unknown" || health.health === "Watch")
+    .sort((left, right) => `${left.reference.recordType}:${left.reference.recordId}`.localeCompare(`${right.reference.recordType}:${right.reference.recordId}`));
+  const criticalDependencies = [...criticalDependencyHealth.values()]
+    .sort((left, right) => getIcarusReferenceKey(left.reference).localeCompare(getIcarusReferenceKey(right.reference)));
+  const unknownCriticalDependencies = unhealthyCriticalDependencies.filter((health) => health.health === "Unknown");
+  const dependencyResilienceByKey = new Map(dependencyResilience.map((entry) =>
+    [getIcarusReferenceKey(entry.reference), entry] as const));
+  const dependencyHistoryByAssessment = new Map<string, Map<string, IcarusDependencyHealthSnapshot>>();
+  failureChains.dependencyGraph.controls.forEach((control) => {
+    control.dependencyHealth.forEach((health) => {
+      const dependencyKey = getIcarusReferenceKey(health.reference);
+      const resilience = dependencyResilienceByKey.get(dependencyKey)?.resilience ?? "Unknown";
+      const perAssessment = dependencyHistoryByAssessment.get(control.assessmentId) ?? new Map();
+      perAssessment.set(dependencyKey, { dependencyKey, health: health.health, resilience });
+      dependencyHistoryByAssessment.set(control.assessmentId, perAssessment);
+    });
+  });
+  const dependencyHistorySnapshots = new Map(
+    [...dependencyHistoryByAssessment].map(([assessmentId, dependencies]) =>
+      [assessmentId, [...dependencies.values()].sort((left, right) => left.dependencyKey.localeCompare(right.dependencyKey))] as const),
+  );
 
   return {
     nowMs,
@@ -176,11 +244,18 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     assessmentStatuses,
     assurance,
     assuranceRollup: buildIcarusAssuranceRollup(assurance.assessments),
+    dependencyHealth,
+    dependencyResilience,
+    resilienceInterventions,
+    criticalDependencies,
+    unhealthyCriticalDependencies,
+    unknownCriticalDependencies,
     failureChains,
+    healthTriggeredChains: failureChains.healthTriggeredChains,
     strategicSignals,
     correlationSignals: buildIcarusCorrelationSignals({ signals: strategicSignals }),
     founderFocusRisks: buildIcarusFounderFocusRisks(strategicSignals),
-    exposureSnapshot: buildIcarusExposureSnapshot(strategicSignals),
+    exposureSnapshot: buildIcarusExposureSnapshot(strategicSignals, dependencyHistorySnapshots),
   };
 }
 

@@ -16,6 +16,14 @@ import {
   type IcarusBlastRadius,
   type IcarusChainPriority,
 } from "./icarus-failure-chain-policy";
+import {
+  ICARUS_DEPENDENCY_HEALTH_STATES,
+  type IcarusDependencyHealthState,
+} from "./icarus-dependency-health";
+import {
+  ICARUS_DEPENDENCY_RESILIENCE_STATES,
+  type IcarusDependencyResilienceState,
+} from "./icarus-dependency-resilience";
 
 // Optional assurance state captured alongside exposure. Absent on legacy snapshots and when assurance was not derived.
 export type IcarusAssuranceSnapshot = {
@@ -35,6 +43,12 @@ export type IcarusFailureChainSnapshot = {
   weakBarrierControlIds: string[];
 };
 
+export type IcarusDependencyHealthSnapshot = {
+  dependencyKey: string;
+  health: IcarusDependencyHealthState;
+  resilience: IcarusDependencyResilienceState;
+};
+
 // Compact, persisted representation of material Icarus exposure at a point in time.
 export type IcarusExposureSnapshotEntry = {
   key: string;
@@ -45,6 +59,7 @@ export type IcarusExposureSnapshotEntry = {
   riskScore: number;
   assurance?: IcarusAssuranceSnapshot;
   failureChain?: IcarusFailureChainSnapshot;
+  dependencyHealth?: IcarusDependencyHealthSnapshot[];
 };
 
 export const ICARUS_STRUCTURAL_CHANGE_KINDS = [
@@ -52,13 +67,21 @@ export const ICARUS_STRUCTURAL_CHANGE_KINDS = [
   "Became cross-pillar",
   "Blast radius increased",
   "Shared concentration increased",
+  "Dependency health failed",
+  "Dependency health degraded",
+  "Dependency health became unknown",
+  "Resilience deteriorated",
   "Single point of failure removed",
   "Blast radius decreased",
   "Barrier restored",
+  "Dependency recovered",
+  "Dependency health validated",
+  "Resilience improved",
 ] as const;
 export type IcarusStructuralChangeKind = (typeof ICARUS_STRUCTURAL_CHANGE_KINDS)[number];
 export const ICARUS_STRUCTURAL_DETERIORATIONS: readonly IcarusStructuralChangeKind[] = [
   "Single point of failure appeared", "Became cross-pillar", "Blast radius increased", "Shared concentration increased",
+  "Dependency health failed", "Dependency health degraded", "Dependency health became unknown", "Resilience deteriorated",
 ];
 
 // Structural change keyed either by risk (blast/barrier) or by a SPOF / shared-dependency key (Empire-wide).
@@ -74,6 +97,10 @@ export type IcarusStructuralChange = {
   controlIds: string[];
   previousCount?: number;
   count?: number;
+  previousHealth?: IcarusDependencyHealthState;
+  health?: IcarusDependencyHealthState;
+  previousResilience?: IcarusDependencyResilienceState;
+  resilience?: IcarusDependencyResilienceState;
 };
 
 export const ICARUS_ASSURANCE_CHANGE_KINDS = [
@@ -131,7 +158,10 @@ export type IcarusExposureTrajectory = {
 
 const changeOrder: readonly IcarusExposureChangeKind[] = ["Worsened", "New", "Persistent", "Improved", "Resolved"];
 
-export function buildIcarusExposureSnapshot(signals: readonly IcarusStrategicSignal[]): IcarusExposureSnapshotEntry[] {
+export function buildIcarusExposureSnapshot(
+  signals: readonly IcarusStrategicSignal[],
+  dependencyHealthByAssessment: ReadonlyMap<string, readonly IcarusDependencyHealthSnapshot[]> = new Map(),
+): IcarusExposureSnapshotEntry[] {
   return signals
     .map((signal) => ({
       key: signal.key,
@@ -158,6 +188,10 @@ export function buildIcarusExposureSnapshot(signals: readonly IcarusStrategicSig
           weakBarrierControlIds: [...signal.failureChain.weakBarrierControlIds].sort(),
         },
       } : {}),
+      ...(dependencyHealthByAssessment.get(signal.assessmentId)
+        ? { dependencyHealth: [...dependencyHealthByAssessment.get(signal.assessmentId)!]
+          .sort((left, right) => left.dependencyKey.localeCompare(right.dependencyKey)) }
+        : {}),
     }))
     .sort((left, right) => left.key.localeCompare(right.key));
 }
@@ -183,9 +217,31 @@ export function normaliseIcarusExposureSnapshot(value: unknown): IcarusExposureS
       riskScore: typeof record.riskScore === "number" && Number.isFinite(record.riskScore) ? record.riskScore : 0,
       ...normaliseAssuranceSnapshot(record.assurance),
       ...normaliseFailureChainSnapshot(record.failureChain),
+      ...normaliseDependencyHealthSnapshot(record.dependencyHealth),
     });
   });
   return [...entries.values()].sort((left, right) => left.key.localeCompare(right.key));
+}
+
+function normaliseDependencyHealthSnapshot(value: unknown): { dependencyHealth?: IcarusDependencyHealthSnapshot[] } {
+  if (!Array.isArray(value)) return {};
+  const entries = new Map<string, IcarusDependencyHealthSnapshot>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") return {};
+    const record = entry as Record<string, unknown>;
+    if (typeof record.dependencyKey !== "string" || !record.dependencyKey.trim()) return {};
+    if (!ICARUS_DEPENDENCY_HEALTH_STATES.includes(record.health as IcarusDependencyHealthState)) return {};
+    if (!ICARUS_DEPENDENCY_RESILIENCE_STATES.includes(record.resilience as IcarusDependencyResilienceState)) return {};
+    const snapshot: IcarusDependencyHealthSnapshot = {
+      dependencyKey: record.dependencyKey,
+      health: record.health as IcarusDependencyHealthState,
+      resilience: record.resilience as IcarusDependencyResilienceState,
+    };
+    const existing = entries.get(snapshot.dependencyKey);
+    if (existing && (existing.health !== snapshot.health || existing.resilience !== snapshot.resilience)) return {};
+    entries.set(snapshot.dependencyKey, snapshot);
+  }
+  return { dependencyHealth: [...entries.values()].sort((left, right) => left.dependencyKey.localeCompare(right.dependencyKey)) };
 }
 
 const acceptanceValues: readonly IcarusAssuranceSnapshot["acceptance"][] = ["None", "Active", "Expired", "Invalid", "Revoked"];
@@ -244,6 +300,33 @@ function holdersByKey(
   return holders;
 }
 
+type DependencyHealthHolders = {
+  health: IcarusDependencyHealthState;
+  resilience: IcarusDependencyResilienceState;
+  holders: IcarusExposureSnapshotEntry[];
+};
+
+function dependencyHealthHolders(
+  entries: readonly IcarusExposureSnapshotEntry[],
+): Map<string, DependencyHealthHolders> {
+  const holders = new Map<string, DependencyHealthHolders>();
+  const conflicting = new Set<string>();
+  entries.forEach((entry) => entry.dependencyHealth?.forEach((snapshot) => {
+    const existing = holders.get(snapshot.dependencyKey);
+    if (!existing) {
+      holders.set(snapshot.dependencyKey, { health: snapshot.health, resilience: snapshot.resilience, holders: [entry] });
+      return;
+    }
+    if (existing.health !== snapshot.health || existing.resilience !== snapshot.resilience) {
+      conflicting.add(snapshot.dependencyKey);
+      return;
+    }
+    existing.holders.push(entry);
+  }));
+  conflicting.forEach((key) => holders.delete(key));
+  return holders;
+}
+
 const holderIds = (entries: readonly IcarusExposureSnapshotEntry[]) => ({
   riskKeys: [...new Set(entries.map((entry) => entry.key))].sort(),
   assessmentIds: [...new Set(entries.map((entry) => entry.assessmentId))].sort(),
@@ -295,6 +378,51 @@ function compareStructure(
     const previousCount = holderIds(previousShared.get(key) ?? []).assessmentIds.length;
     if (count >= 2 && count > previousCount) {
       changes.push({ key, change: "Shared concentration increased", ...holderIds(holders), controlIds: [], previousCount, count });
+    }
+  });
+  const previousDependencyHealth = dependencyHealthHolders(previous);
+  const currentDependencyHealth = dependencyHealthHolders(current);
+  const resilienceRank: Record<IcarusDependencyResilienceState, number> = {
+    Resilient: 0,
+    Adequate: 1,
+    Fragile: 2,
+    "Critical dependency": 3,
+    Unknown: -1,
+  };
+  [...previousDependencyHealth.keys()].filter((key) => currentDependencyHealth.has(key)).sort().forEach((key) => {
+    const before = previousDependencyHealth.get(key)!;
+    const after = currentDependencyHealth.get(key)!;
+    const holders = [...new Map([...before.holders, ...after.holders].map((entry) => [entry.key, entry] as const)).values()];
+    const base = {
+      key: `Dependency:${key}`,
+      ...holderIds(holders),
+      controlIds: [],
+    };
+    if (before.health !== after.health) {
+      let change: IcarusStructuralChangeKind | undefined;
+      if (after.health === "Failed") change = "Dependency health failed";
+      else if (after.health === "Degraded" && (before.health === "Healthy" || before.health === "Watch")) {
+        change = "Dependency health degraded";
+      } else if (after.health === "Unknown" && before.health !== "Unknown" && before.health !== "Not applicable") {
+        change = "Dependency health became unknown";
+      } else if (before.health === "Unknown" && after.health !== "Unknown" && after.health !== "Not applicable") {
+        change = "Dependency health validated";
+      } else if ((before.health === "Failed" || before.health === "Degraded") && (after.health === "Healthy" || after.health === "Watch")) {
+        change = "Dependency recovered";
+      }
+      if (change) changes.push({ ...base, change, previousHealth: before.health, health: after.health });
+    }
+    if (before.resilience !== after.resilience) {
+      const beforeRank = resilienceRank[before.resilience];
+      const afterRank = resilienceRank[after.resilience];
+      if (beforeRank >= 0 && afterRank >= 0 && beforeRank !== afterRank) {
+        changes.push({
+          ...base,
+          change: afterRank > beforeRank ? "Resilience deteriorated" : "Resilience improved",
+          previousResilience: before.resilience,
+          resilience: after.resilience,
+        });
+      }
     }
   });
 
@@ -391,7 +519,8 @@ export function compareIcarusExposure(input: {
     ICARUS_ASSURANCE_CHANGE_KINDS.indexOf(left.change) - ICARUS_ASSURANCE_CHANGE_KINDS.indexOf(right.change)
     || left.key.localeCompare(right.key));
   assuranceChanges.forEach((entry) => { assuranceCounts[entry.change] += 1; });
-  const hasStructuralBaseline = input.previous.some((entry) => entry.failureChain !== undefined);
+  const hasStructuralBaseline = input.previous.some((entry) =>
+    entry.failureChain !== undefined || entry.dependencyHealth !== undefined);
   const structuralChanges = hasStructuralBaseline ? compareStructure(input.previous, input.current) : [];
   structuralChanges.forEach((entry) => { structuralCounts[entry.change] += 1; });
   return {

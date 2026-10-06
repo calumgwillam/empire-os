@@ -1,4 +1,4 @@
-import { getIcarusIdentityKey, type IcarusRecordReference } from "./icarus";
+import { getIcarusIdentityKey, getIcarusReferenceKey, type IcarusRecordReference } from "./icarus";
 import type { IcarusControlAssuranceStatus } from "./icarus-assurance-policy";
 import { getIcarusExposureRank } from "./icarus-materiality-policy";
 import type { IcarusStrategicSignal } from "./icarus-strategic-attention";
@@ -29,6 +29,7 @@ import {
   type IcarusSpofKind,
 } from "./icarus-failure-chain-policy";
 import { OPERATING_PILLARS, type OperatingPillarId } from "./pillar-identity";
+import type { IcarusDependencyHealth } from "./icarus-dependency-health";
 
 // Failure-chain analysis over the Icarus dependency graph: propagation, barriers, dependency breaks, single points
 // of failure, shared dependencies, blast radius, cut points and chain priority. Pure and deterministic; every count
@@ -80,6 +81,26 @@ export type IcarusFailureChain = {
   spofKeys: string[];
   sharedDependencyKeys: string[];
   riskScore: number;
+};
+
+export type IcarusHealthTriggeredChainState =
+  | "Active exposure"
+  | "Emerging exposure"
+  | "Monitoring condition"
+  | "Assurance/data gap";
+
+export type IcarusHealthTriggeredChain = {
+  key: string;
+  dependency: IcarusDependencyHealth;
+  controlNodeId: string;
+  controlId: string;
+  assessmentId: string;
+  failureModeId: string;
+  outcome: string;
+  mechanism: string;
+  state: IcarusHealthTriggeredChainState;
+  strategic: boolean;
+  blast: IcarusBlastRadiusSummary;
 };
 
 export type IcarusDependencyBreak = {
@@ -201,6 +222,7 @@ export type IcarusFailureChainIntelligence = {
   failureChains: IcarusFailureChain[];
   // Chains an assured barrier currently interrupts.
   interruptedChains: IcarusFailureChain[];
+  healthTriggeredChains: IcarusHealthTriggeredChain[];
   singlePointsOfFailure: IcarusSinglePointOfFailure[];
   sharedDependencies: IcarusSharedDependency[];
   barrierWeaknesses: IcarusBarrierRestoration[];
@@ -681,6 +703,54 @@ export function buildIcarusFailureChainIntelligence(input: IcarusFailureChainInp
   const failureChains = chains.filter((chain) => chain.status !== "Interrupted").sort(compareChains);
   const interruptedChains = chains.filter((chain) => chain.status === "Interrupted").sort(compareChains);
 
+  const healthTriggeredChains: IcarusHealthTriggeredChain[] = graph.controls.flatMap((control) => {
+    const modeNodeId = getIcarusFailureModeNodeId(control.assessmentId, control.failureModeId);
+    const mode = graph.modeById.get(modeNodeId);
+    const assessment = graph.assessmentById.get(control.assessmentId);
+    if (!mode || !assessment || mode.state === "Not current") return [];
+    return control.dependencyHealth.flatMap((dependency) => {
+      const state: IcarusHealthTriggeredChainState | undefined = dependency.health === "Failed" ? "Active exposure"
+        : dependency.health === "Degraded" ? "Emerging exposure"
+          : dependency.health === "Watch" ? "Monitoring condition"
+            : dependency.health === "Unknown" ? "Assurance/data gap" : undefined;
+      if (!state) return [];
+      const dependencyNodeId = getIcarusReferenceKey(dependency.reference);
+      const independentlyHeld = mode.activeBarrierNodeIds.some((nodeId) => {
+        if (nodeId === control.nodeId) return false;
+        return !graph.controlById.get(nodeId)?.dependencyNodeIds.includes(dependencyNodeId);
+      });
+      if (independentlyHeld) return [];
+      const blast = summarise([modeReach(mode)]);
+      const strategic = assessment.material
+        || assessment.objectiveImportance === "Critical"
+        || blast.criticalObjectiveIds.length > 0
+        || blast.materialAssessmentIds.length > 1
+        || getIcarusBlastRadiusRank(blast.radius) > getIcarusBlastRadiusRank("Local");
+      if (dependency.health === "Unknown" && !strategic) return [];
+      return [{
+        key: `health:${dependencyNodeId}:${control.nodeId}`,
+        dependency,
+        controlNodeId: control.nodeId,
+        controlId: control.controlId,
+        assessmentId: control.assessmentId,
+        failureModeId: control.failureModeId,
+        outcome: assessment.outcome,
+        mechanism: mode.mechanism,
+        state,
+        strategic,
+        blast,
+      }];
+    });
+  }).sort((left, right) => {
+    const rank: Record<IcarusHealthTriggeredChainState, number> = {
+      "Active exposure": 0,
+      "Emerging exposure": 1,
+      "Assurance/data gap": 2,
+      "Monitoring condition": 3,
+    };
+    return rank[left.state] - rank[right.state] || left.key.localeCompare(right.key);
+  });
+
   // ── Cut points / restorations / two-point fragility ──
   const criticalCutPoints: IcarusCutPoint[] = breaks
     .filter((entry) => entry.exposedModeNodeIds.length > 0)
@@ -719,11 +789,11 @@ export function buildIcarusFailureChainIntelligence(input: IcarusFailureChainInp
       || left.key.localeCompare(right.key));
 
   const twoPointFragilities: IcarusTwoPointFragility[] = currentModes
-    .filter((mode) => mode.activeBarrierNodeIds.length === 2)
+    .filter((mode) => mode.capableBarrierNodeIds.length === 2)
     .flatMap((mode) => {
       const blast = summarise([modeReach(mode)]);
       if (blast.objectiveIds.length === 0) return [];
-      const [first, second] = mode.activeBarrierNodeIds as [string, string];
+      const [first, second] = mode.capableBarrierNodeIds as [string, string];
       const secondDependencies = new Set(graph.controlById.get(second)?.dependencyNodeIds ?? []);
       const sharedDependencyNodeIds = (graph.controlById.get(first)?.dependencyNodeIds ?? []).filter((id) => secondDependencies.has(id));
       return [{
@@ -763,11 +833,36 @@ export function buildIcarusFailureChainIntelligence(input: IcarusFailureChainInp
 
   // ── Signal annotation (Command / Founder Focus) ──
   const signalAnnotations = annotateSignals({ signals: input.signals, failureChains, spofs, shared: causalShared });
+  const healthAnnotationByAssessment = new Set<string>();
+  healthTriggeredChains.filter((chain) => chain.strategic && chain.state !== "Monitoring condition")
+    .forEach((chain) => {
+      if (healthAnnotationByAssessment.has(chain.assessmentId)) return;
+      const signal = input.signals.find((candidate) => candidate.assessmentId === chain.assessmentId);
+      if (!signal) return;
+      healthAnnotationByAssessment.add(chain.assessmentId);
+      const existing = signalAnnotations.get(chain.assessmentId);
+      const commandReason = `DEPENDENCY: ${chain.dependency.reference.recordType.toUpperCase()} ${chain.dependency.reference.recordId} IS ${chain.dependency.health.toUpperCase()}${chain.state === "Assurance/data gap" ? " — CRITICAL HEALTH UNVERIFIED" : " — REQUIRED BARRIER WEAKENED"}`;
+      const focusReason = `Dependency: ${chain.dependency.reference.recordType} is ${chain.dependency.health.toLowerCase()}${chain.state === "Assurance/data gap" ? "; critical health is unverified." : "; a required barrier is weakened."}`;
+      signalAnnotations.set(chain.assessmentId, {
+        priority: existing?.priority ?? "Elevated",
+        blastRadius: existing?.blastRadius ?? chain.blast.radius,
+        basis: existing?.basis ?? [],
+        spofKeys: existing?.spofKeys ?? [],
+        sharedDependencyKeys: existing?.sharedDependencyKeys ?? [],
+        weakBarrierControlIds: [...new Set([...(existing?.weakBarrierControlIds ?? []), chain.controlId])].sort(),
+        commandReason: existing?.commandReason
+          ? `${existing.commandReason}; ${chain.dependency.reference.recordType.toUpperCase()} HEALTH ${chain.dependency.health.toUpperCase()}`
+          : commandReason,
+        focusReason: existing?.focusReason ? `${existing.focusReason} ${focusReason}` : focusReason,
+        dependencyHealthLift: true,
+      });
+    });
 
   return {
     dependencyGraph: graph,
     failureChains,
     interruptedChains,
+    healthTriggeredChains,
     singlePointsOfFailure: spofs,
     sharedDependencies: shared,
     barrierWeaknesses,

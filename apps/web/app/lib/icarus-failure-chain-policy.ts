@@ -1,4 +1,5 @@
 import type { IcarusControlAssuranceStatus } from "./icarus-assurance-policy";
+import type { IcarusDependencyHealthState } from "./icarus-dependency-health";
 
 // Shared vocabulary for Icarus failure-chain intelligence. Every state here is categorical/ordinal and derived
 // from persisted Icarus records plus live strategic context; nothing is a probability or an expected loss.
@@ -17,8 +18,25 @@ export function getIcarusBarrierState(status: IcarusControlAssuranceStatus): Ica
     case "Evidence insufficient":
     case "Inconclusive": return "Weak";
     case "Untested": return "Unknown";
-    case "Not operating": return "None";
+    case "Not operating": return "Failed";
   }
+}
+
+export function getIcarusEffectiveBarrierState(
+  status: IcarusControlAssuranceStatus,
+  requiredDependencyHealth: readonly IcarusDependencyHealthState[],
+): IcarusBarrierState {
+  const controlBarrier = getIcarusBarrierState(status);
+  if (controlBarrier === "Failed") return "Failed";
+  if (requiredDependencyHealth.includes("Failed")) return "Failed";
+
+  if (controlBarrier === "Active") {
+    if (requiredDependencyHealth.includes("Unknown")) return "Unknown";
+    if (requiredDependencyHealth.includes("Degraded")) return "Weak";
+    return "Active";
+  }
+  if (controlBarrier === "Weak" && requiredDependencyHealth.includes("Unknown")) return "Unknown";
+  return controlBarrier;
 }
 
 // Strongest-first; used to describe the best barrier a failure mode currently has.
@@ -159,19 +177,20 @@ export type IcarusSignalFailureChain = {
   // Uppercase Command reason and sentence-case Founder Focus text describe the same issue.
   commandReason?: string;
   focusReason?: string;
+  dependencyHealthLift?: boolean;
 };
 
 const COMMAND_RANK_FLOOR = 3;
 const FOCUS_BAND_FLOOR = 3;
 
-// A Critical systemic chain may lift a signal by one step, never into execution ranks 1–2, and never on top of an
-// assurance lift (a single structural lift per signal).
+// A critical chain or strategically material dependency-health issue may lift a signal once, never into execution
+// ranks 1–2, and never on top of an assurance lift.
 export function adjustIcarusCommandRankForFailureChain(
   rank: number,
   unliftedRank: number,
   failureChain?: IcarusSignalFailureChain,
 ): number {
-  if (!failureChain || failureChain.priority !== "Critical" || !failureChain.commandReason) return rank;
+  if (!failureChain || (failureChain.priority !== "Critical" && !failureChain.dependencyHealthLift) || !failureChain.commandReason) return rank;
   if (rank < unliftedRank) return rank;
   return Math.max(COMMAND_RANK_FLOOR, rank - 1);
 }
@@ -181,7 +200,7 @@ export function adjustIcarusFounderFocusBandForFailureChain(
   unliftedBand: number,
   failureChain?: IcarusSignalFailureChain,
 ): number {
-  if (!failureChain || failureChain.priority !== "Critical" || !failureChain.focusReason) return band;
+  if (!failureChain || (failureChain.priority !== "Critical" && !failureChain.dependencyHealthLift) || !failureChain.focusReason) return band;
   if (band < unliftedBand) return band;
   return Math.max(FOCUS_BAND_FLOOR, band - 1);
 }

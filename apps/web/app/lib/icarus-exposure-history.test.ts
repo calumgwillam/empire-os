@@ -234,6 +234,55 @@ describe("Icarus assurance history", () => {
     state: "Weak" as const, escalation: "None" as const, acceptance: "None" as const, failedControlIds: [], ...overrides,
   });
 
+  describe("Icarus dependency health history", () => {
+    const dependency = (
+      assessmentId: string,
+      health: "Healthy" | "Failed" | "Degraded" | "Unknown",
+      resilience: "Adequate" | "Fragile" | "Critical dependency" | "Unknown",
+    ) => ({ dependencyKey: `Project:${assessmentId}`, health, resilience });
+    const healthyDependency = dependency("a", "Healthy", "Adequate");
+
+    it("persists compact dependency categories and drops malformed optional health state", () => {
+      const [stored] = normaliseIcarusExposureSnapshot([
+        { ...entry("a"), dependencyHealth: [healthyDependency] },
+        { ...entry("b"), dependencyHealth: [{ dependencyKey: "Person:p2", health: "Impossible", resilience: "Unknown" }] },
+      ])!;
+      expect(stored.dependencyHealth).toEqual([healthyDependency]);
+      expect(stored).not.toHaveProperty("failureChain");
+      const malformed = normaliseIcarusExposureSnapshot([
+        { ...entry("a"), dependencyHealth: [{ dependencyKey: "Project:p1", health: "Impossible", resilience: "Fragile" }] },
+      ])!;
+      expect(malformed[0]).not.toHaveProperty("dependencyHealth");
+    });
+
+    it("compares deterioration, failure, unknown transitions, recovery, and resilience changes", () => {
+      const previous = [
+        entry("degraded", { dependencyHealth: [dependency("degraded", "Healthy", "Adequate")] }),
+        entry("failed", { dependencyHealth: [dependency("failed", "Healthy", "Adequate")] }),
+        entry("unknown", { dependencyHealth: [dependency("unknown", "Healthy", "Adequate")] }),
+        entry("recovered", { dependencyHealth: [dependency("recovered", "Failed", "Critical dependency")] }),
+      ];
+      const current = [
+        entry("degraded", { dependencyHealth: [dependency("degraded", "Degraded", "Fragile")] }),
+        entry("failed", { dependencyHealth: [dependency("failed", "Failed", "Critical dependency")] }),
+        entry("unknown", { dependencyHealth: [dependency("unknown", "Unknown", "Unknown")] }),
+        entry("recovered", { dependencyHealth: [dependency("recovered", "Healthy", "Adequate")] }),
+      ];
+      const result = compareIcarusExposure({ previous, current });
+
+      expect(result.hasStructuralBaseline).toBe(true);
+      expect(result.structuralChanges.map((change) => [change.change, change.assessmentIds])).toEqual([
+        ["Dependency health failed", ["failed"]],
+        ["Dependency health degraded", ["degraded"]],
+        ["Dependency health became unknown", ["unknown"]],
+        ["Resilience deteriorated", ["degraded"]],
+        ["Resilience deteriorated", ["failed"]],
+        ["Dependency recovered", ["recovered"]],
+        ["Resilience improved", ["recovered"]],
+      ]);
+    });
+  });
+
   it("captures assurance on snapshots only when the signal carries it", () => {
     const withAssurance = {
       ...signal("a", "Exposed", ["m1"], 500),

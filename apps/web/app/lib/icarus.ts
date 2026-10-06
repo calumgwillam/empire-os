@@ -147,6 +147,9 @@ export type IcarusAssessmentRecord = {
 
 export type IcarusSourceRecord = IcarusRecordReference & {
   title: string;
+  status?: string;
+  health?: string;
+  relevantAt?: string;
 };
 
 export type IcarusEvidenceFreshness =

@@ -7,13 +7,18 @@ import {
 import type { IcarusAssuranceResult, IcarusControlAssurance } from "./icarus-assurance";
 import type { IcarusControlAssuranceStatus } from "./icarus-assurance-policy";
 import {
+  getIcarusDependencyHealth,
+  type IcarusDependencyHealth,
+  type IcarusDependencyHealthRegistry,
+} from "./icarus-dependency-health";
+import {
   getIcarusMaterialityTier,
   type IcarusExposure,
   type IcarusObjectiveImportance,
 } from "./icarus-materiality-policy";
 import type { IcarusStrategicObjectiveContext, IcarusStrategicSignal } from "./icarus-strategic-attention";
 import {
-  getIcarusBarrierState,
+  getIcarusEffectiveBarrierState,
   getIcarusBarrierStrengthRank,
   getIcarusPropagationStateRank,
   isIcarusBarrierCapable,
@@ -112,7 +117,12 @@ export type IcarusChainEdge = {
   provenance: IcarusChainEdgeProvenance[];
 };
 
-export type IcarusFailureModeChainState = "Material exposure" | "Corroborating exposure" | "Barrier-held" | "Not current";
+export type IcarusFailureModeChainState =
+  | "Material exposure"
+  | "Corroborating exposure"
+  | "Dependency health affected"
+  | "Barrier-held"
+  | "Not current";
 
 export type IcarusChainAssessment = {
   nodeId: string;
@@ -152,6 +162,7 @@ export type IcarusChainControl = {
   barrier: IcarusBarrierState;
   // DEPENDS_ON targets (record node ids), sorted.
   dependencyNodeIds: string[];
+  dependencyHealth: IcarusDependencyHealth[];
   ownerPersonId?: string;
 };
 
@@ -168,6 +179,7 @@ export type IcarusDependencyGraph = {
   modeById: ReadonlyMap<string, IcarusChainFailureMode>;
   controlById: ReadonlyMap<string, IcarusChainControl>;
   objectiveImportance: ReadonlyMap<string, IcarusObjectiveImportance>;
+  dependencyHealth: IcarusDependencyHealthRegistry;
 };
 
 export type IcarusDependencyGraphInput = {
@@ -176,6 +188,7 @@ export type IcarusDependencyGraphInput = {
   signals: readonly IcarusStrategicSignal[];
   assurance: IcarusAssuranceResult;
   strategicObjectives: ReadonlyMap<string, IcarusStrategicObjectiveContext>;
+  dependencyHealth?: IcarusDependencyHealthRegistry;
 };
 
 export function getIcarusFailureModeNodeId(assessmentId: string, failureModeId: string): string {
@@ -216,8 +229,14 @@ export function getIcarusFailureFlow(edge: IcarusChainEdge): [string, string] | 
   return [edge.from, edge.to];
 }
 
-function getModeState(material: boolean, exposure: IcarusExposure | undefined, activeBarriers: number): IcarusFailureModeChainState {
+function getModeState(
+  material: boolean,
+  exposure: IcarusExposure | undefined,
+  activeBarriers: number,
+  dependencyHealthAffected: boolean,
+): IcarusFailureModeChainState {
   if (material && exposure) return getIcarusMaterialityTier(exposure) === "Material" ? "Material exposure" : "Corroborating exposure";
+  if (dependencyHealthAffected) return "Dependency health affected";
   return activeBarriers > 0 ? "Barrier-held" : "Not current";
 }
 
@@ -227,6 +246,7 @@ function strongestBarrier(states: readonly IcarusBarrierState[]): IcarusBarrierS
 
 export function buildIcarusDependencyGraph(input: IcarusDependencyGraphInput): IcarusDependencyGraph {
   const nodes = new Map<string, IcarusChainNode>();
+  const dependencyHealthRegistry = new Map(input.dependencyHealth ?? []);
   const edges = new Map<string, IcarusChainEdge>();
   const signalByAssessment = new Map(input.signals.map((signal) => [signal.assessmentId, signal] as const));
   const firstAssessment = new Map<string, IcarusAssessmentRecord>();
@@ -306,16 +326,13 @@ export function buildIcarusDependencyGraph(input: IcarusDependencyGraphInput): I
       const controlNodeIds: string[] = [];
       const activeBarrierNodeIds: string[] = [];
       const capableBarrierNodeIds: string[] = [];
+      let dependencyHealthAffected = false;
       const barrierStates: IcarusBarrierState[] = [];
 
       modeControls.forEach((control) => {
         const status = controlAssurance.get(control.id)?.status ?? "Not operating";
-        const barrier = getIcarusBarrierState(status);
         const controlNodeId = getIcarusControlNodeId(assessmentId, control.id);
         controlNodeIds.push(controlNodeId);
-        barrierStates.push(barrier);
-        if (barrier === "Active") activeBarrierNodeIds.push(controlNodeId);
-        if (isIcarusBarrierCapable(barrier)) capableBarrierNodeIds.push(controlNodeId);
         addNode({
           id: controlNodeId,
           kind: "Control",
@@ -330,6 +347,7 @@ export function buildIcarusDependencyGraph(input: IcarusDependencyGraphInput): I
         );
 
         const dependencyNodeIds = new Set<string>();
+        const dependencyHealthByNode = new Map<string, IcarusDependencyHealth>();
         // Retired controls no longer implement anything; their links describe history, not dependency.
         if (control.lifecycle !== "Retired") {
           control.linkedRecords.forEach((reference) => {
@@ -352,12 +370,25 @@ export function buildIcarusDependencyGraph(input: IcarusDependencyGraphInput): I
             }
             const recordNodeId = addRecordNode(reference);
             dependencyNodeIds.add(recordNodeId);
+            const health = getIcarusDependencyHealth(dependencyHealthRegistry, reference);
+            dependencyHealthRegistry.set(getIcarusReferenceKey(reference), health);
+            dependencyHealthByNode.set(recordNodeId, health);
             addEdge(
               { type: "DEPENDS_ON", from: controlNodeId, to: recordNodeId, edgeClass: "Structural dependency", basis: "Direct", causal: true },
               { origin: "Control link", reason: "Control is implemented through this authoritative record", assessmentId, failureModeId: mode.id, controlId: control.id },
             );
           });
         }
+        const dependencyHealth = [...dependencyHealthByNode.values()].sort((left, right) =>
+          getIcarusReferenceKey(left.reference).localeCompare(getIcarusReferenceKey(right.reference)));
+        const barrier = getIcarusEffectiveBarrierState(status, dependencyHealth.map((entry) => entry.health));
+        if (barrier !== "Active" && dependencyHealth.some((entry) =>
+          entry.health === "Failed" || entry.health === "Degraded" || entry.health === "Unknown")) {
+          dependencyHealthAffected = true;
+        }
+        barrierStates.push(barrier);
+        if (barrier === "Active") activeBarrierNodeIds.push(controlNodeId);
+        if (isIcarusBarrierCapable(barrier)) capableBarrierNodeIds.push(controlNodeId);
         if (control.ownerPersonId) {
           addEdge(
             { type: "OWNED_BY", from: controlNodeId, to: addRecordNode({ recordType: "Person", recordId: control.ownerPersonId }), edgeClass: "Governance", basis: "Direct", causal: false },
@@ -373,11 +404,12 @@ export function buildIcarusDependencyGraph(input: IcarusDependencyGraphInput): I
           status,
           barrier,
           dependencyNodeIds: [...dependencyNodeIds].sort(),
+          dependencyHealth,
           ...(control.ownerPersonId ? { ownerPersonId: control.ownerPersonId } : {}),
         });
       });
 
-      const state = getModeState(modeAssurance.material, modeAssurance.exposure, activeBarrierNodeIds.length);
+      const state = getModeState(modeAssurance.material, modeAssurance.exposure, activeBarrierNodeIds.length, dependencyHealthAffected);
       addNode({
         id: modeNodeId,
         kind: "Failure mode",
@@ -529,6 +561,7 @@ export function buildIcarusDependencyGraph(input: IcarusDependencyGraphInput): I
     modeById: new Map(sortedModes.map((entry) => [entry.nodeId, entry] as const)),
     controlById: new Map(sortedControls.map((entry) => [entry.nodeId, entry] as const)),
     objectiveImportance,
+    dependencyHealth: dependencyHealthRegistry,
   };
 }
 

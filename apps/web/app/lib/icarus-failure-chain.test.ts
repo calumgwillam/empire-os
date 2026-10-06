@@ -1,7 +1,13 @@
 // Failure-chain / dependency intelligence: graph semantics, propagation, barriers, single points of failure, shared
 // dependencies, blast radius, cut points, pipeline integration, Command / Founder Focus and structural history.
 import { describe, expect, it } from "vitest";
-import type { IcarusAssessmentRecord, IcarusControl, IcarusEvidence, IcarusRecordReference } from "./icarus";
+import type {
+  IcarusAssessmentRecord,
+  IcarusControl,
+  IcarusEvidence,
+  IcarusRecordReference,
+  IcarusSourceRecord,
+} from "./icarus";
 import {
   buildIcarusStrategicIntelligence,
   type IcarusPipelineObjective,
@@ -83,13 +89,18 @@ const objectives: IcarusPipelineObjective[] = [
   { id: "closed-objective", pillar: "Excavation", importance: "Critical", status: "Achieved" },
 ];
 
-type RunOptions = { founderDependencyActive?: boolean; objectives?: IcarusPipelineObjective[] };
+type RunOptions = {
+  founderDependencyActive?: boolean;
+  objectives?: IcarusPipelineObjective[];
+  sourceRecords?: readonly IcarusSourceRecord[];
+  people?: { id: string; status: string }[];
+};
 function run(assessments: readonly IcarusAssessmentRecord[], options: RunOptions = {}): IcarusStrategicIntelligence {
   return buildIcarusStrategicIntelligence({
     assessments,
-    sourceRecords: [],
+    sourceRecords: options.sourceRecords ?? [],
     strategicObjectives: options.objectives ?? objectives,
-    people: [{ id: "founder", status: "Active" }, { id: "person-2", status: "Active" }],
+    people: options.people ?? [{ id: "founder", status: "Active" }, { id: "person-2", status: "Active" }],
     actions: [],
     primaryFounderId: "founder",
     founderDependencyActive: options.founderDependencyActive ?? false,
@@ -217,14 +228,34 @@ describe("Icarus failure chains — propagation", () => {
     expect(propagateIcarusFailure(graph, "mode", { blockedNodeIds: new Set(["assessment"]) })).toEqual([]);
   });
 
-  it("an assured barrier interrupts the chain; a failed barrier does not", () => {
+  it("keeps an assured barrier potential when its required SOP health is unknown", () => {
     const held = run(heldBySop());
-    expect(chains(held).failureChains).toEqual([]);
-    expect(chains(held).interruptedChains.map((chain) => [chain.key, chain.status, chain.barrier]))
-      .toEqual([["icarus-failure-mode:a1:m1", "Interrupted", "Active"], ["icarus-failure-mode:a2:m1", "Interrupted", "Active"]]);
+    expect(chains(held).failureChains.map((chain) => [chain.key, chain.status, chain.barrier]))
+      .toEqual([["icarus-failure-mode:a1:m1", "Potential", "Unknown"], ["icarus-failure-mode:a2:m1", "Potential", "Unknown"]]);
+    expect(chains(held).interruptedChains).toEqual([]);
     const failing = run(local());
     expect(chainFor(failing, "a1")).toMatchObject({ status: "Active", barrier: "Failed" });
     expect(chainFor(failing, "a1")!.propagation.find((step) => step.nodeId === "Strategic Objective:o1")?.state).toBe("Downstream exposure");
+  });
+
+  it("uses current project/person health to cap the barrier and trigger a live chain", () => {
+    const project = ref("Project", "project-1");
+    const assured = assessment("a1", ["o1"], [control("c1", "m1", "Passed", [project])]);
+    const healthy = run([assured], {
+      sourceRecords: [{ ...project, title: "Project", status: "In Progress", health: "On track" }],
+    });
+    expect(chains(healthy).dependencyGraph.controls[0].barrier).toBe("Active");
+
+    const person = ref("Person", "person-2");
+    const dependentOnInactivePerson = assessment("a2", ["o1"], [control("c2", "m1", "Passed", [person])]);
+    const failedDependency = run([dependentOnInactivePerson], {
+      people: [{ id: "founder", status: "Active" }, { id: "person-2", status: "Inactive" }],
+    });
+    expect(chains(failedDependency).dependencyGraph.controls[0].barrier).toBe("Failed");
+    expect(chainFor(failedDependency, "a2")).toMatchObject({ status: "Active", barrier: "Failed" });
+    expect(failedDependency.healthTriggeredChains).toMatchObject([
+      { state: "Active exposure", dependency: { health: "Failed" }, assessmentId: "a2" },
+    ]);
   });
 
   it("treats an untested barrier as weak/uncertain: the chain is potential, not interrupted", () => {
@@ -254,7 +285,7 @@ describe("Icarus failure chains — single points of failure", () => {
   it("identifies one dependency carrying several protected outcomes", () => {
     const result = run(heldBySop());
     const spof = chains(result).singlePointsOfFailure.find((entry) => entry.key === "spof:Dependency:SOP:sop-1");
-    expect(spof).toMatchObject({ kind: "Dependency", causal: true, assurance: "Strong", dependentAssessmentIds: ["a1", "a2"] });
+    expect(spof).toMatchObject({ kind: "Dependency", causal: true, assurance: "Unknown", dependentAssessmentIds: ["a1", "a2"] });
     expect(spof!.basis).toEqual(expect.arrayContaining(["sole-barrier-dependency", "multiple-assessments", "multiple-pillars"]));
     expect(spof!.provenanceEdgeIds).toEqual(["DEPENDS_ON|icarus-control:a1:c1|SOP:sop-1", "DEPENDS_ON|icarus-control:a2:c2|SOP:sop-1"]);
   });
@@ -321,9 +352,10 @@ describe("Icarus failure chains — common dependencies", () => {
 
   it("states a shared common cause once, on exactly one member signal", () => {
     const result = run(sharedFailingSop());
-    const carriers = result.strategicSignals.filter((signal) => signal.failureChain?.commandReason);
+    const carriers = result.strategicSignals.filter((signal) => signal.failureChain?.commandReason?.startsWith("FAILURE CHAIN:"));
     expect(carriers.map((signal) => signal.assessmentId)).toEqual(["a1"]);
-    expect(carriers[0].failureChain!.commandReason).toBe("FAILURE CHAIN: 2 MATERIAL RISKS SHARE ONE SOP DEPENDENCY");
+    expect(carriers[0].failureChain!.commandReason).toContain("FAILURE CHAIN: 2 MATERIAL RISKS SHARE ONE SOP DEPENDENCY");
+    expect(signalFor(result, "a2").failureChain!.commandReason).toContain("DEPENDENCY: SOP sop-1 IS UNKNOWN");
   });
 });
 
@@ -359,15 +391,15 @@ describe("Icarus failure chains — blast radius", () => {
     // Closing one member dissolves the common cause.
     const oneClosed = run([sharedFailingSop()[0], { ...sharedFailingSop()[1], status: "Closed" }]);
     expect(chains(oneClosed).sharedDependencies).toEqual([]);
-    expect(signalFor(oneClosed, "a1").failureChain!.commandReason).toBeUndefined();
+    expect(signalFor(oneClosed, "a1").failureChain!.commandReason).toContain("DEPENDENCY: SOP sop-1 IS UNKNOWN");
   });
 });
 
 describe("Icarus failure chains — cut points and restoration", () => {
-  it("marks a dependency whose failure removes several assured barriers as a critical cut point", () => {
+  it("does not claim an unknown-health dependency newly exposed assured barriers", () => {
     const result = run(heldBySop());
     const cut = chains(result).criticalCutPoints.find((entry) => entry.nodeId === "SOP:sop-1");
-    expect(cut).toMatchObject({ key: "cut:Dependency:SOP:sop-1", newlyExposedModeNodeIds: ["icarus-failure-mode:a1:m1", "icarus-failure-mode:a2:m1"] });
+    expect(cut).toMatchObject({ key: "cut:Dependency:SOP:sop-1", newlyExposedModeNodeIds: [] });
     expect(chains(result).founderSynthesis.mostDamagingCutPointKey).toBe(cut!.key);
   });
 
@@ -395,6 +427,40 @@ describe("Icarus failure chains — cut points and restoration", () => {
     }]);
     const unknown = run([assessment("a1", ["o1"], [control("c1", "m1", "Passed"), control("c2", "m1", "Passed")])]);
     expect(chains(unknown).twoPointFragilities).toMatchObject([{ independence: "Unknown", sharedDependencyNodeIds: [] }]);
+  });
+});
+
+describe("Icarus dependency resilience", () => {
+  it("marks a healthy sole dependency as structurally fragile and recommends an independent backup", () => {
+    const project = ref("Project", "project-1");
+    const result = run(
+      [assessment("a1", ["o1"], [control("c1", "m1", "Passed", [project])])],
+      { sourceRecords: [{ ...project, title: "Project", status: "In Progress", health: "On track" }] },
+    );
+    const resilience = result.dependencyResilience.find((entry) => entry.reference.recordId === "project-1");
+
+    expect(resilience).toMatchObject({
+      health: "Healthy",
+      resilience: "Critical dependency",
+      independence: "Unknown independence",
+      concentration: "Local",
+    });
+    expect(result.resilienceInterventions).toMatchObject([
+      { kind: "Add independent backup", reference: project },
+    ]);
+  });
+
+  it("recommends validating strategically critical Unknown health without calling it a failure", () => {
+    const result = run([assessment("a1", ["o1"], [control("c1", "m1", "Passed", [sop])])]);
+
+    expect(result.unknownCriticalDependencies).toMatchObject([{ health: "Unknown", reference: sop }]);
+    expect(result.healthTriggeredChains).toMatchObject([
+      { state: "Assurance/data gap", dependency: { health: "Unknown" }, assessmentId: "a1" },
+    ]);
+    expect(result.resilienceInterventions).toMatchObject([
+      { kind: "Validate", resilience: "Unknown", reference: sop },
+    ]);
+    expect(chainFor(result, "a1")?.status).toBe("Potential");
   });
 });
 
@@ -433,8 +499,9 @@ describe("Icarus failure chains — pipeline", () => {
     });
     // Annotation is attached before every downstream consumer reads signals.
     expect(result.founderFocusRisks).toEqual(buildIcarusFounderFocusRisks(result.strategicSignals));
-    expect(result.exposureSnapshot).toEqual(buildIcarusExposureSnapshot(result.strategicSignals));
+    expect(result.exposureSnapshot).toMatchObject(buildIcarusExposureSnapshot(result.strategicSignals));
     expect(result.exposureSnapshot.every((entry) => entry.failureChain !== undefined)).toBe(true);
+    expect(result.exposureSnapshot.every((entry) => Array.isArray(entry.dependencyHealth))).toBe(true);
   });
 
   it("never changes exposure, materiality or assurance", () => {
@@ -500,6 +567,18 @@ describe("Icarus failure chains — Command and Founder Focus", () => {
     expect(adjustIcarusCommandRankForFailureChain(5, 5, { ...critical, commandReason: undefined })).toBe(5);
     expect(adjustIcarusFounderFocusBandForFailureChain(5, 5, critical)).toBe(4);
     expect(adjustIcarusFounderFocusBandForFailureChain(4, 5, critical)).toBe(4);
+  });
+
+  it("allows one bounded lift for a strategic dependency-health issue", () => {
+    const dependencyHealth = {
+      ...critical,
+      priority: "Elevated" as const,
+      dependencyHealthLift: true,
+    };
+    expect(adjustIcarusCommandRankForFailureChain(5, 5, dependencyHealth)).toBe(4);
+    expect(adjustIcarusCommandRankForFailureChain(4, 5, dependencyHealth)).toBe(4);
+    expect(adjustIcarusFounderFocusBandForFailureChain(5, 5, dependencyHealth)).toBe(4);
+    expect(adjustIcarusFounderFocusBandForFailureChain(4, 5, dependencyHealth)).toBe(4);
   });
 
   it("can strengthen a signal's Command placement and states the reason", () => {

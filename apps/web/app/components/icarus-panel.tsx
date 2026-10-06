@@ -26,7 +26,15 @@ import IcarusAssuranceSection, {
   type IcarusAssurancePersonOption,
 } from "./icarus-assurance-section";
 import IcarusFailureChainSection from "./icarus-failure-chain-section";
-import type { IcarusFailureChainIntelligence } from "../lib/icarus-failure-chain-analysis";
+import type {
+  IcarusFailureChainIntelligence,
+  IcarusHealthTriggeredChain,
+} from "../lib/icarus-failure-chain-analysis";
+import type { IcarusDependencyHealth } from "../lib/icarus-dependency-health";
+import type {
+  IcarusDependencyResilience,
+  IcarusResilienceIntervention,
+} from "../lib/icarus-dependency-resilience";
 
 type IcarusPanelProps = {
   assessments: readonly IcarusAssessmentRecord[];
@@ -43,6 +51,10 @@ type IcarusPanelProps = {
   assurance?: IcarusAssuranceResult;
   assuranceRollup?: IcarusAssuranceRollup;
   failureChains?: IcarusFailureChainIntelligence;
+  healthTriggeredChains?: readonly IcarusHealthTriggeredChain[];
+  criticalDependencies?: readonly IcarusDependencyHealth[];
+  dependencyResilience?: readonly IcarusDependencyResilience[];
+  resilienceInterventions?: readonly IcarusResilienceIntervention[];
   people?: readonly IcarusAssurancePersonOption[];
   actions?: readonly IcarusAssuranceActionOption[];
 };
@@ -107,6 +119,10 @@ export default function IcarusPanel({
   assurance,
   assuranceRollup,
   failureChains,
+  healthTriggeredChains = [],
+  criticalDependencies = [],
+  dependencyResilience = [],
+  resilienceInterventions = [],
   people = [],
   actions = [],
 }: IcarusPanelProps) {
@@ -341,7 +357,14 @@ export default function IcarusPanel({
         </section>
       ) : null}
 
-      <IcarusFailureChainSection intelligence={failureChains} referenceTitle={(reference) => referenceTitle(reference, sources)} />
+      <IcarusFailureChainSection
+        intelligence={failureChains}
+        healthTriggeredChains={healthTriggeredChains}
+        criticalDependencies={criticalDependencies}
+        dependencyResilience={dependencyResilience}
+        resilienceInterventions={resilienceInterventions}
+        referenceTitle={(reference) => referenceTitle(reference, sources)}
+      />
 
       <IcarusAssuranceRollupSection
         rollup={assuranceRollup}

@@ -25,6 +25,11 @@ import { buildFounderFocus } from "./founder-focus";
 import { buildPeopleCorrelationContext } from "./people-correlation-context";
 import { resolveStrategicRiskConvergence } from "./strategic-risk-resolution";
 import { resolveOperatingPillar } from "./pillar-identity";
+import { buildIcarusDependencyHealthRegistry } from "./icarus-dependency-health";
+import {
+  buildIcarusDependencyResilience,
+  buildIcarusResilienceInterventions,
+} from "./icarus-dependency-resilience";
 import {
   buildIcarusCorrelationIntelligence,
   buildIcarusObjectiveContext,
@@ -225,6 +230,12 @@ describe("Icarus intelligence pipeline — composition", () => {
 
     const input = stageAInput(assessments, options);
     const objectives = buildIcarusObjectiveContext(input.strategicObjectives);
+    const dependencyHealth = buildIcarusDependencyHealthRegistry({
+      sourceRecords: input.sourceRecords,
+      people: input.people,
+      actions: input.actions,
+      nowMs: NOW,
+    });
     const reviews = buildIcarusReview(assessments, input.sourceRecords, NOW);
     const base = buildIcarusStrategicAttention({ assessments, reviews, strategicObjectives: objectives });
     const assurance = buildIcarusAssurance({
@@ -234,17 +245,23 @@ describe("Icarus intelligence pipeline — composition", () => {
     const assured = attachIcarusAssuranceToSignals(base, assurance);
     const failureChains = buildIcarusFailureChainIntelligence({
       assessments, signals: assured, assurance, strategicObjectives: objectives, primaryFounderId: "founder", founderDependencyActive: false,
+      dependencyHealth,
     });
+    const dependencyResilience = buildIcarusDependencyResilience(failureChains.dependencyGraph);
+    const resilienceInterventions = buildIcarusResilienceInterventions(dependencyResilience);
     const signals = attachIcarusFailureChainToSignals(assured, failureChains);
     const correlationSignals = buildIcarusCorrelationSignals({ signals });
     expect(result.intelligence.failureChains).toEqual(failureChains);
+    expect(result.intelligence.dependencyHealth).toEqual(dependencyHealth);
+    expect(result.intelligence.dependencyResilience).toEqual(dependencyResilience);
+    expect(result.intelligence.resilienceInterventions).toEqual(resilienceInterventions);
     expect(result.intelligence.reviews).toEqual(reviews);
     expect(result.intelligence.assurance).toEqual(assurance);
     expect(result.intelligence.assuranceRollup).toEqual(buildIcarusAssuranceRollup(assurance.assessments));
     expect(result.intelligence.strategicSignals).toEqual(signals);
     expect(result.intelligence.correlationSignals).toEqual(correlationSignals);
     expect(result.intelligence.founderFocusRisks).toEqual(buildIcarusFounderFocusRisks(signals));
-    expect(result.intelligence.exposureSnapshot).toEqual(buildIcarusExposureSnapshot(signals));
+    expect(result.intelligence.exposureSnapshot).toMatchObject(buildIcarusExposureSnapshot(signals));
     expect(result.intelligence.unresolvedFindings).toEqual(
       reviews.filter((review) => review.assessmentId !== "a3").flatMap((review) => review.findings),
     );
@@ -349,7 +366,7 @@ describe("Icarus intelligence pipeline — sequencing", () => {
 
   it("builds history snapshots from the final assured signals", () => {
     const { intelligence } = runEmpire([failing("a1"), assessment("a2")]);
-    expect(intelligence.exposureSnapshot).toEqual(buildIcarusExposureSnapshot(intelligence.strategicSignals));
+    expect(intelligence.exposureSnapshot).toMatchObject(buildIcarusExposureSnapshot(intelligence.strategicSignals));
     intelligence.exposureSnapshot.forEach((entry) => {
       const assurance = intelligence.assurance.byAssessmentId.get(entry.assessmentId)!;
       expect(entry.assurance).toMatchObject({ state: assurance.state, escalation: assurance.escalation });

@@ -1,16 +1,26 @@
 "use client";
 
-import type { IcarusRecordReference } from "../lib/icarus";
+import { getIcarusReferenceKey, type IcarusRecordReference } from "../lib/icarus";
 import type {
   IcarusBlastRadiusSummary,
   IcarusFailureChainIntelligence,
+  IcarusHealthTriggeredChain,
 } from "../lib/icarus-failure-chain-analysis";
+import type { IcarusDependencyHealth } from "../lib/icarus-dependency-health";
+import type {
+  IcarusDependencyResilience,
+  IcarusResilienceIntervention,
+} from "../lib/icarus-dependency-resilience";
 
 // Thin presentation of derived failure-chain intelligence. Every derivation lives in icarus-failure-chain-analysis;
 // this component only formats it and links back to the originating assessment / failure mode / control anchors.
 
 type Props = {
   intelligence?: IcarusFailureChainIntelligence;
+  healthTriggeredChains?: readonly IcarusHealthTriggeredChain[];
+  criticalDependencies?: readonly IcarusDependencyHealth[];
+  dependencyResilience?: readonly IcarusDependencyResilience[];
+  resilienceInterventions?: readonly IcarusResilienceIntervention[];
   referenceTitle: (reference: IcarusRecordReference) => string;
 };
 
@@ -31,7 +41,14 @@ function describeBlast(blast: IcarusBlastRadiusSummary): string {
   return `${blast.radius}${parts.length > 0 ? ` (${parts.join(", ")})` : ""}${blast.founderCritical ? "; founder-critical" : ""}`;
 }
 
-export default function IcarusFailureChainSection({ intelligence, referenceTitle }: Props) {
+export default function IcarusFailureChainSection({
+  intelligence,
+  healthTriggeredChains = [],
+  criticalDependencies = [],
+  dependencyResilience = [],
+  resilienceInterventions = [],
+  referenceTitle,
+}: Props) {
   if (!intelligence) return null;
   const {
     dependencyGraph: graph, failureChains, singlePointsOfFailure, sharedDependencies, barrierWeaknesses,
@@ -39,7 +56,8 @@ export default function IcarusFailureChainSection({ intelligence, referenceTitle
   } = intelligence;
   const exposedPillars = pillarChainExposure.filter((pillar) => pillar.state !== "No chain exposure");
   const hasContent = failureChains.length > 0 || singlePointsOfFailure.length > 0 || criticalCutPoints.length > 0
-    || twoPointFragilities.length > 0;
+    || twoPointFragilities.length > 0 || criticalDependencies.length > 0 || dependencyResilience.length > 0
+    || healthTriggeredChains.length > 0;
   if (!hasContent) return null;
 
   const nodeLabel = (nodeId: string): string => {
@@ -64,10 +82,70 @@ export default function IcarusFailureChainSection({ intelligence, referenceTitle
   const restoration = barrierWeaknesses.find((entry) => entry.key === founderSynthesis.bestRestorationKey);
   const connected = sharedDependencies.filter((entry) => founderSynthesis.connectedOutcomeKeys.includes(entry.key));
   const founderSpofs = singlePointsOfFailure.filter((entry) => founderSynthesis.founderSpofKeys.includes(entry.key));
+  const resilienceByReference = new Map(dependencyResilience.map((entry) =>
+    [getIcarusReferenceKey(entry.reference), entry] as const));
 
   return (
     <section aria-label="Failure chains" className={sectionClass}>
       <h2 className={headingClass}>Failure chains · dependency intelligence</h2>
+
+      {criticalDependencies.length > 0 ? (
+        <>
+          <h3 className={subheadingClass}>Critical dependency health</h3>
+          <ul className="mt-1 space-y-1">
+            {criticalDependencies.slice(0, CHAIN_LIMIT).map((dependency) => {
+              const dependencyKey = getIcarusReferenceKey(dependency.reference);
+              const resilience = resilienceByReference.get(dependencyKey);
+              return (
+                <li key={dependencyKey} className={itemClass}>
+                  <span className="font-medium text-[#171717]">
+                    {referenceTitle(dependency.reference)} · {dependency.health}
+                  </span>
+                  {` — ${resilience?.resilience ?? "Unknown"} resilience; ${resilience?.independence.toLowerCase() ?? "unknown independence"}; ${resilience?.concentration.toLowerCase() ?? "unknown"} concentration. ${dependency.basis.join(", ").replaceAll("-", " ")}.`}
+                </li>
+              );
+            })}
+          </ul>
+          {criticalDependencies.length > CHAIN_LIMIT
+            ? <p className={`mt-1 ${itemClass}`}>{`${criticalDependencies.length - CHAIN_LIMIT} additional critical dependencies.`}</p>
+            : null}
+        </>
+      ) : null}
+
+      {resilienceInterventions.length > 0 ? (
+        <>
+          <h3 className={subheadingClass}>Resilience restoration priorities</h3>
+          <ul className="mt-1 space-y-1">
+            {resilienceInterventions.slice(0, CHAIN_LIMIT).map((intervention) => (
+              <li key={`${intervention.kind}:${intervention.reference.recordType}:${intervention.reference.recordId}`} className={itemClass}>
+                <span className="font-medium text-[#171717]">{intervention.kind}: </span>
+                {referenceTitle(intervention.reference)}
+                {` — ${intervention.resilience.toLowerCase()}, ${intervention.concentration.toLowerCase()} concentration.`}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+
+      {healthTriggeredChains.length > 0 ? (
+        <>
+          <h3 className={subheadingClass}>Health-triggered failure chains</h3>
+          <ul className="mt-1 space-y-1">
+            {healthTriggeredChains.slice(0, CHAIN_LIMIT).map((chain) => {
+              const barrier = graph.controlById.get(chain.controlNodeId)?.barrier ?? "Unknown";
+              return (
+                <li key={chain.key} className={itemClass}>
+                  <span className="font-medium text-[#171717]">{chain.state}: </span>
+                  {referenceTitle(chain.dependency.reference)}
+                  {` (${chain.dependency.health.toLowerCase()}) → `}
+                  <a href={`#icarus-assessment-${chain.assessmentId}`} className="underline">{chain.outcome}</a>
+                  {` — barrier ${barrier.toLowerCase()}; ${describeBlast(chain.blast)}.`}
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      ) : null}
 
       <ul className="mt-2 space-y-1.5">
         <li className={itemClass}>

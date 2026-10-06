@@ -308,11 +308,18 @@ export function buildFounderOperatingReview(
       ["Became cross-pillar", "Failure-chain blast radius", "now cross-pillar", "A failure chain now reaches more than one operating pillar: "],
       ["Blast radius increased", "Failure-chain blast radius", "wider", "A failure chain now reaches further across the Empire: "],
       ["Shared concentration increased", "Common-cause concentration", "increased", "More material risks now share one dependency: "],
+      ["Dependency health failed", "Critical dependency health", "failed", "A dependency relied on by material risks has failed: "],
+      ["Dependency health degraded", "Critical dependency health", "degraded", "A dependency relied on by material risks has degraded: "],
+      ["Dependency health became unknown", "Critical dependency assurance", "became unknown", "Health evidence is no longer available for a material dependency: "],
+      ["Resilience deteriorated", "Dependency resilience", "weaker", "Material outcomes have become more structurally fragile: "],
     ] as const;
     const improvedKinds = [
       ["Single point of failure removed", "Strategic single points of failure", "removed", "No longer a single point of failure for material risk: "],
       ["Blast radius decreased", "Failure-chain blast radius", "narrower", "A failure chain now reaches less of the Empire: "],
       ["Barrier restored", "Failure-chain barriers", "restored", "A weak, failed or unverified barrier is now effective: "],
+      ["Dependency recovered", "Critical dependency health", "recovered", "A previously degraded or failed dependency has recovered: "],
+      ["Dependency health validated", "Critical dependency assurance", "validated", "Previously unknown dependency health now has evidence: "],
+      ["Resilience improved", "Dependency resilience", "stronger", "Material outcomes are less structurally fragile: "],
     ] as const;
     deterioratedKinds.forEach(([kind, metric, text, prefix]) => {
       if (counts[kind] > 0) deteriorated.push({ metric, changeText: `${counts[kind]} ${text}`, explanation: `${prefix}${structuralOutcomes(kind)}.` });

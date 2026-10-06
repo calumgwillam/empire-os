@@ -9889,15 +9889,37 @@ export default function Home() {
     ...actionRecords.map((record) => ({ recordType: "Action" as const, recordId: record.id, title: record.actionTitle || record.title })),
     ...decisionRecords.map((record) => ({ recordType: "Decision" as const, recordId: record.id, title: record.decisionTitle || record.title })),
     ...lessonRecords.map((record) => ({ recordType: "Lesson" as const, recordId: record.id, title: record.lessonTitle || record.title })),
-    ...projects.map((record) => ({ recordType: "Project" as const, recordId: record.id, title: record.projectName })),
-    ...systemRecords.map((record) => ({ recordType: "System" as const, recordId: record.id, title: record.systemName || record.title })),
-    ...sopRecords.map((record) => ({ recordType: "SOP" as const, recordId: record.id, title: record.sopTitle || record.title })),
+    ...projects.map((record) => ({
+      recordType: "Project" as const,
+      recordId: record.id,
+      title: record.projectName,
+      status: record.status,
+      health: record.health,
+      relevantAt: record.lastReviewedDate,
+    })),
+    ...systemRecords.map((record) => ({
+      recordType: "System" as const,
+      recordId: record.id,
+      title: record.systemName || record.title,
+      status: record.status,
+    })),
+    ...sopRecords.map((record) => ({
+      recordType: "SOP" as const,
+      recordId: record.id,
+      title: record.sopTitle || record.title,
+      status: record.status,
+    })),
     ...opportunityRecords.map((record) => ({ recordType: "Opportunity" as const, recordId: record.id, title: record.opportunityTitle || record.title })),
     ...leads.map((record) => ({ recordType: "Lead" as const, recordId: record.id, title: record.leadName })),
     ...outreachContacts.map((record) => ({ recordType: "Outreach" as const, recordId: record.id, title: record.businessName })),
     ...commitmentRecords.map((record) => ({ recordType: "Commitment" as const, recordId: record.id, title: record.commitmentName })),
     { recordType: "Finance", recordId: "cash-position", title: "Cash position" },
-    ...people.map((record) => ({ recordType: "Person" as const, recordId: record.id, title: record.name })),
+    ...people.map((record) => ({
+      recordType: "Person" as const,
+      recordId: record.id,
+      title: record.name,
+      status: record.status,
+    })),
     ...pillarOptions.map((pillar) => ({ recordType: "Pillar" as const, recordId: pillar, title: pillar })),
     ...strategicObjectives.map((record) => ({ recordType: "Strategic Objective" as const, recordId: record.id, title: record.title })),
   ];
@@ -19646,7 +19668,11 @@ export default function Home() {
               systemicExposure={icarusCorrelation.systemicExposure}
               assurance={icarusIntelligence.assurance}
               assuranceRollup={icarusIntelligence.assuranceRollup}
+              criticalDependencies={icarusIntelligence.criticalDependencies}
+              dependencyResilience={icarusIntelligence.dependencyResilience}
+              resilienceInterventions={icarusIntelligence.resilienceInterventions}
               failureChains={icarusIntelligence.failureChains}
+              healthTriggeredChains={icarusIntelligence.healthTriggeredChains}
               people={people.map(({ id, name, status }) => ({ id, name, status }))}
               actions={actionRecords.map(({ id, actionTitle, status }) => ({ id, title: actionTitle, status }))}
             />
