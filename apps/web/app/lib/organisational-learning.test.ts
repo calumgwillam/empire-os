@@ -8,6 +8,7 @@ import {
   type OrganisationalLearningInput,
 } from "./organisational-learning";
 import type { RecurringProblemInput } from "./recurring-problem-learning";
+import type { IcarusTreatmentOutcomeRecord } from "./icarus";
 
 function input(overrides: Partial<OrganisationalLearningInput> = {}): OrganisationalLearningInput {
   return { actions: [], projects: [], decisions: [], lessons: [], problems: [], systems: [], sops: [], ...overrides };
@@ -45,6 +46,60 @@ function problem(overrides: Partial<RecurringProblemInput> = {}): RecurringProbl
 }
 
 describe("read-only organisational learning policy", () => {
+  it("feeds only verified Icarus outcomes into the existing learning signals with provenance", () => {
+    const outcome = (
+      id: string,
+      value: IcarusTreatmentOutcomeRecord["outcome"],
+    ): IcarusTreatmentOutcomeRecord => ({
+      id,
+      treatmentTargetId: "target-1",
+      assessmentId: "risk-1",
+      executionLinks: [{ recordType: "Action", recordId: "action-1", linkedAt: "2026-05-01T00:00:00.000Z" }],
+      outcome: value,
+      verifiedAt: "2026-05-04T00:00:00.000Z",
+      verifiedByPersonId: "person-1",
+      evidence: [{
+        kind: "Control test",
+        assessmentId: "risk-1",
+        failureModeId: "mode-1",
+        controlId: "control-1",
+        testId: "test-1",
+        result: "Passed",
+        assuranceStatus: "Assured",
+        evidenceStatus: "Current support",
+        evidenceIds: ["evidence-1"],
+      }],
+      afterState: { kind: "Control assurance", state: "Assured" },
+      verificationNote: "Verified against the current control test.",
+    });
+    const signals = buildOrganisationalLearning(input({
+      icarusTreatmentOutcomes: [
+        { targetTitle: "Restore control", record: outcome("effective", "Effective") },
+        { targetTitle: "Restore control", record: outcome("partial", "Partially effective") },
+        { targetTitle: "Restore control", record: outcome("ineffective", "Ineffective") },
+        { targetTitle: "Restore control", record: outcome("unknown", "Inconclusive") },
+      ],
+    }));
+
+    expect(signals.map(({ sourceId, outcomeState }) => [sourceId, outcomeState])).toEqual([
+      ["effective", "Worked"],
+      ["partial", "Partially worked"],
+      ["ineffective", "Failed"],
+    ]);
+    expect(signals[0].evidence).toContainEqual({
+      sourceType: "Icarus Treatment",
+      sourceId: "effective",
+      field: "treatmentTargetId",
+      value: "target-1",
+    });
+    expect(signals[0].evidence).toContainEqual({
+      sourceType: "Icarus Treatment",
+      sourceId: "effective",
+      field: "evidenceReference",
+      value: JSON.stringify(["Control test", "risk-1", "mode-1", "control-1", "test-1", "Passed", "Assured", ["evidence-1"], "Current support"]),
+    });
+  });
+
   it("returns no signals for empty input", () => {
     expect(buildOrganisationalLearning(input())).toEqual([]);
   });

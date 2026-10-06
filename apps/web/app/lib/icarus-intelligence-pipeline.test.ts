@@ -467,7 +467,7 @@ describe("Icarus intelligence pipeline — consistency across consumers", () => 
     expect(legacy.intelligence.assuranceRollup).toEqual(canonical.intelligence.assuranceRollup);
   });
 
-  it("removes a closed risk from every appropriate output in one pipeline call", () => {
+  it("keeps closed material exposure visible without re-entering active intelligence outputs", () => {
     const open = runEmpire([failing("a1")]);
     const closed = runEmpire([failing("a1", { status: "Closed" })]);
     expect(open.intelligence.strategicSignals).toHaveLength(1);
@@ -475,6 +475,11 @@ describe("Icarus intelligence pipeline — consistency across consumers", () => 
       strategicSignals: [], correlationSignals: [], founderFocusRisks: [], exposureSnapshot: [], unresolvedFindings: [],
     });
     expect(closed.intelligence.assurance.assessments).toEqual([]);
+    expect(closed.intelligence.closedAssessmentWarnings).toMatchObject([{
+      assessmentId: "a1",
+      status: "Closed",
+      materialFailureModes: [{ failureModeId: "mode-1" }],
+    }]);
     expect(closed.intelligence.assessmentStatuses.get("a1")).toBe("Closed");
     expect(closed.intelligence.reviews.map((review) => review.assessmentId)).toEqual(["a1"]);
     expect(closed.correlation!.clusterContributions.size).toBe(0);

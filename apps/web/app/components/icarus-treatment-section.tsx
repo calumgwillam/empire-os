@@ -1,7 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import type { IcarusAssessmentRecord, IcarusTreatmentTargetRecord } from "../lib/icarus";
+import {
+  getIcarusTreatmentOutcomeId,
+  type IcarusAssessmentRecord,
+  type IcarusTreatmentOutcomeRecord,
+  type IcarusTreatmentTargetRecord,
+} from "../lib/icarus";
 import {
   createIcarusBarrierRestorationTreatmentTarget,
   createIcarusResilienceTreatmentTarget,
@@ -11,6 +16,7 @@ import {
   type IcarusTreatmentIndex,
   type IcarusTreatmentTarget,
 } from "../lib/icarus-treatment";
+import type { IcarusAssurancePersonOption } from "./icarus-assurance-section";
 import type { IcarusResilienceIntervention } from "../lib/icarus-dependency-resilience";
 
 type Props = {
@@ -18,6 +24,7 @@ type Props = {
   index: IcarusTreatmentIndex;
   actions: readonly IcarusTreatmentExecution[];
   projects: readonly IcarusTreatmentExecution[];
+  people: readonly IcarusAssurancePersonOption[];
   writable: boolean;
   onChange: (assessments: IcarusAssessmentRecord[]) => void;
   onOpenRecord: (recordType: string, recordId: string) => void;
@@ -81,11 +88,15 @@ export default function IcarusTreatmentSection({
   index,
   actions,
   projects,
+  people,
   writable,
   onChange,
   onOpenRecord,
 }: Props) {
   const [selectedExecution, setSelectedExecution] = useState<Record<string, string>>({});
+  const [selectedVerification, setSelectedVerification] = useState<Record<string, string>>({});
+  const [verificationBy, setVerificationBy] = useState<Record<string, string>>({});
+  const [verificationNote, setVerificationNote] = useState<Record<string, string>>({});
   const executions = [...actions, ...projects].sort((left, right) =>
     left.title.localeCompare(right.title) || left.recordType.localeCompare(right.recordType) || left.recordId.localeCompare(right.recordId));
   const promotedIds = new Set(index.targets.map((target) => target.id));
@@ -104,6 +115,43 @@ export default function IcarusTreatmentSection({
   const barrierRestorations = index.barrierRestorations.filter((restoration) =>
     !promotedIds.has(getIcarusBarrierRestorationTreatmentTargetId(restoration)));
   const displayTargets = index.targets.filter((target) => target.material || target.executionLinks.length > 0);
+  const resolutionEligible = assessments.filter((assessment) =>
+    index.summaries.get(assessment.id)?.resolutionEligibility === "Eligible");
+  const closedAssessments = assessments.filter((assessment) => assessment.status === "Closed");
+  const activePeople = people.filter((person) => person.status === "Active")
+    .slice()
+    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+
+  const recordVerification = (target: IcarusTreatmentTarget) => {
+    const view = index.verification.get(target.id);
+    const selectedValue = selectedVerification[target.id] ?? "";
+    const selected = Number(selectedValue);
+    const option = selectedValue !== "" && Number.isInteger(selected) ? view?.options[selected] : undefined;
+    const verifierId = verificationBy[target.id] ?? "";
+    const note = verificationNote[target.id]?.trim() ?? "";
+    if (!option || !verifierId || !note || target.state !== "Completed — verification required") return;
+    const executionLinks = target.executionLinks.flatMap((link) => link.linkedAt
+      ? [{ recordType: link.recordType, recordId: link.recordId, linkedAt: link.linkedAt }]
+      : []);
+    if (executionLinks.length !== target.executionLinks.length || executionLinks.length === 0) return;
+    const verifiedAt = new Date().toISOString();
+    const record: IcarusTreatmentOutcomeRecord = {
+      id: getIcarusTreatmentOutcomeId(target.id, verifierId, option.evidence),
+      treatmentTargetId: target.id,
+      assessmentId: target.assessmentId,
+      executionLinks,
+      outcome: option.outcome,
+      verifiedAt,
+      verifiedByPersonId: verifierId,
+      evidence: option.evidence.map((entry) => ({ ...entry })),
+      afterState: { ...option.afterState },
+      verificationNote: note,
+    };
+    if (assessments.some((assessment) => assessment.treatmentOutcomes?.some((entry) => entry.id === record.id))) return;
+    commitAssessments(assessments.map((assessment) => assessment.id !== target.assessmentId
+      ? assessment
+      : { ...assessment, treatmentOutcomes: [...(assessment.treatmentOutcomes ?? []), record] }));
+  };
 
   const addExecution = (target: IcarusTreatmentTarget) => {
     const selection = selectedExecution[target.id] ?? "";
@@ -182,6 +230,14 @@ export default function IcarusTreatmentSection({
     <section id="icarus-treatment-routing" aria-label="Strategic treatment routing" className={sectionClass}>
       <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#51483e]">Treatment status · accountable execution</h2>
       <p className={`${itemClass} mt-1`}>Actions and Projects remain the execution records. Completion requires separate strategic verification and never resolves a risk automatically.</p>
+      <p className={`${itemClass} mt-1`}>
+        {resolutionEligible.length > 0
+          ? `${resolutionEligible.length} assessment${resolutionEligible.length === 1 ? " is" : "s are"} eligible for resolution review; no assessment status is changed automatically.`
+          : "No assessment currently meets the conservative resolution-eligibility conditions."}
+        {closedAssessments.length > 0
+          ? ` ${closedAssessments.length} administratively closed assessment${closedAssessments.length === 1 ? " is" : "s are"} not treated as verified resolved.`
+          : ""}
+      </p>
       {displayTargets.length === 0 ? (
         <p className={`${itemClass} mt-2`}>No material assurance treatment targets are currently derived or promoted.</p>
       ) : (
@@ -209,6 +265,71 @@ export default function IcarusTreatmentSection({
                 <p className={itemClass}>{target.treatmentKind} — {target.reason}</p>
                 <p className="text-[10px] text-[#6a625d]">Source: {target.provenance.kind}</p>
                 <p className={`font-medium ${stateTone(target.state)}`}>{target.state}</p>
+                {index.verification.get(target.id) ? (
+                  <div className="mt-2 rounded border border-[#d9d1c8] bg-[#faf8f5] p-2">
+                    <p className="text-[11px] font-medium text-[#4d4944]">
+                      Verification: {index.verification.get(target.id)?.state}
+                    </p>
+                    {index.verification.get(target.id)?.history.map(({ record, current, attribution }) => (
+                      <p key={record.id} className="mt-1 text-[10px] leading-4 text-[#6a625d]">
+                        {`${record.outcome} · ${record.verifiedAt} · verifier ${record.verifiedByPersonId} · ${record.afterState.kind}: ${record.afterState.state} · attribution ${attribution}${current ? "" : " · superseded by current evidence"}`}
+                        {record.verificationNote ? ` — ${record.verificationNote}` : ""}
+                      </p>
+                    ))}
+                    {writable && target.state === "Completed — verification required"
+                      && ["Awaiting verification", "Superseded"].includes(index.verification.get(target.id)?.state ?? "")
+                      ? index.verification.get(target.id)?.options.length ? (
+                        <div className="mt-2 flex flex-wrap items-end gap-2">
+                          <label className="text-[10px] text-[#5e5953]">
+                            Evidence-supported outcome
+                            <select
+                              className={selectClass}
+                              value={selectedVerification[target.id] ?? ""}
+                              onChange={(event) => setSelectedVerification((current) => ({ ...current, [target.id]: event.target.value }))}
+                            >
+                              <option value="">Select current evidence</option>
+                              {index.verification.get(target.id)?.options.map((option, optionIndex) => (
+                                <option key={`${option.outcome}:${optionIndex}`} value={optionIndex}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="text-[10px] text-[#5e5953]">
+                            Verified by
+                            <select
+                              className={selectClass}
+                              value={verificationBy[target.id] ?? ""}
+                              onChange={(event) => setVerificationBy((current) => ({ ...current, [target.id]: event.target.value }))}
+                            >
+                              <option value="">Select active Person</option>
+                              {activePeople.map((person) => (
+                                <option key={person.id} value={person.id}>{person.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="min-w-[220px] flex-1 text-[10px] text-[#5e5953]">
+                            Verification note
+                            <input
+                              className={selectClass}
+                              value={verificationNote[target.id] ?? ""}
+                              onChange={(event) => setVerificationNote((current) => ({ ...current, [target.id]: event.target.value }))}
+                              placeholder="Record what the evidence establishes"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className={buttonClass}
+                            disabled={!selectedVerification[target.id] || !verificationBy[target.id] || !verificationNote[target.id]?.trim()}
+                            onClick={() => recordVerification(target)}
+                          >
+                            Record verified outcome
+                          </button>
+                        </div>
+                      ) : <p className={`${itemClass} mt-1`}>No current source evidence supports a verification outcome. The treatment remains unverified.</p>
+                      : null}
+                  </div>
+                ) : null}
                 {target.executions.length > 0 ? (
                   <ul className="mt-1 space-y-1">
                     {target.executions.map((execution) => {

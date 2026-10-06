@@ -1,11 +1,12 @@
 import type { ActionRecord, DecisionRecord, LessonRecord } from "./capture-conversions";
+import { getIcarusTreatmentOutcomeEvidenceKey, type IcarusTreatmentOutcomeRecord } from "./icarus";
 import type { ProjectRecord } from "./projects";
 import {
   buildRecurringProblemLearning,
   type RecurringProblemLearningInput,
 } from "./recurring-problem-learning";
 
-export type LearningSourceType = "Action" | "Project" | "Decision" | "Lesson" | "Problem";
+export type LearningSourceType = "Action" | "Project" | "Decision" | "Lesson" | "Problem" | "Icarus Treatment";
 export type LearningOutcomeState = "Missing evidence" | "Unknown" | "Worked" | "Partially worked" | "Failed";
 export type LearningState =
   | "Unknown"
@@ -35,7 +36,9 @@ export type LearningEvidenceField =
   | "lastReviewOutcome" | "reviewOwnerPersonId" | "reviewNote" | "nextReviewDate"
   | "decisionStatus" | "executionState" | "actualOutcome" | "outcomeRating" | "lessons"
   | "description" | "recommendedChange" | "relatedProblem" | "relatedProject"
-  | "relatedDecision" | "relatedSystem" | "frequency" | "problemStatus" | "isUnresolved";
+  | "relatedDecision" | "relatedSystem" | "frequency" | "problemStatus" | "isUnresolved"
+  | "treatmentTargetId" | "treatmentOutcome" | "verifiedAt" | "verifiedByPersonId"
+  | "evidenceReference" | "verificationNote";
 
 export type LearningEvidence = {
   sourceType: LearningSourceType;
@@ -79,6 +82,10 @@ export type OrganisationalLearningInput = {
   problems: RecurringProblemLearningInput["problems"];
   systems: RecurringProblemLearningInput["systems"];
   sops: RecurringProblemLearningInput["sops"];
+  icarusTreatmentOutcomes?: readonly {
+    targetTitle: string;
+    record: IcarusTreatmentOutcomeRecord;
+  }[];
 };
 
 function executionState(status: string, isProject = false): LearningExecutionState {
@@ -180,6 +187,38 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
       ["relatedSystem", lesson.relatedSystem],
     ], [lesson]);
     signals.push(item);
+  });
+
+  (input.icarusTreatmentOutcomes ?? []).forEach(({ targetTitle, record }) => {
+    const outcomeState: LearningOutcomeState = record.outcome === "Effective" ? "Worked"
+      : record.outcome === "Partially effective" ? "Partially worked"
+        : record.outcome === "Ineffective" ? "Failed" : "Unknown";
+    if (outcomeState === "Unknown") return;
+    const sourceType: LearningSourceType = "Icarus Treatment";
+    signals.push({
+      sourceType,
+      sourceId: record.id,
+      sourceTitle: targetTitle,
+      executionState: "Completed execution",
+      outcomeState,
+      learningState: "Learning identified",
+      recurrenceState: "Unknown",
+      evidence: [
+        { sourceType, sourceId: record.id, field: "treatmentTargetId", value: record.treatmentTargetId },
+        { sourceType, sourceId: record.id, field: "treatmentOutcome", value: record.outcome },
+        { sourceType, sourceId: record.id, field: "verifiedAt", value: record.verifiedAt },
+        { sourceType, sourceId: record.id, field: "verifiedByPersonId", value: record.verifiedByPersonId },
+        { sourceType, sourceId: record.id, field: "verificationNote", value: record.verificationNote },
+        ...record.evidence.map((entry) => ({
+          sourceType,
+          sourceId: record.id,
+          field: "evidenceReference" as const,
+          value: getIcarusTreatmentOutcomeEvidenceKey(entry),
+        })),
+      ],
+      linkedLessonIds: [],
+      recommendedNextTransition: "Review learning",
+    });
   });
 
   input.problems.forEach((problem) => {

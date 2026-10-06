@@ -35,6 +35,7 @@ import type {
   IcarusResilienceIntervention,
 } from "../lib/icarus-dependency-resilience";
 import type { IcarusStrategicIntelligence } from "../lib/icarus-intelligence-pipeline";
+import type { IcarusStrategicSignal } from "../lib/icarus-strategic-attention";
 import type { IcarusStressTestingInput } from "../lib/icarus-stress-testing";
 import IcarusStressLab from "./icarus-stress-lab";
 import IcarusTreatmentSection from "./icarus-treatment-section";
@@ -66,6 +67,7 @@ type IcarusPanelProps = {
   stressTestingInput?: IcarusStressTestingInput;
   stressBaseline?: IcarusStrategicIntelligence;
   treatmentIndex?: IcarusTreatmentIndex;
+  closedAssessmentWarnings?: readonly IcarusStrategicSignal[];
   people?: readonly IcarusAssurancePersonOption[];
   actions?: readonly IcarusTreatmentExecution[];
   projects?: readonly IcarusTreatmentExecution[];
@@ -139,6 +141,7 @@ export default function IcarusPanel({
   stressTestingInput,
   stressBaseline,
   treatmentIndex,
+  closedAssessmentWarnings = [],
   people = [],
   actions = [],
   projects = [],
@@ -409,10 +412,25 @@ export default function IcarusPanel({
           index={treatmentIndex}
           actions={actions}
           projects={projects}
+          people={people ?? []}
           writable={writable}
           onChange={onChange}
           onOpenRecord={onOpenRecord}
         />
+      ) : null}
+      {closedAssessmentWarnings.length > 0 ? (
+        <section className="mt-4 rounded-xl border border-[#b96b55] bg-[#fff7f3] p-4" aria-label="Closed assessments with material exposure">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8b3d28]">Closed assessments with material exposure</h2>
+          <p className="mt-1 text-[12px] leading-5 text-[#4d4944]">Administrative closure is not evidence of strategic resolution. These material exposures remain visible for review.</p>
+          <ul className="mt-2 space-y-1">
+            {closedAssessmentWarnings.map((signal) => (
+              <li key={signal.key} className="text-[12px] leading-5 text-[#4d4944]">
+                <a className="font-medium underline" href={`#icarus-assessment-${signal.assessmentId}`}>{signal.outcome}</a>
+                {` · ${signal.exposure} · ${signal.materialFailureModes.length} material failure mode${signal.materialFailureModes.length === 1 ? "" : "s"}`}
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
       {stressTestingInput && stressBaseline ? (
         <IcarusStressLab input={stressTestingInput} baseline={stressBaseline} onPromote={promoteStressFinding} />

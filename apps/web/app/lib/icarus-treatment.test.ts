@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { assertIcarusDataStructure, normaliseIcarusAssessmentData, type IcarusAssessmentRecord } from "./icarus";
+import {
+  assertIcarusDataStructure,
+  getIcarusTreatmentOutcomeId,
+  normaliseIcarusAssessmentData,
+  type IcarusAssessmentRecord,
+} from "./icarus";
 import type { IcarusAssuranceObligation } from "./icarus-assurance";
 import type { IcarusResilienceIntervention } from "./icarus-dependency-resilience";
 import {
@@ -57,10 +62,11 @@ function index(
 ) {
   return buildIcarusTreatmentIndex({
     assessments: records,
-    assurance: { assessments: [], byAssessmentId: new Map(), obligations },
+    assurance: { byAssessmentId: new Map(), obligations },
     resilience: [],
     recommendations: [],
     barrierRestorations: [],
+    dependencyHealth: new Map(),
     actions,
     projects,
     founderPersonId: "founder-1",
@@ -83,6 +89,49 @@ const action = (
 });
 
 describe("Icarus treatment routing", () => {
+  it("derives resolution eligibility conservatively without closing or accepting exposure", () => {
+    const makeIndex = (
+      record: IcarusAssessmentRecord,
+      acceptances: readonly { current: boolean; validity: "Active" | "Expired" | "Invalid" | "Revoked" }[] = [],
+      modes: readonly {
+        failureModeId: string;
+        material: boolean;
+        assurance: "Failing" | "Unassured" | "Accepted" | "Partially assured" | "Assured";
+      }[] = [],
+    ) => buildIcarusTreatmentIndex({
+      assessments: [record],
+      assurance: {
+        byAssessmentId: new Map([[assessmentId, {
+          assessmentId,
+          objectiveIds: [],
+          operatingPillarIds: [],
+          controls: [],
+          modes,
+          acceptances,
+        }]]),
+        obligations: [],
+      },
+      resilience: [],
+      recommendations: [],
+      barrierRestorations: [],
+      dependencyHealth: new Map(),
+      actions: [],
+      projects: [],
+      founderPersonId: null,
+      nowMs,
+    });
+
+    expect(makeIndex(assessment()).summaries.get(assessmentId)?.resolutionEligibility).toBe("Eligible");
+    expect(makeIndex(assessment(), [], [{
+      failureModeId: "mode-1",
+      material: true,
+      assurance: "Assured",
+    }]).summaries.get(assessmentId)?.resolutionEligibility).toBe("Not eligible");
+    expect(makeIndex(assessment(), [{ current: true, validity: "Active" }]).summaries.get(assessmentId)?.resolutionEligibility)
+      .toBe("Not eligible");
+    expect(makeIndex(assessment({ status: "Closed" })).summaries.get(assessmentId)?.resolutionEligibility).toBe("Unknown");
+  });
+
   it("uses deterministic source-kind-scoped identities without collisions", () => {
     expect(getIcarusTreatmentTargetId("Source A", "id:1")).toBe(getIcarusTreatmentTargetId("Source A", "id:1"));
     expect(getIcarusTreatmentTargetId("Source A", "id:1")).not.toBe(getIcarusTreatmentTargetId("Source B", "id:1"));
@@ -261,5 +310,37 @@ describe("Icarus treatment routing", () => {
 
     const malformed = normaliseIcarusAssessmentData([{ ...assessment(), treatmentTargets: [{ id: "bad" }] }]);
     expect(malformed).toEqual([assessment({ treatmentTargets: [] })]);
+  });
+
+  it("preserves valid verified outcomes, rejects altered event identities, and deduplicates legacy copies", () => {
+    const evidence = [{
+      kind: "Control test" as const,
+      assessmentId,
+      failureModeId: "mode-1",
+      controlId: "control-1",
+      testId: "test-1",
+      result: "Passed" as const,
+      assuranceStatus: "Assured" as const,
+      evidenceStatus: "Current support" as const,
+      evidenceIds: ["evidence-1"],
+    }];
+    const outcome = {
+      id: getIcarusTreatmentOutcomeId("target-1", "person-1", evidence),
+      treatmentTargetId: "target-1",
+      assessmentId,
+      executionLinks: [{ recordType: "Action" as const, recordId: "action-1", linkedAt: "2026-05-01T00:00:00.000Z" }],
+      outcome: "Effective" as const,
+      verifiedAt: "2026-05-02T00:00:00.000Z",
+      verifiedByPersonId: "person-1",
+      evidence,
+      afterState: { kind: "Control assurance" as const, state: "Assured" as const },
+      verificationNote: "Current control test passed.",
+    };
+    const valid = assessment({ treatmentOutcomes: [outcome] });
+    expect(() => assertIcarusDataStructure([valid])).not.toThrow();
+    expect(normaliseIcarusAssessmentData([{
+      ...valid,
+      treatmentOutcomes: [outcome, outcome, { ...outcome, id: "altered" }],
+    }])).toEqual([valid]);
   });
 });

@@ -135,6 +135,8 @@ export type IcarusStrategicIntelligence = {
   // Authoritative material strategic signals with assurance attached: the single input for Command, Founder Focus,
   // correlation, systemic exposure and history.
   strategicSignals: IcarusStrategicSignal[];
+  // Material exposures in administratively Closed records remain visible for governance, but do not re-enter active intelligence.
+  closedAssessmentWarnings: IcarusStrategicSignal[];
   correlationSignals: IcarusCorrelationSignal[];
   founderFocusRisks: IcarusFounderFocusRisk[];
   exposureSnapshot: IcarusExposureSnapshotEntry[];
@@ -173,6 +175,12 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     .filter((review) => assessmentStatuses.get(review.assessmentId) !== "Closed")
     .flatMap((review) => review.findings);
   const strategicObjectives = buildIcarusObjectiveContext(input.strategicObjectives);
+  const closedAssessmentWarnings = buildIcarusStrategicAttention({
+    assessments: input.assessments.filter((assessment) => assessment.status === "Closed"),
+    reviews,
+    strategicObjectives,
+    includeClosedAssessments: true,
+  });
 
   // Materiality is decided here, before (and independently of) assurance.
   const exposureSignals = buildIcarusStrategicAttention({
@@ -261,6 +269,7 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     failureChains,
     healthTriggeredChains: failureChains.healthTriggeredChains,
     strategicSignals,
+    closedAssessmentWarnings,
     correlationSignals: buildIcarusCorrelationSignals({ signals: strategicSignals }),
     founderFocusRisks: buildIcarusFounderFocusRisks(strategicSignals),
     exposureSnapshot: input.includeExposureSnapshot === false

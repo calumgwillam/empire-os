@@ -4,12 +4,20 @@ import type {
   IcarusRecordReference,
   IcarusTreatmentTargetRecord,
 } from "./icarus";
+import type { IcarusDependencyHealthRegistry } from "./icarus-dependency-health";
 import type {
+  IcarusAcceptanceAssurance,
+  IcarusAssessmentAssurance,
   IcarusAssuranceObligation,
-  IcarusAssuranceResult,
+  IcarusControlAssurance,
+  IcarusFailureModeAssurance,
 } from "./icarus-assurance";
 import type { IcarusDependencyResilience, IcarusResilienceIntervention } from "./icarus-dependency-resilience";
 import type { IcarusBarrierRestoration } from "./icarus-failure-chain-analysis";
+import {
+  buildIcarusTreatmentOutcomeIndex,
+  type IcarusTreatmentOutcomeView,
+} from "./icarus-treatment-outcome";
 
 export { getIcarusTreatmentTargetId } from "./icarus";
 
@@ -72,9 +80,13 @@ export type IcarusTreatmentAssessmentSummary = {
   overdueCount: number;
   missingExecutionCount: number;
   awaitingVerificationCount: number;
+  verifiedIneffectiveCount: number;
+  partiallyEffectiveCount: number;
+  verificationInconclusiveCount: number;
   founderOwnedCount: number;
   delegatedCount: number;
   unpromotedInterventionCount: number;
+  resolutionEligibility: "Eligible" | "Not eligible" | "Unknown";
   attentionReasons: readonly string[];
 };
 
@@ -83,16 +95,33 @@ export type IcarusTreatmentIndex = {
   summaries: ReadonlyMap<string, IcarusTreatmentAssessmentSummary>;
   recommendations: readonly IcarusResilienceIntervention[];
   barrierRestorations: readonly IcarusBarrierRestoration[];
+  verification: ReadonlyMap<string, IcarusTreatmentOutcomeView>;
+};
+
+type IcarusTreatmentAssuranceAssessment = Pick<
+  IcarusAssessmentAssurance,
+  "assessmentId" | "objectiveImportance"
+> & {
+  objectiveIds: readonly IcarusAssessmentAssurance["objectiveIds"][number][];
+  operatingPillarIds: readonly IcarusAssessmentAssurance["operatingPillarIds"][number][];
+  acceptances: readonly Pick<IcarusAcceptanceAssurance, "current" | "validity">[];
+  modes: readonly Pick<IcarusFailureModeAssurance, "failureModeId" | "material" | "assurance">[];
+  controls: readonly Pick<
+    IcarusControlAssurance,
+    "controlId" | "failureModeId" | "status" | "evidence" | "lastEvent"
+  >[];
 };
 
 export type IcarusTreatmentIndexInput = {
   assessments: readonly IcarusAssessmentRecord[];
-  assurance: Omit<IcarusAssuranceResult, "obligations"> & {
+  assurance: {
+    byAssessmentId: ReadonlyMap<string, IcarusTreatmentAssuranceAssessment>;
     obligations: readonly IcarusAssuranceObligation[];
   };
   resilience: readonly IcarusDependencyResilience[];
   recommendations: readonly IcarusResilienceIntervention[];
   barrierRestorations: readonly IcarusBarrierRestoration[];
+  dependencyHealth: IcarusDependencyHealthRegistry;
   actions: readonly IcarusTreatmentExecution[];
   projects: readonly IcarusTreatmentExecution[];
   founderPersonId: string | null;
@@ -178,7 +207,7 @@ function materialObligation(obligation: IcarusAssuranceObligation): boolean {
 function createObligationTarget(
   obligation: IcarusAssuranceObligation,
   assessment: IcarusAssessmentRecord,
-  assuranceAssessment: IcarusAssuranceResult["assessments"][number] | undefined,
+  assuranceAssessment: IcarusTreatmentAssuranceAssessment | undefined,
   actionMap: ReadonlyMap<string, IcarusTreatmentExecution>,
   founderPersonId: string | null,
   nowMs: number,
@@ -253,6 +282,9 @@ function buildSummary(
   targets: readonly IcarusTreatmentTarget[],
   recommendations: readonly IcarusResilienceIntervention[],
   barrierRestorations: readonly IcarusBarrierRestoration[],
+  verification: ReadonlyMap<string, IcarusTreatmentOutcomeView>,
+  assessment: IcarusAssessmentRecord,
+  assuranceAssessment: IcarusTreatmentAssuranceAssessment | undefined,
 ): IcarusTreatmentAssessmentSummary {
   const materialTargets = targets.filter((target) => target.material
     && (target.assessmentId === assessmentId || target.affectedAssessmentIds.includes(assessmentId)));
@@ -262,7 +294,18 @@ function buildSummary(
   const blockedCount = count("Blocked");
   const overdueCount = count("Overdue");
   const missingExecutionCount = count("Missing execution record");
-  const awaitingVerificationCount = count("Completed — verification required");
+  const materialForAssessment = targets.filter((target) => target.material
+    && (target.assessmentId === assessmentId || target.affectedAssessmentIds.includes(assessmentId)));
+  const awaitingVerificationCount = materialForAssessment.filter((target) =>
+    target.state === "Completed — verification required"
+      && ["Awaiting verification", "Superseded"].includes(verification.get(target.id)?.state ?? "Awaiting verification")).length;
+  const verifiedIneffectiveCount = materialForAssessment.filter((target) =>
+    verification.get(target.id)?.state === "Verified ineffective").length;
+  const partiallyEffectiveCount = materialForAssessment.filter((target) =>
+    verification.get(target.id)?.state === "Partially effective").length;
+  const verificationInconclusiveCount = materialForAssessment.filter((target) =>
+    verification.get(target.id)?.state === "Verification inconclusive"
+      || verification.get(target.id)?.state === "Superseded").length;
   const founderOwnedCount = materialTargets.filter((target) => target.founderOwned).length;
   const delegatedCount = materialTargets.filter((target) => target.executions.some((execution) =>
     Boolean(execution.ownerPersonId?.trim())) && !target.founderOwned).length;
@@ -272,6 +315,18 @@ function buildSummary(
       && !promotedIds.has(getIcarusResilienceTreatmentTargetId(recommendation))).length
     + barrierRestorations.filter((restoration) => restoration.assessmentId === assessmentId
       && !promotedIds.has(getIcarusBarrierRestorationTreatmentTargetId(restoration))).length;
+  const currentAcceptedExposure = assuranceAssessment?.acceptances.some((acceptance) =>
+    acceptance.current && acceptance.validity === "Active") ?? false;
+  const unresolvedMaterialModes = assuranceAssessment?.modes.some((mode) => mode.material) ?? false;
+  const treatmentVerificationPending = materialForAssessment.some((target) => {
+    const state = verification.get(target.id)?.state;
+    return state !== "Verified effective" && state !== "No longer applicable";
+  });
+  const resolutionEligibility = assessment.status === "Closed" || !assuranceAssessment
+    ? "Unknown"
+    : currentAcceptedExposure || unresolvedMaterialModes || treatmentVerificationPending || unpromotedInterventionCount > 0
+      ? "Not eligible"
+      : "Eligible";
   const attentionReasons = [
     unroutedCount > 0 ? `${unroutedCount} material treatment target${unroutedCount === 1 ? " is" : "s are"} unrouted` : "",
     unownedCount > 0 ? `${unownedCount} treatment${unownedCount === 1 ? " is" : "s are"} unowned` : "",
@@ -279,6 +334,9 @@ function buildSummary(
     overdueCount > 0 ? `${overdueCount} treatment${overdueCount === 1 ? " is" : "s are"} overdue` : "",
     missingExecutionCount > 0 ? `${missingExecutionCount} execution link${missingExecutionCount === 1 ? " is" : "s are"} missing` : "",
     awaitingVerificationCount > 0 ? `${awaitingVerificationCount} completed treatment${awaitingVerificationCount === 1 ? " still requires" : "s still require"} strategic verification` : "",
+    verifiedIneffectiveCount > 0 ? `${verifiedIneffectiveCount} treatment${verifiedIneffectiveCount === 1 ? " is" : "s are"} verified ineffective` : "",
+    partiallyEffectiveCount > 0 ? `${partiallyEffectiveCount} treatment${partiallyEffectiveCount === 1 ? " is" : "s are"} only partially effective` : "",
+    verificationInconclusiveCount > 0 ? `${verificationInconclusiveCount} treatment verification${verificationInconclusiveCount === 1 ? " is" : "s are"} inconclusive or superseded` : "",
     unpromotedInterventionCount > 0
       ? `${unpromotedInterventionCount} resilience/restoration intervention${unpromotedInterventionCount === 1 ? " remains" : "s remain"} a recommendation`
       : "",
@@ -292,9 +350,13 @@ function buildSummary(
     overdueCount,
     missingExecutionCount,
     awaitingVerificationCount,
+    verifiedIneffectiveCount,
+    partiallyEffectiveCount,
+    verificationInconclusiveCount,
     founderOwnedCount,
     delegatedCount,
     unpromotedInterventionCount,
+    resolutionEligibility,
     attentionReasons,
   };
 }
@@ -348,6 +410,12 @@ export function buildIcarusTreatmentIndex(input: IcarusTreatmentIndexInput): Ica
     });
   });
   const uniqueTargets = [...uniqueById.values()].sort((left, right) => left.id.localeCompare(right.id));
+  const verification = buildIcarusTreatmentOutcomeIndex({
+    assessments: input.assessments,
+    targets: uniqueTargets,
+    assurance: { byAssessmentId: input.assurance.byAssessmentId },
+    dependencyHealth: input.dependencyHealth,
+  });
   const knownDependencies = new Set(input.resilience.map((entry) => getIcarusReferenceKey(entry.reference)));
   const recommendations = input.recommendations.filter((recommendation) =>
     knownDependencies.has(getIcarusReferenceKey(recommendation.reference)))
@@ -359,11 +427,19 @@ export function buildIcarusTreatmentIndex(input: IcarusTreatmentIndexInput): Ica
       || left.failureModeId.localeCompare(right.failureModeId)
       || left.controlId.localeCompare(right.controlId));
   const assessmentIds = new Set(input.assessments.map((assessment) => assessment.id));
-  const summaries = new Map([...assessmentIds].sort().map((assessmentId) => [
-    assessmentId,
-    buildSummary(assessmentId, uniqueTargets, recommendations, barrierRestorations),
-  ] as const));
-  return { targets: uniqueTargets, summaries, recommendations, barrierRestorations };
+  const summaries = new Map([...assessmentIds].sort().flatMap((assessmentId) => {
+    const assessment = assessmentById.get(assessmentId);
+    return assessment ? [[assessmentId, buildSummary(
+      assessmentId,
+      uniqueTargets,
+      recommendations,
+      barrierRestorations,
+      verification,
+      assessment,
+      input.assurance.byAssessmentId.get(assessmentId),
+    )] as const] : [];
+  }));
+  return { targets: uniqueTargets, summaries, recommendations, barrierRestorations, verification };
 }
 
 export function createIcarusResilienceTreatmentTarget(

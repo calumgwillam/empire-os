@@ -4,7 +4,12 @@ import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import { describe, expect, it } from "vitest";
 import { buildOrganisationalLearning, type OrganisationalLearningInput } from "./organisational-learning";
 import type { LearningAttentionInput } from "./learning-attention";
-import { buildIcarusReview, type IcarusAssessmentRecord, type IcarusRecordReference } from "./icarus";
+import {
+  buildIcarusReview,
+  type IcarusAssessmentRecord,
+  type IcarusRecordReference,
+  type IcarusTreatmentOutcomeRecord,
+} from "./icarus";
 import { buildIcarusStrategicAttention, type IcarusStrategicSignal } from "./icarus-strategic-attention";
 import { resolveStrategicRiskConvergence } from "./strategic-risk-resolution";
 import {
@@ -472,7 +477,12 @@ function institutionalisationFor(target: LearningAttentionInput["associatedTarge
     .map((signal) => ({ signal, associatedTarget: target }));
 }
 
-function productionLearning(records: OrganisationalLearningInput): LearningAttentionInput[] {
+type ProductionLearningRecords = OrganisationalLearningInput & {
+  icarusAssessments?: readonly IcarusAssessmentRecord[];
+  icarusTreatmentTargets?: readonly { id: string; treatmentKind: string }[];
+};
+
+function productionLearning(records: ProductionLearningRecords): LearningAttentionInput[] {
   const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
   function section(start: string, end: string): string {
     const first = page.indexOf(start);
@@ -500,12 +510,14 @@ function productionLearning(records: OrganisationalLearningInput): LearningAtten
     problemRecords: records.problems,
     systemRecords: records.systems,
     sopRecords: records.sops,
+    icarusAssessments: records.icarusAssessments ?? [],
+    icarusTreatmentIndex: { targets: records.icarusTreatmentTargets ?? [] },
   }), { timeout: 1000 });
   if (!context.result) throw new Error("Production learning projection returned no result");
   return context.result;
 }
 
-function learningRecords(overrides: Partial<OrganisationalLearningInput> = {}): OrganisationalLearningInput {
+function learningRecords(overrides: Partial<ProductionLearningRecords> = {}): ProductionLearningRecords {
   return { actions: [], projects: [], decisions: [], lessons: [], problems: [], systems: [], sops: [], ...overrides };
 }
 
@@ -521,6 +533,42 @@ describe("Production record projection into Command learning", () => {
     expect(page.slice(start, end)).toContain("learning: commandLearningInput,");
   });
 
+  it("projects verified Icarus treatment learning from the real page composition", () => {
+    const record: IcarusTreatmentOutcomeRecord = {
+      id: "outcome-1",
+      treatmentTargetId: "target-1",
+      assessmentId: "icarus-1",
+      executionLinks: [{ recordType: "Action", recordId: "action-1", linkedAt: icarusTimestamp }],
+      outcome: "Effective",
+      verifiedAt: icarusTimestamp,
+      verifiedByPersonId: "person-1",
+      evidence: [{
+        kind: "Control test",
+        assessmentId: "icarus-1",
+        failureModeId: "mode-1",
+        controlId: "control-1",
+        testId: "test-1",
+        result: "Passed",
+        assuranceStatus: "Assured",
+        evidenceStatus: "Current support",
+        evidenceIds: ["evidence-1"],
+      }],
+      afterState: { kind: "Control assurance", state: "Assured" },
+      verificationNote: "Current evidence confirms the control is effective.",
+    };
+    const learning = productionLearning(learningRecords({
+      icarusAssessments: [icarusAssessment({ treatmentOutcomes: [record] })],
+      icarusTreatmentTargets: [{ id: "target-1", treatmentKind: "Restore control" }],
+    }));
+    const treatmentSignals = learning.filter(({ signal }) => signal.sourceType === "Icarus Treatment");
+    expect(treatmentSignals).toHaveLength(1);
+    expect(treatmentSignals[0]?.signal).toMatchObject({
+      sourceId: "outcome-1",
+      sourceTitle: "Restore control",
+      outcomeState: "Worked",
+    });
+  });
+
   it("leaves ordinary execution and outcomes without explicit learning conditions unchanged", () => {
     const actions = [action({ status: "Blocked" })];
     const projects = [project({ status: "blocked" })];
@@ -534,6 +582,7 @@ describe("Production record projection into Command learning", () => {
         outcomeRating: "Worked", lessons: "",
       })),
     }));
+    expect(learning.filter(({ signal }) => signal.sourceType === "Icarus Treatment")).toEqual([]);
     expect(buildCommandAttention({ ...baseline, learning })).toEqual(buildCommandAttention(baseline));
     expect(learning.find(({ signal }) => signal.sourceType === "Decision")?.signal.executionState)
       .toBe("No execution path");

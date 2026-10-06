@@ -120,11 +120,14 @@ describe("Icarus counterfactual stress testing", () => {
     const project = runIcarusStressTest(input, [{ type: "Project", projectId: "project-1", state: "Blocked" }], baseline(input));
     expect(project.hypothetical.dependencyHealth.get("Project:project-1")?.health).toBe("Degraded");
     expect(project.delta.newlyActivatedChains[0]?.status).toBe("Potential");
+    expect(project.delta.newlyExposedAssessments.map((entry) => entry.assessmentId)).toEqual(["risk-1"]);
 
     const actionInput = makeInput({ assessments: [assessment("risk-action", [actionRef])] });
+    const currentActionHealth = baseline(actionInput).dependencyHealth.get("Action:action-1")?.health;
     const action = runIcarusStressTest(actionInput, [{ type: "Action", actionId: "action-1", state: "Blocked" }], baseline(actionInput));
+    expect(currentActionHealth).toBe("Unknown");
     expect(action.hypothetical.dependencyHealth.get("Action:action-1")?.health).toBe("Degraded");
-    expect(action.delta.newlyExposedAssessments.map((entry) => entry.assessmentId)).toEqual(["risk-action"]);
+    expect(action.delta.newlyExposedAssessments).toEqual([]);
   });
 
   it("supports direct health overrides for unknown, watch, degraded, and failed dependency states", () => {

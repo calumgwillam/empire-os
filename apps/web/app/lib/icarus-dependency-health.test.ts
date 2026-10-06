@@ -41,20 +41,23 @@ describe("Icarus dependency health", () => {
     expect(getIcarusDependencyHealth(registry, reference("Person", "other")).health).toBe("Unknown");
   });
 
-  it("treats action completion, blockage, overdue state, cancellation, and missing records distinctly", () => {
+  it("keeps workflow state distinct from verified operational health", () => {
     const registry = buildIcarusDependencyHealthRegistry(input({
       actions: [
         { id: "completed", status: "Completed" },
         { id: "blocked", status: "Blocked" },
         { id: "overdue", status: "In Progress", dueDate: "2025-04-01" },
         { id: "cancelled", status: "Cancelled" },
+        { id: "active", status: "In Progress" },
       ],
     }));
 
-    expect(getIcarusDependencyHealth(registry, reference("Action", "completed")).health).toBe("Not applicable");
-    expect(getIcarusDependencyHealth(registry, reference("Action", "blocked")).health).toBe("Degraded");
-    expect(getIcarusDependencyHealth(registry, reference("Action", "overdue")).health).toBe("Watch");
-    expect(getIcarusDependencyHealth(registry, reference("Action", "cancelled")).health).toBe("Unknown");
+    for (const id of ["completed", "blocked", "overdue", "cancelled", "active"]) {
+      expect(getIcarusDependencyHealth(registry, reference("Action", id))).toMatchObject({
+        health: "Unknown",
+        basis: expect.arrayContaining(["no-operational-health-evidence"]),
+      });
+    }
     expect(getIcarusDependencyHealth(registry, reference("Action", "missing"))).toMatchObject({
       health: "Unknown",
       basis: ["missing-source-record"],
@@ -69,6 +72,7 @@ describe("Icarus dependency health", () => {
         source("Project", "blocked", { status: "Blocked" }),
         source("Project", "completed", { status: "Completed", health: "On track" }),
         source("Project", "cancelled", { status: "Cancelled" }),
+        source("Project", "active-no-health", { status: "In Progress" }),
       ],
     }));
 
@@ -80,6 +84,10 @@ describe("Icarus dependency health", () => {
     expect(getIcarusDependencyHealth(registry, reference("Project", "blocked")).health).toBe("Degraded");
     expect(getIcarusDependencyHealth(registry, reference("Project", "completed")).health).toBe("Not applicable");
     expect(getIcarusDependencyHealth(registry, reference("Project", "cancelled")).health).toBe("Unknown");
+    expect(getIcarusDependencyHealth(registry, reference("Project", "active-no-health"))).toMatchObject({
+      health: "Unknown",
+      basis: ["unsupported-project-state", "no-operational-health-evidence"],
+    });
   });
 
   it("keeps SOP and System health Unknown when only identity or lifecycle state is available", () => {

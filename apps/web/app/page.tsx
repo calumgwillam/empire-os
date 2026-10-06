@@ -4130,6 +4130,31 @@ function FounderFocusList({ items, totalCount, onOpen }: { items: FocusListItem[
   );
 }
 
+function IcarusResolutionReviewList({
+  items,
+  onOpen,
+}: {
+  items: readonly { assessmentId: string; title: string }[];
+  onOpen: (assessmentId: string) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <section className="mt-4 rounded-2xl border border-[#c9b8a3] bg-[#f5efe6] p-4" aria-label="Icarus resolution review">
+      <h2 className="text-[10px] font-medium uppercase tracking-[0.18em] text-[#51483e]">Icarus resolution review eligible</h2>
+      <p className="mt-1 text-[12px] leading-5 text-[#4d4944]">These assessments meet the current conservative eligibility conditions. Eligibility is not resolution or closure.</p>
+      <ul className="mt-2 space-y-1">
+        {items.map((item) => (
+          <li key={item.assessmentId}>
+            <button type="button" className="text-left text-[12px] font-medium underline" onClick={() => onOpen(item.assessmentId)}>
+              {item.title}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 type CapacityRankedDelegationPerson = PersonRecord & {
   carriedCount: number;
   attentionCount: number;
@@ -10098,11 +10123,16 @@ export default function Home() {
     resilience: icarusIntelligence.dependencyResilience,
     recommendations: icarusIntelligence.resilienceInterventions,
     barrierRestorations: icarusIntelligence.failureChains.barrierWeaknesses,
+    dependencyHealth: icarusIntelligence.dependencyHealth,
     actions: icarusTreatmentActions,
     projects: icarusTreatmentProjects,
     founderPersonId: founderPerson?.id ?? null,
     nowMs: icarusIntelligence.nowMs,
   });
+  const icarusResolutionReviewItems = icarusAssessments.flatMap((assessment) =>
+    icarusTreatmentIndex.summaries.get(assessment.id)?.resolutionEligibility === "Eligible"
+      ? [{ assessmentId: assessment.id, title: assessment.outcome }]
+      : []);
   const icarusSignalsWithTreatment = icarusIntelligence.strategicSignals.map((signal) => {
     const treatment = icarusTreatmentIndex.summaries.get(signal.assessmentId);
     return treatment ? {
@@ -11122,6 +11152,12 @@ export default function Home() {
     })),
     systems: systemRecords,
     sops: sopRecords,
+    icarusTreatmentOutcomes: icarusAssessments.flatMap((assessment) =>
+      (assessment.treatmentOutcomes ?? []).map((record) => ({
+        targetTitle: icarusTreatmentIndex.targets.find((target) => target.id === record.treatmentTargetId)?.treatmentKind
+          ?? "Icarus treatment",
+        record,
+      }))),
   }).map((signal) => ({ signal }));
 
   const commandAttentionPolicy = buildCommandAttention({
@@ -16429,6 +16465,13 @@ export default function Home() {
               <div className="mt-5">
                 <FounderFocusList items={founderFocusList} totalCount={founderFocusCandidates.length} onOpen={handleOpenAttentionRecord} />
               </div>
+              <IcarusResolutionReviewList
+                items={icarusResolutionReviewItems}
+                onOpen={(assessmentId) => openIcarusReference({
+                  identityKey: getIcarusIdentityKey(assessmentId),
+                  assessmentId,
+                })}
+              />
 
               {integrityNeedsFounderAttention && integrityAudit ? (
                 <button type="button" onClick={() => setActiveView("Empire")} className="mt-5 block w-full rounded-2xl border border-[#d4b4a7] bg-[#f8efeb] p-4 text-left transition hover:border-[#6a3328]">
@@ -16907,6 +16950,13 @@ export default function Home() {
               <div className="mt-6">
                 <FounderFocusList items={founderFocusList} totalCount={founderFocusCandidates.length} onOpen={handleOpenAttentionRecord} />
               </div>
+              <IcarusResolutionReviewList
+                items={icarusResolutionReviewItems}
+                onOpen={(assessmentId) => openIcarusReference({
+                  identityKey: getIcarusIdentityKey(assessmentId),
+                  assessmentId,
+                })}
+              />
 
               <section className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -19745,6 +19795,7 @@ export default function Home() {
               stressTestingInput={icarusStressTestingInput}
               stressBaseline={icarusIntelligence}
               treatmentIndex={icarusTreatmentIndex}
+              closedAssessmentWarnings={icarusIntelligence.closedAssessmentWarnings}
               failureChains={icarusIntelligence.failureChains}
               healthTriggeredChains={icarusIntelligence.healthTriggeredChains}
               people={people.map(({ id, name, status }) => ({ id, name, status }))}

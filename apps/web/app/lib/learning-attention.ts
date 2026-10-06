@@ -33,6 +33,7 @@ export function buildLearningAttention(
   const result: LearningAttentionSignal[] = [];
 
   input.forEach(({ signal, associatedTarget }) => {
+    if (signal.sourceType === "Icarus Treatment") return;
     const belongsToLesson = (id: string) =>
       (signal.sourceType === "Lesson" && signal.sourceId === id)
       || signal.linkedLessonIds.includes(id);

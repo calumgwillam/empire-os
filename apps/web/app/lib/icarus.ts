@@ -153,6 +153,67 @@ export type IcarusTreatmentTargetRecord = {
   promotedAt: string;
 };
 
+export type IcarusTreatmentOutcomeCategory =
+  | "Effective"
+  | "Partially effective"
+  | "Ineffective"
+  | "Inconclusive"
+  | "No longer applicable";
+
+export type IcarusTreatmentOutcomeEvidence =
+  | {
+    kind: "Control test";
+    assessmentId: string;
+    failureModeId: string;
+    controlId: string;
+    testId: string;
+    result: IcarusControlTestResult;
+    assuranceStatus: "Assured" | "Failed" | "Test overdue" | "Evidence insufficient" | "Inconclusive" | "Untested" | "Not operating";
+    evidenceStatus: "Current support" | "No current support" | "Conflicting" | "Not applicable";
+    evidenceIds: string[];
+  }
+  | {
+    kind: "Dependency health";
+    dependencyReference: IcarusRecordReference;
+    health: "Healthy" | "Watch" | "Degraded" | "Failed" | "Unknown" | "Not applicable";
+    source: "Explicit" | "Derived";
+    basis: string[];
+  }
+  | {
+    kind: "Failure mode materiality";
+    assessmentId: string;
+    failureModeId: string;
+    material: boolean;
+  };
+
+export type IcarusTreatmentOutcomeStateFact =
+  | {
+    kind: "Control assurance";
+    state: "Assured" | "Failed" | "Test overdue" | "Evidence insufficient" | "Inconclusive" | "Untested" | "Not operating" | "Partially assured";
+  }
+  | {
+    kind: "Dependency health";
+    state: "Healthy" | "Watch" | "Degraded" | "Failed" | "Unknown" | "Not applicable";
+  }
+  | {
+    kind: "Failure mode materiality";
+    state: "Material" | "Not material";
+  };
+
+export type IcarusTreatmentOutcomeRecord = {
+  id: string;
+  treatmentTargetId: string;
+  assessmentId: string;
+  executionLinks: IcarusTreatmentExecutionLink[];
+  outcome: IcarusTreatmentOutcomeCategory;
+  verifiedAt: string;
+  verifiedByPersonId: string;
+  evidence: IcarusTreatmentOutcomeEvidence[];
+  beforeState?: IcarusTreatmentOutcomeStateFact;
+  afterState: IcarusTreatmentOutcomeStateFact;
+  verificationNote: string;
+};
+
 export type IcarusAssessmentStatus = "Open" | "Monitoring" | "Closed";
 
 export type IcarusAssessmentRecord = {
@@ -173,6 +234,8 @@ export type IcarusAssessmentRecord = {
   assuranceActionLinks?: IcarusAssuranceActionLink[];
   // Derived treatment candidates remain separate from these explicitly promoted, persisted targets.
   treatmentTargets?: IcarusTreatmentTargetRecord[];
+  // Explicit, evidence-linked verification events. Absence on legacy records means no verification is recorded.
+  treatmentOutcomes?: IcarusTreatmentOutcomeRecord[];
 };
 
 export type IcarusSourceRecord = IcarusRecordReference & {
@@ -284,6 +347,36 @@ export function getIcarusTreatmentTargetId(sourceKind: string, sourceId: string)
   return `icarus-treatment:${encodeURIComponent(sourceKind)}:${encodeURIComponent(sourceId)}`;
 }
 
+export function getIcarusTreatmentOutcomeEvidenceKey(evidence: IcarusTreatmentOutcomeEvidence): string {
+  if (evidence.kind === "Control test") {
+    return JSON.stringify([
+      evidence.kind, evidence.assessmentId, evidence.failureModeId, evidence.controlId, evidence.testId,
+      evidence.result, evidence.assuranceStatus, [...evidence.evidenceIds].sort(),
+      evidence.evidenceStatus,
+    ]);
+  }
+  if (evidence.kind === "Dependency health") {
+    return JSON.stringify([
+      evidence.kind, getIcarusReferenceKey(evidence.dependencyReference), evidence.health,
+      evidence.source, [...evidence.basis].sort(),
+    ]);
+  }
+  return JSON.stringify([evidence.kind, evidence.assessmentId, evidence.failureModeId, evidence.material]);
+}
+
+export function getIcarusTreatmentOutcomeId(
+  treatmentTargetId: string,
+  verifiedByPersonId: string,
+  evidence: readonly IcarusTreatmentOutcomeEvidence[],
+): string {
+  const evidenceKeys = [...new Set(evidence.map(getIcarusTreatmentOutcomeEvidenceKey))].sort();
+  return `icarus-treatment-outcome:${encodeURIComponent(JSON.stringify([
+    treatmentTargetId,
+    verifiedByPersonId,
+    evidenceKeys,
+  ]))}`;
+}
+
 export function isIcarusRecordReference(value: unknown): value is IcarusRecordReference {
   return isPlainObject(value)
     && ICARUS_SOURCE_TYPES.includes(value.recordType as IcarusSourceType)
@@ -363,7 +456,9 @@ export function isIcarusAssessmentRecord(value: unknown): value is IcarusAssessm
     || (value.assuranceActionLinks !== undefined
       && (!Array.isArray(value.assuranceActionLinks) || !value.assuranceActionLinks.every(isIcarusAssuranceActionLink)))
     || (value.treatmentTargets !== undefined
-      && (!Array.isArray(value.treatmentTargets) || !value.treatmentTargets.every(isIcarusTreatmentTargetRecord)))) {
+      && (!Array.isArray(value.treatmentTargets) || !value.treatmentTargets.every(isIcarusTreatmentTargetRecord)))
+    || (value.treatmentOutcomes !== undefined
+      && (!Array.isArray(value.treatmentOutcomes) || !value.treatmentOutcomes.every(isIcarusTreatmentOutcomeRecord)))) {
     return false;
   }
   return true;
@@ -452,6 +547,72 @@ function isIcarusTreatmentTargetRecord(value: unknown): value is IcarusTreatment
     && isValidIcarusDate(value.promotedAt);
 }
 
+function isIcarusTreatmentOutcomeEvidence(value: unknown): value is IcarusTreatmentOutcomeEvidence {
+  if (!isPlainObject(value)) return false;
+  if (value.kind === "Control test") {
+    return isNonEmptyString(value.assessmentId)
+      && isNonEmptyString(value.failureModeId)
+      && isNonEmptyString(value.controlId)
+      && isNonEmptyString(value.testId)
+      && ICARUS_CONTROL_TEST_RESULTS.includes(value.result as IcarusControlTestResult)
+      && ["Assured", "Failed", "Test overdue", "Evidence insufficient", "Inconclusive", "Untested", "Not operating"]
+        .includes(String(value.assuranceStatus))
+      && ["Current support", "No current support", "Conflicting", "Not applicable"].includes(String(value.evidenceStatus))
+      && Array.isArray(value.evidenceIds)
+      && value.evidenceIds.every(isNonEmptyString);
+  }
+  if (value.kind === "Dependency health") {
+    return isIcarusRecordReference(value.dependencyReference)
+      && ["Healthy", "Watch", "Degraded", "Failed", "Unknown", "Not applicable"].includes(String(value.health))
+      && (value.source === "Explicit" || value.source === "Derived")
+      && Array.isArray(value.basis)
+      && value.basis.every(isNonEmptyString);
+  }
+  return value.kind === "Failure mode materiality"
+    && isNonEmptyString(value.assessmentId)
+    && isNonEmptyString(value.failureModeId)
+    && typeof value.material === "boolean";
+}
+
+function isIcarusTreatmentOutcomeStateFact(value: unknown): value is IcarusTreatmentOutcomeStateFact {
+  if (!isPlainObject(value)) return false;
+  if (value.kind === "Control assurance") {
+    return ["Assured", "Failed", "Test overdue", "Evidence insufficient", "Inconclusive", "Untested", "Not operating", "Partially assured"]
+      .includes(String(value.state));
+  }
+  if (value.kind === "Dependency health") {
+    return ["Healthy", "Watch", "Degraded", "Failed", "Unknown", "Not applicable"].includes(String(value.state));
+  }
+  return value.kind === "Failure mode materiality"
+    && (value.state === "Material" || value.state === "Not material");
+}
+
+function isIcarusTreatmentOutcomeRecord(value: unknown): value is IcarusTreatmentOutcomeRecord {
+  if (!isPlainObject(value)
+    || !isNonEmptyString(value.id)
+    || !isNonEmptyString(value.treatmentTargetId)
+    || !isNonEmptyString(value.assessmentId)
+    || !Array.isArray(value.executionLinks)
+    || !value.executionLinks.every(isIcarusTreatmentExecutionLink)
+    || !["Effective", "Partially effective", "Ineffective", "Inconclusive", "No longer applicable"].includes(String(value.outcome))
+    || !isNonEmptyString(value.verifiedAt)
+    || !isValidIcarusDate(value.verifiedAt)
+    || !isNonEmptyString(value.verifiedByPersonId)
+    || !Array.isArray(value.evidence)
+    || value.evidence.length === 0
+    || !value.evidence.every(isIcarusTreatmentOutcomeEvidence)
+    || (value.beforeState !== undefined && !isIcarusTreatmentOutcomeStateFact(value.beforeState))
+    || !isIcarusTreatmentOutcomeStateFact(value.afterState)
+    || !isNonEmptyString(value.verificationNote)) {
+    return false;
+  }
+  return value.id === getIcarusTreatmentOutcomeId(
+    value.treatmentTargetId,
+    value.verifiedByPersonId,
+    value.evidence,
+  );
+}
+
 function filterUniqueById<T>(entries: readonly T[], idOf: (entry: T) => string): T[] {
   const seen = new Set<string>();
   return entries.filter((entry) => {
@@ -513,6 +674,15 @@ export function normaliseIcarusAssessmentData(value: unknown): unknown {
         next.treatmentTargets = filterUniqueById(
           next.treatmentTargets.filter(isIcarusTreatmentTargetRecord),
           (target) => target.id,
+        );
+      }
+    }
+    if ("treatmentOutcomes" in next) {
+      if (!Array.isArray(next.treatmentOutcomes)) delete next.treatmentOutcomes;
+      else {
+        next.treatmentOutcomes = filterUniqueById(
+          next.treatmentOutcomes.filter(isIcarusTreatmentOutcomeRecord),
+          (outcome) => outcome.id,
         );
       }
     }
@@ -608,6 +778,12 @@ export function assertIcarusDataStructure(value: unknown): asserts value is Icar
       }
     });
     assertUniqueIds((assessment.acceptances ?? []).map((acceptance) => acceptance.id), `acceptance for assessment ${assessment.id}`);
+    assertUniqueIds((assessment.treatmentOutcomes ?? []).map((outcome) => outcome.id), `treatment outcome for assessment ${assessment.id}`);
+    (assessment.treatmentOutcomes ?? []).forEach((outcome) => {
+      if (outcome.assessmentId !== assessment.id) {
+        throw new Error(`Icarus treatment outcome ${outcome.id} belongs to a different assessment.`);
+      }
+    });
   }
 
   assertUniqueIds(failureModeIds, "failure mode");

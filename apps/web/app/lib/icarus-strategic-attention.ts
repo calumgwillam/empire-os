@@ -113,7 +113,7 @@ export type IcarusStrategicSignal = {
   key: string;
   assessmentId: string;
   outcome: string;
-  status: Exclude<IcarusAssessmentStatus, "Closed">;
+  status: IcarusAssessmentStatus;
   exposure: IcarusExposure;
   materialityTier: IcarusMaterialityTier;
   scope: IcarusStrategicScope;
@@ -149,6 +149,7 @@ export type IcarusStrategicSignal = {
 export type IcarusStrategicAttentionInput = {
   assessments: readonly IcarusAssessmentRecord[];
   reviews: readonly IcarusReview[];
+  includeClosedAssessments?: boolean;
   // When supplied, objective links only count if the objective exists and is live.
   strategicObjectives?: ReadonlyMap<string, IcarusStrategicObjectiveContext>;
 };
@@ -318,7 +319,7 @@ export function buildIcarusStrategicAttention(input: IcarusStrategicAttentionInp
   const signals: IcarusStrategicSignal[] = [];
 
   input.assessments.forEach((assessment) => {
-    if (assessment.status === "Closed" || !assessment.outcome.trim()) return;
+    if ((assessment.status === "Closed" && !input.includeClosedAssessments) || !assessment.outcome.trim()) return;
     const findings = reviewsById.get(assessment.id)?.findings ?? [];
     // Pillar links only confer strategic scope when they resolve to a canonical operating pillar.
     const strategicLinks = assessment.linkedRecords.filter((reference) => {

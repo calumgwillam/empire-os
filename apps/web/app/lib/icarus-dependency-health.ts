@@ -86,14 +86,16 @@ function assessPerson(status: string | undefined): HealthResult {
 
 function assessAction(action: IcarusDependencyHealthAction | null, nowMs: number): HealthResult {
   if (!action) return { health: "Unknown", basis: ["missing-action"] };
-  if (action.status === "Completed") return { health: "Not applicable", basis: ["completed-action"] };
-  if (action.status === "Blocked") return { health: "Degraded", basis: ["blocked-action"] };
-  if (action.status === "Waiting") return { health: "Watch", basis: ["waiting-action"] };
-  if (action.status === "Cancelled") return { health: "Unknown", basis: ["cancelled-action"] };
+  if (action.status === "Completed") return { health: "Unknown", basis: ["completed-action", "no-operational-health-evidence"] };
+  if (action.status === "Blocked") return { health: "Unknown", basis: ["blocked-action", "no-operational-health-evidence"] };
+  if (action.status === "Waiting") return { health: "Unknown", basis: ["waiting-action", "no-operational-health-evidence"] };
+  if (action.status === "Cancelled") return { health: "Unknown", basis: ["cancelled-action", "no-operational-health-evidence"] };
   if (action.status === "Open" || action.status === "In Progress") {
     const dueAt = parseDate(action.dueDate);
-    if (dueAt !== undefined && dueAt < nowMs) return { health: "Watch", basis: ["overdue-action"] };
-    return { health: "Healthy", basis: ["active-action"] };
+    return {
+      health: "Unknown",
+      basis: [dueAt !== undefined && dueAt < nowMs ? "overdue-action" : "active-action", "no-operational-health-evidence"],
+    };
   }
   return { health: "Unknown", basis: ["missing-action"] };
 }
@@ -115,7 +117,11 @@ function assessProject(record: IcarusSourceRecord): HealthResult {
     return { health: "Watch", basis: ["waiting-project"], ...(relevantAt ? { relevantAt } : {}) };
   }
   if (record.status === "Open" || record.status === "In Progress") {
-    return { health: "Healthy", basis: ["on-track-project"], ...(relevantAt ? { relevantAt } : {}) };
+    return {
+      health: "Unknown",
+      basis: ["unsupported-project-state", "no-operational-health-evidence"],
+      ...(relevantAt ? { relevantAt } : {}),
+    };
   }
   return { health: "Unknown", basis: ["unsupported-project-state"] };
 }
