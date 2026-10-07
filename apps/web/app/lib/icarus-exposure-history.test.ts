@@ -66,14 +66,14 @@ describe("Icarus exposure comparison", () => {
     expect(result).toMatchObject({
       hasBaseline: false,
       changes: [],
-      counts: { New: 0, Worsened: 0, Persistent: 0, Improved: 0, Resolved: 0 },
+      counts: { New: 0, Worsened: 0, Persistent: 0, Improved: 0, "No longer present": 0 },
       hasAssuranceBaseline: false,
       assuranceChanges: [],
     });
     expect(Object.values(result.assuranceCounts).every((count) => count === 0)).toBe(true);
   });
 
-  it("distinguishes new, persistent, worsened, improved and resolved exposure", () => {
+  it("distinguishes exposure that is no longer present from verified resolution", () => {
     const statuses = new Map<string, IcarusAssessmentStatus>([["closed", "Closed"], ["still-open", "Open"]]);
     const result = compareIcarusExposure({
       previous: [
@@ -104,11 +104,13 @@ describe("Icarus exposure comparison", () => {
       ["fresh", "New", undefined],
       ["same", "Persistent", undefined],
       ["tier-better", "Improved", undefined],
-      ["closed", "Resolved", "Closed"],
-      ["deleted", "Resolved", "Removed"],
-      ["still-open", "Resolved", "No longer material"],
+      ["closed", "No longer present", "Closed"],
+      ["deleted", "No longer present", "Removed"],
+      ["still-open", "No longer present", "No longer material"],
     ]);
-    expect(result.counts).toEqual({ New: 1, Worsened: 3, Persistent: 1, Improved: 1, Resolved: 3 });
+    expect(result.counts).toEqual({ New: 1, Worsened: 3, Persistent: 1, Improved: 1, "No longer present": 3 });
+    expect(result.changes.filter((change) => change.change === "No longer present")
+      .every((change) => change.resolution !== undefined)).toBe(true);
     expect(result.changes[0].addedFailureModeIds).toEqual(["mode-2"]);
     expect(result.changes.find((change) => change.assessmentId === "tier-worse")).toMatchObject({
       previousExposure: "Unverified control",
@@ -189,7 +191,7 @@ describe("Founder Operating Review strategic-risk trajectory", () => {
     expect(result.deteriorated).toEqual([]);
   });
 
-  it("surfaces new, worsened and resolved strategic exposure against the 7-day baseline without hiding churn", () => {
+  it("keeps disappeared exposure neutral while surfacing new and worsened exposure without hiding churn", () => {
     const result = buildFounderOperatingReview(reviewInput({
       snapshots: [{
         date: "2026-10-01",
@@ -201,16 +203,82 @@ describe("Founder Operating Review strategic-risk trajectory", () => {
         assessmentStatuses: new Map<string, IcarusAssessmentStatus>([["closed", "Closed"]]),
       },
     }));
-    expect(result.strategicRiskTrajectory?.counts).toEqual({ New: 1, Worsened: 1, Persistent: 0, Improved: 0, Resolved: 1 });
+    expect(result.strategicRiskTrajectory?.counts).toEqual({
+      New: 1, Worsened: 1, Persistent: 0, Improved: 0, "No longer present": 1,
+    });
     expect(result.deteriorated.map((item) => [item.metric, item.changeText])).toEqual([
       ["New strategic risks", "+1 material Icarus exposure"],
       ["Strategic risk severity", "1 worsened"],
     ]);
     expect(result.deteriorated[0].explanation).toContain("Outcome fresh");
-    expect(result.improved.map((item) => [item.metric, item.changeText])).toEqual([
-      ["Resolved strategic risks", "-1 material Icarus exposure"],
+    expect(result.improved).toEqual([]);
+    expect(result.noLongerPresent).toEqual([{
+      metric: "Icarus exposure no longer present",
+      changeText: "1 material exposure",
+      explanation: "Not a verified resolution: 1 administratively closed.",
+    }]);
+    expect(result.noLongerPresent[0].explanation).not.toContain("Verified resolved");
+    expect(result.headline).toBe("7-Day Operating Trajectory: Operating load increased — 2 areas deteriorated");
+  });
+
+  it("categorizes closed, no-longer-material and removed exposure without changing real improvement order", () => {
+    const result = buildFounderOperatingReview(reviewInput({
+      snapshots: [{
+        date: "2026-10-01",
+        ...baseSnapshot,
+        icarusExposure: [
+          entry("closed"),
+          entry("immaterial"),
+          entry("removed"),
+          entry("improved", { exposure: "Exposed" }),
+        ],
+      }],
+      icarusExposure: {
+        current: [entry("improved", { exposure: "Unverified control" })],
+        assessmentStatuses: new Map<string, IcarusAssessmentStatus>([
+          ["closed", "Closed"],
+          ["immaterial", "Monitoring"],
+          ["improved", "Open"],
+        ]),
+      },
+    }));
+    expect(result.strategicRiskTrajectory?.changes.map((change) => [
+      change.assessmentId, change.change, change.resolution,
+    ])).toEqual([
+      ["improved", "Improved", undefined],
+      ["closed", "No longer present", "Closed"],
+      ["immaterial", "No longer present", "No longer material"],
+      ["removed", "No longer present", "Removed"],
     ]);
-    expect(result.headline).toContain("Mixed trajectory");
+    expect(result.strategicRiskTrajectory?.counts).toEqual({
+      New: 0, Worsened: 0, Persistent: 0, Improved: 1, "No longer present": 3,
+    });
+    expect(result.improved).toEqual([{
+      metric: "Strategic risk severity",
+      changeText: "1 improved",
+      explanation: "Icarus exposure moved to a less severe tier, lost exposed failure modes or fell in strategic consequence: Outcome improved.",
+    }]);
+    expect(result.noLongerPresent).toEqual([{
+      metric: "Icarus exposure no longer present",
+      changeText: "3 material exposures",
+      explanation: "Not a verified resolution: 1 administratively closed; 1 no longer material; 1 removed from current records.",
+    }]);
+    const withoutDisappearance = buildFounderOperatingReview(reviewInput({
+      snapshots: [{
+        date: "2026-10-01",
+        ...baseSnapshot,
+        icarusExposure: [entry("improved", { exposure: "Exposed" })],
+      }],
+      icarusExposure: {
+        current: [entry("improved", { exposure: "Unverified control" })],
+        assessmentStatuses: new Map<string, IcarusAssessmentStatus>([["improved", "Open"]]),
+      },
+    }));
+    expect(result.improved).toEqual(withoutDisappearance.improved);
+    expect(result.strategicRiskTrajectory?.counts.Improved)
+      .toBe(withoutDisappearance.strategicRiskTrajectory?.counts.Improved);
+    expect(result.headline).toBe(withoutDisappearance.headline);
+    expect(result.headline).toBe("7-Day Operating Trajectory: Positive momentum — 1 area improved");
   });
 
   it("names the Icarus contribution in the convergent recurring item", () => {

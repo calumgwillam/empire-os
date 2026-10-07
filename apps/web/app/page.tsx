@@ -4605,6 +4605,7 @@ function FounderOperatingReview({
   baselineDateLabel,
   improved,
   deteriorated,
+  noLongerPresent,
   recurring,
   founderDependency,
   next7Days,
@@ -4615,6 +4616,7 @@ function FounderOperatingReview({
   baselineDateLabel: string;
   improved: ReviewItem[];
   deteriorated: ReviewItem[];
+  noLongerPresent: ReviewItem[];
   recurring: RecurringReviewItem[];
   founderDependency: {
     status: string;
@@ -4725,6 +4727,30 @@ function FounderOperatingReview({
             )}
           </div>
         </div>
+
+        {noLongerPresent.length > 0 ? (
+          <div className="mt-4 rounded-xl border border-[#d3cbc3] bg-[#f1eee9] p-3.5">
+            <div className="flex items-center justify-between gap-2 border-b border-[#d3cbc3] pb-2">
+              <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#51483e]">
+                Exposure no longer present
+              </h3>
+              <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-0.5 text-[9px] font-medium text-[#51483e]">
+                {noLongerPresent.length} observation{noLongerPresent.length === 1 ? "" : "s"}
+              </span>
+            </div>
+            <div className="mt-3 space-y-2">
+              {noLongerPresent.map((item) => (
+                <div key={`absent-${item.metric}`} className="rounded-lg border border-[#d3cbc3] bg-white p-2.5">
+                  <div className="flex items-center justify-between gap-2 text-[13px] font-medium text-[#171717]">
+                    <span>{item.metric}</span>
+                    <span className="text-[11px] font-semibold text-[#51483e]">{item.changeText}</span>
+                  </div>
+                  <div className="mt-1 text-[11px] leading-4 text-[#524d49]">{item.explanation}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {/* RECURRING */}
         <div className="rounded-xl border border-[#d3cbc3] bg-white p-3.5">
@@ -16529,6 +16555,7 @@ export default function Home() {
                   baselineDateLabel={founderOperatingReview.baselineDateLabel}
                   improved={founderOperatingReview.improved}
                   deteriorated={founderOperatingReview.deteriorated}
+                  noLongerPresent={founderOperatingReview.noLongerPresent}
                   recurring={founderOperatingReview.recurring}
                   founderDependency={founderOperatingReview.founderDependency}
                   next7Days={founderOperatingReview.next7Days}

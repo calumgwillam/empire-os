@@ -146,6 +146,7 @@ describe("Founder Operating Review policy", () => {
       baselineDateLabel: today,
       improved: [],
       deteriorated: [],
+      noLongerPresent: [],
       recurring: [],
       founderDependency: {
         status: "Baseline established",

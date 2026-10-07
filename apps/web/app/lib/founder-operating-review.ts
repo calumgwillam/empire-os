@@ -119,6 +119,7 @@ export type FounderOperatingReviewResult = {
   baselineDateLabel: string;
   improved: { metric: string; changeText: string; explanation: string }[];
   deteriorated: { metric: string; changeText: string; explanation: string }[];
+  noLongerPresent: { metric: string; changeText: string; explanation: string }[];
   recurring: FounderOperatingReviewItem[];
   founderDependency: { status: string; summary: string; detail: string };
   next7Days: FounderOperatingReviewItem[];
@@ -138,6 +139,7 @@ export function buildFounderOperatingReview(
 
   const improved: FounderOperatingReviewResult["improved"] = [];
   const deteriorated: FounderOperatingReviewResult["deteriorated"] = [];
+  const noLongerPresent: FounderOperatingReviewResult["noLongerPresent"] = [];
 
   if (baselineSnapshot) {
     const compareLowerIsBetter = (
@@ -232,7 +234,7 @@ export function buildFounderOperatingReview(
     })
     : null;
   if (strategicRiskTrajectory?.hasBaseline) {
-    // Reported per change kind so churn (one new, one resolved) is never hidden by an unchanged net count.
+    // Reported per change kind so churn is never hidden by an unchanged net count.
     const outcomes = (kind: string) => strategicRiskTrajectory.changes
       .filter((change) => change.change === kind)
       .map((change) => change.outcome)
@@ -252,11 +254,26 @@ export function buildFounderOperatingReview(
         explanation: `Icarus exposure moved to a more severe tier, gained an exposed failure mode or rose in strategic consequence: ${outcomes("Worsened")}.`,
       });
     }
-    if (counts.Resolved > 0) {
-      improved.push({
-        metric: "Resolved strategic risks",
-        changeText: `-${counts.Resolved} material Icarus exposure${counts.Resolved === 1 ? "" : "s"}`,
-        explanation: `Icarus exposure was closed or is no longer material: ${outcomes("Resolved")}.`,
+    if (counts["No longer present"] > 0) {
+      const disappeared = strategicRiskTrajectory.changes.filter((change) => change.change === "No longer present");
+      const reasonCounts = new Map<string, number>();
+      disappeared.forEach((change) => {
+        const reason = change.resolution ?? "Removed";
+        reasonCounts.set(reason, (reasonCounts.get(reason) ?? 0) + 1);
+      });
+      const reasons = [
+        ["Closed", "administratively closed"],
+        ["No longer material", "no longer material"],
+        ["Removed", "removed from current records"],
+      ] as const;
+      const reasonSummary = reasons.flatMap(([reason, label]) => {
+        const count = reasonCounts.get(reason) ?? 0;
+        return count > 0 ? [`${count} ${label}`] : [];
+      }).join("; ");
+      noLongerPresent.push({
+        metric: "Icarus exposure no longer present",
+        changeText: `${counts["No longer present"]} material exposure${counts["No longer present"] === 1 ? "" : "s"}`,
+        explanation: `Not a verified resolution: ${reasonSummary}.`,
       });
     }
     if (counts.Improved > 0) {
@@ -515,6 +532,7 @@ export function buildFounderOperatingReview(
     baselineDateLabel,
     improved,
     deteriorated,
+    noLongerPresent,
     recurring,
     founderDependency: {
       status: dependencyStatus,

@@ -125,7 +125,7 @@ export type IcarusAssuranceChange = {
   controlIds: string[];
 };
 
-export type IcarusExposureChangeKind = "New" | "Worsened" | "Persistent" | "Improved" | "Resolved";
+export type IcarusExposureChangeKind = "New" | "Worsened" | "Persistent" | "Improved" | "No longer present";
 
 // "No longer material": the assessment is still open but no failure mode currently meets the materiality rules.
 export type IcarusExposureResolution = "Closed" | "No longer material" | "Removed";
@@ -156,7 +156,7 @@ export type IcarusExposureTrajectory = {
   structuralCounts: Record<IcarusStructuralChangeKind, number>;
 };
 
-const changeOrder: readonly IcarusExposureChangeKind[] = ["Worsened", "New", "Persistent", "Improved", "Resolved"];
+const changeOrder: readonly IcarusExposureChangeKind[] = ["Worsened", "New", "Persistent", "Improved", "No longer present"];
 
 export function buildIcarusExposureSnapshot(
   signals: readonly IcarusStrategicSignal[],
@@ -464,7 +464,9 @@ export function compareIcarusExposure(input: {
   current: readonly IcarusExposureSnapshotEntry[];
   assessmentStatuses?: ReadonlyMap<string, IcarusAssessmentStatus>;
 }): IcarusExposureTrajectory {
-  const counts: Record<IcarusExposureChangeKind, number> = { New: 0, Worsened: 0, Persistent: 0, Improved: 0, Resolved: 0 };
+  const counts: Record<IcarusExposureChangeKind, number> = {
+    New: 0, Worsened: 0, Persistent: 0, Improved: 0, "No longer present": 0,
+  };
   const assuranceCounts = emptyAssuranceCounts();
   const structuralCounts = Object.fromEntries(ICARUS_STRUCTURAL_CHANGE_KINDS.map((kind) => [kind, 0])) as Record<IcarusStructuralChangeKind, number>;
   if (!input.previous) {
@@ -506,7 +508,7 @@ export function compareIcarusExposure(input: {
     if (currentKeys.has(previous.key)) return;
     const status = input.assessmentStatuses?.get(previous.assessmentId);
     changes.push({
-      key: previous.key, assessmentId: previous.assessmentId, outcome: previous.outcome, change: "Resolved",
+      key: previous.key, assessmentId: previous.assessmentId, outcome: previous.outcome, change: "No longer present",
       previousExposure: previous.exposure, addedFailureModeIds: [], removedFailureModeIds: [...previous.failureModeIds],
       resolution: status === undefined ? "Removed" : status === "Closed" ? "Closed" : "No longer material",
     });
