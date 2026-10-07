@@ -30,6 +30,7 @@ import {
 import {
   buildIcarusFounderFocusRisks,
   buildIcarusStrategicAttention,
+  getIcarusCurrentExposureSignals,
   type IcarusFounderFocusRisk,
   type IcarusStrategicObjectiveContext,
   type IcarusStrategicSignal,
@@ -79,6 +80,8 @@ import {
   type ConvergentSituationInput,
   type StrategicRiskConvergence,
 } from "./strategic-risk-resolution";
+import { buildIcarusTreatmentIndex, type IcarusTreatmentExecution, type IcarusTreatmentIndex } from "./icarus-treatment";
+import { buildIcarusStrategicLifecycleIndex, type IcarusStrategicLifecycleIndex } from "./icarus-strategic-lifecycle";
 
 // Only live objectives confer strategic consequence (see IcarusStrategicObjectiveContext.isLive).
 const LIVE_OBJECTIVE_STATUSES: ReadonlySet<string> = new Set(["Active", "Watching"]);
@@ -110,6 +113,9 @@ export type IcarusStrategicIntelligenceInput = {
   dependencyHealthOverrides?: ReadonlyMap<string, IcarusDependencyHealth>;
   controlAssuranceOverrides?: ReadonlyMap<string, IcarusControlAssuranceStatus>;
   includeExposureSnapshot?: boolean;
+  treatmentActions?: readonly IcarusTreatmentExecution[];
+  treatmentProjects?: readonly IcarusTreatmentExecution[];
+  hypothetical?: boolean;
 };
 
 export type IcarusStrategicIntelligence = {
@@ -122,6 +128,8 @@ export type IcarusStrategicIntelligence = {
   // Stored status per assessment id (first record wins for a duplicated id).
   assessmentStatuses: ReadonlyMap<string, IcarusAssessmentStatus>;
   assurance: IcarusAssuranceResult;
+  treatment: IcarusTreatmentIndex;
+  lifecycle: IcarusStrategicLifecycleIndex;
   assuranceRollup: IcarusAssuranceRollup;
   dependencyHealth: IcarusDependencyHealthRegistry;
   dependencyResilience: IcarusDependencyResilience[];
@@ -135,7 +143,7 @@ export type IcarusStrategicIntelligence = {
   // Authoritative material strategic signals with assurance attached: the single input for Command, Founder Focus,
   // correlation, systemic exposure and history.
   strategicSignals: IcarusStrategicSignal[];
-  // Material exposures in administratively Closed records remain visible for governance, but do not re-enter active intelligence.
+  // Administrative closure warnings remain separate; explicitly reviewed lifecycle concerns may re-enter attention.
   closedAssessmentWarnings: IcarusStrategicSignal[];
   correlationSignals: IcarusCorrelationSignal[];
   founderFocusRisks: IcarusFounderFocusRisk[];
@@ -171,6 +179,11 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
   });
 
   const reviews = buildIcarusReview(input.assessments, input.sourceRecords, nowMs);
+  // A read projection only: lifecycle surveillance must examine protection even on Closed assessments.
+  // Legacy Closed records without lifecycle history retain the existing exclusion contract.
+  const surveillanceAssessments = input.assessments.map((assessment) => assessment.status === "Closed"
+    && (assessment.strategicResolutionReviews?.some((review) => review.outcome === "Verified resolved") || assessment.confirmedRegressions?.length)
+    ? { ...assessment, status: "Monitoring" as const } : assessment);
   const unresolvedFindings = reviews
     .filter((review) => assessmentStatuses.get(review.assessmentId) !== "Closed")
     .flatMap((review) => review.findings);
@@ -185,13 +198,13 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
 
   // Materiality is decided here, before (and independently of) assurance.
   const exposureSignals = buildIcarusStrategicAttention({
-    assessments: input.assessments,
+    assessments: surveillanceAssessments,
     reviews,
     strategicObjectives,
     dependencyHealth,
   });
   const assurance = buildIcarusAssurance({
-    assessments: input.assessments,
+    assessments: surveillanceAssessments,
     reviews,
     signals: exposureSignals,
     people: input.people,
@@ -206,7 +219,7 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
   // Failure chains need final assurance (barrier state) but not the correlation graph, so they belong in Stage A;
   // they annotate signals before any consumer (Command, Focus, correlation, snapshot) reads them.
   const failureChains = buildIcarusFailureChainIntelligence({
-    assessments: input.assessments,
+    assessments: surveillanceAssessments,
     signals: assuredSignals,
     assurance,
     strategicObjectives,
@@ -217,7 +230,39 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
   });
   const dependencyResilience = buildIcarusDependencyResilience(failureChains.dependencyGraph);
   const resilienceInterventions = buildIcarusResilienceInterventions(dependencyResilience);
-  const strategicSignals = attachIcarusFailureChainToSignals(assuredSignals, failureChains);
+  const treatment = buildIcarusTreatmentIndex({
+    assessments: input.assessments, assurance, dependencyHealth, resilience: dependencyResilience,
+    recommendations: resilienceInterventions, barrierRestorations: failureChains.barrierWeaknesses,
+    actions: input.treatmentActions ?? input.actions.map((action) => ({
+      recordType: "Action", recordId: action.id, title: action.id, status: action.status, dueDate: action.dueDate,
+    })),
+    projects: input.treatmentProjects ?? input.sourceRecords.filter((record) => record.recordType === "Project")
+      .map((record) => ({ recordType: "Project", recordId: record.recordId, title: record.title, status: record.status ?? "" })),
+    founderPersonId: input.primaryFounderId, nowMs,
+  });
+  const significantAssessmentIds = new Set(input.assessments.filter((assessment) => assessment.linkedRecords.some((reference) =>
+    reference.recordType === "Strategic Objective" && strategicObjectives.get(reference.recordId)?.isLive
+    && strategicObjectives.get(reference.recordId)?.importance === "Critical")).map((assessment) => assessment.id));
+  const lifecycle = buildIcarusStrategicLifecycleIndex({
+    assessments: input.assessments, assurance, treatment, signals: exposureSignals, dependencyHealth,
+    people: input.people, nowMs, significantAssessmentIds,
+    hypothetical: input.hypothetical || Boolean(input.dependencyHealthOverrides?.size || input.controlAssuranceOverrides?.size),
+  });
+  const lifecycleAttention = new Map([...lifecycle.byAssessmentId].filter(([, view]) => view.attentionReasons.length)
+    .map(([id, view]) => [id, {
+      failureModeIds: [...new Set(view.reviews.filter((review) => !["Current", "Superseded", "Not verified"].includes(review.validity))
+        .flatMap((review) => review.record.scope.kind === "Whole assessment"
+          ? input.assessments.find((assessment) => assessment.id === id)?.failureModes.map((mode) => mode.id) ?? []
+          : review.record.scope.failureModeIds))],
+      reasons: view.attentionReasons,
+    }] as const));
+  const finalExposureSignals = buildIcarusStrategicAttention({
+    assessments: surveillanceAssessments, reviews, strategicObjectives, dependencyHealth, lifecycleAttention,
+  }).filter((signal) => assessmentStatuses.get(signal.assessmentId) !== "Closed" || lifecycleAttention.has(signal.assessmentId))
+    .map((signal) => ({ ...signal, status: assessmentStatuses.get(signal.assessmentId) ?? signal.status }));
+  const strategicSignals = attachIcarusFailureChainToSignals(attachIcarusAssuranceToSignals(finalExposureSignals, assurance), failureChains);
+  // Lifecycle-only review reminders are attention, not newly observed strategic exposure.
+  const currentExposureSignals = getIcarusCurrentExposureSignals(strategicSignals);
   const criticalAssessmentIds = new Set(failureChains.dependencyGraph.assessments
     .filter((assessment) => assessment.material || assessment.objectiveImportance === "Critical")
     .map((assessment) => assessment.assessmentId));
@@ -261,7 +306,10 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     unresolvedFindingAssessmentCount: new Set(unresolvedFindings.map((finding) => finding.assessmentId)).size,
     assessmentStatuses,
     assurance,
-    assuranceRollup: buildIcarusAssuranceRollup(assurance.assessments),
+    treatment,
+    lifecycle,
+    assuranceRollup: buildIcarusAssuranceRollup(assurance.assessments.filter((assessment) =>
+      assessmentStatuses.get(assessment.assessmentId) !== "Closed" || lifecycleAttention.has(assessment.assessmentId))),
     dependencyHealth,
     dependencyResilience,
     resilienceInterventions,
@@ -272,11 +320,11 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     healthTriggeredChains: failureChains.healthTriggeredChains,
     strategicSignals,
     closedAssessmentWarnings,
-    correlationSignals: buildIcarusCorrelationSignals({ signals: strategicSignals }),
+    correlationSignals: buildIcarusCorrelationSignals({ signals: currentExposureSignals }),
     founderFocusRisks: buildIcarusFounderFocusRisks(strategicSignals),
     exposureSnapshot: input.includeExposureSnapshot === false
       ? []
-      : buildIcarusExposureSnapshot(strategicSignals, dependencyHistorySnapshots),
+      : buildIcarusExposureSnapshot(currentExposureSignals, dependencyHistorySnapshots),
   };
 }
 
@@ -337,7 +385,7 @@ export function buildIcarusCorrelationIntelligence(
     if (pillar) recordPillars.set(`${objectType}:${id}`, pillar);
   });
   const systemicExposure = buildIcarusSystemicExposure({
-    signals: intelligence.strategicSignals,
+    signals: getIcarusCurrentExposureSignals(intelligence.strategicSignals),
     ...(input.pillars ? { pillars: input.pillars } : {}),
     recordPillars,
     otherSignals: [...input.graph.signalled.values()]

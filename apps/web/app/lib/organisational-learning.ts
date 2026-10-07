@@ -1,12 +1,13 @@
 import type { ActionRecord, DecisionRecord, LessonRecord } from "./capture-conversions";
 import { getIcarusTreatmentOutcomeEvidenceKey, type IcarusTreatmentOutcomeRecord } from "./icarus";
 import type { ProjectRecord } from "./projects";
+import type { IcarusStrategicLifecycleIndex } from "./icarus-strategic-lifecycle";
 import {
   buildRecurringProblemLearning,
   type RecurringProblemLearningInput,
 } from "./recurring-problem-learning";
 
-export type LearningSourceType = "Action" | "Project" | "Decision" | "Lesson" | "Problem" | "Icarus Treatment";
+export type LearningSourceType = "Action" | "Project" | "Decision" | "Lesson" | "Problem" | "Icarus Treatment" | "Icarus Lifecycle";
 export type LearningOutcomeState = "Missing evidence" | "Unknown" | "Worked" | "Partially worked" | "Failed";
 export type LearningState =
   | "Unknown"
@@ -40,7 +41,8 @@ export type LearningEvidenceField =
   | "treatmentTargetId" | "treatmentOutcome" | "verifiedAt" | "verifiedByPersonId"
   | "evidenceReference" | "verificationNote"
   | "interventionDecisionId" | "interventionOptionId" | "causeId" | "verificationCurrency"
-  | "interventionAttribution" | "treatmentAttribution";
+  | "interventionAttribution" | "treatmentAttribution"
+  | "assessmentId" | "resolutionReviewId" | "regressionId" | "lifecycleValidity" | "humanExplanation";
 
 export type LearningEvidence = {
   sourceType: LearningSourceType;
@@ -77,6 +79,7 @@ export type LearningLessonInput = Pick<LessonRecord,
   | "relatedProblem" | "relatedProject" | "relatedDecision" | "relatedSystem">;
 
 export type OrganisationalLearningInput = {
+  icarusLifecycle?: IcarusStrategicLifecycleIndex;
   actions: readonly LearningActionInput[];
   projects: readonly LearningProjectInput[];
   decisions: readonly LearningDecisionInput[];
@@ -251,6 +254,40 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
       recommendedNextTransition: linkedLessons.length ? "Review existing Lesson" : "Review learning",
     });
   });
+
+  if (input.icarusLifecycle && !input.icarusLifecycle.hypothetical) {
+    input.icarusLifecycle.byAssessmentId.forEach((history) => {
+      history.regressions.forEach((regression) => {
+        const sourceType: LearningSourceType = "Icarus Lifecycle";
+        const origin = history.reviews.find((review) => review.record.id === regression.record.resolutionReviewId);
+        signals.push({
+          sourceType, sourceId: regression.record.id,
+          sourceTitle: regression.valid ? "Human-confirmed regression after verified strategic resolution"
+            : "Recorded regression observation with invalid references",
+          executionState: "Unknown", outcomeState: "Unknown", learningState: "Learning identified",
+          recurrenceState: regression.valid ? "Recorded recurrence" : "Unknown",
+          evidence: [
+            { sourceType, sourceId: regression.record.id, field: "assessmentId", value: history.assessmentId },
+            { sourceType, sourceId: regression.record.id, field: "resolutionReviewId", value: regression.record.resolutionReviewId },
+            { sourceType, sourceId: regression.record.id, field: "regressionId", value: regression.record.id },
+            { sourceType, sourceId: regression.record.id, field: "verifiedAt", value: regression.record.confirmedAt },
+            { sourceType, sourceId: regression.record.id, field: "lifecycleValidity",
+              value: regression.valid ? origin?.validity ?? "Historical" : `Invalid references: ${regression.issues.join("; ")}` },
+            { sourceType, sourceId: regression.record.id, field: "humanExplanation", value: regression.record.explanation },
+            { sourceType, sourceId: regression.record.id, field: "verificationNote", value: regression.record.rationale },
+            ...regression.record.causeIds.map((value): LearningEvidence =>
+              ({ sourceType, sourceId: regression.record.id, field: "causeId", value })),
+            ...regression.record.evidenceKeys.map((value): LearningEvidence =>
+              ({ sourceType, sourceId: regression.record.id, field: "evidenceReference", value })),
+            ...(regression.reResolutionReviewId ? [{ sourceType, sourceId: regression.record.id,
+              field: "resolutionReviewId" as const, value: regression.reResolutionReviewId }] : []),
+          ],
+          linkedLessonIds: [],
+          recommendedNextTransition: "Review learning",
+        });
+      });
+    });
+  }
 
   input.problems.forEach((problem) => {
     const item = signal("Problem", problem.id, problem.problemStatement || problem.title, "Unknown", [

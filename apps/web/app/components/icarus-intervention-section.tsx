@@ -332,6 +332,19 @@ function DecisionEditor({
         {record.effects.map((effect) => <p key={effect.id}>{effect.optionId}: {effect.direction} - {JSON.stringify(effect.target)}. {effect.rationale}</p>)}
       </details>
       <details className="mt-2 text-[11px]"><summary>Selection history, outcomes and prior same-cause context</summary>
+        {view.lifecycleHistory.map((history) => <div key={history.assessmentId} className="mb-2">
+          <p>Explicit lifecycle history for assessment {history.assessmentId}. Shared wording does not establish shared cause.</p>
+          {history.reviews.map((review) => <p key={review.record.id}>
+            {review.record.reviewedAt}: {review.record.outcome} ({review.record.scope.kind}) - now {review.validity}.
+            {" "}{review.reasons.join("; ")} Human review: {review.record.rationale}
+          </p>)}
+          {history.regressions.map((regression) => <p key={regression.record.id}>
+            Confirmed {regression.record.confirmedAt}: {regression.record.id} - human-recorded explanation {regression.record.explanation};
+            {" "}explicit cause IDs {regression.record.causeIds.join(", ") || "none"}.
+            {" "}{regression.valid ? "Valid history" : regression.issues.join("; ")}
+            {regression.reResolutionReviewId ? `; re-resolution ${regression.reResolutionReviewId}` : ""}
+          </p>)}
+        </div>)}
         {record.selectionHistory.map((event) => <p key={event.id}>{event.selectedAt} - {event.optionId} - {event.rationale} (Person {event.selectedByPersonId})</p>)}
         {[...view.outcomes, ...view.priorOutcomes].map((outcome) => <p key={`${outcome.decisionId}:${outcome.optionId}:${outcome.record.id}`}>
           {outcome.decisionId === record.id ? "This intervention" : "Prior explicitly shared cause"}: {outcome.record.outcome}

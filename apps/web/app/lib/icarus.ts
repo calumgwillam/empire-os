@@ -316,6 +316,49 @@ export type IcarusInterventionDecisionRecord = IcarusInterventionScope & IcarusI
 
 export type IcarusAssessmentStatus = "Open" | "Monitoring" | "Closed";
 
+export type IcarusResolutionScope = {
+  kind: "Whole assessment" | "Failure modes";
+  failureModeIds: string[];
+};
+
+export type IcarusResolutionControlCondition = {
+  failureModeId: string;
+  controlId: string;
+  testId: string;
+  evidenceIds: string[];
+  requiredDependencies: IcarusRecordReference[];
+};
+
+export type IcarusStrategicResolutionReview = {
+  id: string;
+  assessmentId: string;
+  reviewedAt: string;
+  reviewedByPersonId: string;
+  outcome: "Verified resolved" | "Not verified";
+  scope: IcarusResolutionScope;
+  controlConditions: IcarusResolutionControlCondition[];
+  treatmentOutcomeIds: string[];
+  causeIds: string[];
+  rationale: string;
+  nextReviewBy?: string;
+  supersedesReviewId?: string;
+  resolvesRegressionId?: string;
+};
+
+export type IcarusConfirmedRegression = {
+  id: string;
+  assessmentId: string;
+  resolutionReviewId: string;
+  confirmedAt: string;
+  confirmedByPersonId: string;
+  scope: IcarusResolutionScope;
+  // Exact observation identities, not a copied source record or inferred causal explanation.
+  evidenceKeys: string[];
+  causeIds: string[];
+  explanation: "Dependency invalidation" | "Barrier failure" | "Treatment ineffective" | "Cause changed" | "Unknown";
+  rationale: string;
+};
+
 export type IcarusAssessmentRecord = {
   id: string;
   outcome: string;
@@ -338,6 +381,8 @@ export type IcarusAssessmentRecord = {
   treatmentOutcomes?: IcarusTreatmentOutcomeRecord[];
   causes?: IcarusCauseRecord[];
   interventionDecisions?: IcarusInterventionDecisionRecord[];
+  strategicResolutionReviews?: IcarusStrategicResolutionReview[];
+  confirmedRegressions?: IcarusConfirmedRegression[];
 };
 
 export type IcarusSourceRecord = IcarusRecordReference & {
@@ -566,7 +611,11 @@ export function isIcarusAssessmentRecord(value: unknown): value is IcarusAssessm
     || (value.causes !== undefined
       && (!Array.isArray(value.causes) || !value.causes.every(isIcarusCauseRecord)))
     || (value.interventionDecisions !== undefined
-      && (!Array.isArray(value.interventionDecisions) || !value.interventionDecisions.every(isIcarusInterventionDecisionRecord)))) {
+      && (!Array.isArray(value.interventionDecisions) || !value.interventionDecisions.every(isIcarusInterventionDecisionRecord)))
+    || (value.strategicResolutionReviews !== undefined
+      && (!Array.isArray(value.strategicResolutionReviews) || !value.strategicResolutionReviews.every(isIcarusStrategicResolutionReview)))
+    || (value.confirmedRegressions !== undefined
+      && (!Array.isArray(value.confirmedRegressions) || !value.confirmedRegressions.every(isIcarusConfirmedRegression)))) {
     return false;
   }
   return true;
@@ -578,6 +627,37 @@ function isOptionalNonEmptyString(value: unknown): boolean {
 
 function isOptionalValidDate(value: unknown): boolean {
   return value === undefined || (isNonEmptyString(value) && isValidIcarusDate(value));
+}
+
+function isResolutionScope(value: unknown): value is IcarusResolutionScope {
+  return isPlainObject(value) && (value.kind === "Whole assessment" || value.kind === "Failure modes")
+    && isStringList(value.failureModeIds) && value.failureModeIds.length > 0
+    && new Set(value.failureModeIds).size === value.failureModeIds.length;
+}
+
+export function isIcarusStrategicResolutionReview(value: unknown): value is IcarusStrategicResolutionReview {
+  return isPlainObject(value) && isNonEmptyString(value.id) && isNonEmptyString(value.assessmentId)
+    && isNonEmptyString(value.reviewedAt) && isValidIcarusDate(value.reviewedAt)
+    && isNonEmptyString(value.reviewedByPersonId)
+    && (value.outcome === "Verified resolved" || value.outcome === "Not verified")
+    && isResolutionScope(value.scope) && isNonEmptyString(value.rationale)
+    && isOptionalValidDate(value.nextReviewBy) && isOptionalNonEmptyString(value.supersedesReviewId)
+    && isOptionalNonEmptyString(value.resolvesRegressionId)
+    && isStringList(value.treatmentOutcomeIds) && isStringList(value.causeIds)
+    && Array.isArray(value.controlConditions) && value.controlConditions.every((condition: unknown) =>
+      isPlainObject(condition) && isNonEmptyString(condition.failureModeId) && isNonEmptyString(condition.controlId)
+      && isNonEmptyString(condition.testId) && isStringList(condition.evidenceIds) && condition.evidenceIds.length > 0
+      && Array.isArray(condition.requiredDependencies) && condition.requiredDependencies.every(isIcarusRecordReference))
+    && (value.outcome !== "Verified resolved" || value.controlConditions.length > 0);
+}
+
+export function isIcarusConfirmedRegression(value: unknown): value is IcarusConfirmedRegression {
+  return isPlainObject(value) && isNonEmptyString(value.id) && isNonEmptyString(value.assessmentId)
+    && isNonEmptyString(value.resolutionReviewId) && isNonEmptyString(value.confirmedAt) && isValidIcarusDate(value.confirmedAt)
+    && isNonEmptyString(value.confirmedByPersonId) && isResolutionScope(value.scope)
+    && isStringList(value.evidenceKeys) && value.evidenceKeys.length > 0 && isStringList(value.causeIds)
+    && ["Dependency invalidation", "Barrier failure", "Treatment ineffective", "Cause changed", "Unknown"].includes(String(value.explanation))
+    && isNonEmptyString(value.rationale);
 }
 
 export const ICARUS_MAX_TEST_CADENCE_DAYS = 3660;
@@ -821,6 +901,16 @@ export function normaliseIcarusAssessmentData(value: unknown): unknown {
   return value.map((assessment: unknown) => {
     if (!isPlainObject(assessment)) return assessment;
     const next: Record<string, unknown> = { ...assessment };
+    for (const [key, validator] of [
+      ["strategicResolutionReviews", isIcarusStrategicResolutionReview],
+      ["confirmedRegressions", isIcarusConfirmedRegression],
+    ] as const) {
+      if (key in next) {
+        const entries = next[key];
+        if (!Array.isArray(entries)) delete next[key];
+        else next[key] = entries.filter((entry: unknown) => validator(entry));
+      }
+    }
     if ("causes" in next) {
       if (!Array.isArray(next.causes)) delete next.causes;
       else next.causes = filterUniqueById(next.causes.filter(isIcarusCauseRecord), (cause) => cause.id);

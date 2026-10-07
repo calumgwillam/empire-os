@@ -40,6 +40,8 @@ import type { IcarusStressTestingInput } from "../lib/icarus-stress-testing";
 import IcarusStressLab from "./icarus-stress-lab";
 import IcarusTreatmentSection from "./icarus-treatment-section";
 import IcarusInterventionSection from "./icarus-intervention-section";
+import IcarusLifecycleSection from "./icarus-lifecycle-section";
+import type { IcarusStrategicLifecycleIndex, IcarusStrategicLifecycleInput } from "../lib/icarus-strategic-lifecycle";
 import type { IcarusInterventionIndex } from "../lib/icarus-intervention-decision";
 import {
   createIcarusStressTreatmentTarget,
@@ -70,6 +72,8 @@ type IcarusPanelProps = {
   stressBaseline?: IcarusStrategicIntelligence;
   treatmentIndex?: IcarusTreatmentIndex;
   interventionIndex?: IcarusInterventionIndex;
+  lifecycleIndex?: IcarusStrategicLifecycleIndex;
+  lifecycleInput?: IcarusStrategicLifecycleInput;
   closedAssessmentWarnings?: readonly IcarusStrategicSignal[];
   people?: readonly IcarusAssurancePersonOption[];
   actions?: readonly IcarusTreatmentExecution[];
@@ -145,6 +149,8 @@ export default function IcarusPanel({
   stressBaseline,
   treatmentIndex,
   interventionIndex,
+  lifecycleIndex,
+  lifecycleInput,
   closedAssessmentWarnings = [],
   people = [],
   actions = [],
@@ -410,6 +416,10 @@ export default function IcarusPanel({
         resilienceInterventions={resilienceInterventions}
         referenceTitle={(reference) => referenceTitle(reference, sources)}
       />
+      {loaded && lifecycleIndex && lifecycleInput ? <IcarusLifecycleSection
+        input={lifecycleInput} index={lifecycleIndex} people={people} writable={writable}
+        createId={createId} onChange={onChange}
+      /> : null}
       {loaded && treatmentIndex && interventionIndex ? (
         <IcarusInterventionSection
           assessments={assessments}

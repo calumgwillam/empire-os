@@ -259,10 +259,10 @@ export default function IcarusTreatmentSection({
       <p className={`${itemClass} mt-1`}>Actions and Projects remain the execution records. Completion requires separate strategic verification and never resolves a risk automatically.</p>
       <p className={`${itemClass} mt-1`}>
         {resolutionEligible.length > 0
-          ? `${resolutionEligible.length} assessment${resolutionEligible.length === 1 ? " is" : "s are"} eligible for resolution review; no assessment status is changed automatically.`
-          : "No assessment currently meets the conservative resolution-eligibility conditions."}
+          ? `${resolutionEligible.length} assessment${resolutionEligible.length === 1 ? " passes" : "s pass"} the preliminary treatment checks. Positive strategic resolution eligibility and explicit reviews are shown separately.`
+          : "No assessment currently passes the preliminary treatment checks."}
         {closedAssessments.length > 0
-          ? ` ${closedAssessments.length} administratively closed assessment${closedAssessments.length === 1 ? " is" : "s are"} not treated as verified resolved.`
+          ? ` ${closedAssessments.length} administratively closed assessment${closedAssessments.length === 1 ? "" : "s"}; closure alone never establishes verified resolution.`
           : ""}
       </p>
       {displayTargets.length === 0 ? (

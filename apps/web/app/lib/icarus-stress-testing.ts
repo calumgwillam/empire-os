@@ -183,6 +183,7 @@ function applyOverrides(input: IcarusStressTestingInput, overrides: readonly Ica
 
   const scenarioInput: IcarusStrategicIntelligenceInput = {
     ...input,
+    hypothetical: true,
     nowMs: input.nowMs,
     assessments: input.assessments,
     people: input.people.map((person) => personStates.has(person.id)
@@ -191,6 +192,12 @@ function applyOverrides(input: IcarusStressTestingInput, overrides: readonly Ica
     actions: input.actions.map((action) => actionStates.has(action.id)
       ? { ...action, status: actionStates.get(action.id)! }
       : action),
+    treatmentActions: input.treatmentActions?.map((action) => actionStates.has(action.recordId)
+      ? { ...action, status: actionStates.get(action.recordId)! }
+      : action),
+    treatmentProjects: input.treatmentProjects?.map((project) => projectStates.has(project.recordId)
+      ? { ...project, status: projectStates.get(project.recordId) === "Operating" ? "In Progress" : "Blocked" }
+      : project),
     sourceRecords: input.sourceRecords.map((record) => {
       if (record.recordType === "Project" && projectStates.has(record.recordId)) {
         const state = projectStates.get(record.recordId)!;

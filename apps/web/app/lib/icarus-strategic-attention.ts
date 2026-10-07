@@ -105,6 +105,7 @@ export type IcarusMaterialFailureMode = {
   overdueControlIds: string[];
   supportingEvidenceIds: string[];
   requiredDependencyState?: "Failed" | "Degraded" | "Unknown";
+  lifecycleOnly?: boolean;
 };
 
 export type IcarusAttentionTarget = {
@@ -142,6 +143,7 @@ export type IcarusStrategicSignal = {
   assurance?: IcarusSignalAssurance;
   // Attached by attachIcarusFailureChainToSignals (icarus-failure-chain-analysis). Absent => pre-failure-chain behaviour.
   failureChain?: IcarusSignalFailureChain;
+  lifecycle?: { attentionReasons: readonly string[] };
   treatment?: {
     attentionReasons: readonly string[];
     founderOwnedCount: number;
@@ -156,7 +158,15 @@ export type IcarusStrategicAttentionInput = {
   // When supplied, objective links only count if the objective exists and is live.
   strategicObjectives?: ReadonlyMap<string, IcarusStrategicObjectiveContext>;
   dependencyHealth?: IcarusDependencyHealthRegistry;
+  lifecycleAttention?: ReadonlyMap<string, { failureModeIds: readonly string[]; reasons: readonly string[] }>;
 };
+
+export function getIcarusCurrentExposureSignals(signals: readonly IcarusStrategicSignal[]): IcarusStrategicSignal[] {
+  return signals.flatMap((signal) => {
+    const modes = signal.materialFailureModes.filter((mode) => !mode.lifecycleOnly);
+    return modes.length ? [{ ...signal, materialFailureModes: modes }] : [];
+  });
+}
 
 const weaknessOrder: readonly IcarusWeakness[] = [
   "No operating control",
@@ -239,6 +249,7 @@ function classifyFailureMode(
   findings: readonly IcarusReviewFinding[],
   strategic: boolean,
   dependencyHealth: IcarusDependencyHealthRegistry,
+  lifecycleConcern = false,
 ): IcarusMaterialFailureMode | null {
   const mode = assessment.failureModes[modeIndex];
   const modeFindings = findings.filter((finding) => finding.failureModeId === mode.id);
@@ -252,7 +263,7 @@ function classifyFailureMode(
     && getIcarusLatestControlAssuranceEvent(control)?.result === "Passed"
     && !controlFindingCodes(control.id).some((code) => controlVerificationBlockers.includes(code))
     && getIcarusEffectiveProtection(control, "Assured", dependencyHealth).barrier === "Active");
-  if (verifiedControl) return null;
+  if (verifiedControl && !lifecycleConcern) return null;
 
   const currentEvidence = mode.evidence.filter((evidence) => !modeFindings.some((finding) =>
     finding.evidenceId === evidence.id && unusableEvidenceCodes.includes(finding.code)));
@@ -279,7 +290,9 @@ function classifyFailureMode(
   });
 
   // Contradicted mechanisms and unexamined non-strategic modes are not current strategic exposures.
-  const exposure = classifyIcarusExposure({ evidence, controlGap, strategicallyLinked: strategic });
+  const exposure = verifiedControl && lifecycleConcern ? "Unverified control"
+    : classifyIcarusExposure({ evidence, controlGap, strategicallyLinked: strategic })
+      ?? (lifecycleConcern ? "Unexamined strategic exposure" : null);
   if (!exposure) return null;
 
   const findingCodes = Array.from(new Set(modeFindings.map((finding) => finding.code))).sort();
@@ -309,10 +322,12 @@ function classifyFailureMode(
     overdueControlIds,
     supportingEvidenceIds,
     ...(requiredDependencyState ? { requiredDependencyState } : {}),
+    ...(verifiedControl && lifecycleConcern ? { lifecycleOnly: true } : {}),
   };
 }
 
 function describeExposure(mode: IcarusMaterialFailureMode): string {
+  if (mode.lifecycleOnly) return "strategic lifecycle review requires attention; current effective protection remains established";
   if (mode.requiredDependencyState) {
     return mode.requiredDependencyState === "Unknown"
       ? "required dependency health is Unknown; effective protection is not established, independently of control-test assurance"
@@ -359,7 +374,8 @@ export function buildIcarusStrategicAttention(input: IcarusStrategicAttentionInp
     });
 
     const materialFailureModes = assessment.failureModes
-      .map((_, index) => classifyFailureMode(assessment, index, findings, scope !== "Operational", input.dependencyHealth ?? new Map()))
+      .map((mode, index) => classifyFailureMode(assessment, index, findings, scope !== "Operational", input.dependencyHealth ?? new Map(),
+        input.lifecycleAttention?.get(assessment.id)?.failureModeIds.includes(mode.id)))
       .filter((mode): mode is IcarusMaterialFailureMode => mode !== null);
     if (materialFailureModes.length === 0) return;
 
@@ -370,8 +386,10 @@ export function buildIcarusStrategicAttention(input: IcarusStrategicAttentionInp
         || right.mode.weaknesses.length - left.mode.weaknesses.length
         || left.index - right.index)
       .map(({ mode }) => mode);
-    const primary = orderedModes[0];
-    const weaknessSet = new Set(orderedModes.flatMap((mode) => mode.weaknesses));
+    const exposureModes = orderedModes.filter((mode) => !mode.lifecycleOnly);
+    const rankingModes = exposureModes.length ? exposureModes : orderedModes;
+    const primary = rankingModes[0];
+    const weaknessSet = new Set(rankingModes.flatMap((mode) => mode.weaknesses));
     const weaknesses = weaknessOrder.filter((weakness) => weaknessSet.has(weakness));
     const hasOverdueControlReview = orderedModes.some((mode) => mode.overdueControlIds.length > 0);
 
@@ -379,7 +397,7 @@ export function buildIcarusStrategicAttention(input: IcarusStrategicAttentionInp
       exposure: primary.exposure,
       scope,
       objectiveImportance,
-      materialFailureModeCount: orderedModes.length,
+      materialFailureModeCount: rankingModes.length,
       weaknessCount: weaknesses.length,
       hasOverdueControlReview,
     });
@@ -419,8 +437,8 @@ export function buildIcarusStrategicAttention(input: IcarusStrategicAttentionInp
         anchors.push(target);
       });
 
-    const concentration = orderedModes.length > 1
-      ? ` ${orderedModes.length} failure modes are materially exposed.`
+    const concentration = exposureModes.length > 1
+      ? ` ${exposureModes.length} failure modes are materially exposed.`
       : "";
     signals.push({
       key: getIcarusIdentityKey(assessment.id),
@@ -449,6 +467,9 @@ export function buildIcarusStrategicAttention(input: IcarusStrategicAttentionInp
         ...(primary.supportingEvidenceIds[0] ? { evidenceId: primary.supportingEvidenceIds[0] } : {}),
       },
       summary: `${primary.mechanism} — ${describeExposure(primary)}.${concentration}`,
+      ...(input.lifecycleAttention?.has(assessment.id) ? { lifecycle: {
+        attentionReasons: input.lifecycleAttention.get(assessment.id)!.reasons,
+      } } : {}),
     });
   });
 
@@ -486,24 +507,27 @@ export function getIcarusCommandPlacement(signal: IcarusStrategicSignal): Icarus
     baseRank,
     signal.failureChain,
   );
-  const reasons = [commandExposureReason[signal.exposure]];
+  const lifecycleOnly = signal.materialFailureModes.every((mode) => mode.lifecycleOnly);
+  const modeCount = signal.materialFailureModes.filter((mode) => !mode.lifecycleOnly).length;
+  const reasons = [lifecycleOnly ? "ICARUS: STRATEGIC LIFECYCLE REVIEW" : commandExposureReason[signal.exposure]];
   if (signal.scope === "Strategic objective") {
     reasons.push(signal.objectiveImportance ? `${signal.objectiveImportance.toUpperCase()} OBJECTIVE LINKED` : "STRATEGIC OBJECTIVE LINKED");
   }
   else if (signal.scope === "Pillar") reasons.push("PILLAR LINKED");
   if (signal.hasOverdueControlReview) reasons.push("CONTROL REVIEW OVERDUE");
-  if (signal.materialFailureModes.length > 1) reasons.push(`${signal.materialFailureModes.length} MATERIAL FAILURE MODES`);
+  if (modeCount > 1) reasons.push(`${modeCount} MATERIAL FAILURE MODES`);
   if (signal.weaknesses.includes("Weak evidence")) reasons.push("EVIDENCE WEAK");
   reasons.push(...getIcarusAssuranceCommandReasons(signal.assurance));
   if (signal.failureChain?.commandReason) reasons.push(signal.failureChain.commandReason);
-  const modeCount = signal.materialFailureModes.length;
+  reasons.push(...(signal.lifecycle?.attentionReasons ?? []));
   return {
     attentionRank,
     tieWeight: signal.scope === "Strategic objective" ? 2 : signal.scope === "Pillar" ? 1 : 0,
     priorityScore: signal.riskScore,
     reasons,
-    anchoredReason: `ICARUS RISK: ${signal.outcome} (${signal.exposure.toLowerCase()})`,
-    statusText: `${signal.status} assessment / ${signal.exposure} / ${modeCount} material failure mode${modeCount === 1 ? "" : "s"} / ${signal.scope}${signal.assurance ? ` / Assurance: ${signal.assurance.state}` : ""}`,
+    anchoredReason: lifecycleOnly ? `ICARUS LIFECYCLE REVIEW: ${signal.outcome}` : `ICARUS RISK: ${signal.outcome} (${signal.exposure.toLowerCase()})`,
+    statusText: lifecycleOnly ? `${signal.status} assessment / Strategic lifecycle review / Current effective protection retained`
+      : `${signal.status} assessment / ${signal.exposure} / ${modeCount} material failure mode${modeCount === 1 ? "" : "s"} / ${signal.scope}${signal.assurance ? ` / Assurance: ${signal.assurance.state}` : ""}`,
   };
 }
 
@@ -524,11 +548,12 @@ export type IcarusFounderFocusRisk = {
 function describeFounderFocusReason(signal: IcarusStrategicSignal, scopeText: string): string {
   const assurance = signal.assurance;
   const gaps = (assurance?.escalationCategories ?? []).map((category) => ICARUS_OBLIGATION_LABEL[category].toLowerCase());
-  const chain = signal.failureChain?.focusReason ? ` ${signal.failureChain.focusReason}` : "";
+  const chain = (signal.failureChain?.focusReason ? ` ${signal.failureChain.focusReason}` : "")
+    + (signal.lifecycle?.attentionReasons.length ? ` ${signal.lifecycle.attentionReasons.join("; ")}.` : "");
   if (assurance?.escalation === "Assurance failure") {
     return `Icarus assurance failure${scopeText} — ${gaps.join("; ")}. Underlying risk: ${signal.summary}${chain}`;
   }
-  const base = `Icarus strategic risk${scopeText} — ${signal.summary}`;
+  const base = `Icarus ${signal.materialFailureModes.every((mode) => mode.lifecycleOnly) ? "strategic lifecycle review" : "strategic risk"}${scopeText} — ${signal.summary}`;
   const governance = assurance?.escalation === "Governance gap" ? ` Governance gap: ${gaps.join("; ")}.` : "";
   const accepted = assurance?.materialModesAccepted && assurance.acceptance === "Active" ? " Exposure is formally accepted and under review." : "";
   return `${base}${governance}${accepted}${chain}`;

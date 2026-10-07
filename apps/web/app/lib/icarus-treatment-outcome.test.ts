@@ -398,6 +398,22 @@ describe("Icarus treatment verification", () => {
       }));
   });
 
+  it("preserves a directly verified treatment observation when restored protection removes mode materiality", () => {
+    const input = indexInput({ assessments: [assessment({ treatmentOutcomes: [effectiveOutcome()] })] });
+    const current = input.assurance.byAssessmentId.get(assessmentId)!;
+    const restored = {
+      ...input,
+      assurance: { byAssessmentId: new Map([[assessmentId, {
+        ...current, modes: [{ failureModeId: modeId, material: false, assurance: "Assured" as const }],
+      }]]) },
+    };
+    const view = buildIcarusTreatmentOutcomeIndex(restored).get(target().id)!;
+    expect(view.options.map((option) => option.outcome)).toEqual(["Effective"]);
+    expect(view.state).toBe("Verified effective");
+    expect(view.history[0].current).toBe(true);
+    expect(view.history[0].evidenceCurrent).toBe(true);
+  });
+
   it("allows no-longer-applicable only when current assurance says the mode is no longer material", () => {
     const input = indexInput({
       assurance: {

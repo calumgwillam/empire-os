@@ -137,7 +137,10 @@ function verificationOptions(
     const status = controlAssurance.find((entry) => entry.controlId === control.id)?.status;
     return status && getIcarusEffectiveProtection(control, status, dependencyHealth).barrier !== "Active";
   });
-  if (mode && !mode.material && target.failureModeId && !protectionImpaired) {
+  const hasReferencedControlTest = Boolean(target.controlId) && controlRecords.some((control) => controlAssurance.some((entry) =>
+    entry.controlId === control.id && entry.lastEvent?.source === "Control test"));
+  // Loss of mode materiality does not replace a directly verifiable control-treatment observation.
+  if (mode && !mode.material && target.failureModeId && !protectionImpaired && !hasReferencedControlTest) {
     const evidence: IcarusTreatmentOutcomeEvidence = {
       kind: "Failure mode materiality",
       assessmentId: target.assessmentId,

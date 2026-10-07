@@ -15,6 +15,7 @@ import type { DecisionRecord, LessonRecord } from "./capture-conversions";
 import type { IcarusTreatmentIndex, IcarusTreatmentTarget } from "./icarus-treatment";
 import type { IcarusStrategicSignal } from "./icarus-strategic-attention";
 import type { OrganisationalLearningInput } from "./organisational-learning";
+import type { IcarusLifecycleAssessmentView, IcarusStrategicLifecycleIndex } from "./icarus-strategic-lifecycle";
 
 export type IcarusInterventionReadiness =
   | "Not structured" | "Alternatives incomplete" | "Conflict" | "Prerequisites unmet"
@@ -58,6 +59,7 @@ export type IcarusInterventionDecisionView = {
   priorOutcomes: readonly IcarusInterventionOutcome[];
   priorEffects: readonly IcarusInterventionEffect[];
   learning: readonly IcarusInterventionLearning[];
+  lifecycleHistory: readonly IcarusLifecycleAssessmentView[];
 };
 
 export type IcarusInterventionIndex = {
@@ -67,6 +69,7 @@ export type IcarusInterventionIndex = {
   byCauseId: ReadonlyMap<string, readonly IcarusInterventionDecisionView[]>;
   attentionByAssessmentId: ReadonlyMap<string, readonly string[]>;
   learningInput: NonNullable<OrganisationalLearningInput["icarusTreatmentOutcomes"]>;
+  lifecycle?: IcarusStrategicLifecycleIndex;
 };
 
 export type IcarusInterventionIndexInput = {
@@ -78,6 +81,7 @@ export type IcarusInterventionIndexInput = {
   lessons: readonly Pick<LessonRecord, "id" | "status">[];
   people: readonly { id: string; status: string }[];
   nowMs: number;
+  lifecycle?: IcarusStrategicLifecycleIndex;
 };
 
 export function emptyIcarusInterventionScope(assessmentId?: string): IcarusInterventionScope {
@@ -437,6 +441,10 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
       record, selectedOption, readiness,
       issues: uniqueSorted(issues), warnings: uniqueSorted(warnings), conflicts: uniqueSorted(conflicts), unmetPrerequisites: uniqueSorted(unmetPrerequisites),
       targets, outcomes: currentOutcomes, priorOutcomes, priorEffects,
+      lifecycleHistory: record.assessmentIds.flatMap((id) => {
+        const history = input.lifecycle?.byAssessmentId.get(id);
+        return history ? [history] : [];
+      }),
       learning: learning.filter((entry) => entry.decisionId === record.id
         || (entry.reviewed && entry.causeIds.some((id) => record.causeIds.includes(id)))),
     };
@@ -499,5 +507,5 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
       } : {}),
     };
   });
-  return { causes, decisions: views, byAssessmentId, byCauseId, attentionByAssessmentId, learningInput };
+  return { causes, decisions: views, byAssessmentId, byCauseId, attentionByAssessmentId, learningInput, lifecycle: input.lifecycle };
 }

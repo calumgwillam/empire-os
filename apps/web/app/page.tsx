@@ -229,7 +229,6 @@ import {
   normaliseIcarusExposureSnapshot,
   type IcarusExposureSnapshotEntry,
 } from "./lib/icarus-exposure-history";
-import { buildIcarusTreatmentIndex } from "./lib/icarus-treatment";
 import { buildIcarusInterventionIndex } from "./lib/icarus-intervention-decision";
 import {
   attachIndividualOperatingUnderstandings,
@@ -10113,15 +10112,6 @@ export default function Home() {
     .map(({ objectType, id }) => ({ objectType, id }));
   // Icarus Stage A (see icarus-intelligence-pipeline): after People/operational independence so ownership can be
   // judged against founder dependency, and before Command Attention, which ranks the resulting strategic signals.
-  const icarusIntelligence = buildIcarusStrategicIntelligence({
-    assessments: icarusAssessments,
-    sourceRecords: icarusSourceRecords,
-    strategicObjectives,
-    people: people.map(({ id, status }) => ({ id, status })),
-    actions: actionRecords.map(({ id, status, dueDate }) => ({ id, status, dueDate })),
-    primaryFounderId: founderPerson?.id ?? null,
-    founderDependencyActive: founderDependentWork.length > 0,
-  });
   const icarusTreatmentActions = actionRecords.map((action) => ({
     recordType: "Action" as const,
     recordId: action.id,
@@ -10143,21 +10133,20 @@ export default function Home() {
     blocked: project.health === "Blocked" || project.status === "Blocked",
     context: project.area,
   }));
-  // One pure treatment index feeds Icarus, Command and Founder from authoritative Action/Project records.
-  const icarusTreatmentIndex = buildIcarusTreatmentIndex({
+  const icarusIntelligence = buildIcarusStrategicIntelligence({
     assessments: icarusAssessments,
-    assurance: icarusIntelligence.assurance,
-    resilience: icarusIntelligence.dependencyResilience,
-    recommendations: icarusIntelligence.resilienceInterventions,
-    barrierRestorations: icarusIntelligence.failureChains.barrierWeaknesses,
-    dependencyHealth: icarusIntelligence.dependencyHealth,
-    actions: icarusTreatmentActions,
-    projects: icarusTreatmentProjects,
-    founderPersonId: founderPerson?.id ?? null,
-    nowMs: icarusIntelligence.nowMs,
+    sourceRecords: icarusSourceRecords,
+    strategicObjectives,
+    people: people.map(({ id, status }) => ({ id, status })),
+    actions: actionRecords.map(({ id, status, dueDate }) => ({ id, status, dueDate })),
+    treatmentActions: icarusTreatmentActions,
+    treatmentProjects: icarusTreatmentProjects,
+    primaryFounderId: founderPerson?.id ?? null,
+    founderDependencyActive: founderDependentWork.length > 0,
   });
+  const icarusTreatmentIndex = icarusIntelligence.treatment;
   const icarusResolutionReviewItems = icarusAssessments.flatMap((assessment) =>
-    icarusTreatmentIndex.summaries.get(assessment.id)?.resolutionEligibility === "Eligible"
+    icarusIntelligence.lifecycle.byAssessmentId.get(assessment.id)?.eligibility.state === "Eligible for human review"
       ? [{ assessmentId: assessment.id, title: assessment.outcome }]
       : []);
   const icarusInterventionIndex = buildIcarusInterventionIndex({
@@ -10169,6 +10158,7 @@ export default function Home() {
     lessons: lessonRecords,
     people,
     nowMs: icarusIntelligence.nowMs,
+    lifecycle: icarusIntelligence.lifecycle,
   });
   const icarusSignalsWithTreatment = icarusIntelligence.strategicSignals.map((signal) => {
     const treatment = icarusTreatmentIndex.summaries.get(signal.assessmentId);
@@ -11193,6 +11183,7 @@ export default function Home() {
     systems: systemRecords,
     sops: sopRecords,
     icarusTreatmentOutcomes: icarusInterventionIndex.learningInput,
+    icarusLifecycle: icarusInterventionIndex.lifecycle,
   }).map((signal) => ({ signal }));
 
   const commandAttentionPolicy = buildCommandAttention({
@@ -16654,7 +16645,7 @@ export default function Home() {
                 >
                   <span className="text-[10px] font-medium uppercase tracking-[0.16em] text-[#51483e]">Icarus · unresolved failure intelligence</span>
                   <span className="mt-1 block text-[12px] leading-5 text-[#4d4944]">
-                    {icarusIntelligence.strategicSignals.length} material strategic risk{icarusIntelligence.strategicSignals.length === 1 ? " is" : "s are"} ranked in Command attention and Founder Focus. {icarusIntelligence.unresolvedFindings.length} unresolved finding{icarusIntelligence.unresolvedFindings.length === 1 ? "" : "s"} across {icarusIntelligence.unresolvedFindingAssessmentCount} active assessment{icarusIntelligence.unresolvedFindingAssessmentCount === 1 ? "" : "s"} remain reviewable in Icarus.
+                    {icarusIntelligence.strategicSignals.length} Icarus strategic attention item{icarusIntelligence.strategicSignals.length === 1 ? " is" : "s are"} ranked in Command attention and Founder Focus, including relevant lifecycle concerns. {icarusIntelligence.unresolvedFindings.length} unresolved finding{icarusIntelligence.unresolvedFindings.length === 1 ? "" : "s"} across {icarusIntelligence.unresolvedFindingAssessmentCount} active assessment{icarusIntelligence.unresolvedFindingAssessmentCount === 1 ? "" : "s"} remain reviewable in Icarus.
                   </span>
                   {icarusCorrelation.systemicExposure.pillars.some((pillar) => pillar.state === "Material exposure" || pillar.state === "Systemic exposure") ? (
                     <span className="mt-1 block text-[12px] leading-5 text-[#4d4944]">
@@ -19835,6 +19826,13 @@ export default function Home() {
               stressBaseline={icarusIntelligence}
               treatmentIndex={icarusTreatmentIndex}
               interventionIndex={icarusInterventionIndex}
+              lifecycleInput={{
+                assessments: icarusAssessments, assurance: icarusIntelligence.assurance,
+                treatment: icarusTreatmentIndex, dependencyHealth: icarusIntelligence.dependencyHealth,
+                signals: icarusIntelligence.strategicSignals, people,
+                nowMs: icarusIntelligence.nowMs,
+              }}
+              lifecycleIndex={icarusIntelligence.lifecycle}
               closedAssessmentWarnings={icarusIntelligence.closedAssessmentWarnings}
               failureChains={icarusIntelligence.failureChains}
               healthTriggeredChains={icarusIntelligence.healthTriggeredChains}
