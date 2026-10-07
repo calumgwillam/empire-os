@@ -26,6 +26,7 @@ import { buildPeopleCorrelationContext } from "./people-correlation-context";
 import { resolveStrategicRiskConvergence } from "./strategic-risk-resolution";
 import { resolveOperatingPillar } from "./pillar-identity";
 import { buildIcarusDependencyHealthRegistry } from "./icarus-dependency-health";
+import { getIcarusEffectiveProtection } from "./icarus-effective-protection";
 import {
   buildIcarusDependencyResilience,
   buildIcarusResilienceInterventions,
@@ -223,6 +224,69 @@ function deepFreeze<T>(value: T): T {
 }
 
 describe("Icarus intelligence pipeline — composition", () => {
+  it.each([
+    ["Failed", "Failed", "Material"],
+    ["Degraded", "Weak", "Corroborating"],
+    ["Unknown", "Unknown", "Corroborating"],
+  ] as const)("restores visibility for passed protection with a %s required dependency without rewriting assurance", (health, barrier, materiality) => {
+    const dependency = { recordType: "Project" as const, recordId: "required-project" };
+    const passed: IcarusControl = {
+      ...failedControl, linkedRecords: [dependency],
+      assuranceTests: [{ ...failedControl.assuranceTests![0], result: "Passed" }],
+    };
+    const record = failing("dependency-risk", { controls: [passed], accountableOwnerPersonId: "person-2" });
+    const dependencyHealth = new Map([[getIcarusReferenceKey(dependency), {
+      reference: dependency, health, source: "Explicit" as const,
+      basis: ["no-operational-health-evidence" as const], supportingRecords: [],
+    }]]);
+    const before = JSON.stringify(record);
+    const intelligence = buildIcarusStrategicIntelligence({
+      ...stageAInput([record]), dependencyHealthOverrides: dependencyHealth,
+    });
+    expect(intelligence.assurance.byAssessmentId.get(record.id)?.controls[0].status).toBe("Assured");
+    expect(intelligence.assurance.byAssessmentId.get(record.id)?.controls[0].lastEvent?.result).toBe("Passed");
+    expect(getIcarusEffectiveProtection(passed, "Assured", dependencyHealth).barrier).toBe(barrier);
+    expect(intelligence.failureChains.dependencyGraph.controls[0].barrier).toBe(barrier);
+    expect(intelligence.strategicSignals).toHaveLength(1);
+    expect(intelligence.strategicSignals[0].materialityTier).toBe(materiality);
+    expect(intelligence.strategicSignals[0].summary).toContain("dependency");
+    expect(intelligence.strategicSignals[0].summary).not.toContain("control is recorded as ineffective");
+    expect(intelligence.correlationSignals).toHaveLength(1);
+    expect(intelligence.founderFocusRisks).toHaveLength(1);
+    expect(buildCommandAttention({
+      problems: [], actions: [], outreach: [], projects: [], decisions: [], opportunities: [], lessons: [], systems: [],
+      sops: [], handoffs: [], procurementQueue: [], nowMs: NOW, icarus: intelligence.strategicSignals,
+    }).items.some((item) => item.objectType === "Icarus" && item.id === record.id)).toBe(true);
+    expect(JSON.stringify(record)).toBe(before);
+  });
+
+  it("preserves independent backup containment but not a backup sharing the failed required dependency", () => {
+    const dependency = { recordType: "Project" as const, recordId: "required-project" };
+    const passed: IcarusControl = {
+      ...failedControl, linkedRecords: [dependency],
+      assuranceTests: [{ ...failedControl.assuranceTests![0], result: "Passed" }],
+    };
+    const backup: IcarusControl = {
+      ...passed, id: "independent-backup", linkedRecords: [],
+      assuranceTests: [{ ...passed.assuranceTests![0], id: "backup-test" }],
+    };
+    const record = failing("dependency-risk", { controls: [passed, backup], accountableOwnerPersonId: "person-2" });
+    const input = {
+      ...stageAInput([record]), dependencyHealthOverrides: new Map([[getIcarusReferenceKey(dependency), {
+        reference: dependency, health: "Failed" as const, source: "Explicit" as const,
+        basis: ["blocked-project" as const], supportingRecords: [],
+      }]]),
+    };
+    const contained = buildIcarusStrategicIntelligence(input);
+    expect(contained.strategicSignals).toEqual([]);
+    expect(contained.failureChains.healthTriggeredChains).toEqual([]);
+    expect(contained.failureChains.dependencyGraph.controls.map((control) => control.barrier)).toContain("Active");
+    const shared = { ...record, controls: [passed, { ...backup, linkedRecords: [dependency] }] };
+    const exposed = buildIcarusStrategicIntelligence({ ...input, assessments: [shared] });
+    expect(exposed.strategicSignals[0].materialityTier).toBe("Material");
+    expect(exposed.failureChains.dependencyGraph.controls.every((control) => control.barrier === "Failed")).toBe(true);
+  });
+
   it("produces exactly what the previous hand-composed adapter chain produced", () => {
     const assessments = [failing("a1"), assessment("a2"), assessment("a3", { status: "Closed" })];
     const options: Options = {};
@@ -237,7 +301,7 @@ describe("Icarus intelligence pipeline — composition", () => {
       nowMs: NOW,
     });
     const reviews = buildIcarusReview(assessments, input.sourceRecords, NOW);
-    const base = buildIcarusStrategicAttention({ assessments, reviews, strategicObjectives: objectives });
+    const base = buildIcarusStrategicAttention({ assessments, reviews, strategicObjectives: objectives, dependencyHealth });
     const assurance = buildIcarusAssurance({
       assessments, reviews, signals: base, people: input.people, actions: input.actions, primaryFounderId: "founder",
       founderDependencyActive: false, strategicObjectives: objectives, nowMs: NOW,

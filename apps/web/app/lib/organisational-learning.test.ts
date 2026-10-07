@@ -74,10 +74,10 @@ describe("read-only organisational learning policy", () => {
     });
     const signals = buildOrganisationalLearning(input({
       icarusTreatmentOutcomes: [
-        { targetTitle: "Restore control", record: outcome("effective", "Effective") },
-        { targetTitle: "Restore control", record: outcome("partial", "Partially effective") },
-        { targetTitle: "Restore control", record: outcome("ineffective", "Ineffective") },
-        { targetTitle: "Restore control", record: outcome("unknown", "Inconclusive") },
+        { targetTitle: "Restore control", record: outcome("effective", "Effective"), treatmentEvidence: { current: true, attribution: "Supported" } },
+        { targetTitle: "Restore control", record: outcome("partial", "Partially effective"), treatmentEvidence: { current: true, attribution: "Uncertain" } },
+        { targetTitle: "Restore control", record: outcome("ineffective", "Ineffective"), treatmentEvidence: { current: true, attribution: "Supported" } },
+        { targetTitle: "Restore control", record: outcome("unknown", "Inconclusive"), treatmentEvidence: { current: true, attribution: "Uncertain" } },
       ],
     }));
 
@@ -85,6 +85,7 @@ describe("read-only organisational learning policy", () => {
       ["effective", "Worked"],
       ["partial", "Partially worked"],
       ["ineffective", "Failed"],
+      ["unknown", "Unknown"],
     ]);
     expect(signals[0].evidence).toContainEqual({
       sourceType: "Icarus Treatment",
@@ -98,6 +99,58 @@ describe("read-only organisational learning policy", () => {
       field: "evidenceReference",
       value: JSON.stringify(["Control test", "risk-1", "mode-1", "control-1", "test-1", "Passed", "Assured", ["evidence-1"], "Current support"]),
     });
+
+    const recorded = outcome("historical", "Effective");
+    const history = buildOrganisationalLearning(input({
+      icarusTreatmentOutcomes: [
+        { targetTitle: "Restore control", record: recorded, treatmentEvidence: { current: false, attribution: "Not attributable" } },
+        { targetTitle: "Restore control", record: { ...recorded, id: "currency-unknown" } },
+        {
+          targetTitle: "Restore control", record: { ...recorded, id: "current-treatment-historical-intervention" },
+          treatmentEvidence: { current: true, attribution: "Supported" },
+          interventionContext: { current: false, decisionIds: ["old"], optionIds: ["rejected"], causeIds: ["cause"], lessonIds: ["l"] },
+        },
+      ],
+      lessons: [lesson()],
+    }));
+    expect(history.map(({ sourceType, sourceId }) => [sourceType, sourceId])).toEqual([
+      ["Lesson", "l"],
+      ["Icarus Treatment", "historical"],
+      ["Icarus Treatment", "currency-unknown"],
+      ["Icarus Treatment", "current-treatment-historical-intervention"],
+    ]);
+    expect(history[0]).toMatchObject({
+      sourceType: "Lesson",
+      sourceId: "l",
+      outcomeState: "Missing evidence",
+      linkedLessonIds: ["l"],
+    });
+    expect(history[0].evidence).toContainEqual({
+      sourceType: "Lesson", sourceId: "l", field: "status", value: "New",
+    });
+    const treatmentHistory = history.filter(({ sourceType }) => sourceType === "Icarus Treatment");
+    expect(treatmentHistory.map(({ sourceId, outcomeState }) => [sourceId, outcomeState])).toEqual([
+      ["historical", "Unknown"],
+      ["currency-unknown", "Unknown"],
+      ["current-treatment-historical-intervention", "Worked"],
+    ]);
+    expect(treatmentHistory[0].evidence).toContainEqual(expect.objectContaining({
+      field: "verificationCurrency", value: "Historical / superseded or currency unknown",
+    }));
+    expect(treatmentHistory[0].evidence).toContainEqual(expect.objectContaining({
+      field: "interventionAttribution", value: "Not attributable — historical or no intervention context",
+    }));
+    expect(treatmentHistory[1].evidence).toContainEqual(expect.objectContaining({
+      field: "verificationCurrency", value: "Historical / superseded or currency unknown",
+    }));
+    expect(treatmentHistory[2].evidence).toContainEqual(expect.objectContaining({
+      field: "treatmentAttribution", value: "Supported",
+    }));
+    expect(treatmentHistory[2].evidence).toContainEqual(expect.objectContaining({
+      field: "interventionAttribution", value: "Not attributable — historical or no intervention context",
+    }));
+    expect(treatmentHistory[2].linkedLessonIds).toEqual(["l"]);
+    expect(lesson().status).toBe("New");
   });
 
   it("returns no signals for empty input", () => {

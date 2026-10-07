@@ -37,6 +37,8 @@ import {
   type IcarusSignalAssurance,
 } from "./icarus-assurance-policy";
 import { deriveIcarusRelationships, type IcarusRelationship } from "./icarus-relationships";
+import { getIcarusEffectiveProtection } from "./icarus-effective-protection";
+import type { IcarusDependencyHealthRegistry } from "./icarus-dependency-health";
 import {
   adjustIcarusCommandRankForFailureChain,
   adjustIcarusFounderFocusBandForFailureChain,
@@ -102,6 +104,7 @@ export type IcarusMaterialFailureMode = {
   weakControlIds: string[];
   overdueControlIds: string[];
   supportingEvidenceIds: string[];
+  requiredDependencyState?: "Failed" | "Degraded" | "Unknown";
 };
 
 export type IcarusAttentionTarget = {
@@ -152,6 +155,7 @@ export type IcarusStrategicAttentionInput = {
   includeClosedAssessments?: boolean;
   // When supplied, objective links only count if the objective exists and is live.
   strategicObjectives?: ReadonlyMap<string, IcarusStrategicObjectiveContext>;
+  dependencyHealth?: IcarusDependencyHealthRegistry;
 };
 
 const weaknessOrder: readonly IcarusWeakness[] = [
@@ -234,6 +238,7 @@ function classifyFailureMode(
   modeIndex: number,
   findings: readonly IcarusReviewFinding[],
   strategic: boolean,
+  dependencyHealth: IcarusDependencyHealthRegistry,
 ): IcarusMaterialFailureMode | null {
   const mode = assessment.failureModes[modeIndex];
   const modeFindings = findings.filter((finding) => finding.failureModeId === mode.id);
@@ -245,7 +250,8 @@ function classifyFailureMode(
     (control.lifecycle === "Active" || control.lifecycle === "Monitoring")
     // The latest assurance event (explicit test, or the legacy effectiveness review) must be a pass.
     && getIcarusLatestControlAssuranceEvent(control)?.result === "Passed"
-    && !controlFindingCodes(control.id).some((code) => controlVerificationBlockers.includes(code)));
+    && !controlFindingCodes(control.id).some((code) => controlVerificationBlockers.includes(code))
+    && getIcarusEffectiveProtection(control, "Assured", dependencyHealth).barrier === "Active");
   if (verifiedControl) return null;
 
   const currentEvidence = mode.evidence.filter((evidence) => !modeFindings.some((finding) =>
@@ -257,9 +263,16 @@ function classifyFailureMode(
   });
 
   const weakControlIds = controls
-    .filter((control) => controlFindingCodes(control.id).some((code) => failingControlCodes.includes(code)))
+    .filter((control) => controlFindingCodes(control.id).some((code) => failingControlCodes.includes(code))
+      || ((control.lifecycle === "Active" || control.lifecycle === "Monitoring")
+        && getIcarusEffectiveProtection(control, "Assured", dependencyHealth).dependencies.some((dependency) => dependency.health === "Failed")))
     .map((control) => control.id);
   const operatingControls = controls.filter((control) => control.lifecycle === "Active" || control.lifecycle === "Monitoring");
+  const requiredHealth = operatingControls.flatMap((control) =>
+    getIcarusEffectiveProtection(control, "Assured", dependencyHealth).dependencies.map((dependency) => dependency.health));
+  const requiredDependencyState = requiredHealth.includes("Failed") ? "Failed"
+    : requiredHealth.includes("Degraded") ? "Degraded"
+      : requiredHealth.includes("Unknown") ? "Unknown" : undefined;
   const controlGap: IcarusControlGap = classifyIcarusControlGap({
     failingControlCount: weakControlIds.length,
     operatingControlCount: operatingControls.length,
@@ -295,10 +308,16 @@ function classifyFailureMode(
         .map((control) => control.id),
     overdueControlIds,
     supportingEvidenceIds,
+    ...(requiredDependencyState ? { requiredDependencyState } : {}),
   };
 }
 
 function describeExposure(mode: IcarusMaterialFailureMode): string {
+  if (mode.requiredDependencyState) {
+    return mode.requiredDependencyState === "Unknown"
+      ? "required dependency health is Unknown; effective protection is not established, independently of control-test assurance"
+      : `effective protection is impaired by a ${mode.requiredDependencyState.toLowerCase()} required dependency; control-test assurance is separate`;
+  }
   if (mode.exposure === "Exposed") {
     return mode.controlGap === "Failing"
       ? "evidenced failure mechanism whose control is recorded as ineffective, weak or contradicted"
@@ -340,7 +359,7 @@ export function buildIcarusStrategicAttention(input: IcarusStrategicAttentionInp
     });
 
     const materialFailureModes = assessment.failureModes
-      .map((_, index) => classifyFailureMode(assessment, index, findings, scope !== "Operational"))
+      .map((_, index) => classifyFailureMode(assessment, index, findings, scope !== "Operational", input.dependencyHealth ?? new Map()))
       .filter((mode): mode is IcarusMaterialFailureMode => mode !== null);
     if (materialFailureModes.length === 0) return;
 

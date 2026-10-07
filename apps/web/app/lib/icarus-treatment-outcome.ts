@@ -14,6 +14,7 @@ import type {
 } from "./icarus-assurance";
 import type { IcarusDependencyHealthRegistry } from "./icarus-dependency-health";
 import type { IcarusTreatmentTarget } from "./icarus-treatment";
+import { getIcarusEffectiveProtection } from "./icarus-effective-protection";
 
 export type IcarusTreatmentVerificationOption = {
   outcome: IcarusTreatmentOutcomeCategory;
@@ -31,6 +32,7 @@ export type IcarusTreatmentOutcomeView = {
   history: readonly {
     record: IcarusTreatmentOutcomeRecord;
     current: boolean;
+    evidenceCurrent?: boolean;
     attribution: "Supported" | "Uncertain" | "Not attributable";
   }[];
   latest?: IcarusTreatmentOutcomeRecord;
@@ -128,7 +130,14 @@ function verificationOptions(
   const assuranceAssessment = assurance.byAssessmentId.get(target.assessmentId);
   const modeId = target.failureModeId;
   const mode = assuranceAssessment?.modes.find((entry) => entry.failureModeId === modeId);
-  if (mode && !mode.material && target.failureModeId) {
+  const controlRecords = (assessment?.controls ?? []).filter((control) =>
+    control.failureModeId === modeId && (!target.controlId || control.id === target.controlId));
+  const controlAssurance = assuranceAssessment?.controls ?? [];
+  const protectionImpaired = controlRecords.some((control) => {
+    const status = controlAssurance.find((entry) => entry.controlId === control.id)?.status;
+    return status && getIcarusEffectiveProtection(control, status, dependencyHealth).barrier !== "Active";
+  });
+  if (mode && !mode.material && target.failureModeId && !protectionImpaired) {
     const evidence: IcarusTreatmentOutcomeEvidence = {
       kind: "Failure mode materiality",
       assessmentId: target.assessmentId,
@@ -143,13 +152,18 @@ function verificationOptions(
       label: "No longer applicable — failure mode is not currently material",
     }];
   }
-  const controlRecords = (assessment?.controls ?? []).filter((control) =>
-    control.failureModeId === modeId && (!target.controlId || control.id === target.controlId));
-  const controlAssurance = assuranceAssessment?.controls ?? [];
   const currentTests = controlRecords.flatMap((control) => {
     const controlStatus = controlAssurance.find((entry) => entry.controlId === control.id);
     const test = controlStatus?.lastEvent;
     if (!controlStatus || test?.source !== "Control test" || !test.testId) return [];
+    const protection = getIcarusEffectiveProtection(control, controlStatus.status, dependencyHealth);
+    // Hypothetical dependencies cannot support a real verification occurrence.
+    if (protection.dependencies.some((dependency) => dependency.source === "Scenario override")) return [];
+    const dependencies: IcarusTreatmentOutcomeEvidence[] = protection.dependencies.map((dependency) => ({
+      kind: "Dependency health", dependencyReference: { ...dependency.reference },
+      health: dependency.health, source: dependency.source === "Explicit" ? "Explicit" : "Derived",
+      basis: [...dependency.basis].sort(),
+    }));
     return [{
       evidence: {
         kind: "Control test" as const,
@@ -164,29 +178,31 @@ function verificationOptions(
       },
       status: controlStatus.status,
       evidenceStatus: controlStatus.evidence,
+      protection: protection.barrier,
+      dependencies,
     }];
   });
 
-  currentTests.forEach(({ evidence, status }) => {
+  currentTests.forEach(({ evidence, status, protection, dependencies }) => {
     const outcome: IcarusTreatmentOutcomeCategory = evidence.result === "Passed"
-      && status === "Assured" && evidence.evidenceStatus === "Current support"
+      && status === "Assured" && evidence.evidenceStatus === "Current support" && protection === "Active"
       ? "Effective"
-      : evidence.result === "Failed" || status === "Failed" ? "Ineffective" : "Inconclusive";
-    const attribution = attributionFor(target, [evidence]);
+      : evidence.result === "Failed" || status === "Failed" || protection === "Failed" ? "Ineffective" : "Inconclusive";
+    const attribution = dependencies.length > 0 ? "Uncertain" : attributionFor(target, [evidence]);
     options.push({
       outcome,
-      evidence: [evidence],
+      evidence: [evidence, ...dependencies],
       afterState: { kind: "Control assurance", state: status ?? "Untested" },
       attribution,
-      label: `${outcome} — ${evidence.controlId} test ${evidence.testId}: ${evidence.result.toLowerCase()}${evidence.evidenceIds.length > 0 ? `; evidence ${evidence.evidenceIds.join(", ")}` : ""}`,
+      label: `${outcome} — ${evidence.controlId} test ${evidence.testId}: ${evidence.result.toLowerCase()}; effective protection ${protection.toLowerCase()}${evidence.evidenceIds.length > 0 ? `; evidence ${evidence.evidenceIds.join(", ")}` : ""}`,
     });
   });
 
   if (mode?.assurance === "Partially assured") {
     const modeTests = currentTests.filter(({ evidence }) => evidence.failureModeId === mode.failureModeId);
-    if (modeTests.some(({ status, evidenceStatus }) => status === "Assured" && evidenceStatus === "Current support")
+    if (modeTests.some(({ status, evidenceStatus, protection }) => status === "Assured" && evidenceStatus === "Current support" && protection === "Active")
       && modeTests.some(({ status }) => status === "Failed")) {
-      const evidence = modeTests.map(({ evidence: entry }) => entry);
+      const evidence = modeTests.flatMap(({ evidence: entry, dependencies }) => [entry, ...dependencies]);
       options.push({
         outcome: "Partially effective",
         evidence,
@@ -226,7 +242,7 @@ export function buildIcarusTreatmentOutcomeIndex(
     const records = outcomes.filter((outcome) => outcome.treatmentTargetId === target.id)
       .slice()
       .sort((left, right) => left.verifiedAt.localeCompare(right.verifiedAt) || left.id.localeCompare(right.id));
-    const history = records.map((record) => {
+    const history = records.map((record, recordIndex) => {
       const currentOption = options.find((option) => option.outcome === record.outcome
         && sameEvidence(option.evidence, record.evidence)
         && sameAfterState(record.afterState, option.afterState)
@@ -234,7 +250,8 @@ export function buildIcarusTreatmentOutcomeIndex(
         && sameExecutionLinks(record.executionLinks, target.executionLinks));
       return {
         record,
-        current: Boolean(currentOption),
+        current: recordIndex === records.length - 1 && Boolean(currentOption),
+        evidenceCurrent: Boolean(currentOption),
         attribution: currentOption?.attribution ?? "Not attributable" as const,
       };
     });

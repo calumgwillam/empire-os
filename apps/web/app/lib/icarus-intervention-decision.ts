@@ -6,6 +6,7 @@ import {
   type IcarusInterventionDecisionRecord,
   type IcarusInterventionEffect,
   type IcarusInterventionOption,
+  type IcarusInterventionRelation,
   type IcarusInterventionScope,
   type IcarusSourceRecord,
   type IcarusTreatmentOutcomeRecord,
@@ -26,6 +27,7 @@ export type IcarusInterventionOutcome = {
   causeIds: readonly string[];
   record: IcarusTreatmentOutcomeRecord;
   current: boolean;
+  treatmentCurrent: boolean;
   postSelectionEvidence: boolean;
   treatmentAttribution: "Supported" | "Uncertain" | "Not attributable";
   // A treatment's control test supports that control, not causal success of the whole intervention.
@@ -48,6 +50,7 @@ export type IcarusInterventionDecisionView = {
   selectedOption?: IcarusInterventionOption;
   readiness: IcarusInterventionReadiness;
   issues: readonly string[];
+  warnings: readonly string[];
   conflicts: readonly string[];
   unmetPrerequisites: readonly string[];
   targets: readonly IcarusTreatmentTarget[];
@@ -167,6 +170,21 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
     ];
   }
 
+  function postSelectionEvidence(
+    record: IcarusTreatmentOutcomeRecord,
+    decision: IcarusInterventionDecisionRecord,
+    option: IcarusInterventionOption,
+  ): boolean {
+    const selection = decision.selectionHistory.filter((event) => event.optionId === option.id).at(-1);
+    const link = option.treatmentLinks.find((entry) => entry.targetId === record.treatmentTargetId);
+    const reference = record.interventionReference;
+    const occurrenceMatches = !record.occurrenceId || (reference?.decisionId === decision.id
+      && reference.optionId === option.id && reference.selectionEventId === selection?.id);
+    return Boolean(selection && link && occurrenceMatches
+      && Date.parse(record.verifiedAt) >= Date.parse(selection.selectedAt)
+      && Date.parse(record.verifiedAt) >= Date.parse(link.linkedAt));
+  }
+
   function optionOutcomes(decision: IcarusInterventionDecisionRecord, option: IcarusInterventionOption): IcarusInterventionOutcome[] {
     // Merely linking a target is not evidence that this option was ever selected.
     if (!decision.selectionHistory.some((event) => event.optionId === option.id)) return [];
@@ -174,53 +192,58 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
     return outcomes.filter((record) => targetIds.has(record.treatmentTargetId)).map((record): IcarusInterventionOutcome => {
       const historical = input.treatment.verification.get(record.treatmentTargetId)?.history
         .find((entry) => entry.record.id === record.id);
-      const selection = decision.selectionHistory.find((event) => event.optionId === option.id);
-      const link = option.treatmentLinks.find((entry) => entry.targetId === record.treatmentTargetId);
-      const postSelectionEvidence = Boolean(selection && link
-        && Date.parse(record.verifiedAt) >= Date.parse(selection.selectedAt)
-        && Date.parse(record.verifiedAt) >= Date.parse(link.linkedAt));
-      const current = Boolean(historical?.current) && postSelectionEvidence
-        && decision.status !== "Superseded" && option.status !== "Superseded"
-        && !optionDuplicates.has(option.id) && !decisionDuplicates.has(decision.id);
+      const postSelection = postSelectionEvidence(record, decision, option);
+      const validity = decisionValidity(decision);
+      const current = Boolean(historical?.current) && postSelection
+        && decision.status === "Recorded" && decision.selectedOptionId === option.id && option.status === "Candidate"
+        && validity.blockingIssues.length === 0 && validity.conflicts.length === 0
+        && requiredPredecessors(option.id).every((relation) => predecessorSatisfied(relation, new Set([option.id])));
       return {
         decisionId: decision.id, optionId: option.id, causeIds: uniqueSorted(option.causeIds),
-        record, current, postSelectionEvidence,
+        record, current, treatmentCurrent: Boolean(historical?.current), postSelectionEvidence: postSelection,
         treatmentAttribution: historical?.attribution ?? "Not attributable",
         causalAttribution: current && record.outcome !== "No longer applicable" ? "Uncertain" : "Not attributable",
       };
     }).sort((a, b) => a.record.verifiedAt.localeCompare(b.record.verifiedAt) || a.record.id.localeCompare(b.record.id));
   }
 
-  const allOutcomes = records.flatMap((decision) => decision.options.flatMap((option) => optionOutcomes(decision, option)));
+  // prerequisite-of requires current verified protection. must-precede additionally requires verification
+  // before the successor's selection. A selected blocks option releases its successor after verification.
+  // Unselected blockers and complements impose no prerequisite; mutual exclusions are conflicts.
+  function requiredPredecessors(optionId: string) {
+    return relationships.filter((relation) => relation.toOptionId === optionId
+      && (relation.kind === "prerequisite-of" || relation.kind === "must-precede"
+        || (relation.kind === "blocks" && selectedIds.has(relation.fromOptionId))));
+  }
+  function predecessorSatisfied(relation: IcarusInterventionRelation, visited = new Set<string>()): boolean {
+    if (!prerequisiteSatisfied(relation.fromOptionId, visited)) return false;
+    if (relation.kind !== "must-precede") return true;
+    const successor = records.find((record) => record.selectedOptionId === relation.toOptionId && record.status === "Recorded");
+    const selection = successor?.selectionHistory.at(-1);
+    if (!selection) return true;
+    const predecessor = optionsById.get(relation.fromOptionId);
+    const owner = records.find((record) => record.selectedOptionId === relation.fromOptionId && record.status === "Recorded");
+    return Boolean(predecessor && owner && predecessor.treatmentLinks.every((link) =>
+      input.treatment.verification.get(link.targetId)?.history.some((entry) =>
+        (entry.evidenceCurrent ?? entry.current) && entry.record.outcome === "Effective"
+        && postSelectionEvidence(entry.record, owner, predecessor)
+        && Date.parse(entry.record.verifiedAt) <= Date.parse(selection.selectedAt))));
+  }
   function prerequisiteSatisfied(optionId: string, visited = new Set<string>()): boolean {
     if (visited.has(optionId)) return false;
     const nextVisited = new Set(visited).add(optionId);
     const option = optionsById.get(optionId);
     const owner = records.find((decision) => decision.selectedOptionId === optionId && decision.status === "Recorded");
-    const exclusiveConflict = relationships.some((relation) => relation.kind === "mutually-exclusive-with"
-      && (relation.fromOptionId === optionId || relation.toOptionId === optionId)
-      && selectedIds.has(relation.fromOptionId) && selectedIds.has(relation.toOptionId));
-    return Boolean(option && owner && !decisionDuplicates.has(owner.id) && !exclusiveConflict
-      && scopeIssues(owner).length === 0 && scopeIssues(option).length === 0
-      && owner.causeIds.every((id) => causesById.has(id))
-      && option.causeIds.length > 0 && option.causeIds.every((id) => causesById.has(id) && owner.causeIds.includes(id))
-      && owner.selectionHistory.some((event) => event.optionId === optionId)
-      && owner.selectionHistory[owner.selectionHistory.length - 1]?.optionId === optionId
-      && (!owner.decisionRecordId || ["Active", "Under Review", "Completed"].includes(
-        authoritativeDecisions.get(owner.decisionRecordId)?.decisionStatus ?? "",
-      ))
+    const validity = owner ? decisionValidity(owner) : undefined;
+    return Boolean(option && owner && validity && validity.blockingIssues.length === 0 && validity.conflicts.length === 0
       && selectedIds.has(optionId) && option.status === "Candidate"
       && option.treatmentLinks.length > 0 && option.treatmentLinks.every((link) =>
         targetsById.get(link.targetId)?.state === "Completed — verification required"
         && input.treatment.verification.get(link.targetId)?.state === "Verified effective"
         && input.treatment.verification.get(link.targetId)?.history.some((entry) => entry.current
-          && entry.record.outcome === "Effective" && Date.parse(entry.record.verifiedAt) >= Date.parse(link.linkedAt)
-          && owner.selectionHistory.some((event) => event.optionId === optionId
-            && Date.parse(entry.record.verifiedAt) >= Date.parse(event.selectedAt))))
-      && relationships.filter((relation) => relation.toOptionId === optionId
-        && (relation.kind === "prerequisite-of" || relation.kind === "must-precede"
-          || (relation.kind === "blocks" && selectedIds.has(relation.fromOptionId))))
-        .every((relation) => prerequisiteSatisfied(relation.fromOptionId, nextVisited)));
+          && entry.record.outcome === "Effective" && postSelectionEvidence(entry.record, owner, option)))
+      && requiredPredecessors(optionId)
+        .every((relation) => predecessorSatisfied(relation, nextVisited)));
   }
 
   const preceding = relationships.filter((relation) => relation.kind === "prerequisite-of" || relation.kind === "must-precede");
@@ -235,6 +258,8 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
   }
   const cyclicIds = new Set(preceding.filter((relation) => reaches(relation.toOptionId, relation.fromOptionId))
     .flatMap((relation) => [relation.fromOptionId, relation.toOptionId]));
+  const selectionDuplicates = duplicateIds(records.flatMap((record) => record.selectionHistory));
+  const allOutcomes = records.flatMap((decision) => decision.options.flatMap((option) => optionOutcomes(decision, option)));
 
   function effectMaterial(effect: IcarusInterventionEffect): boolean {
     const target = effect.target;
@@ -263,10 +288,11 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
     };
   }));
 
-  const views: IcarusInterventionDecisionView[] = records.map((record) => {
+  function decisionValidity(record: IcarusInterventionDecisionRecord) {
     const selectedOption = record.options.find((option) => option.id === record.selectedOptionId && option.status === "Candidate");
     const issues = [
       ...scopeIssues(record),
+      ...(!record.assessmentIds.length ? ["Decision has no assessment scope"] : []),
       ...(record.causeIds.length === 0 ? ["No explicit cause linked"] : []),
       ...record.causeIds.filter((id) => !causesById.has(id)).map((id) => `Missing or ambiguous cause: ${id}`),
       ...record.causeIds.flatMap((id) => {
@@ -283,14 +309,13 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
         ? ["Authoritative Decision is draft or reversed"] : []),
       ...(record.selectedOptionId && (!selectedOption || selectedOption.status !== "Candidate")
         ? ["Selected option is missing, rejected or superseded"] : []),
+      ...(record.selectedOptionId && !record.rationale.trim() ? ["Selection rationale is missing"] : []),
       ...(record.selectedOptionId && !record.selectionHistory.some((event) => event.optionId === record.selectedOptionId)
         ? ["Selection has no recorded provenance"] : []),
       ...(record.selectedOptionId && record.selectionHistory.length > 0
         && record.selectionHistory[record.selectionHistory.length - 1].optionId !== record.selectedOptionId
         ? ["Selected option conflicts with latest selection history"] : []),
       ...record.lessonLinks.filter((link) => !lessons.has(link.lessonId)).map((link) => `Missing Lesson: ${link.lessonId}`),
-      ...learning.filter((entry) => entry.decisionId === record.id && !entry.validLink)
-        .map((entry) => `Lesson link has missing outcome or invalid cause scope: ${entry.lessonId}`),
       ...record.effects.flatMap((effect) => effect.evidence.filter((ref) => !assessmentsById.get(ref.assessmentId)
         ?.failureModes.find((mode) => mode.id === ref.failureModeId)?.evidence.some((entry) => entry.id === ref.evidenceId))
         .map((ref) => `Missing side-effect evidence: ${ref.evidenceId}`)),
@@ -324,6 +349,8 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
       ...selectedOption.causeIds.filter((id) => !causesById.has(id) || !record.causeIds.includes(id))
         .map((id) => `Option cause is missing or outside decision scope: ${id}`),
       ...(selectedOption.causeIds.length === 0 ? ["Selected option has no explicit target cause"] : []),
+      ...(!selectedOption.intent || !selectedOption.scope || !selectedOption.character || !selectedOption.description.trim()
+        ? ["Selected option classification or description is incomplete"] : []),
       ...selectedOption.treatmentLinks.filter((link) => !targetsById.has(link.targetId))
         .map((link) => `Missing treatment target: ${link.targetId}`),
       ...selectedOption.priorOptionIds.filter((id) => !optionsById.has(id))
@@ -334,7 +361,15 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
     const conflicts = [
       ...(decisionDuplicates.has(record.id) ? [`Duplicate intervention decision identity: ${record.id}`] : []),
       ...record.options.filter((option) => optionDuplicates.has(option.id)).map((option) => `Duplicate option identity: ${option.id}`),
-      ...[...duplicateIds(record.selectionHistory)].map((id) => `Duplicate selection event identity: ${id}`),
+      ...record.selectionHistory.filter((event) => selectionDuplicates.has(event.id)).map((event) => `Duplicate selection event identity: ${event.id}`),
+      ...record.selectionHistory.filter((event, index) =>
+        !record.options.some((option) => option.id === event.optionId) || !event.rationale.trim()
+        || !event.selectedByPersonId.trim() || !Number.isFinite(Date.parse(event.selectedAt))
+        || Date.parse(event.selectedAt) < Date.parse(record.createdAt)
+        || (index > 0 && Date.parse(event.selectedAt) < Date.parse(record.selectionHistory[index - 1].selectedAt)))
+        .map((event) => `Invalid selection provenance or chronology: ${event.id}`),
+      ...(record.selectedOptionId && record.status !== "Recorded" && record.status !== "Superseded"
+        ? ["Selected option requires a recorded decision context"] : []),
       ...[...duplicateIds(record.relationships)].map((id) => `Duplicate relationship identity: ${id}`),
       ...[...duplicateIds(record.effects)].map((id) => `Duplicate side-effect identity: ${id}`),
       ...[...duplicateIds(record.lessonLinks)].map((id) => `Duplicate Lesson-link identity: ${id}`),
@@ -345,10 +380,21 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
         .map((relation) => `Mutually exclusive selections: ${relation.fromOptionId} / ${relation.toOptionId}`),
       ...record.options.filter((option) => cyclicIds.has(option.id)).map((option) => `Prerequisite/sequence cycle: ${option.id}`),
     ];
+    const warnings = issues.filter((issue) => issue.startsWith("Inactive or missing context author:")
+      || issue.startsWith("Missing Lesson:") || issue.startsWith("Side-effect evidence is not current support:"));
+    const blockingIssues = issues.filter((issue) => !warnings.includes(issue));
+    return { selectedOption, issues, conflicts, blockingIssues, warnings, relatedRelations };
+  }
+
+  const views: IcarusInterventionDecisionView[] = records.map((record) => {
+    const validity = decisionValidity(record);
+    const { selectedOption, conflicts, relatedRelations, warnings } = validity;
+    const issues = [...validity.issues, ...learning.filter((entry) => entry.decisionId === record.id && !entry.validLink)
+      .map((entry) => `Lesson link has missing outcome or invalid cause scope: ${entry.lessonId}`)];
     const unmetPrerequisites = selectedOption ? relatedRelations.filter((relation) =>
       relation.toOptionId === selectedOption.id && (
-        ((relation.kind === "prerequisite-of" || relation.kind === "must-precede") && !prerequisiteSatisfied(relation.fromOptionId))
-        || (relation.kind === "blocks" && selectedIds.has(relation.fromOptionId) && !prerequisiteSatisfied(relation.fromOptionId))
+        ((relation.kind === "prerequisite-of" || relation.kind === "must-precede") && !predecessorSatisfied(relation))
+        || (relation.kind === "blocks" && selectedIds.has(relation.fromOptionId) && !predecessorSatisfied(relation))
       )).map((relation) => `${relation.kind}: ${relation.fromOptionId} -> ${relation.toOptionId}`) : [];
     const targets = selectedOption?.treatmentLinks.flatMap((link) => {
       const target = targetsById.get(link.targetId);
@@ -389,7 +435,7 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
     } else readiness = "Executing";
     return {
       record, selectedOption, readiness,
-      issues: uniqueSorted(issues), conflicts: uniqueSorted(conflicts), unmetPrerequisites: uniqueSorted(unmetPrerequisites),
+      issues: uniqueSorted(issues), warnings: uniqueSorted(warnings), conflicts: uniqueSorted(conflicts), unmetPrerequisites: uniqueSorted(unmetPrerequisites),
       targets, outcomes: currentOutcomes, priorOutcomes, priorEffects,
       learning: learning.filter((entry) => entry.decisionId === record.id
         || (entry.reviewed && entry.causeIds.some((id) => record.causeIds.includes(id)))),
@@ -430,17 +476,25 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
 
   const learningInput = outcomes.map((record) => {
     const contexts = allOutcomes.filter((entry) => entry.record.id === record.id);
+    const currentContexts = contexts.filter((entry) => entry.current);
+    const learningContexts = currentContexts.length ? currentContexts : contexts;
+    const treatmentEvidence = input.treatment.verification.get(record.treatmentTargetId)?.history
+      .find((entry) => entry.record.id === record.id);
     return {
       record,
       targetTitle: targetsById.get(record.treatmentTargetId)?.treatmentKind ?? "Icarus treatment",
+      treatmentEvidence: {
+        current: Boolean(treatmentEvidence?.current),
+        attribution: treatmentEvidence?.attribution ?? "Not attributable",
+      },
       ...(contexts.length ? {
         interventionContext: {
-          decisionIds: uniqueSorted(contexts.map((entry) => entry.decisionId)),
-          optionIds: uniqueSorted(contexts.map((entry) => entry.optionId)),
-          causeIds: uniqueSorted(contexts.flatMap((entry) => [...entry.causeIds].filter((id) => causesById.has(id)))),
+          decisionIds: uniqueSorted(learningContexts.map((entry) => entry.decisionId)),
+          optionIds: uniqueSorted(learningContexts.map((entry) => entry.optionId)),
+          causeIds: uniqueSorted(learningContexts.flatMap((entry) => [...entry.causeIds].filter((id) => causesById.has(id)))),
           lessonIds: uniqueSorted(learning.filter((entry) => entry.validLink && entry.outcomeIds.includes(record.id))
             .map((entry) => entry.lessonId)),
-          current: contexts.every((entry) => entry.current),
+          current: contexts.some((entry) => entry.current),
         },
       } : {}),
     };

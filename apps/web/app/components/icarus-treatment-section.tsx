@@ -19,10 +19,13 @@ import {
 } from "../lib/icarus-treatment";
 import type { IcarusAssurancePersonOption } from "./icarus-assurance-section";
 import type { IcarusResilienceIntervention } from "../lib/icarus-dependency-resilience";
+import type { IcarusInterventionIndex } from "../lib/icarus-intervention-decision";
 
 type Props = {
   assessments: readonly IcarusAssessmentRecord[];
   index: IcarusTreatmentIndex;
+  interventionIndex?: IcarusInterventionIndex;
+  createId: () => string;
   actions: readonly IcarusTreatmentExecution[];
   projects: readonly IcarusTreatmentExecution[];
   people: readonly IcarusAssurancePersonOption[];
@@ -66,6 +69,8 @@ function stateTone(state: IcarusTreatmentTarget["state"]): string {
 export default function IcarusTreatmentSection({
   assessments,
   index,
+  interventionIndex,
+  createId,
   actions,
   projects,
   people,
@@ -77,6 +82,11 @@ export default function IcarusTreatmentSection({
   const [selectedVerification, setSelectedVerification] = useState<Record<string, string>>({});
   const [verificationBy, setVerificationBy] = useState<Record<string, string>>({});
   const [verificationNote, setVerificationNote] = useState<Record<string, string>>({});
+  const [verificationContext, setVerificationContext] = useState<Record<string, string>>({});
+  const [verificationError, setVerificationError] = useState<Record<string, string>>({});
+  const verificationContexts = (targetId: string) => (interventionIndex?.decisions ?? []).filter((view) =>
+    view.record.status === "Recorded" && view.selectedOption?.treatmentLinks.some((link) => link.targetId === targetId)
+    && !["Not structured", "Conflict", "Prerequisites unmet"].includes(view.readiness));
   const executions = [...actions, ...projects].sort((left, right) =>
     left.title.localeCompare(right.title) || left.recordType.localeCompare(right.recordType) || left.recordId.localeCompare(right.recordId));
   const promotedIds = new Set(index.targets.map((target) => target.id));
@@ -109,14 +119,44 @@ export default function IcarusTreatmentSection({
     const option = selectedValue !== "" && Number.isInteger(selected) ? view?.options[selected] : undefined;
     const verifierId = verificationBy[target.id] ?? "";
     const note = verificationNote[target.id]?.trim() ?? "";
-    if (!option || !verifierId || !note || target.state !== "Completed — verification required") return;
+    const fail = (message: string) => setVerificationError((current) => ({ ...current, [target.id]: message }));
+    if (!option || !activePeople.some((person) => person.id === verifierId) || !note
+      || target.state !== "Completed — verification required") {
+      fail("Select current evidence, an active verifier and a verification note for completed execution.");
+      return;
+    }
+    if (!assessments.some((assessment) => assessment.id === target.assessmentId)) {
+      fail("The treatment target's assessment no longer exists. Restore its assessment before recording verification.");
+      return;
+    }
     const executionLinks = target.executionLinks.flatMap((link) => link.linkedAt
       ? [{ recordType: link.recordType, recordId: link.recordId, linkedAt: link.linkedAt }]
       : []);
-    if (executionLinks.length !== target.executionLinks.length || executionLinks.length === 0) return;
+    if (executionLinks.length !== target.executionLinks.length || executionLinks.length === 0) {
+      fail("Execution linkage provenance is missing. Restore the dated execution links before verification.");
+      return;
+    }
     const verifiedAt = new Date().toISOString();
+    const contextId = verificationContext[target.id] ?? "";
+    const context = verificationContexts(target.id).find((view) => view.record.id === contextId);
+    const selection = context?.record.selectionHistory[context.record.selectionHistory.length - 1];
+    if (contextId && (!context || !selection || selection.optionId !== context.selectedOption?.id)) {
+      fail("The intervention selection is no longer valid. Select a current intervention or treatment-only verification.");
+      return;
+    }
+    const contextLink = context?.selectedOption?.treatmentLinks.find((link) => link.targetId === target.id);
+    if (context && (!selection || !contextLink || Date.parse(selection.selectedAt) > Date.parse(verifiedAt)
+      || Date.parse(contextLink.linkedAt) > Date.parse(verifiedAt))) {
+      fail("Verification cannot precede the intervention selection or treatment linkage. Correct future-dated provenance first.");
+      return;
+    }
+    const occurrenceId = createId();
     const record: IcarusTreatmentOutcomeRecord = {
-      id: getIcarusTreatmentOutcomeId(target.id, verifierId, option.evidence),
+      id: getIcarusTreatmentOutcomeId(target.id, verifierId, option.evidence, occurrenceId),
+      occurrenceId,
+      ...(context && selection ? { interventionReference: {
+        decisionId: context.record.id, optionId: selection.optionId, selectionEventId: selection.id,
+      } } : {}),
       treatmentTargetId: target.id,
       assessmentId: target.assessmentId,
       executionLinks,
@@ -124,13 +164,20 @@ export default function IcarusTreatmentSection({
       verifiedAt,
       verifiedByPersonId: verifierId,
       evidence: option.evidence.map((entry) => ({ ...entry })),
+      ...(view?.latest ? { beforeState: { ...view.latest.afterState } } : {}),
       afterState: { ...option.afterState },
       verificationNote: note,
     };
-    if (assessments.some((assessment) => assessment.treatmentOutcomes?.some((entry) => entry.id === record.id))) return;
+    if (assessments.some((assessment) => assessment.treatmentOutcomes?.some((entry) => entry.id === record.id))) {
+      fail("Verification occurrence identity already exists. Record a new occurrence.");
+      return;
+    }
     commitAssessments(assessments.map((assessment) => assessment.id !== target.assessmentId
       ? assessment
       : { ...assessment, treatmentOutcomes: [...(assessment.treatmentOutcomes ?? []), record] }));
+    setVerificationError((current) => ({ ...current, [target.id]: "" }));
+    setSelectedVerification((current) => ({ ...current, [target.id]: "" }));
+    setVerificationNote((current) => ({ ...current, [target.id]: "" }));
   };
 
   const addExecution = (target: IcarusTreatmentTarget) => {
@@ -250,16 +297,27 @@ export default function IcarusTreatmentSection({
                     <p className="text-[11px] font-medium text-[#4d4944]">
                       Verification: {index.verification.get(target.id)?.state}
                     </p>
-                    {index.verification.get(target.id)?.history.map(({ record, current, attribution }) => (
+                    {index.verification.get(target.id)?.history.map(({ record, current, evidenceCurrent, attribution }) => (
                       <p key={record.id} className="mt-1 text-[10px] leading-4 text-[#6a625d]">
-                        {`${record.outcome} · ${record.verifiedAt} · verifier ${record.verifiedByPersonId} · ${record.afterState.kind}: ${record.afterState.state} · attribution ${attribution}${current ? "" : " · superseded by current evidence"}`}
+                        {`${record.outcome} · ${record.verifiedAt} · verifier ${record.verifiedByPersonId} · ${record.afterState.kind}: ${record.afterState.state} · attribution ${attribution}${current ? " · current treatment occurrence" : evidenceCurrent ? " · historical occurrence; source evidence still matches" : " · historical occurrence; support no longer current"}${record.interventionReference ? ` · recorded for intervention ${record.interventionReference.decisionId}` : " · no explicit intervention attribution"}`}
                         {record.verificationNote ? ` — ${record.verificationNote}` : ""}
                       </p>
                     ))}
+                    {verificationError[target.id] ? <p role="alert" className="text-[11px] text-[#8b3d28]">{verificationError[target.id]}</p> : null}
                     {writable && target.state === "Completed — verification required"
-                      && ["Awaiting verification", "Superseded"].includes(index.verification.get(target.id)?.state ?? "")
                       ? index.verification.get(target.id)?.options.length ? (
                         <div className="mt-2 flex flex-wrap items-end gap-2">
+                          <label className="text-[10px] text-[#5e5953]">
+                            Verification scope
+                            <select className={selectClass} value={verificationContext[target.id] ?? ""}
+                              onChange={(event) => setVerificationContext((current) => ({ ...current, [target.id]: event.target.value }))}>
+                              <option value="">Treatment only — no intervention proof</option>
+                              {verificationContexts(target.id).map((view) => (
+                                <option key={view.record.id} value={view.record.id}>{view.record.title} — {view.selectedOption?.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <p className="w-full text-[10px] text-[#6a625d]">Record an explicit new review of the current evidence. This does not create fresh source evidence or establish intervention causation.</p>
                           <label className="text-[10px] text-[#5e5953]">
                             Evidence-supported outcome
                             <select
@@ -300,10 +358,10 @@ export default function IcarusTreatmentSection({
                           <button
                             type="button"
                             className={buttonClass}
-                            disabled={!selectedVerification[target.id] || !verificationBy[target.id] || !verificationNote[target.id]?.trim()}
+                            disabled={!(selectedVerification[target.id] ?? "") || !verificationBy[target.id] || !verificationNote[target.id]?.trim()}
                             onClick={() => recordVerification(target)}
                           >
-                            Record verified outcome
+                            Record new verification occurrence
                           </button>
                         </div>
                       ) : <p className={`${itemClass} mt-1`}>No current source evidence supports a verification outcome. The treatment remains unverified.</p>

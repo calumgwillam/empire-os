@@ -5,6 +5,7 @@ import type {
   IcarusTreatmentTargetRecord,
 } from "./icarus";
 import type { IcarusDependencyHealthRegistry } from "./icarus-dependency-health";
+import { getIcarusEffectiveProtection } from "./icarus-effective-protection";
 import type {
   IcarusAcceptanceAssurance,
   IcarusAssessmentAssurance,
@@ -302,6 +303,7 @@ function buildSummary(
   verification: ReadonlyMap<string, IcarusTreatmentOutcomeView>,
   assessment: IcarusAssessmentRecord,
   assuranceAssessment: IcarusTreatmentAssuranceAssessment | undefined,
+  dependencyHealth: IcarusDependencyHealthRegistry,
 ): IcarusTreatmentAssessmentSummary {
   const materialTargets = targets.filter((target) => target.material
     && (target.assessmentId === assessmentId || target.affectedAssessmentIds.includes(assessmentId)));
@@ -335,13 +337,20 @@ function buildSummary(
   const currentAcceptedExposure = assuranceAssessment?.acceptances.some((acceptance) =>
     acceptance.current && acceptance.validity === "Active") ?? false;
   const unresolvedMaterialModes = assuranceAssessment?.modes.some((mode) => mode.material) ?? false;
+  const impairedProtection = assessment.failureModes.some((mode) => {
+    const controls = assessment.controls.filter((control) => control.failureModeId === mode.id);
+    const passed = controls.filter((control) => assuranceAssessment?.controls
+      .some((entry) => entry.controlId === control.id && entry.status === "Assured"));
+    return passed.length > 0 && !passed.some((control) =>
+      getIcarusEffectiveProtection(control, "Assured", dependencyHealth).barrier === "Active");
+  });
   const treatmentVerificationPending = materialForAssessment.some((target) => {
     const state = verification.get(target.id)?.state;
     return state !== "Verified effective" && state !== "No longer applicable";
   });
   const resolutionEligibility = assessment.status === "Closed" || !assuranceAssessment
     ? "Unknown"
-    : currentAcceptedExposure || unresolvedMaterialModes || treatmentVerificationPending || unpromotedInterventionCount > 0
+    : currentAcceptedExposure || unresolvedMaterialModes || impairedProtection || treatmentVerificationPending || unpromotedInterventionCount > 0
       ? "Not eligible"
       : "Eligible";
   const attentionReasons = [
@@ -454,6 +463,7 @@ export function buildIcarusTreatmentIndex(input: IcarusTreatmentIndexInput): Ica
       verification,
       assessment,
       input.assurance.byAssessmentId.get(assessmentId),
+      input.dependencyHealth,
     )] as const] : [];
   }));
   return { targets: uniqueTargets, summaries, recommendations, barrierRestorations, verification };

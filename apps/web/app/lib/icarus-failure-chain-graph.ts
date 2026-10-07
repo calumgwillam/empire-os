@@ -18,7 +18,6 @@ import {
 } from "./icarus-materiality-policy";
 import type { IcarusStrategicObjectiveContext, IcarusStrategicSignal } from "./icarus-strategic-attention";
 import {
-  getIcarusEffectiveBarrierState,
   getIcarusBarrierStrengthRank,
   getIcarusPropagationStateRank,
   isIcarusBarrierCapable,
@@ -26,6 +25,7 @@ import {
   type IcarusPropagationState,
 } from "./icarus-failure-chain-policy";
 import { resolveOperatingPillar, type OperatingPillarId } from "./pillar-identity";
+import { getIcarusEffectiveProtection } from "./icarus-effective-protection";
 
 // Directed failure-chain / dependency graph over Icarus records and the Empire identities they explicitly reference.
 //
@@ -389,7 +389,7 @@ export function buildIcarusDependencyGraph(input: IcarusDependencyGraphInput): I
         }
         const dependencyHealth = [...dependencyHealthByNode.values()].sort((left, right) =>
           getIcarusReferenceKey(left.reference).localeCompare(getIcarusReferenceKey(right.reference)));
-        const barrier = getIcarusEffectiveBarrierState(status, dependencyHealth.map((entry) => entry.health));
+        const barrier = getIcarusEffectiveProtection(control, status, dependencyHealthRegistry).barrier;
         if (barrier !== "Active" && dependencyHealth.some((entry) =>
           entry.health === "Failed" || entry.health === "Degraded" || entry.health === "Unknown")) {
           dependencyHealthAffected = true;

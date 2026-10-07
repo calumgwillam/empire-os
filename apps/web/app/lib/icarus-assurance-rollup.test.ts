@@ -53,8 +53,28 @@ describe("pillar assurance rollup", () => {
       ["failure", "Assurance failure"],
       ["gap", "Governance gaps"],
       ["partial", "Partially assured"],
-      ["sound", "Assured"],
+      ["sound", "Governed exposure"],
     ]);
+  });
+
+  it("keeps tested protection distinct from accepted exposure with stable counts and ordering", () => {
+    const entries = [
+      entry("protected", { operatingPillarIds: ["protected"], state: "Assured" }),
+      entry("accepted", { operatingPillarIds: ["accepted"], state: "Accepted exposure" }),
+      entry("mixed-protected", { operatingPillarIds: ["mixed"], state: "Assured" }),
+      entry("mixed-accepted", { operatingPillarIds: ["mixed"], state: "Accepted exposure" }),
+      entry("weak", { operatingPillarIds: ["weak"], state: "Weak", escalation: "Assurance failure" }),
+      entry("weak-accepted", { operatingPillarIds: ["weak"], state: "Accepted exposure" }),
+    ];
+    const rollup = buildIcarusAssuranceRollup(entries);
+    expect(rollup).toEqual(buildIcarusAssuranceRollup([...entries].reverse()));
+    expect(rollup.pillars.map(({ pillarId, posture }) => [pillarId, posture])).toEqual([
+      ["weak", "Assurance failure"], ["accepted", "Governed exposure"],
+      ["mixed", "Governed exposure"], ["protected", "Assured"],
+    ]);
+    expect(rollup.pillars.find((pillar) => pillar.pillarId === "mixed")?.stateCounts)
+      .toEqual({ Assured: 1, "Accepted exposure": 1, "Partially assured": 0, Weak: 0, Unassured: 0 });
+    expect(rollup.pillars.find((pillar) => pillar.pillarId === "accepted")?.stateCounts.Assured).toBe(0);
   });
 
   it("counts unowned risks, failed controls, overdue obligations and acceptances per pillar", () => {

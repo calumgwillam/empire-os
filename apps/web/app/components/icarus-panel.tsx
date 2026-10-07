@@ -427,6 +427,8 @@ export default function IcarusPanel({
         <IcarusTreatmentSection
           assessments={assessments}
           index={treatmentIndex}
+          interventionIndex={interventionIndex}
+          createId={createId}
           actions={actions}
           projects={projects}
           people={people ?? []}

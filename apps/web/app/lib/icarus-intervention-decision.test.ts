@@ -267,6 +267,85 @@ describe("intervention alternatives and selection history", () => {
 });
 
 describe("intervention prerequisites, sequence and conflicts", () => {
+  it("uses the same duplicate-selection conflict to invalidate predecessor proof and successor readiness", () => {
+    const first = selected("first", option("predecessor", {
+      treatmentLinks: [{ targetId: "target", linkedAt: at, linkedByPersonId: "person" }],
+    }));
+    first.selectionHistory.push({ ...first.selectionHistory[0] });
+    const second = selected("second", option("successor"), { relationships: [relation("predecessor", "successor")] });
+    const entry = outcome();
+    const result = buildIcarusInterventionIndex(input([first, second], {
+      assessments: [assessment({ causes: [cause()], interventionDecisions: [first, second], treatmentOutcomes: [entry] })],
+      treatment: treatment([target()], [entry]),
+    }));
+    const predecessor = result.decisions.find((view) => view.record.id === "first");
+    expect(predecessor?.readiness).toBe("Conflict");
+    expect(predecessor?.conflicts).toContain("Duplicate selection event identity: first-selection");
+    expect(predecessor?.outcomes[0]).toMatchObject({ current: false, treatmentCurrent: true });
+    expect(result.decisions.find((view) => view.record.id === "second")?.unmetPrerequisites)
+      .toEqual(["prerequisite-of: predecessor -> successor"]);
+  });
+
+  it("does not erase verified predecessor protection because its historical editor is now inactive", () => {
+    const first = selected("first", option("predecessor", {
+      treatmentLinks: [{ targetId: "target", linkedAt: at, linkedByPersonId: "person" }],
+    }));
+    first.updatedByPersonId = "former-editor";
+    const second = selected("second", option("successor"), { relationships: [relation("predecessor", "successor")] });
+    const result = buildIcarusInterventionIndex(input([first, second], { treatment: treatment([target()], [outcome()]) }));
+    expect(result.decisions.find((view) => view.record.id === "first")?.warnings)
+      .toContain("Inactive or missing context author: former-editor");
+    expect(result.decisions.find((view) => view.record.id === "second")?.unmetPrerequisites).toEqual([]);
+  });
+
+  it("requires must-precede verification before successor selection, unlike a live protection prerequisite", () => {
+    const first = selected("first", option("predecessor", {
+      treatmentLinks: [{ targetId: "target", linkedAt: at, linkedByPersonId: "person" }],
+    }));
+    const build = (kind: IcarusInterventionRelation["kind"], selectedAt: string) => {
+      const second = selected("second", option("successor"), {
+        createdAt: selectedAt, relationships: [relation("predecessor", "successor", kind)],
+      });
+      return buildIcarusInterventionIndex(input([first, second], { treatment: treatment([target()], [outcome()]) }))
+        .decisions.find((view) => view.record.id === "second");
+    };
+    expect(build("prerequisite-of", at)?.unmetPrerequisites).toEqual([]);
+    expect(build("must-precede", at)?.unmetPrerequisites).toEqual(["must-precede: predecessor -> successor"]);
+    expect(build("must-precede", "2026-10-03T10:00:00.000Z")?.unmetPrerequisites).toEqual([]);
+    expect(build("blocks", at)?.unmetPrerequisites).toEqual([]);
+  });
+
+  it("does not undo a valid must-precede milestone merely because a newer verification occurrence was recorded", () => {
+    const first = selected("first", option("predecessor", {
+      treatmentLinks: [{ targetId: "target", linkedAt: at, linkedByPersonId: "person" }],
+    }));
+    const second = selected("second", option("successor"), {
+      createdAt: "2026-10-03T10:00:00.000Z", relationships: [relation("predecessor", "successor", "must-precede")],
+    });
+    const old = outcome();
+    const next: IcarusTreatmentOutcomeRecord = {
+      ...old, occurrenceId: "new-review",
+      id: getIcarusTreatmentOutcomeId(old.treatmentTargetId, old.verifiedByPersonId, old.evidence, "new-review"),
+      verifiedAt: "2026-10-04T10:00:00.000Z",
+      interventionReference: { decisionId: first.id, optionId: "predecessor", selectionEventId: first.selectionHistory[0].id },
+    };
+    const facts = treatment([target()], [old, next]);
+    const view = facts.verification.get("target")!;
+    const verification = new Map([["target", { ...view, history: [
+      { record: old, current: false, evidenceCurrent: true, attribution: "Uncertain" as const },
+      { record: next, current: true, evidenceCurrent: true, attribution: "Uncertain" as const },
+    ] }]]);
+    const result = buildIcarusInterventionIndex(input([first, second], { treatment: { ...facts, verification } }));
+    expect(result.decisions.find((entry) => entry.record.id === "second")?.unmetPrerequisites).toEqual([]);
+    verification.set("target", { ...view, history: [
+      { record: old, current: false, evidenceCurrent: false, attribution: "Uncertain" },
+      { record: next, current: true, evidenceCurrent: true, attribution: "Uncertain" },
+    ] });
+    expect(buildIcarusInterventionIndex(input([first, second], { treatment: { ...facts, verification } }))
+      .decisions.find((entry) => entry.record.id === "second")?.unmetPrerequisites)
+      .toEqual(["must-precede: predecessor -> successor"]);
+  });
+
   it("does not count completion as prerequisite satisfaction; current effective verification clears it", () => {
     const prerequisite = option("prerequisite", { treatmentLinks: [{ targetId: "target", linkedAt: at, linkedByPersonId: "person" }] });
     const first = selected("first", prerequisite);
@@ -352,6 +431,77 @@ describe("intervention prerequisites, sequence and conflicts", () => {
 });
 
 describe("treatment routing and conservative intervention outcomes", () => {
+  it("keeps treatment-only verification current without inventing intervention attribution or altering Lessons", () => {
+    const entry = outcome();
+    const facts = input([], {
+      assessments: [assessment({ treatmentOutcomes: [entry] })],
+      treatment: treatment([target()], [entry]),
+    });
+    const before = JSON.stringify(facts);
+    const result = buildIcarusInterventionIndex(facts);
+    expect(result.learningInput[0].interventionContext).toBeUndefined();
+    expect(result.learningInput[0].treatmentEvidence).toEqual({ current: true, attribution: "Uncertain" });
+    const learning = buildOrganisationalLearning({
+      actions: [], projects: [], decisions: [], lessons: [], problems: [], systems: [], sops: [],
+      icarusTreatmentOutcomes: result.learningInput,
+    });
+    expect(learning[0].outcomeState).toBe("Worked");
+    expect(learning[0].evidence).toContainEqual(expect.objectContaining({
+      field: "interventionAttribution", value: "Not attributable — historical or no intervention context",
+    }));
+    expect(learning[0].evidence.some((evidence) => evidence.field === "interventionDecisionId")).toBe(false);
+    expect(JSON.stringify(facts)).toBe(before);
+  });
+
+  it.each(["Rejected", "Superseded"] as const)("retains a %s option's observation without current intervention proof", (status) => {
+    const chosen = option("chosen", { treatmentLinks: [{ targetId: "target", linkedAt: at, linkedByPersonId: "person" }] });
+    const record = selected("decision", chosen);
+    record.options = record.options.map((option) => option.id === chosen.id ? { ...option, status, rationale: "No longer chosen" } : option);
+    const entry = outcome();
+    const result = buildIcarusInterventionIndex(input([record], {
+      assessments: [assessment({ causes: [cause()], interventionDecisions: [record], treatmentOutcomes: [entry] })],
+      treatment: treatment([target()], [entry]),
+    }));
+    expect(result.decisions[0].outcomes).toHaveLength(1);
+    expect(result.decisions[0].outcomes[0]).toMatchObject({
+      current: false, treatmentCurrent: true, record: entry, causalAttribution: "Not attributable",
+    });
+    expect(result.learningInput[0].interventionContext?.current).toBe(false);
+    expect(result.learningInput[0].treatmentEvidence?.current).toBe(true);
+  });
+
+  it("keeps reused verification historical until a new explicit occurrence identifies the selected intervention", () => {
+    const linkedAt = "2026-10-03T10:00:00.000Z";
+    const chosen = option("chosen", { treatmentLinks: [{ targetId: "target", linkedAt, linkedByPersonId: "person" }] });
+    const record = selected("decision", chosen, { createdAt: linkedAt });
+    const legacy = outcome();
+    const build = (entries: IcarusTreatmentOutcomeRecord[]) => buildIcarusInterventionIndex(input([record], {
+      assessments: [assessment({ causes: [cause()], interventionDecisions: [record], treatmentOutcomes: entries })],
+      treatment: treatment([target()], entries),
+    }));
+    const before = build([legacy]);
+    expect(before.decisions[0].readiness).toBe("Awaiting verification");
+    expect(before.decisions[0].outcomes[0]).toMatchObject({ current: false, treatmentCurrent: true, postSelectionEvidence: false });
+    const occurrenceId = "new-occurrence";
+    const next: IcarusTreatmentOutcomeRecord = {
+      ...legacy, occurrenceId,
+      id: getIcarusTreatmentOutcomeId(legacy.treatmentTargetId, legacy.verifiedByPersonId, legacy.evidence, occurrenceId),
+      verifiedAt: "2026-10-04T10:00:00.000Z", beforeState: legacy.afterState,
+      interventionReference: { decisionId: record.id, optionId: chosen.id, selectionEventId: record.selectionHistory[0].id },
+    };
+    const after = build([legacy, next]);
+    expect(next.id).not.toBe(legacy.id);
+    expect(after.decisions[0].readiness).toBe("Outcome available");
+    expect(after.decisions[0].outcomes.map(({ record, current }) => [record.id, current]))
+      .toEqual([[legacy.id, false], [next.id, true]]);
+    expect(parseIcarusAssessments(JSON.stringify([
+      assessment({ causes: [cause()], interventionDecisions: [record], treatmentOutcomes: [legacy, next] }),
+    ]))[0].treatmentOutcomes).toEqual([legacy, next]);
+    const unrelated = { ...next, interventionReference: { ...next.interventionReference!, decisionId: "unrelated" } };
+    expect(build([unrelated]).decisions[0].outcomes[0]).toMatchObject({ current: false, postSelectionEvidence: false, treatmentCurrent: true });
+    const unscoped = { ...next, interventionReference: undefined };
+    expect(build([unscoped]).decisions[0].outcomes[0].current).toBe(false);
+  });
   it.each([
     ["Missing execution record", "Selected — unrouted"],
     ["Unrouted", "Selected — unrouted"],

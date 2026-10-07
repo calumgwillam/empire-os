@@ -180,6 +180,7 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     reviews,
     strategicObjectives,
     includeClosedAssessments: true,
+    dependencyHealth,
   });
 
   // Materiality is decided here, before (and independently of) assurance.
@@ -187,6 +188,7 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     assessments: input.assessments,
     reviews,
     strategicObjectives,
+    dependencyHealth,
   });
   const assurance = buildIcarusAssurance({
     assessments: input.assessments,

@@ -4,20 +4,21 @@
 //
 // Three independent inputs, combined in a fixed order:
 //   1. Evidence strength  — derived from persisted evidence reviews on a failure mode.
-//   2. Control state      — derived from persisted control lifecycle/effectiveness + review findings.
+//   2. Effective protection — control lifecycle/effectiveness + review findings, capped by required dependency health.
 //   3. Strategic consequence — derived at read time from LIVE strategic context (linked objective
 //      importance, operating-pillar link). Never persisted on the assessment.
 // Evidence × control => exposure tier (ordinal). Exposure tier => materiality tier (Material vs
 // Corroborating). Exposure + consequence + concentration => a ranking score that only orders
 // items; it is not a measurement and must not be displayed as one.
 
-export type IcarusMaterialitySource = "Persisted" | "Derived from persisted Icarus records" | "Derived from live strategic context";
+export type IcarusMaterialitySource = "Persisted" | "Derived from persisted Icarus records" | "Derived from live strategic context"
+  | "Derived from Icarus records and required dependency health";
 
 export const ICARUS_MATERIALITY_CONTRACT = {
   evidenceStrength: "Derived from persisted Icarus records",
   controlState: "Derived from persisted Icarus records",
-  exposure: "Derived from persisted Icarus records",
-  materialityTier: "Derived from persisted Icarus records",
+  exposure: "Derived from Icarus records and required dependency health",
+  materialityTier: "Derived from Icarus records and required dependency health",
   strategicConsequence: "Derived from live strategic context",
   rankingScore: "Derived from live strategic context",
   assessmentStatus: "Persisted",

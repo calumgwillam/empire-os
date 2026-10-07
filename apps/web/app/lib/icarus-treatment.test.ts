@@ -140,6 +140,41 @@ describe("Icarus treatment routing", () => {
     );
   });
 
+  it.each(["Failed", "Degraded", "Unknown"] as const)(
+    "keeps resolution review ineligible for a passed control with %s required protection unless independent backup remains",
+    (health) => {
+      const dependency = { recordType: "Project" as const, recordId: "required-project" };
+      const record = assessment({
+        failureModes: [{ id: "mode", mechanism: "Mechanism", vulnerability: "", evidence: [] }],
+        controls: [{
+          id: "control", failureModeId: "mode", intervention: "Protection", lifecycle: "Active",
+          effectiveness: "Unknown", evidenceIds: [], linkedRecords: [dependency],
+        }],
+      });
+      const assurance = {
+        assessmentId, objectiveIds: [], operatingPillarIds: [], acceptances: [],
+        modes: [{ failureModeId: "mode", material: false, assurance: "Assured" as const }],
+        controls: [{ controlId: "control", failureModeId: "mode", status: "Assured" as const, evidence: "Current support" as const }],
+      };
+      const base = {
+        assessments: [record], assurance: { byAssessmentId: new Map([[assessmentId, assurance]]), obligations: [] },
+        resilience: [], recommendations: [], barrierRestorations: [], actions: [], projects: [], founderPersonId: null,
+        dependencyHealth: new Map([["Project:required-project", {
+          reference: dependency, health, source: "Explicit" as const, basis: ["no-operational-health-evidence" as const], supportingRecords: [],
+        }]]),
+      };
+      expect(buildIcarusTreatmentIndex(base).summaries.get(assessmentId)?.resolutionEligibility).toBe("Not eligible");
+      const backup = { ...record.controls[0], id: "backup", linkedRecords: [] };
+      const held = buildIcarusTreatmentIndex({
+        ...base, assessments: [{ ...record, controls: [...record.controls, backup] }],
+        assurance: { byAssessmentId: new Map([[assessmentId, {
+          ...assurance, controls: [...assurance.controls, { ...assurance.controls[0], controlId: "backup" }],
+        }]]), obligations: [] },
+      });
+      expect(held.summaries.get(assessmentId)?.resolutionEligibility).toBe("Eligible");
+    },
+  );
+
   it("derives material obligations as unrouted and preserves legacy Action links without duplicates", () => {
     const unrouted = index([assessment()], [obligation()]);
     expect(unrouted.targets[0].state).toBe("Unrouted");

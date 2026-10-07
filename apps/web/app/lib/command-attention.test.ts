@@ -15,6 +15,10 @@ import { resolveStrategicRiskConvergence } from "./strategic-risk-resolution";
 import { buildIcarusInterventionIndex } from "./icarus-intervention-decision";
 import type { IcarusTreatmentTarget } from "./icarus-treatment";
 import {
+  buildIcarusTreatmentOutcomeIndex,
+  type IcarusTreatmentOutcomeIndexInput,
+} from "./icarus-treatment-outcome";
+import {
   buildCommandAttention,
   compareAttentionItems,
   getActionPriorityScore,
@@ -481,7 +485,8 @@ function institutionalisationFor(target: LearningAttentionInput["associatedTarge
 
 type ProductionLearningRecords = OrganisationalLearningInput & {
   icarusAssessments?: readonly IcarusAssessmentRecord[];
-  icarusTreatmentTargets?: readonly { id: string; treatmentKind: string }[];
+  icarusTreatmentTargets?: readonly (Pick<IcarusTreatmentTarget, "id" | "treatmentKind"> & Partial<IcarusTreatmentTarget>)[];
+  icarusVerificationContext?: Pick<IcarusTreatmentOutcomeIndexInput, "assurance" | "dependencyHealth">;
 };
 
 function productionLearning(records: ProductionLearningRecords): LearningAttentionInput[] {
@@ -504,14 +509,21 @@ function productionLearning(records: ProductionLearningRecords): LearningAttenti
   });
   const context: { result?: LearningAttentionInput[] } = {};
   const targets = (records.icarusTreatmentTargets ?? []).map((entry): IcarusTreatmentTarget => ({
-    ...entry, sourceKind: "Failure-chain restoration", sourceId: entry.id, assessmentId: "projection",
+    sourceKind: "Failure-chain restoration", sourceId: entry.id, assessmentId: "projection",
     reason: "Projection target", basis: [], affectedAssessmentIds: [], objectiveIds: [], pillarIds: [],
     provenance: { kind: "Failure-chain recommendation", finding: "Projection" },
     executionLinks: [], executions: [], state: "Unrouted", material: true, founderOwned: false,
+    ...entry,
   }));
+  const verification = buildIcarusTreatmentOutcomeIndex({
+    assessments: records.icarusAssessments ?? [],
+    targets,
+    assurance: records.icarusVerificationContext?.assurance ?? { byAssessmentId: new Map() },
+    dependencyHealth: records.icarusVerificationContext?.dependencyHealth ?? new Map(),
+  });
   const interventionIndex = buildIcarusInterventionIndex({
     assessments: records.icarusAssessments ?? [],
-    treatment: { targets, verification: new Map(), summaries: new Map(), recommendations: [], barrierRestorations: [] },
+    treatment: { targets, verification, summaries: new Map(), recommendations: [], barrierRestorations: [] },
     signals: [], sources: [], decisions: records.decisions, lessons: records.lessons, people: [], nowMs: NOW,
   });
   runInNewContext(outputText, Object.assign(context, {
@@ -524,7 +536,7 @@ function productionLearning(records: ProductionLearningRecords): LearningAttenti
     systemRecords: records.systems,
     sopRecords: records.sops,
     icarusAssessments: records.icarusAssessments ?? [],
-    icarusTreatmentIndex: { targets: records.icarusTreatmentTargets ?? [] },
+    icarusTreatmentIndex: { targets, verification },
     icarusInterventionIndex: interventionIndex,
   }), { timeout: 1000 });
   if (!context.result) throw new Error("Production learning projection returned no result");
@@ -570,16 +582,60 @@ describe("Production record projection into Command learning", () => {
       afterState: { kind: "Control assurance", state: "Assured" },
       verificationNote: "Current evidence confirms the control is effective.",
     };
-    const learning = productionLearning(learningRecords({
-      icarusAssessments: [icarusAssessment({ treatmentOutcomes: [record] })],
-      icarusTreatmentTargets: [{ id: "target-1", treatmentKind: "Restore control" }],
-    }));
+    const records = learningRecords({
+      icarusAssessments: [icarusAssessment({
+        treatmentOutcomes: [record],
+        controls: [{
+          id: "control-1", failureModeId: "mode-1", intervention: "Restore control", lifecycle: "Active",
+          effectiveness: "Unknown", evidenceIds: ["evidence-1"], linkedRecords: [],
+          assuranceTests: [{
+            id: "test-1", testedAt: icarusTimestamp, testedByPersonId: "person-1",
+            result: "Passed", evidenceIds: ["evidence-1"],
+          }],
+        }],
+      })],
+      icarusTreatmentTargets: [{
+        id: "target-1", treatmentKind: "Restore control", assessmentId: "icarus-1",
+        failureModeId: "mode-1", controlId: "control-1", state: "Completed — verification required",
+        executionLinks: record.executionLinks,
+        executions: [{ recordType: "Action", recordId: "action-1", title: "Restore control", status: "Completed" }],
+      }],
+      icarusVerificationContext: {
+        assurance: { byAssessmentId: new Map([["icarus-1", {
+          assessmentId: "icarus-1", acceptances: [],
+          modes: [{ failureModeId: "mode-1", material: true, assurance: "Assured" }],
+          controls: [{
+            controlId: "control-1", failureModeId: "mode-1", status: "Assured", evidence: "Current support",
+            lastEvent: {
+              source: "Control test", testId: "test-1", at: icarusTimestamp,
+              result: "Passed", evidenceIds: ["evidence-1"],
+            },
+          }],
+        }]]) },
+        dependencyHealth: new Map(),
+      },
+    });
+    const learning = productionLearning(records);
     const treatmentSignals = learning.filter(({ signal }) => signal.sourceType === "Icarus Treatment");
     expect(treatmentSignals).toHaveLength(1);
     expect(treatmentSignals[0]?.signal).toMatchObject({
       sourceId: "outcome-1",
       sourceTitle: "Restore control",
       outcomeState: "Worked",
+    });
+    expect(treatmentSignals[0].signal.evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "verificationCurrency", value: "Current" }),
+      expect.objectContaining({ field: "treatmentAttribution", value: "Supported" }),
+      expect.objectContaining({
+        field: "interventionAttribution", value: "Not attributable — historical or no intervention context",
+      }),
+    ]));
+    expect(treatmentSignals[0].signal.evidence.some((entry) => entry.field === "interventionDecisionId")).toBe(false);
+    const unknownCurrency = productionLearning({ ...records, icarusVerificationContext: undefined })
+      .filter(({ signal }) => signal.sourceType === "Icarus Treatment");
+    expect(unknownCurrency).toHaveLength(1);
+    expect(unknownCurrency[0].signal).toMatchObject({
+      sourceId: "outcome-1", sourceTitle: "Restore control", outcomeState: "Unknown",
     });
   });
 

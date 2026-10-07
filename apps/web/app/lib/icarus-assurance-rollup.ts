@@ -13,6 +13,7 @@ export const ICARUS_PILLAR_ASSURANCE_POSTURES = [
   "Assurance failure",
   "Governance gaps",
   "Partially assured",
+  "Governed exposure",
   "Assured",
   "No material exposure",
 ] as const;
@@ -89,9 +90,9 @@ function getPillarPosture(entries: readonly IcarusAssessmentAssurance[]): Icarus
   const escalation = strongestEscalation(entries);
   if (escalation === "Assurance failure") return "Assurance failure";
   if (escalation === "Governance gap") return "Governance gaps";
+  if (entries.every((entry) => entry.state === "Assured")) return "Assured";
   return entries.every((entry) => entry.state === "Assured" || entry.state === "Accepted exposure")
-    ? "Assured"
-    : "Partially assured";
+    ? "Governed exposure" : "Partially assured";
 }
 
 function groupBy(entries: readonly IcarusAssessmentAssurance[], keys: (entry: IcarusAssessmentAssurance) => readonly string[]) {

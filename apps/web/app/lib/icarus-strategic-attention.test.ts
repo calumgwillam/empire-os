@@ -134,6 +134,28 @@ describe("Icarus strategic attention materiality", () => {
     expect(derive([record])).toEqual([]);
   });
 
+  it("does not equate an absent dependency-health record with a failed control test", () => {
+    const dependency = { recordType: "Project" as const, recordId: "required" };
+    const record = assessment({
+      failureModes: [mode({ evidence: [evidence(), evidence({ id: "control-evidence-1" })] })],
+      controls: [verifiedControl({ linkedRecords: [dependency] })],
+    });
+    const signals = derive([record]);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({ exposure: "Unverified control", materialityTier: "Corroborating" });
+    expect(signals[0].materialFailureModes[0].requiredDependencyState).toBe("Unknown");
+    expect(signals[0].summary).toContain("Unknown");
+    expect(signals[0].summary).not.toContain("control is recorded as ineffective");
+    expect(record.controls[0].effectiveness).toBe("Evidence supports");
+    const healthy = buildIcarusStrategicAttention({
+      assessments: [record], reviews: buildIcarusReview([record], sourcesFor([record]), NOW),
+      dependencyHealth: new Map([["Project:required", {
+        reference: dependency, health: "Healthy", source: "Explicit", basis: ["on-track-project"], supportingRecords: [],
+      }]]),
+    });
+    expect(healthy).toEqual([]);
+  });
+
   it("keeps a mode material when a supposedly verified control has an overdue review", () => {
     const record = assessment({
       failureModes: [mode({ evidence: [evidence(), evidence({ id: "control-evidence-1" })] })],

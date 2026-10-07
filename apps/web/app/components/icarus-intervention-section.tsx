@@ -196,7 +196,7 @@ function DecisionEditor({
       <summary className="text-[12px] font-medium">{record.title} - {view.readiness}</summary>
       <p className="mt-1 text-[11px]">Selected means chosen, not superior. Outcome available does not mean successful or resolved.</p>
       {[...view.issues, ...view.conflicts, ...view.unmetPrerequisites].map((issue) =>
-        <p key={issue} className="mt-1 text-[11px] text-[#8b3d28]">{issue}</p>)}
+        <p key={issue} className="mt-1 text-[11px] text-[#8b3d28]">{view.warnings.includes(issue) ? "Warning (does not invalidate prerequisite protection): " : ""}{issue}</p>)}
       <label className="mt-2 block text-[11px]">Authoritative Decision
         <select className={field} disabled={disabled} value={record.decisionRecordId ?? ""}
           onChange={(event) => update({ ...record, decisionRecordId: event.target.value || undefined })}>
@@ -294,7 +294,10 @@ function DecisionEditor({
         <label>Relationship<select className={field} value={relationKind} disabled={disabled} onChange={(event) => {
           const kind = ICARUS_INTERVENTION_RELATIONSHIPS.find((entry) => entry === event.target.value);
           if (kind) setRelationKind(kind);
-        }}>{ICARUS_INTERVENTION_RELATIONSHIPS.map((kind) => <option key={kind}>{kind}</option>)}</select></label>
+        }}>{ICARUS_INTERVENTION_RELATIONSHIPS.map((kind) => <option key={kind} value={kind}>
+          {kind === "blocks" ? "blocks — selected blocker releases after effective verification" : kind}
+        </option>)}</select></label>
+        <p>Prerequisite-of requires current verified effective protection. Must-precede additionally requires verification before the successor is selected. Blocks applies only while its source is selected and not verified effective. Mutual exclusion is a selection conflict; complements is non-blocking context.</p>
         <label>To option<select className={field} value={relationTo} disabled={disabled} onChange={(event) => setRelationTo(event.target.value)}>
           <option value="">Choose destination</option>{allOptions.map((option) => <option key={option.id} value={option.id}>{option.name} ({option.id})</option>)}
         </select></label>
@@ -333,8 +336,9 @@ function DecisionEditor({
         {[...view.outcomes, ...view.priorOutcomes].map((outcome) => <p key={`${outcome.decisionId}:${outcome.optionId}:${outcome.record.id}`}>
           {outcome.decisionId === record.id ? "This intervention" : "Prior explicitly shared cause"}: {outcome.record.outcome}
           {" "}- option {outcome.optionId}
-          {" "}- {outcome.current ? "Current treatment evidence" : "Historical / superseded evidence"}
-          {!outcome.postSelectionEvidence ? " (recorded before this selection or target link)" : ""}
+          {" "}- {outcome.treatmentCurrent ? "Current treatment evidence" : "Historical / superseded treatment evidence"}
+          {" "}- {outcome.current ? "Current intervention context, not causal proof" : "Not current intervention evidence"}
+          {!outcome.postSelectionEvidence ? " (predates or does not match this selection and target linkage)" : ""}
           {" "}- treatment attribution {outcome.treatmentAttribution}; intervention causation {outcome.causalAttribution}.
           {" "}Target {outcome.record.treatmentTargetId}; outcome {outcome.record.id}; {outcome.record.verificationNote}
           {" "}- verified {outcome.record.verifiedAt} by Person {outcome.record.verifiedByPersonId};

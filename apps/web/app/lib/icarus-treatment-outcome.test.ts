@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   getIcarusTreatmentOutcomeId,
+  parseIcarusAssessments,
   type IcarusAssessmentRecord,
   type IcarusTreatmentOutcomeRecord,
 } from "./icarus";
@@ -143,6 +144,57 @@ function effectiveOutcome(): IcarusTreatmentOutcomeRecord {
 }
 
 describe("Icarus treatment verification", () => {
+  it.each([
+    ["Failed", "Ineffective"],
+    ["Degraded", "Inconclusive"],
+    ["Unknown", "Inconclusive"],
+  ] as const)("does not verify passed control protection as Effective with a %s required dependency", (health, category) => {
+    const dependency = { recordType: "Project" as const, recordId: "required" };
+    const record = assessment();
+    record.controls[0].linkedRecords = [dependency];
+    const input = indexInput({
+      assessments: [record],
+      dependencyHealth: new Map([["Project:required", {
+        reference: dependency, health, source: "Explicit", basis: ["no-operational-health-evidence"], supportingRecords: [],
+      }]]),
+    });
+    const view = buildIcarusTreatmentOutcomeIndex(input).get(target().id);
+    expect(view?.options.map((option) => option.outcome)).toEqual([category]);
+    expect(view?.options[0].evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "Control test", result: "Passed", assuranceStatus: "Assured" }),
+      expect.objectContaining({ kind: "Dependency health", health }),
+    ]));
+    expect(view?.options[0].attribution).toBe("Uncertain");
+    expect(input.assurance.byAssessmentId.get(assessmentId)?.controls[0].status).toBe("Assured");
+    record.treatmentOutcomes = [effectiveOutcome()];
+    expect(buildIcarusTreatmentOutcomeIndex(input).get(target().id)?.history[0].current).toBe(false);
+  });
+
+  it("retains legacy verification and explicitly records a distinct occurrence against unchanged evidence", () => {
+    const legacy = effectiveOutcome();
+    const occurrenceId = "verification-occurrence-2";
+    const next: IcarusTreatmentOutcomeRecord = {
+      ...legacy, occurrenceId,
+      interventionReference: { decisionId: "new-context", optionId: "new-option", selectionEventId: "new-selection" },
+      id: getIcarusTreatmentOutcomeId(legacy.treatmentTargetId, legacy.verifiedByPersonId, legacy.evidence, occurrenceId),
+      verifiedAt: "2026-05-05T00:00:00.000Z", beforeState: legacy.afterState,
+    };
+    expect(next.id).not.toBe(legacy.id);
+    const stored = assessment({ treatmentOutcomes: [legacy, next] });
+    const loaded = parseIcarusAssessments(JSON.stringify([stored]));
+    expect(loaded?.[0].treatmentOutcomes).toEqual([legacy, next]);
+    expect(parseIcarusAssessments(JSON.stringify([assessment({ treatmentOutcomes: [legacy] })]))?.[0].treatmentOutcomes)
+      .toEqual([legacy]);
+    expect(parseIcarusAssessments(JSON.stringify([assessment({
+      treatmentOutcomes: [legacy, { ...next, occurrenceId: "" }],
+    })]))[0].treatmentOutcomes).toEqual([legacy]);
+    const view = buildIcarusTreatmentOutcomeIndex(indexInput({ assessments: loaded ?? [] })).get(target().id);
+    expect(view?.state).toBe("Verified effective");
+    expect(view?.history.map(({ record, current }) => [record.id, current])).toEqual([[legacy.id, false], [next.id, true]]);
+    expect(view?.history.every((entry) => entry.evidenceCurrent)).toBe(true);
+    expect(view?.options.map((option) => option.outcome)).toEqual(["Effective"]);
+  });
+
   it("keeps completed execution awaiting explicit evidence-based verification", () => {
     const result = buildIcarusTreatmentOutcomeIndex(indexInput());
     const view = result.get(target().id);

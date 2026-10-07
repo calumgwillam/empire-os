@@ -39,7 +39,8 @@ export type LearningEvidenceField =
   | "relatedDecision" | "relatedSystem" | "frequency" | "problemStatus" | "isUnresolved"
   | "treatmentTargetId" | "treatmentOutcome" | "verifiedAt" | "verifiedByPersonId"
   | "evidenceReference" | "verificationNote"
-  | "interventionDecisionId" | "interventionOptionId" | "causeId" | "verificationCurrency";
+  | "interventionDecisionId" | "interventionOptionId" | "causeId" | "verificationCurrency"
+  | "interventionAttribution" | "treatmentAttribution";
 
 export type LearningEvidence = {
   sourceType: LearningSourceType;
@@ -86,6 +87,10 @@ export type OrganisationalLearningInput = {
   icarusTreatmentOutcomes?: readonly {
     targetTitle: string;
     record: IcarusTreatmentOutcomeRecord;
+    treatmentEvidence?: {
+      current: boolean;
+      attribution: "Supported" | "Uncertain" | "Not attributable";
+    };
     interventionContext?: {
       decisionIds: readonly string[];
       optionIds: readonly string[];
@@ -197,12 +202,11 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
     signals.push(item);
   });
 
-  (input.icarusTreatmentOutcomes ?? []).forEach(({ targetTitle, record, interventionContext }) => {
+  (input.icarusTreatmentOutcomes ?? []).forEach(({ targetTitle, record, treatmentEvidence, interventionContext }) => {
     const recordedOutcome: LearningOutcomeState = record.outcome === "Effective" ? "Worked"
       : record.outcome === "Partially effective" ? "Partially worked"
         : record.outcome === "Ineffective" ? "Failed" : "Unknown";
-    const outcomeState = interventionContext && !interventionContext.current ? "Unknown" : recordedOutcome;
-    if (outcomeState === "Unknown" && !interventionContext) return;
+    const outcomeState = treatmentEvidence?.current ? recordedOutcome : "Unknown";
     const sourceType: LearningSourceType = "Icarus Treatment";
     const linkedLessons = input.lessons.filter((lesson) => interventionContext?.lessonIds.includes(lesson.id));
     signals.push({
@@ -220,6 +224,12 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
         { sourceType, sourceId: record.id, field: "verifiedAt", value: record.verifiedAt },
         { sourceType, sourceId: record.id, field: "verifiedByPersonId", value: record.verifiedByPersonId },
         { sourceType, sourceId: record.id, field: "verificationNote", value: record.verificationNote },
+        { sourceType, sourceId: record.id, field: "verificationCurrency",
+          value: treatmentEvidence?.current ? "Current" : "Historical / superseded or currency unknown" },
+        { sourceType, sourceId: record.id, field: "treatmentAttribution",
+          value: treatmentEvidence?.attribution ?? "Not attributable" },
+        { sourceType, sourceId: record.id, field: "interventionAttribution",
+          value: interventionContext?.current ? "Uncertain — current intervention context" : "Not attributable — historical or no intervention context" },
         ...record.evidence.map((entry) => ({
           sourceType,
           sourceId: record.id,
@@ -233,8 +243,6 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
             ({ sourceType, sourceId: record.id, field: "interventionOptionId", value })),
           ...interventionContext.causeIds.map((value): LearningEvidence =>
             ({ sourceType, sourceId: record.id, field: "causeId", value })),
-          { sourceType, sourceId: record.id, field: "verificationCurrency" as const,
-            value: interventionContext.current ? "Current" : "Historical / superseded" },
         ] : []),
         ...linkedLessons.map((lesson): LearningEvidence =>
           ({ sourceType: "Lesson", sourceId: lesson.id, field: "status", value: lesson.status })),

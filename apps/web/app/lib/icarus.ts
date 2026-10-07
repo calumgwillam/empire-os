@@ -202,6 +202,12 @@ export type IcarusTreatmentOutcomeStateFact =
 
 export type IcarusTreatmentOutcomeRecord = {
   id: string;
+  occurrenceId?: string;
+  interventionReference?: {
+    decisionId: string;
+    optionId: string;
+    selectionEventId: string;
+  };
   treatmentTargetId: string;
   assessmentId: string;
   executionLinks: IcarusTreatmentExecutionLink[];
@@ -464,12 +470,14 @@ export function getIcarusTreatmentOutcomeId(
   treatmentTargetId: string,
   verifiedByPersonId: string,
   evidence: readonly IcarusTreatmentOutcomeEvidence[],
+  occurrenceId?: string,
 ): string {
   const evidenceKeys = [...new Set(evidence.map(getIcarusTreatmentOutcomeEvidenceKey))].sort();
   return `icarus-treatment-outcome:${encodeURIComponent(JSON.stringify([
     treatmentTargetId,
     verifiedByPersonId,
     evidenceKeys,
+    ...(occurrenceId ? [occurrenceId] : []),
   ]))}`;
 }
 
@@ -706,10 +714,17 @@ function isIcarusTreatmentOutcomeRecord(value: unknown): value is IcarusTreatmen
     || !isNonEmptyString(value.verificationNote)) {
     return false;
   }
+  if (value.occurrenceId !== undefined && !isNonEmptyString(value.occurrenceId)) return false;
+  if (value.interventionReference !== undefined
+    && (!isNonEmptyString(value.occurrenceId) || !isPlainObject(value.interventionReference)
+      || !isNonEmptyString(value.interventionReference.decisionId)
+      || !isNonEmptyString(value.interventionReference.optionId)
+      || !isNonEmptyString(value.interventionReference.selectionEventId))) return false;
   return value.id === getIcarusTreatmentOutcomeId(
     value.treatmentTargetId,
     value.verifiedByPersonId,
     value.evidence,
+    value.occurrenceId,
   );
 }
 
