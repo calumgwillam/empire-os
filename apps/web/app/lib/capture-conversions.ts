@@ -1,3 +1,5 @@
+import { normaliseIcarusLessonLearning, type IcarusLessonLearning } from "./icarus-learning";
+
 export const reviewOutcomes = [
   "Keep as Capture",
   "Convert to Problem",
@@ -91,6 +93,7 @@ export type CaptureConversionRecord = {
   relatedProject?: string;
   relatedSystem?: string;
   lessonStatus?: string;
+  icarusLearning?: IcarusLessonLearning;
   systemName?: string;
   purpose?: string;
   area?: string;
@@ -428,6 +431,8 @@ export function normalizeOpportunityRecord(record: CaptureConversionRecord): Opp
 }
 
 export function normalizeLessonRecord(record: CaptureConversionRecord): LessonRecord {
+  const { icarusLearning: storedLearning, ...base } = record;
+  const icarusLearning = normaliseIcarusLessonLearning(storedLearning);
   const lessonStatus =
     (record.lessonStatus as LessonStatus | undefined) ??
     ((record.status === "New" || record.status === "Reviewed" || record.status === "Change Required" || record.status === "Implemented" || record.status === "Archived")
@@ -435,7 +440,8 @@ export function normalizeLessonRecord(record: CaptureConversionRecord): LessonRe
       : "New");
 
   return {
-    ...record,
+    ...base,
+    ...(icarusLearning ? { icarusLearning } : {}),
     lessonTitle: record.lessonTitle?.trim() || record.title || "Untitled lesson",
     description: record.lessonDescription?.trim() || record.originalRawNote?.trim() || "",
     sourceEvent: record.sourceEvent?.trim() || "",
@@ -450,6 +456,10 @@ export function normalizeLessonRecord(record: CaptureConversionRecord): LessonRe
     owner: record.owner?.trim() || "",
     status: lessonStatus,
   };
+}
+
+export function applyLessonEditorChanges(current: CaptureConversionRecord, edited: LessonRecord): LessonRecord {
+  return { ...edited, icarusLearning: current.icarusLearning };
 }
 
 export function normalizeSystemRecord(record: CaptureConversionRecord): SystemRecord {

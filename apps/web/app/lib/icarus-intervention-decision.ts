@@ -16,6 +16,7 @@ import type { IcarusTreatmentIndex, IcarusTreatmentTarget } from "./icarus-treat
 import type { IcarusStrategicSignal } from "./icarus-strategic-attention";
 import type { OrganisationalLearningInput } from "./organisational-learning";
 import type { IcarusLifecycleAssessmentView, IcarusStrategicLifecycleIndex } from "./icarus-strategic-lifecycle";
+import type { IcarusLearningIndex, IcarusLessonLearningView } from "./icarus-learning";
 
 export type IcarusInterventionReadiness =
   | "Not structured" | "Alternatives incomplete" | "Conflict" | "Prerequisites unmet"
@@ -60,6 +61,7 @@ export type IcarusInterventionDecisionView = {
   priorEffects: readonly IcarusInterventionEffect[];
   learning: readonly IcarusInterventionLearning[];
   lifecycleHistory: readonly IcarusLifecycleAssessmentView[];
+  learningConclusions: readonly IcarusLessonLearningView[];
 };
 
 export type IcarusInterventionIndex = {
@@ -70,6 +72,7 @@ export type IcarusInterventionIndex = {
   attentionByAssessmentId: ReadonlyMap<string, readonly string[]>;
   learningInput: NonNullable<OrganisationalLearningInput["icarusTreatmentOutcomes"]>;
   lifecycle?: IcarusStrategicLifecycleIndex;
+  learningValidity?: IcarusLearningIndex;
 };
 
 export type IcarusInterventionIndexInput = {
@@ -82,6 +85,7 @@ export type IcarusInterventionIndexInput = {
   people: readonly { id: string; status: string }[];
   nowMs: number;
   lifecycle?: IcarusStrategicLifecycleIndex;
+  learningValidity?: IcarusLearningIndex;
 };
 
 export function emptyIcarusInterventionScope(assessmentId?: string): IcarusInterventionScope {
@@ -445,6 +449,10 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
         const history = input.lifecycle?.byAssessmentId.get(id);
         return history ? [history] : [];
       }),
+      learningConclusions: [...new Set(record.lessonLinks.map((link) => link.lessonId))].sort().flatMap((id) => {
+        const learning = input.learningValidity?.byLessonId.get(id);
+        return learning ? [learning] : [];
+      }),
       learning: learning.filter((entry) => entry.decisionId === record.id
         || (entry.reviewed && entry.causeIds.some((id) => record.causeIds.includes(id)))),
     };
@@ -507,5 +515,6 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
       } : {}),
     };
   });
-  return { causes, decisions: views, byAssessmentId, byCauseId, attentionByAssessmentId, learningInput, lifecycle: input.lifecycle };
+  return { causes, decisions: views, byAssessmentId, byCauseId, attentionByAssessmentId, learningInput,
+    lifecycle: input.lifecycle, learningValidity: input.learningValidity };
 }

@@ -35,7 +35,7 @@ export function buildLearningCommandAdapter(
       sourceId: candidate.sourceId,
       sourceTitle: candidate.sourceTitle,
       attentionKind: candidate.attentionKind,
-      reason: learningReasons[candidate.attentionKind],
+      reason: candidate.reasons?.length ? `Icarus learning: ${candidate.reasons.join("; ")}` : learningReasons[candidate.attentionKind],
     };
     const target = existingCommandTargets.find(
       (entry) => entry.objectType === candidate.target.objectType && entry.id === candidate.target.id,

@@ -1,5 +1,6 @@
 import type { CommandAttentionItem } from "./command-attention";
 import type { LearningEvidence, LearningSignal } from "./organisational-learning";
+import { getIcarusIdentityKey } from "./icarus";
 
 export type LearningAttentionKind =
   | "Review learning"
@@ -24,6 +25,8 @@ export type LearningAttentionSignal = {
   attentionRequired: true;
   attentionKind: LearningAttentionKind;
   target: LearningAttentionTarget;
+  reasons?: readonly string[];
+  identityKey?: string;
 };
 
 // Consume structured learning conditions; outcome quality and narrative text are not materiality rules.
@@ -34,6 +37,16 @@ export function buildLearningAttention(
 
   input.forEach(({ signal, associatedTarget }) => {
     if (signal.sourceType === "Icarus Treatment" || signal.sourceType === "Icarus Lifecycle") return;
+    if (signal.icarusLearning) {
+      const learning = signal.icarusLearning;
+      if (learning.attentionReasons.length) learning.attentionAssessmentIds.forEach((id) => result.push({
+        sourceType: signal.sourceType, sourceId: signal.sourceId, sourceTitle: signal.sourceTitle,
+        attentionRequired: true, attentionKind: "Institutionalisation", target: { objectType: "Icarus", id },
+        identityKey: getIcarusIdentityKey(id), reasons: learning.attentionReasons,
+      }));
+      if (!signal.evidence.some((entry) => entry.sourceType === "Lesson" && entry.sourceId === signal.sourceId
+        && entry.field === "status" && entry.value === "Change Required")) return;
+    }
     const belongsToLesson = (id: string) =>
       (signal.sourceType === "Lesson" && signal.sourceId === id)
       || signal.linkedLessonIds.includes(id);

@@ -34,6 +34,7 @@ export type RecurringProblemSopInput = {
 };
 
 export type RecurringProblemLearningInput = {
+  learningValidity?: ReadonlyMap<string, { validated: boolean; institutionalised: boolean }>;
   problems: readonly RecurringProblemInput[];
   lessons: readonly RecurringProblemLessonInput[];
   systems: readonly RecurringProblemSystemInput[];
@@ -70,14 +71,17 @@ export function buildRecurringProblemLearning(
   const unresolvedRecurring = recurringProblems.filter((problem) => problem.isUnresolved);
   const maturityFor = (problem: RecurringProblemInput): RecurringProblemMaturity => {
     const linkedLessons = input.lessons.filter((lesson) => lesson.relatedProblem === problem.id);
-    const meaningfulLessons = linkedLessons.filter((lesson) => meaningfulLessonStatuses.includes(lesson.status));
+    const meaningfulLessons = linkedLessons.filter((lesson) => input.learningValidity?.has(lesson.id)
+      ? input.learningValidity.get(lesson.id)!.validated : meaningfulLessonStatuses.includes(lesson.status));
 
     if (meaningfulLessons.length === 0) {
       return "missing";
     }
 
-    const meaningfulLessonIds = new Set(meaningfulLessons.map((lesson) => lesson.id));
-    const linkedSystemIdsFromLessons = new Set(meaningfulLessons.map((lesson) => lesson.relatedSystem).filter(Boolean));
+    if (meaningfulLessons.some((lesson) => input.learningValidity?.get(lesson.id)?.institutionalised)) return "institutionalised";
+    const legacyLessons = meaningfulLessons.filter((lesson) => !input.learningValidity?.has(lesson.id));
+    const meaningfulLessonIds = new Set(legacyLessons.map((lesson) => lesson.id));
+    const linkedSystemIdsFromLessons = new Set(legacyLessons.map((lesson) => lesson.relatedSystem).filter(Boolean));
     const activeLinkedSystems = input.systems.filter((system) =>
       institutionalStatuses.includes(system.status) &&
       (meaningfulLessonIds.has(system.relatedLesson) || linkedSystemIdsFromLessons.has(system.id)),

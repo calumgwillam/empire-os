@@ -134,6 +134,7 @@ function projectPageInput(overrides: Partial<PageInputs> = {}): FounderFocusInpu
     ...overrides,
     icarusTreatmentIndex: { summaries: overrides.icarusTreatmentSummaries ?? new Map() },
     icarusInterventionIndex: { attentionByAssessmentId: overrides.icarusInterventionReasons ?? new Map() },
+    icarusLearningIndex: { attention: [] },
     // Mirrors the pipeline contract: founderFocusRisks = buildIcarusFounderFocusRisks(strategicSignals).
     icarusIntelligence: { founderFocusRisks: buildIcarusFounderFocusRisks(overrides.icarusStrategicSignals ?? []) },
     buildFounderFocus: (value: FounderFocusInput) => {

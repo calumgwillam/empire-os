@@ -2,6 +2,7 @@ import type { ActionRecord, DecisionRecord, LessonRecord } from "./capture-conve
 import { getIcarusTreatmentOutcomeEvidenceKey, type IcarusTreatmentOutcomeRecord } from "./icarus";
 import type { ProjectRecord } from "./projects";
 import type { IcarusStrategicLifecycleIndex } from "./icarus-strategic-lifecycle";
+import type { IcarusLearningIndex, IcarusLessonLearningView } from "./icarus-learning";
 import {
   buildRecurringProblemLearning,
   type RecurringProblemLearningInput,
@@ -62,6 +63,8 @@ export type LearningSignal = {
   evidence: LearningEvidence[];
   linkedLessonIds: string[];
   recommendedNextTransition: LearningNextTransition;
+  icarusLearning?: IcarusLessonLearningView;
+  icarusObservation?: "Observed";
 };
 
 export type LearningActionInput = Pick<ActionRecord,
@@ -80,6 +83,7 @@ export type LearningLessonInput = Pick<LessonRecord,
 
 export type OrganisationalLearningInput = {
   icarusLifecycle?: IcarusStrategicLifecycleIndex;
+  icarusLearning?: IcarusLearningIndex;
   actions: readonly LearningActionInput[];
   projects: readonly LearningProjectInput[];
   decisions: readonly LearningDecisionInput[];
@@ -131,7 +135,9 @@ function decisionOutcome(decision: LearningDecisionInput): LearningOutcomeState 
 
 // Reviews and completion evidence do not, on their own, establish outcome quality.
 export function buildOrganisationalLearning(input: OrganisationalLearningInput): LearningSignal[] {
-  const recurrence = buildRecurringProblemLearning(input);
+  const recurrence = buildRecurringProblemLearning({ ...input, learningValidity: input.icarusLearning?.maturityByLessonId });
+  const meaningful = (lesson: LearningLessonInput) => input.icarusLearning?.maturityByLessonId.has(lesson.id)
+    ? input.icarusLearning.maturityByLessonId.get(lesson.id)!.validated : meaningfulLesson(lesson);
   const signals: LearningSignal[] = [];
 
   function signal(
@@ -151,7 +157,7 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
     return {
       sourceType, sourceId, sourceTitle, executionState: execution,
       outcomeState: "Missing evidence",
-      learningState: lessons.some(meaningfulLesson)
+      learningState: lessons.some(meaningful)
         ? "Meaningful learning captured"
         : lessons.length > 0 ? "Lesson available" : "Unknown",
       recurrenceState: "Unknown",
@@ -202,6 +208,8 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
       ["relatedProject", lesson.relatedProject], ["relatedDecision", lesson.relatedDecision],
       ["relatedSystem", lesson.relatedSystem],
     ], [lesson]);
+    const learning = input.icarusLearning?.byLessonId.get(lesson.id);
+    if (learning?.reviews.length) item.icarusLearning = learning;
     signals.push(item);
   });
 
@@ -218,7 +226,7 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
       sourceTitle: targetTitle,
       executionState: "Completed execution",
       outcomeState,
-      learningState: linkedLessons.some(meaningfulLesson) ? "Meaningful learning captured"
+      learningState: linkedLessons.some(meaningful) ? "Meaningful learning captured"
         : linkedLessons.length ? "Lesson available" : "Learning identified",
       recurrenceState: "Unknown",
       evidence: [
@@ -252,6 +260,7 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
       ],
       linkedLessonIds: linkedLessons.map((lesson) => lesson.id),
       recommendedNextTransition: linkedLessons.length ? "Review existing Lesson" : "Review learning",
+      icarusObservation: "Observed",
     });
   });
 
@@ -284,6 +293,7 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
           ],
           linkedLessonIds: [],
           recommendedNextTransition: "Review learning",
+          icarusObservation: "Observed",
         });
       });
     });

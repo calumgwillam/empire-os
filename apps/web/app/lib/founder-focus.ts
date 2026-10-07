@@ -65,6 +65,7 @@ export type FounderFocusStrategicRiskInput = {
 };
 
 export type FounderFocusInput = {
+  icarusLearning?: readonly import("./icarus-learning").IcarusLearningAttention[];
   signalledRecords: readonly FounderFocusSignalInput[];
   founderReviewItems: readonly FounderFocusReviewInput[];
   limitations: readonly FounderFocusLimitationInput[];
@@ -251,5 +252,16 @@ export function buildFounderFocus(input: FounderFocusInput): FounderFocusCandida
     });
   });
 
+  input.icarusLearning?.forEach((learning) => {
+    const key = `Icarus:${learning.assessmentId}`;
+    const host = candidatesByRecord.get(clusterKeyByRecordKey.get(key) ?? key)
+      ?? [...candidatesByRecord.values()].find((candidate) => candidate.strategicRiskKeys?.includes(learning.identityKey));
+    const reason = `Icarus learning: ${learning.reasons.join("; ")}`;
+    if (host) candidatesByRecord.set(host.key, { ...host, reason: `${host.reason} ${reason}` });
+    else candidatesByRecord.set(key, {
+      key, objectType: "Icarus", id: learning.assessmentId, title: learning.title, area: "Icarus",
+      score: 0, band: 5, urgencyTime: null, reason,
+    });
+  });
   return [...candidatesByRecord.values()].sort(compareFounderFocusCandidates);
 }

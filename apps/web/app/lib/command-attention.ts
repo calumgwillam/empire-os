@@ -684,18 +684,14 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
 
   if (input.learning) {
     const augmentations = buildLearningCommandAdapter(
-      buildLearningAttention(input.learning),
+      buildLearningAttention(input.learning).filter((candidate) => !candidate.identityKey),
       [...uniqueByKey.values()].map(({ objectType, id }) => ({ objectType, id })),
     );
     augmentations.forEach((augmentation) => {
       if (augmentation.targetResolution !== "Augment existing target") return;
       const existing = uniqueByKey.get(`${augmentation.target.objectType}:${augmentation.target.id}`);
       if (!existing) return;
-      addAttentionItem(augmentation.reason, {
-        ...existing,
-        reason: augmentation.reason,
-        reasons: [augmentation.reason],
-      });
+      addAttentionItem(augmentation.reason, { ...existing, reason: augmentation.reason, reasons: [augmentation.reason] });
     });
   }
 
@@ -760,6 +756,24 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
     });
   }
 
+  if (input.learning) {
+    const candidates = buildLearningAttention(input.learning);
+    candidates.filter((candidate) => candidate.identityKey && candidate.target.objectType === "Icarus").forEach((candidate) => {
+      const existing = uniqueByKey.get(`Icarus:${candidate.target.id}`)
+        ?? [...uniqueByKey.values()].find((item) => item.strategicRisk?.references.some((ref) => ref.identityKey === candidate.identityKey));
+      const reason = `Icarus learning: ${candidate.sourceTitle}: ${candidate.reasons?.join("; ")}`;
+      if (existing) {
+        addAttentionItem(reason, { ...existing, reason, reasons: [reason] });
+      } else {
+        addAttentionItem(reason, {
+          id: candidate.target.id, objectType: "Icarus", title: candidate.sourceTitle, reason, reasons: [reason],
+          statusText: "Learning review reminder / not a new strategic exposure",
+          area: "Icarus", attentionRank: 5, tieWeight: 0, priorityScore: 0, sortDate: 0,
+          sortDateAscending: false, navigationMode: "record-handler",
+        });
+      }
+    });
+  }
   const sortedGroups = Object.fromEntries(Object.entries(groups).map(([reason, items]) => [reason, [...items].sort(compareAttentionItems)]));
   const items = Array.from(new Map(
     Object.values(sortedGroups).flat().map((item) => [`${item.objectType}:${item.id}`, item]),

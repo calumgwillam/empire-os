@@ -41,6 +41,8 @@ import IcarusStressLab from "./icarus-stress-lab";
 import IcarusTreatmentSection from "./icarus-treatment-section";
 import IcarusInterventionSection from "./icarus-intervention-section";
 import IcarusLifecycleSection from "./icarus-lifecycle-section";
+import IcarusLearningSection from "./icarus-learning-section";
+import type { IcarusLearningInput, IcarusLearningIndex, IcarusLessonLearning } from "../lib/icarus-learning";
 import type { IcarusStrategicLifecycleIndex, IcarusStrategicLifecycleInput } from "../lib/icarus-strategic-lifecycle";
 import type { IcarusInterventionIndex } from "../lib/icarus-intervention-decision";
 import {
@@ -74,6 +76,10 @@ type IcarusPanelProps = {
   interventionIndex?: IcarusInterventionIndex;
   lifecycleIndex?: IcarusStrategicLifecycleIndex;
   lifecycleInput?: IcarusStrategicLifecycleInput;
+  learningInput?: IcarusLearningInput;
+  learningIndex?: IcarusLearningIndex;
+  learningWritable?: boolean;
+  onLearningChange?: (lessonId: string, history: IcarusLessonLearning) => void;
   closedAssessmentWarnings?: readonly IcarusStrategicSignal[];
   people?: readonly IcarusAssurancePersonOption[];
   actions?: readonly IcarusTreatmentExecution[];
@@ -151,6 +157,10 @@ export default function IcarusPanel({
   interventionIndex,
   lifecycleIndex,
   lifecycleInput,
+  learningInput,
+  learningIndex,
+  learningWritable = false,
+  onLearningChange,
   closedAssessmentWarnings = [],
   people = [],
   actions = [],
@@ -419,6 +429,10 @@ export default function IcarusPanel({
       {loaded && lifecycleIndex && lifecycleInput ? <IcarusLifecycleSection
         input={lifecycleInput} index={lifecycleIndex} people={people} writable={writable}
         createId={createId} onChange={onChange}
+      /> : null}
+      {loaded && learningInput && learningIndex && onLearningChange ? <IcarusLearningSection
+        input={learningInput} index={learningIndex} writable={learningWritable} createId={createId}
+        onChange={onLearningChange} onOpenRecord={onOpenRecord}
       /> : null}
       {loaded && treatmentIndex && interventionIndex ? (
         <IcarusInterventionSection

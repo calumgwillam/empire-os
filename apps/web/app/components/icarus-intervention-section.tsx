@@ -332,6 +332,10 @@ function DecisionEditor({
         {record.effects.map((effect) => <p key={effect.id}>{effect.optionId}: {effect.direction} - {JSON.stringify(effect.target)}. {effect.rationale}</p>)}
       </details>
       <details className="mt-2 text-[11px]"><summary>Selection history, outcomes and prior same-cause context</summary>
+        {view.learningConclusions.map((learning) => <p key={learning.lessonId}>
+          Explicit Lesson {learning.lessonId}: {learning.validity}; embedding {learning.institutionalisation || "Not recorded"}.
+          {" "}{learning.attentionReasons.join("; ")}
+        </p>)}
         {view.lifecycleHistory.map((history) => <div key={history.assessmentId} className="mb-2">
           <p>Explicit lifecycle history for assessment {history.assessmentId}. Shared wording does not establish shared cause.</p>
           {history.reviews.map((review) => <p key={review.record.id}>

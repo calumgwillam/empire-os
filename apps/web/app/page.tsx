@@ -30,6 +30,7 @@ import {
   normalizeActionRecord,
   normalizeDecisionRecord,
   normalizeLessonRecord,
+  applyLessonEditorChanges,
   normalizeOpportunityRecord,
   normalizeProblemRecord,
   normalizeSopRecord,
@@ -230,6 +231,7 @@ import {
   type IcarusExposureSnapshotEntry,
 } from "./lib/icarus-exposure-history";
 import { buildIcarusInterventionIndex } from "./lib/icarus-intervention-decision";
+import { buildIcarusLearningIndex, getIcarusLearningMechanismRevision, type IcarusLearningInput, type IcarusLessonLearning } from "./lib/icarus-learning";
 import {
   attachIndividualOperatingUnderstandings,
   assertIndividualOperatingUnderstandingsDataStructure,
@@ -10149,6 +10151,34 @@ export default function Home() {
     icarusIntelligence.lifecycle.byAssessmentId.get(assessment.id)?.eligibility.state === "Eligible for human review"
       ? [{ assessmentId: assessment.id, title: assessment.outcome }]
       : []);
+  const icarusLearningInput: IcarusLearningInput = {
+    lessons: lessonRecords, assessments: icarusAssessments, assurance: icarusIntelligence.assurance,
+    dependencyHealth: icarusIntelligence.dependencyHealth, treatment: icarusTreatmentIndex,
+    lifecycle: icarusIntelligence.lifecycle, people, nowMs: icarusIntelligence.nowMs,
+    mechanisms: [
+      ...systemRecords.map((record) => ({
+        recordType: "System" as const, recordId: record.id, title: record.systemName, status: record.status,
+        revision: getIcarusLearningMechanismRevision([record.version, record.process, record.standards, record.outputs]),
+      })),
+      ...sopRecords.map((record) => ({
+        recordType: "SOP" as const, recordId: record.id, title: record.sopTitle, status: record.status,
+        revision: getIcarusLearningMechanismRevision([record.version, record.procedure, record.safetyConsiderations, record.qualityStandard]),
+      })),
+      ...decisionRecords.map((record) => ({
+        recordType: "Decision" as const, recordId: record.id, title: record.decisionTitle, status: record.decisionStatus,
+        revision: getIcarusLearningMechanismRevision([record.decisionStatement, record.actualOutcome]),
+      })),
+      ...actionRecords.map((record) => ({
+        recordType: "Action" as const, recordId: record.id, title: record.actionTitle || record.title, status: record.status,
+        revision: getIcarusLearningMechanismRevision([record.actionDescription, record.completionEvidence, record.completionDate]),
+      })),
+      ...projects.map((record) => ({
+        recordType: "Project" as const, recordId: record.id, title: record.projectName, status: record.status,
+        revision: getIcarusLearningMechanismRevision([record.reviewNote, record.lastReviewOutcome, record.relatedSystemIds, record.relatedSopIds]),
+      })),
+    ],
+  };
+  const icarusLearningIndex = buildIcarusLearningIndex(icarusLearningInput);
   const icarusInterventionIndex = buildIcarusInterventionIndex({
     assessments: icarusAssessments,
     treatment: icarusTreatmentIndex,
@@ -10159,6 +10189,7 @@ export default function Home() {
     people,
     nowMs: icarusIntelligence.nowMs,
     lifecycle: icarusIntelligence.lifecycle,
+    learningValidity: icarusLearningIndex,
   });
   const icarusSignalsWithTreatment = icarusIntelligence.strategicSignals.map((signal) => {
     const treatment = icarusTreatmentIndex.summaries.get(signal.assessmentId);
@@ -10262,6 +10293,7 @@ export default function Home() {
       isUnresolved: isProblemUnresolved(problem),
     })),
     lessons: lessonRecords.map(({ id, relatedProblem, relatedSystem, status }) => ({ id, relatedProblem, relatedSystem, status })),
+    learningValidity: icarusLearningIndex.maturityByLessonId,
     systems: systemRecords.map(({ id, relatedLesson, status }) => ({ id, relatedLesson, status })),
     sops: sopRecords.map(({ relatedLesson, relatedSystem, status }) => ({ relatedLesson, relatedSystem, status })),
   });
@@ -11184,6 +11216,7 @@ export default function Home() {
     sops: sopRecords,
     icarusTreatmentOutcomes: icarusInterventionIndex.learningInput,
     icarusLifecycle: icarusInterventionIndex.lifecycle,
+    icarusLearning: icarusInterventionIndex.learningValidity,
   }).map((signal) => ({ signal }));
 
   const commandAttentionPolicy = buildCommandAttention({
@@ -11664,6 +11697,7 @@ export default function Home() {
   incomeRecords.forEach((income) => addFounderFocusRecordFact("Finance", `income:${income.id}`, income.date));
 
   const founderFocusCandidates = buildFounderFocus({
+    icarusLearning: icarusLearningIndex.attention,
     signalledRecords: [...correlationLayer.signalled.entries()].map(([recordKey, record]) => ({
       recordKey,
       objectType: record.objectType,
@@ -14485,6 +14519,15 @@ export default function Home() {
     });
   };
 
+  const handleIcarusLearningChange = (lessonId: string, history: IcarusLessonLearning) => {
+    if (!conversionsWritableRef.current) throw new Error("Lesson storage is not writable; existing data was left untouched.");
+    if (conversions.filter((record) => record.id === lessonId && record.targetType === "Convert to Lesson").length !== 1) {
+      throw new Error("The authoritative Lesson is missing or ambiguous; existing data was left untouched.");
+    }
+    setConversions((current) => current.map((record) =>
+      record.id === lessonId && record.targetType === "Convert to Lesson" ? { ...record, icarusLearning: history } : record));
+  };
+
   const handleLessonSave = () => {
     if (!selectedLessonId || !lessonEditor) {
       return;
@@ -14503,7 +14546,7 @@ export default function Home() {
 
     setConversions((currentConversions) =>
       currentConversions.map((conversion) =>
-        conversion.id === selectedLessonId ? updatedLesson : conversion,
+        conversion.id === selectedLessonId ? applyLessonEditorChanges(conversion, updatedLesson) : conversion,
       ),
     );
 
@@ -19833,6 +19876,10 @@ export default function Home() {
                 nowMs: icarusIntelligence.nowMs,
               }}
               lifecycleIndex={icarusIntelligence.lifecycle}
+              learningInput={icarusLearningInput}
+              learningIndex={icarusLearningIndex}
+              learningWritable={operatingDataLoaded}
+              onLearningChange={handleIcarusLearningChange}
               closedAssessmentWarnings={icarusIntelligence.closedAssessmentWarnings}
               failureChains={icarusIntelligence.failureChains}
               healthTriggeredChains={icarusIntelligence.healthTriggeredChains}
