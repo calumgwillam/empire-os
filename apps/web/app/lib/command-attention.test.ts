@@ -12,6 +12,8 @@ import {
 } from "./icarus";
 import { buildIcarusStrategicAttention, type IcarusStrategicSignal } from "./icarus-strategic-attention";
 import { resolveStrategicRiskConvergence } from "./strategic-risk-resolution";
+import { buildIcarusInterventionIndex } from "./icarus-intervention-decision";
+import type { IcarusTreatmentTarget } from "./icarus-treatment";
 import {
   buildCommandAttention,
   compareAttentionItems,
@@ -501,6 +503,17 @@ function productionLearning(records: ProductionLearningRecords): LearningAttenti
     compilerOptions: { target: ScriptTarget.ES2020, module: ModuleKind.ESNext },
   });
   const context: { result?: LearningAttentionInput[] } = {};
+  const targets = (records.icarusTreatmentTargets ?? []).map((entry): IcarusTreatmentTarget => ({
+    ...entry, sourceKind: "Failure-chain restoration", sourceId: entry.id, assessmentId: "projection",
+    reason: "Projection target", basis: [], affectedAssessmentIds: [], objectiveIds: [], pillarIds: [],
+    provenance: { kind: "Failure-chain recommendation", finding: "Projection" },
+    executionLinks: [], executions: [], state: "Unrouted", material: true, founderOwned: false,
+  }));
+  const interventionIndex = buildIcarusInterventionIndex({
+    assessments: records.icarusAssessments ?? [],
+    treatment: { targets, verification: new Map(), summaries: new Map(), recommendations: [], barrierRestorations: [] },
+    signals: [], sources: [], decisions: records.decisions, lessons: records.lessons, people: [], nowMs: NOW,
+  });
   runInNewContext(outputText, Object.assign(context, {
     Map, Set, buildOrganisationalLearning,
     actionRecords: records.actions,
@@ -512,6 +525,7 @@ function productionLearning(records: ProductionLearningRecords): LearningAttenti
     sopRecords: records.sops,
     icarusAssessments: records.icarusAssessments ?? [],
     icarusTreatmentIndex: { targets: records.icarusTreatmentTargets ?? [] },
+    icarusInterventionIndex: interventionIndex,
   }), { timeout: 1000 });
   if (!context.result) throw new Error("Production learning projection returned no result");
   return context.result;

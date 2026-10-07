@@ -39,6 +39,8 @@ import type { IcarusStrategicSignal } from "../lib/icarus-strategic-attention";
 import type { IcarusStressTestingInput } from "../lib/icarus-stress-testing";
 import IcarusStressLab from "./icarus-stress-lab";
 import IcarusTreatmentSection from "./icarus-treatment-section";
+import IcarusInterventionSection from "./icarus-intervention-section";
+import type { IcarusInterventionIndex } from "../lib/icarus-intervention-decision";
 import {
   createIcarusStressTreatmentTarget,
   type IcarusTreatmentExecution,
@@ -67,6 +69,7 @@ type IcarusPanelProps = {
   stressTestingInput?: IcarusStressTestingInput;
   stressBaseline?: IcarusStrategicIntelligence;
   treatmentIndex?: IcarusTreatmentIndex;
+  interventionIndex?: IcarusInterventionIndex;
   closedAssessmentWarnings?: readonly IcarusStrategicSignal[];
   people?: readonly IcarusAssurancePersonOption[];
   actions?: readonly IcarusTreatmentExecution[];
@@ -141,6 +144,7 @@ export default function IcarusPanel({
   stressTestingInput,
   stressBaseline,
   treatmentIndex,
+  interventionIndex,
   closedAssessmentWarnings = [],
   people = [],
   actions = [],
@@ -406,6 +410,19 @@ export default function IcarusPanel({
         resilienceInterventions={resilienceInterventions}
         referenceTitle={(reference) => referenceTitle(reference, sources)}
       />
+      {loaded && treatmentIndex && interventionIndex ? (
+        <IcarusInterventionSection
+          assessments={assessments}
+          sources={sources}
+          treatment={treatmentIndex}
+          index={interventionIndex}
+          people={people}
+          writable={writable}
+          createId={createId}
+          onChange={onChange}
+          onOpenRecord={onOpenRecord}
+        />
+      ) : null}
       {loaded && treatmentIndex ? (
         <IcarusTreatmentSection
           assessments={assessments}

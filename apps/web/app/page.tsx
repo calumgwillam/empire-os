@@ -230,6 +230,7 @@ import {
   type IcarusExposureSnapshotEntry,
 } from "./lib/icarus-exposure-history";
 import { buildIcarusTreatmentIndex } from "./lib/icarus-treatment";
+import { buildIcarusInterventionIndex } from "./lib/icarus-intervention-decision";
 import {
   attachIndividualOperatingUnderstandings,
   assertIndividualOperatingUnderstandingsDataStructure,
@@ -10159,12 +10160,25 @@ export default function Home() {
     icarusTreatmentIndex.summaries.get(assessment.id)?.resolutionEligibility === "Eligible"
       ? [{ assessmentId: assessment.id, title: assessment.outcome }]
       : []);
+  const icarusInterventionIndex = buildIcarusInterventionIndex({
+    assessments: icarusAssessments,
+    treatment: icarusTreatmentIndex,
+    signals: icarusIntelligence.strategicSignals,
+    sources: icarusSourceRecords,
+    decisions: decisionRecords,
+    lessons: lessonRecords,
+    people,
+    nowMs: icarusIntelligence.nowMs,
+  });
   const icarusSignalsWithTreatment = icarusIntelligence.strategicSignals.map((signal) => {
     const treatment = icarusTreatmentIndex.summaries.get(signal.assessmentId);
     return treatment ? {
       ...signal,
       treatment: {
-        attentionReasons: treatment.attentionReasons,
+        attentionReasons: [
+          ...treatment.attentionReasons,
+          ...(icarusInterventionIndex.attentionByAssessmentId.get(signal.assessmentId) ?? []),
+        ],
         founderOwnedCount: treatment.founderOwnedCount,
         delegatedCount: treatment.delegatedCount,
       },
@@ -11178,12 +11192,7 @@ export default function Home() {
     })),
     systems: systemRecords,
     sops: sopRecords,
-    icarusTreatmentOutcomes: icarusAssessments.flatMap((assessment) =>
-      (assessment.treatmentOutcomes ?? []).map((record) => ({
-        targetTitle: icarusTreatmentIndex.targets.find((target) => target.id === record.treatmentTargetId)?.treatmentKind
-          ?? "Icarus treatment",
-        record,
-      }))),
+    icarusTreatmentOutcomes: icarusInterventionIndex.learningInput,
   }).map((signal) => ({ signal }));
 
   const commandAttentionPolicy = buildCommandAttention({
@@ -11697,7 +11706,10 @@ export default function Home() {
       const treatment = icarusTreatmentIndex.summaries.get(risk.id);
       return treatment ? {
         ...risk,
-        treatmentReasons: treatment.attentionReasons,
+        treatmentReasons: [
+          ...treatment.attentionReasons,
+          ...(icarusInterventionIndex.attentionByAssessmentId.get(risk.id) ?? []),
+        ],
         founderOwnedTreatmentCount: treatment.founderOwnedCount,
         delegatedTreatmentCount: treatment.delegatedCount,
       } : risk;
@@ -19822,6 +19834,7 @@ export default function Home() {
               stressTestingInput={icarusStressTestingInput}
               stressBaseline={icarusIntelligence}
               treatmentIndex={icarusTreatmentIndex}
+              interventionIndex={icarusInterventionIndex}
               closedAssessmentWarnings={icarusIntelligence.closedAssessmentWarnings}
               failureChains={icarusIntelligence.failureChains}
               healthTriggeredChains={icarusIntelligence.healthTriggeredChains}

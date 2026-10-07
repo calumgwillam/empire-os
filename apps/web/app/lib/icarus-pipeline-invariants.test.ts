@@ -247,7 +247,7 @@ describe("Icarus pipeline invariants", () => {
       current: closed.snapshot,
       assessmentStatuses: new Map([["a1", "Closed"]]),
     });
-    expect(trajectory.changes.map((change) => [change.assessmentId, change.change, change.resolution])).toEqual([["a1", "Resolved", "Closed"]]);
+    expect(trajectory.changes.map((change) => [change.assessmentId, change.change, change.resolution])).toEqual([["a1", "No longer present", "Closed"]]);
   });
 
   it("drops a risk out everywhere once its mechanism is controlled by verified evidence", () => {

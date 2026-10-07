@@ -38,7 +38,8 @@ export type LearningEvidenceField =
   | "description" | "recommendedChange" | "relatedProblem" | "relatedProject"
   | "relatedDecision" | "relatedSystem" | "frequency" | "problemStatus" | "isUnresolved"
   | "treatmentTargetId" | "treatmentOutcome" | "verifiedAt" | "verifiedByPersonId"
-  | "evidenceReference" | "verificationNote";
+  | "evidenceReference" | "verificationNote"
+  | "interventionDecisionId" | "interventionOptionId" | "causeId" | "verificationCurrency";
 
 export type LearningEvidence = {
   sourceType: LearningSourceType;
@@ -85,6 +86,13 @@ export type OrganisationalLearningInput = {
   icarusTreatmentOutcomes?: readonly {
     targetTitle: string;
     record: IcarusTreatmentOutcomeRecord;
+    interventionContext?: {
+      decisionIds: readonly string[];
+      optionIds: readonly string[];
+      causeIds: readonly string[];
+      lessonIds: readonly string[];
+      current: boolean;
+    };
   }[];
 };
 
@@ -189,19 +197,22 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
     signals.push(item);
   });
 
-  (input.icarusTreatmentOutcomes ?? []).forEach(({ targetTitle, record }) => {
-    const outcomeState: LearningOutcomeState = record.outcome === "Effective" ? "Worked"
+  (input.icarusTreatmentOutcomes ?? []).forEach(({ targetTitle, record, interventionContext }) => {
+    const recordedOutcome: LearningOutcomeState = record.outcome === "Effective" ? "Worked"
       : record.outcome === "Partially effective" ? "Partially worked"
         : record.outcome === "Ineffective" ? "Failed" : "Unknown";
-    if (outcomeState === "Unknown") return;
+    const outcomeState = interventionContext && !interventionContext.current ? "Unknown" : recordedOutcome;
+    if (outcomeState === "Unknown" && !interventionContext) return;
     const sourceType: LearningSourceType = "Icarus Treatment";
+    const linkedLessons = input.lessons.filter((lesson) => interventionContext?.lessonIds.includes(lesson.id));
     signals.push({
       sourceType,
       sourceId: record.id,
       sourceTitle: targetTitle,
       executionState: "Completed execution",
       outcomeState,
-      learningState: "Learning identified",
+      learningState: linkedLessons.some(meaningfulLesson) ? "Meaningful learning captured"
+        : linkedLessons.length ? "Lesson available" : "Learning identified",
       recurrenceState: "Unknown",
       evidence: [
         { sourceType, sourceId: record.id, field: "treatmentTargetId", value: record.treatmentTargetId },
@@ -215,9 +226,21 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
           field: "evidenceReference" as const,
           value: getIcarusTreatmentOutcomeEvidenceKey(entry),
         })),
+        ...(interventionContext ? [
+          ...interventionContext.decisionIds.map((value): LearningEvidence =>
+            ({ sourceType, sourceId: record.id, field: "interventionDecisionId", value })),
+          ...interventionContext.optionIds.map((value): LearningEvidence =>
+            ({ sourceType, sourceId: record.id, field: "interventionOptionId", value })),
+          ...interventionContext.causeIds.map((value): LearningEvidence =>
+            ({ sourceType, sourceId: record.id, field: "causeId", value })),
+          { sourceType, sourceId: record.id, field: "verificationCurrency" as const,
+            value: interventionContext.current ? "Current" : "Historical / superseded" },
+        ] : []),
+        ...linkedLessons.map((lesson): LearningEvidence =>
+          ({ sourceType: "Lesson", sourceId: lesson.id, field: "status", value: lesson.status })),
       ],
-      linkedLessonIds: [],
-      recommendedNextTransition: "Review learning",
+      linkedLessonIds: linkedLessons.map((lesson) => lesson.id),
+      recommendedNextTransition: linkedLessons.length ? "Review existing Lesson" : "Review learning",
     });
   });
 

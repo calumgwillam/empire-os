@@ -99,6 +99,7 @@ type PageInputs = {
     founderOwnedCount: number;
     delegatedCount: number;
   }>;
+  icarusInterventionReasons?: Map<string, readonly string[]>;
 };
 
 // Exercise the actual page adapter and authoritative helpers without importing the client component.
@@ -132,6 +133,7 @@ function projectPageInput(overrides: Partial<PageInputs> = {}): FounderFocusInpu
     strategicDataConfidence: { limitations: [] },
     ...overrides,
     icarusTreatmentIndex: { summaries: overrides.icarusTreatmentSummaries ?? new Map() },
+    icarusInterventionIndex: { attentionByAssessmentId: overrides.icarusInterventionReasons ?? new Map() },
     // Mirrors the pipeline contract: founderFocusRisks = buildIcarusFounderFocusRisks(strategicSignals).
     icarusIntelligence: { founderFocusRisks: buildIcarusFounderFocusRisks(overrides.icarusStrategicSignals ?? []) },
     buildFounderFocus: (value: FounderFocusInput) => {
@@ -944,6 +946,17 @@ describe("Founder Focus page projection of Icarus strategic risks", () => {
       treatmentReasons: ["1 treatment is blocked"],
       founderOwnedTreatmentCount: 1,
       delegatedTreatmentCount: 0,
+    });
+    const interventionRisks = projectPageInput({
+      icarusStrategicSignals: [signal],
+      icarusInterventionReasons: new Map([["a1", ["Material exposure has no structured intervention decision"]]]),
+      icarusTreatmentSummaries: new Map([["a1", { attentionReasons: [], founderOwnedCount: 0, delegatedCount: 0 }]]),
+    }).strategicRisks;
+    expect(interventionRisks).toHaveLength(1);
+    expect(interventionRisks?.[0]).toMatchObject({
+      id: treatedRisks[0].id,
+      treatmentReasons: ["Material exposure has no structured intervention decision"],
+      score: treatedRisks[0].score,
     });
   });
 });

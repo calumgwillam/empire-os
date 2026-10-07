@@ -146,6 +146,23 @@ export function getIcarusBarrierRestorationTreatmentTargetId(restoration: Icarus
   );
 }
 
+export function persistIcarusTreatmentTarget(
+  target: IcarusTreatmentTarget,
+  promotedAt: string,
+): IcarusTreatmentTargetRecord {
+  return {
+    id: target.id, sourceKind: target.sourceKind, sourceId: target.sourceId,
+    assessmentId: target.assessmentId,
+    ...(target.failureModeId ? { failureModeId: target.failureModeId } : {}),
+    ...(target.controlId ? { controlId: target.controlId } : {}),
+    ...(target.dependencyReference ? { dependencyReference: { ...target.dependencyReference } } : {}),
+    treatmentKind: target.treatmentKind, reason: target.reason,
+    basis: [...target.basis], affectedAssessmentIds: [...target.affectedAssessmentIds],
+    objectiveIds: [...target.objectiveIds], pillarIds: [...target.pillarIds],
+    provenance: { ...target.provenance }, executionLinks: [], promotedAt,
+  };
+}
+
 function uniqueLinks<T extends { recordType: "Action" | "Project"; recordId: string }>(links: readonly T[]): T[] {
   const found = new Map<string, T>();
   links.forEach((link) => {

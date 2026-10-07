@@ -214,6 +214,100 @@ export type IcarusTreatmentOutcomeRecord = {
   verificationNote: string;
 };
 
+export type IcarusInterventionScope = {
+  assessmentIds: string[];
+  failureModes: { assessmentId: string; failureModeId: string }[];
+  dependencyReferences: IcarusRecordReference[];
+  objectiveIds: string[];
+  pillarIds: string[];
+};
+
+export type IcarusInterventionProvenance = {
+  createdAt: string;
+  updatedAt: string;
+  createdByPersonId: string;
+  updatedByPersonId: string;
+};
+
+export type IcarusCauseRecord = IcarusInterventionScope & IcarusInterventionProvenance & {
+  id: string;
+  title: string;
+  description: string;
+};
+
+export const ICARUS_INTERVENTION_INTENTS = ["Symptom treatment", "Root-cause treatment", "Systemic intervention"] as const;
+export const ICARUS_INTERVENTION_SCOPES = ["Local", "Multi-risk", "Cross-pillar", "Systemic"] as const;
+export const ICARUS_INTERVENTION_CHARACTERS = ["Temporary", "Transitional", "Structural"] as const;
+export const ICARUS_INTERVENTION_RELATIONSHIPS = [
+  "prerequisite-of", "must-precede", "blocks", "mutually-exclusive-with", "complements",
+] as const;
+export const ICARUS_INTERVENTION_EFFECTS = [
+  "Potentially improves", "Potentially worsens", "Creates dependency", "Removes dependency", "Unknown",
+] as const;
+
+export type IcarusInterventionOption = IcarusInterventionScope & {
+  id: string;
+  name: string;
+  description: string;
+  causeIds: string[];
+  intent?: (typeof ICARUS_INTERVENTION_INTENTS)[number];
+  scope?: (typeof ICARUS_INTERVENTION_SCOPES)[number];
+  character?: (typeof ICARUS_INTERVENTION_CHARACTERS)[number];
+  // Selected is derived only from the decision's explicit selectedOptionId.
+  status: "Candidate" | "Rejected" | "Superseded";
+  rationale: string;
+  priorOptionIds: string[];
+  treatmentLinks: { targetId: string; linkedAt: string; linkedByPersonId: string }[];
+};
+
+export type IcarusInterventionRelation = {
+  id: string;
+  fromOptionId: string;
+  toOptionId: string;
+  kind: (typeof ICARUS_INTERVENTION_RELATIONSHIPS)[number];
+  rationale: string;
+  recordedAt: string;
+  recordedByPersonId: string;
+};
+
+export type IcarusInterventionEffect = {
+  id: string;
+  optionId: string;
+  target:
+    | { kind: "Cause"; id: string }
+    | { kind: "Assessment"; id: string }
+    | { kind: "Dependency"; reference: IcarusRecordReference }
+    | { kind: "Strategic Objective"; id: string }
+    | { kind: "Pillar"; id: string };
+  direction: (typeof ICARUS_INTERVENTION_EFFECTS)[number];
+  rationale: string;
+  evidence: { assessmentId: string; failureModeId: string; evidenceId: string }[];
+  recordedAt: string;
+  recordedByPersonId: string;
+};
+
+export type IcarusInterventionDecisionRecord = IcarusInterventionScope & IcarusInterventionProvenance & {
+  id: string;
+  title: string;
+  causeIds: string[];
+  decisionRecordId?: string;
+  status: "Draft" | "Recorded" | "Superseded";
+  selectedOptionId?: string;
+  rationale: string;
+  nextReviewBy?: string;
+  options: IcarusInterventionOption[];
+  selectionHistory: {
+    id: string; optionId: string; rationale: string; selectedAt: string; selectedByPersonId: string;
+  }[];
+  relationships: IcarusInterventionRelation[];
+  effects: IcarusInterventionEffect[];
+  // Lesson content/review stays in Lessons. Cause scope is explicitly confirmed, never inferred.
+  lessonLinks: {
+    id: string; lessonId: string; outcomeIds: string[]; causeIds: string[];
+    rationale: string; linkedAt: string; linkedByPersonId: string;
+  }[];
+};
+
 export type IcarusAssessmentStatus = "Open" | "Monitoring" | "Closed";
 
 export type IcarusAssessmentRecord = {
@@ -236,6 +330,8 @@ export type IcarusAssessmentRecord = {
   treatmentTargets?: IcarusTreatmentTargetRecord[];
   // Explicit, evidence-linked verification events. Absence on legacy records means no verification is recorded.
   treatmentOutcomes?: IcarusTreatmentOutcomeRecord[];
+  causes?: IcarusCauseRecord[];
+  interventionDecisions?: IcarusInterventionDecisionRecord[];
 };
 
 export type IcarusSourceRecord = IcarusRecordReference & {
@@ -458,7 +554,11 @@ export function isIcarusAssessmentRecord(value: unknown): value is IcarusAssessm
     || (value.treatmentTargets !== undefined
       && (!Array.isArray(value.treatmentTargets) || !value.treatmentTargets.every(isIcarusTreatmentTargetRecord)))
     || (value.treatmentOutcomes !== undefined
-      && (!Array.isArray(value.treatmentOutcomes) || !value.treatmentOutcomes.every(isIcarusTreatmentOutcomeRecord)))) {
+      && (!Array.isArray(value.treatmentOutcomes) || !value.treatmentOutcomes.every(isIcarusTreatmentOutcomeRecord)))
+    || (value.causes !== undefined
+      && (!Array.isArray(value.causes) || !value.causes.every(isIcarusCauseRecord)))
+    || (value.interventionDecisions !== undefined
+      && (!Array.isArray(value.interventionDecisions) || !value.interventionDecisions.every(isIcarusInterventionDecisionRecord)))) {
     return false;
   }
   return true;
@@ -623,6 +723,81 @@ function filterUniqueById<T>(entries: readonly T[], idOf: (entry: T) => string):
   });
 }
 
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(isNonEmptyString);
+}
+
+function isInterventionScope(value: Record<string, unknown>): boolean {
+  return isStringList(value.assessmentIds) && isStringList(value.objectiveIds) && isStringList(value.pillarIds)
+    && Array.isArray(value.dependencyReferences) && value.dependencyReferences.every(isIcarusRecordReference)
+    && Array.isArray(value.failureModes) && value.failureModes.every((entry: unknown) =>
+      isPlainObject(entry) && isNonEmptyString(entry.assessmentId) && isNonEmptyString(entry.failureModeId));
+}
+
+function isInterventionProvenance(value: Record<string, unknown>): boolean {
+  return isNonEmptyString(value.createdAt) && isValidIcarusDate(value.createdAt)
+    && isNonEmptyString(value.updatedAt) && isValidIcarusDate(value.updatedAt)
+    && isNonEmptyString(value.createdByPersonId) && isNonEmptyString(value.updatedByPersonId);
+}
+
+function isRecordedInterventionEntry(value: Record<string, unknown>): boolean {
+  return isNonEmptyString(value.id) && isNonEmptyString(value.rationale)
+    && isNonEmptyString(value.recordedAt) && isValidIcarusDate(value.recordedAt)
+    && isNonEmptyString(value.recordedByPersonId);
+}
+
+export function isIcarusCauseRecord(value: unknown): value is IcarusCauseRecord {
+  return isPlainObject(value) && isNonEmptyString(value.id) && isNonEmptyString(value.title)
+    && typeof value.description === "string" && isInterventionScope(value) && isInterventionProvenance(value);
+}
+
+function isInterventionOption(value: unknown): value is IcarusInterventionOption {
+  return isPlainObject(value) && isNonEmptyString(value.id) && isNonEmptyString(value.name)
+    && typeof value.description === "string" && typeof value.rationale === "string"
+    && isStringList(value.causeIds) && isStringList(value.priorOptionIds) && isInterventionScope(value)
+    && (value.intent === undefined || ICARUS_INTERVENTION_INTENTS.some((entry) => entry === value.intent))
+    && (value.scope === undefined || ICARUS_INTERVENTION_SCOPES.some((entry) => entry === value.scope))
+    && (value.character === undefined || ICARUS_INTERVENTION_CHARACTERS.some((entry) => entry === value.character))
+    && ["Candidate", "Rejected", "Superseded"].some((status) => status === value.status)
+    && Array.isArray(value.treatmentLinks) && value.treatmentLinks.every((link: unknown) =>
+      isPlainObject(link) && isNonEmptyString(link.targetId) && isNonEmptyString(link.linkedByPersonId)
+      && isNonEmptyString(link.linkedAt) && isValidIcarusDate(link.linkedAt));
+}
+
+function isInterventionEffect(value: unknown): value is IcarusInterventionEffect {
+  if (!isPlainObject(value) || !isRecordedInterventionEntry(value) || !isNonEmptyString(value.optionId)
+    || !ICARUS_INTERVENTION_EFFECTS.some((entry) => entry === value.direction)
+    || !isPlainObject(value.target) || !Array.isArray(value.evidence)) return false;
+  const target = value.target;
+  return (target.kind === "Dependency" ? isIcarusRecordReference(target.reference)
+    : ["Cause", "Assessment", "Strategic Objective", "Pillar"].some((kind) => kind === target.kind) && isNonEmptyString(target.id))
+    && value.evidence.every((entry: unknown) => isPlainObject(entry)
+      && isNonEmptyString(entry.assessmentId) && isNonEmptyString(entry.failureModeId) && isNonEmptyString(entry.evidenceId));
+}
+
+export function isIcarusInterventionDecisionRecord(value: unknown): value is IcarusInterventionDecisionRecord {
+  return isPlainObject(value) && isNonEmptyString(value.id) && isNonEmptyString(value.title)
+    && typeof value.rationale === "string" && isStringList(value.causeIds)
+    && isInterventionScope(value) && isInterventionProvenance(value)
+    && isOptionalNonEmptyString(value.decisionRecordId) && isOptionalNonEmptyString(value.selectedOptionId)
+    && isOptionalValidDate(value.nextReviewBy) && ["Draft", "Recorded", "Superseded"].some((status) => status === value.status)
+    && Array.isArray(value.options) && value.options.every(isInterventionOption)
+    && Array.isArray(value.selectionHistory) && value.selectionHistory.every((entry: unknown) =>
+      isPlainObject(entry) && isNonEmptyString(entry.id) && isNonEmptyString(entry.optionId)
+      && isNonEmptyString(entry.rationale) && isNonEmptyString(entry.selectedByPersonId)
+      && isNonEmptyString(entry.selectedAt) && isValidIcarusDate(entry.selectedAt))
+    && Array.isArray(value.relationships) && value.relationships.every((entry: unknown) =>
+      isPlainObject(entry) && isRecordedInterventionEntry(entry)
+      && isNonEmptyString(entry.fromOptionId) && isNonEmptyString(entry.toOptionId)
+      && ICARUS_INTERVENTION_RELATIONSHIPS.some((kind) => kind === entry.kind))
+    && Array.isArray(value.effects) && value.effects.every(isInterventionEffect)
+    && Array.isArray(value.lessonLinks) && value.lessonLinks.every((link: unknown) =>
+      isPlainObject(link) && isNonEmptyString(link.id) && isNonEmptyString(link.lessonId)
+      && isStringList(link.outcomeIds) && link.outcomeIds.length > 0 && isStringList(link.causeIds)
+      && isNonEmptyString(link.rationale) && isNonEmptyString(link.linkedByPersonId)
+      && isNonEmptyString(link.linkedAt) && isValidIcarusDate(link.linkedAt));
+}
+
 // Recovers optional assurance and treatment fields: malformed optional entries are dropped so one bad value cannot
 // make all Icarus data unreadable. Core Icarus fields stay strictly validated by assertIcarusDataStructure.
 // Legacy records without these optional fields remain unchanged.
@@ -631,6 +806,16 @@ export function normaliseIcarusAssessmentData(value: unknown): unknown {
   return value.map((assessment: unknown) => {
     if (!isPlainObject(assessment)) return assessment;
     const next: Record<string, unknown> = { ...assessment };
+    if ("causes" in next) {
+      if (!Array.isArray(next.causes)) delete next.causes;
+      else next.causes = filterUniqueById(next.causes.filter(isIcarusCauseRecord), (cause) => cause.id);
+    }
+    if ("interventionDecisions" in next) {
+      if (!Array.isArray(next.interventionDecisions)) delete next.interventionDecisions;
+      else next.interventionDecisions = filterUniqueById(
+        next.interventionDecisions.filter(isIcarusInterventionDecisionRecord), (decision) => decision.id,
+      );
+    }
     const modeEvidenceIds = new Map<string, Set<string>>();
     if (Array.isArray(next.failureModes)) {
       next.failureModes.forEach((mode: unknown) => {

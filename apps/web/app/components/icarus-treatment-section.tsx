@@ -12,6 +12,7 @@ import {
   createIcarusResilienceTreatmentTarget,
   getIcarusBarrierRestorationTreatmentTargetId,
   getIcarusResilienceTreatmentTargetId,
+  persistIcarusTreatmentTarget,
   type IcarusTreatmentExecution,
   type IcarusTreatmentIndex,
   type IcarusTreatmentTarget,
@@ -35,27 +36,6 @@ const itemClass = "text-[12px] leading-5 text-[#4d4944]";
 const buttonClass = "rounded border border-[#315b45] px-2 py-1 text-[10px] font-medium text-[#315b45] disabled:opacity-40";
 const selectClass = "mt-1 rounded border border-[#cfc8c1] bg-white px-2 py-1 text-[11px] text-[#171717]";
 
-function toPersistedTarget(target: IcarusTreatmentTarget): IcarusTreatmentTargetRecord {
-  return {
-    id: target.id,
-    sourceKind: target.sourceKind,
-    sourceId: target.sourceId,
-    assessmentId: target.assessmentId,
-    ...(target.failureModeId ? { failureModeId: target.failureModeId } : {}),
-    ...(target.controlId ? { controlId: target.controlId } : {}),
-    ...(target.dependencyReference ? { dependencyReference: { ...target.dependencyReference } } : {}),
-    treatmentKind: target.treatmentKind,
-    reason: target.reason,
-    basis: [...target.basis],
-    affectedAssessmentIds: [...target.affectedAssessmentIds],
-    objectiveIds: [...target.objectiveIds],
-    pillarIds: [...target.pillarIds],
-    provenance: { kind: target.provenance.kind, finding: target.provenance.finding },
-    executionLinks: [],
-    promotedAt: new Date().toISOString(),
-  };
-}
-
 function changeStoredTarget(
   assessments: readonly IcarusAssessmentRecord[],
   target: IcarusTreatmentTarget,
@@ -64,7 +44,7 @@ function changeStoredTarget(
   return assessments.map((assessment) => {
     if (assessment.id !== target.assessmentId) return assessment;
     const stored = assessment.treatmentTargets ?? [];
-    const current = stored.find((entry) => entry.id === target.id) ?? toPersistedTarget(target);
+    const current = stored.find((entry) => entry.id === target.id) ?? persistIcarusTreatmentTarget(target, new Date().toISOString());
     const next = update(current);
     return {
       ...assessment,
