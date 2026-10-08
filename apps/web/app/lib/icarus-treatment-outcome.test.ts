@@ -8,6 +8,7 @@ import {
 import {
   buildIcarusTreatmentOutcomeIndex,
   getIcarusTreatmentVerificationIssues,
+  getIcarusTreatmentCompletion,
   type IcarusTreatmentOutcomeIndexInput,
 } from "./icarus-treatment-outcome";
 import type { IcarusTreatmentTarget } from "./icarus-treatment";
@@ -85,6 +86,8 @@ function target(overrides: Partial<IcarusTreatmentTarget> = {}): IcarusTreatment
       recordId: "action-1",
       title: "Restore the control",
       status: "Completed",
+      completedAt: "2026-05-01T00:00:00.000Z",
+      completionEvidence: "Restoration work recorded as complete",
     }],
     state: "Completed — verification required",
     material: true,
@@ -142,6 +145,7 @@ function effectiveOutcome(): IcarusTreatmentOutcomeRecord {
     evidence: [...option.evidence],
     afterState: { ...option.afterState },
     verificationNote: "The current control test passed with supporting evidence.",
+    completionConditions: getIcarusTreatmentCompletion(targetRecord, input.nowMs!).conditions,
   };
 }
 
@@ -309,7 +313,10 @@ describe("Icarus treatment verification", () => {
     ["Failed", "Ineffective"],
     ["Inconclusive", "Inconclusive"],
   ] as const)("classifies a current %s control test as %s", (result, outcome) => {
+    const record = assessment();
+    record.controls[0].assuranceTests![0].result = result;
     const input = indexInput({
+      assessments: [record],
       assurance: {
         byAssessmentId: new Map([[assessmentId, {
           assessmentId,
@@ -458,6 +465,13 @@ describe("Icarus treatment verification", () => {
     const source = indexInput();
     const recorded = { ...effectiveOutcome(), verifiedAt: "2026-05-03T00:00:00.000Z" };
     source.targets = [target({ executionLinks: [{ ...target().executionLinks[0], linkedAt: recorded.verifiedAt }] })];
+    source.targets = source.targets.map((entry) => ({
+      ...entry,
+      executions: entry.executions.map((execution) => ({
+        ...execution, completedAt: recorded.verifiedAt,
+      })),
+    }));
+    recorded.completionConditions = getIcarusTreatmentCompletion(source.targets[0], source.nowMs ?? Date.parse(recorded.verifiedAt)).conditions;
     recorded.executionLinks = [{ recordType: "Action", recordId: "action-1", linkedAt: recorded.verifiedAt }];
     source.assessments = [assessment({ treatmentOutcomes: [recorded] })];
     source.nowMs = Date.parse(recorded.verifiedAt);
@@ -497,7 +511,8 @@ describe("Icarus treatment verification", () => {
       assessments: [assessment({ treatmentOutcomes: [effectiveOutcome()] })],
       targets: [target({ executionLinks: [{ ...target().executionLinks[0], linkedAt: "2026-05-02T00:00:00.000Z" }] })],
     })).get(target().id)!;
-    expect(view.options.map((option) => option.outcome)).toEqual(["Effective"]);
+    expect(view.options).toEqual([]);
+    expect(view.issues).toContain("Completion chronology is invalid: Action:action-1");
     expect(view.history[0].issues).toContain("Execution linkage provenance has changed");
     expect(view.state).toBe("Superseded");
   });
@@ -548,5 +563,175 @@ describe("Icarus treatment verification", () => {
       Date.parse("2026-05-04T00:00:00.000Z"),
     );
     expect(issues).toContain(`Source control test predates treatment routing or intervention selection: ${testId}`);
+  });
+
+  it("keeps legacy outcomes readable but cannot infer their missing completion provenance", () => {
+    const recorded = effectiveOutcome();
+    delete recorded.completionConditions;
+    const loaded = parseIcarusAssessments(JSON.stringify([assessment({ treatmentOutcomes: [recorded] })]));
+    expect(loaded[0].treatmentOutcomes).toEqual([recorded]);
+    const view = buildIcarusTreatmentOutcomeIndex(indexInput({ assessments: loaded })).get(target().id)!;
+    expect(view.state).toBe("Superseded");
+    expect(view.history[0].issues).toContain("Recorded verification has no completion provenance");
+    expect(view.protection).toBe("Protection unknown");
+  });
+
+  it("preserves an outcome with damaged optional completion data without granting assurance", () => {
+    const recorded = effectiveOutcome();
+    const loaded = parseIcarusAssessments(JSON.stringify([assessment({
+      treatmentOutcomes: [{ ...recorded, completionConditions: [] }],
+    })]));
+    expect(loaded[0].treatmentOutcomes?.[0]).toMatchObject({
+      id: recorded.id, verificationNote: recorded.verificationNote, completionConditions: [],
+    });
+    expect(buildIcarusTreatmentOutcomeIndex(indexInput({ assessments: loaded })).get(target().id)?.history[0].current).toBe(false);
+    const damaged = JSON.parse(JSON.stringify(assessment({ treatmentOutcomes: [recorded] })));
+    damaged.treatmentOutcomes[0].completionConditions = [{ invalid: true }];
+    const repaired = parseIcarusAssessments(JSON.stringify([damaged]));
+    expect(repaired[0].treatmentOutcomes?.[0].id).toBe(recorded.id);
+    expect(repaired[0].treatmentOutcomes?.[0].completionConditions).toEqual([]);
+  });
+
+  it.each([
+    { completedAt: undefined, completionEvidence: undefined },
+    { completedAt: "2026-05-01T00:00:00.000Z", completionEvidence: "" },
+    { completedAt: "2026-02-30T00:00:00.000Z", completionEvidence: "Claimed completion" },
+    { completedAt: "2026-05-21T00:00:00.000Z", completionEvidence: "Claimed completion" },
+  ])("never infers completion provenance from Completed status: %j", (completion) => {
+    const routed = target();
+    const view = buildIcarusTreatmentOutcomeIndex(indexInput({
+      targets: [{ ...routed, executions: routed.executions.map((execution) => ({ ...execution, ...completion })) }],
+    })).get(routed.id)!;
+    expect(view.options).toEqual([]);
+    expect(view.state).toBe("Awaiting verification");
+    expect(view.completion?.issues.length).toBeGreaterThan(0);
+    expect(view.protection).toBe("Not observed");
+  });
+
+  it("requires observations to follow the last of all linked execution completions", () => {
+    const routed = target();
+    const linked = {
+      ...routed,
+      executionLinks: [...routed.executionLinks, { recordType: "Project" as const, recordId: "project", linkedAt: "2026-05-01T00:00:00.000Z" }],
+      executions: [...routed.executions, {
+        recordType: "Project" as const, recordId: "project", title: "Project", status: "Completed",
+        completedAt: "2026-05-04T00:00:00.000Z", completionEvidence: "Completion recorded",
+      }],
+    };
+    const view = buildIcarusTreatmentOutcomeIndex(indexInput({ targets: [linked] })).get(routed.id)!;
+    expect(view.options).toEqual([]);
+    expect(view.issues).toContain(`Source control test predates execution completion: ${testId}`);
+    expect(view.completion?.conditions).toHaveLength(2);
+  });
+
+  it("records explicit completion review provenance for a Project without inventing operating fields", () => {
+    const link = { recordType: "Project" as const, recordId: "project", linkedAt: "2026-05-01T00:00:00.000Z" };
+    const review = {
+      id: "completion-review", completedAt: "2026-05-02T00:00:00.000Z",
+      recordedAt: "2026-05-02T10:00:00.000Z", recordedByPersonId: "person-2",
+      executionLinks: [link], note: "Reviewed completed delivery",
+    };
+    const routed = target({
+      executionLinks: [link],
+      executions: [{ recordType: "Project", recordId: "project", title: "Project", status: "Completed" }],
+      completionReviews: [review],
+    });
+    const view = buildIcarusTreatmentOutcomeIndex(indexInput({ targets: [routed] })).get(routed.id)!;
+    expect(view.options.map((option) => option.outcome)).toEqual(["Effective"]);
+    expect(view.state).toBe("Awaiting verification");
+    expect(view.protection).toBe("Observed — review required");
+    expect(view.completion?.conditions[0]).toMatchObject({
+      source: "Completion review", completionReviewId: review.id, completedAt: review.completedAt, basis: review.note,
+    });
+    expect(routed.executions[0].completedAt).toBeUndefined();
+    const stored = assessment({
+      treatmentTargets: [{
+        ...routed, basis: [], affectedAssessmentIds: [assessmentId], objectiveIds: [], pillarIds: [],
+        executionLinks: [link], promotedAt: link.linkedAt, completionReviews: [review],
+      }],
+    });
+    expect(parseIcarusAssessments(JSON.stringify([stored]))[0].treatmentTargets?.[0].completionReviews).toEqual([review]);
+    const changed = { ...routed, executionLinks: [{ ...link, linkedAt: "2026-05-02T00:00:00.000Z" }] };
+    expect(getIcarusTreatmentCompletion(changed, indexInput().nowMs!).issues)
+      .toContain("Completion review provenance is invalid or no longer matches execution linkage");
+  });
+
+  it("invalidates a verification snapshot when completion evidence changes or execution reopens", () => {
+    const routed = target();
+    const source = indexInput({ assessments: [assessment({ treatmentOutcomes: [effectiveOutcome()] })] });
+    source.targets = [{ ...routed, executions: routed.executions.map((execution) => ({
+      ...execution, completionEvidence: "Changed completion basis",
+    })) }];
+    const changed = buildIcarusTreatmentOutcomeIndex(source).get(routed.id)!;
+    expect(changed.history[0].current).toBe(false);
+    expect(changed.history[0].issues).toContain("Execution completion provenance has changed");
+    source.targets = [{ ...routed, state: "In progress", executions: routed.executions.map((execution) => ({
+      ...execution, status: "In Progress",
+    })) }];
+    expect(buildIcarusTreatmentOutcomeIndex(source).get(routed.id)?.protection).toBe("Protection unknown");
+  });
+
+  it("expires follow-up assurance at the deadline boundary and cannot renew it with the same observation", () => {
+    const recorded = { ...effectiveOutcome(), nextObservationBy: "2026-05-05" };
+    const source = indexInput({ assessments: [assessment({ treatmentOutcomes: [recorded] })],
+      nowMs: Date.parse("2026-05-05T23:59:59.999Z") });
+    expect(buildIcarusTreatmentOutcomeIndex(source).get(target().id)?.state).toBe("Verified effective");
+    source.nowMs!++;
+    const due = buildIcarusTreatmentOutcomeIndex(source).get(target().id)!;
+    expect(due.history[0].evidenceCurrent).toBe(false);
+    expect(due.protection).toBe("Observation due");
+    const next = {
+      ...recorded, occurrenceId: "renewal",
+      id: getIcarusTreatmentOutcomeId(recorded.treatmentTargetId, recorded.verifiedByPersonId, recorded.evidence, "renewal"),
+      verifiedAt: "2026-05-06T00:00:00.000Z", nextObservationBy: "2026-05-10",
+    };
+    source.assessments = [assessment({ treatmentOutcomes: [recorded, next] })];
+    expect(buildIcarusTreatmentOutcomeIndex(source).get(target().id)?.history[1].issues)
+      .toContain("Follow-up requires a new source observation, not another review of the same evidence");
+  });
+
+  it("distinguishes distinct repeat tests, reused tests, intervening failure and current deterioration", () => {
+    const first = effectiveOutcome();
+    const source = indexInput();
+    const record = assessment({ treatmentOutcomes: [first] });
+    const current = source.assurance.byAssessmentId.get(assessmentId)!;
+    record.controls[0].assuranceTests!.push({
+      id: "repeat-test", testedAt: "2026-05-06T00:00:00.000Z",
+      testedByPersonId: "person-2", result: "Passed", evidenceIds: [evidenceId],
+    });
+    source.assessments = [record];
+    source.assurance = { byAssessmentId: new Map([[assessmentId, {
+      ...current, controls: current.controls.map((control) => ({
+        ...control, lastEvent: { ...control.lastEvent!, testId: "repeat-test", at: "2026-05-06T00:00:00.000Z" },
+      })),
+    }]]) };
+    const option = buildIcarusTreatmentOutcomeIndex(source).get(target().id)!.options[0];
+    const second = {
+      ...first, occurrenceId: "repeat", verifiedAt: "2026-05-07T00:00:00.000Z",
+      id: getIcarusTreatmentOutcomeId(first.treatmentTargetId, first.verifiedByPersonId, option.evidence, "repeat"),
+      evidence: [...option.evidence], nextObservationBy: "2026-06-01",
+    };
+    record.treatmentOutcomes = [first, second];
+    expect(buildIcarusTreatmentOutcomeIndex(source).get(target().id)?.protection).toBe("Repeated protection observed");
+    record.controls[0].assuranceTests!.push({
+      id: "intervening-failure", testedAt: "2026-05-05T00:00:00.000Z",
+      testedByPersonId: "person-2", result: "Failed", evidenceIds: [evidenceId],
+    });
+    expect(buildIcarusTreatmentOutcomeIndex(source).get(target().id)?.protection).toBe("Evidence-supported effectiveness");
+    const duplicate = { ...second, occurrenceId: "same-observation",
+      id: getIcarusTreatmentOutcomeId(first.treatmentTargetId, first.verifiedByPersonId, second.evidence, "same-observation") };
+    record.treatmentOutcomes = [second, duplicate];
+    expect(buildIcarusTreatmentOutcomeIndex(source).get(target().id)?.protection).toBe("Evidence-supported effectiveness");
+    record.controls[0].assuranceTests!.push({
+      id: "latest-failure", testedAt: "2026-05-08T00:00:00.000Z",
+      testedByPersonId: "person-2", result: "Failed", evidenceIds: [evidenceId],
+    });
+    source.assurance = { byAssessmentId: new Map([[assessmentId, {
+      ...current, controls: current.controls.map((control) => ({
+        ...control, status: "Failed" as const, evidence: "Conflicting" as const,
+        lastEvent: { ...control.lastEvent!, result: "Failed" as const, testId: "latest-failure", at: "2026-05-08T00:00:00.000Z" },
+      })),
+    }]]) };
+    expect(buildIcarusTreatmentOutcomeIndex(source).get(target().id)?.protection).toBe("Protection deteriorated");
   });
 });

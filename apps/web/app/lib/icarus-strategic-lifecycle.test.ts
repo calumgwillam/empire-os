@@ -324,7 +324,8 @@ describe("durable Icarus strategic lifecycle", () => {
     }];
     const recoveryInput: Partial<IcarusStrategicIntelligenceInput> = {
       nowMs: Date.parse(recoveredAt), actions: [{ id: "recovery-action", status: "Completed" }],
-      treatmentActions: [{ recordType: "Action", recordId: "recovery-action", title: "Restore protection", status: "Completed" }],
+      treatmentActions: [{ recordType: "Action", recordId: "recovery-action", title: "Restore protection", status: "Completed",
+        completedAt: recoveredAt, completionEvidence: "Recovery work complete" }],
     };
     const beforeVerification = derive(restored, recoveryInput);
     expect(beforeVerification.view.eligibility.state).toBe("Insufficient evidence");
@@ -336,6 +337,7 @@ describe("durable Icarus strategic lifecycle", () => {
       verifiedAt: recoveredAt, verifiedByPersonId: "reviewer", executionLinks: restored[0].treatmentTargets[0].executionLinks,
       outcome: "Effective", evidence: [...recoveryOption.evidence], afterState: recoveryOption.afterState,
       verificationNote: "Treatment-only verification; not intervention attribution.",
+      completionConditions: beforeVerification.intelligence.treatment.verification.get(recoveryTargetId)!.completion!.conditions.slice(),
     }];
     const { input } = derive(restored, recoveryInput);
     const eligibility = deriveIcarusResolutionEligibility(input, "risk", scope);
@@ -406,7 +408,8 @@ describe("durable Icarus strategic lifecycle", () => {
     }];
     const result = derive([base], {
       actions: [{ id: "recovery", status: "Completed" }],
-      treatmentActions: [{ recordType: "Action", recordId: "recovery", title: "Recovery", status: "Completed" }],
+      treatmentActions: [{ recordType: "Action", recordId: "recovery", title: "Recovery", status: "Completed",
+        completedAt: reviewedAt, completionEvidence: "Recovery work complete" }],
     });
     expect(result.intelligence.assurance.byAssessmentId.get(base.id)?.controls[0].status).toBe("Assured");
     expect(result.intelligence.treatment.verification.get(targetId)?.options).toEqual([]);
@@ -530,8 +533,10 @@ describe("treatment, intervention and learning lifecycle integration", () => {
     }];
     const overrides: Partial<IcarusStrategicIntelligenceInput> = {
       actions: recordType === "Action" ? [{ id: "execution", status: "Completed" }] : [],
-      treatmentActions: recordType === "Action" ? [{ recordType, recordId: "execution", title: "Restore", status: "Completed" }] : [],
-      treatmentProjects: recordType === "Project" ? [{ recordType, recordId: "execution", title: "Restore", status: "Completed" }] : [],
+      treatmentActions: recordType === "Action" ? [{ recordType, recordId: "execution", title: "Restore", status: "Completed",
+        completedAt: createdAt, completionEvidence: "Recorded work completion" }] : [],
+      treatmentProjects: recordType === "Project" ? [{ recordType, recordId: "execution", title: "Restore", status: "Completed",
+        completedAt: createdAt, completionEvidence: "Recorded work completion" }] : [],
     };
     const initial = derive([{ ...base, controls: base.controls.map((control) => ({
       ...control, assuranceTests: control.assuranceTests!.map((test) => ({ ...test, result: "Failed" as const })),
@@ -548,6 +553,7 @@ describe("treatment, intervention and learning lifecycle integration", () => {
       id: getIcarusTreatmentOutcomeId(targetId, "reviewer", option.evidence), assessmentId: "risk", treatmentTargetId: targetId,
       verifiedAt: createdAt, verifiedByPersonId: "reviewer", executionLinks: base.treatmentTargets[0].executionLinks,
       outcome: "Effective", evidence: [...option.evidence], afterState: option.afterState, verificationNote: "Explicit current treatment observation.",
+      completionConditions: first.intelligence.treatment.verification.get(targetId)!.completion!.conditions.slice(),
     };
     base.treatmentOutcomes = [outcome];
     const current = derive([base], overrides);

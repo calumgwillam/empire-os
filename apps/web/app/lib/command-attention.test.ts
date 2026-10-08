@@ -520,6 +520,7 @@ function productionLearning(records: ProductionLearningRecords): LearningAttenti
     targets,
     assurance: records.icarusVerificationContext?.assurance ?? { byAssessmentId: new Map() },
     dependencyHealth: records.icarusVerificationContext?.dependencyHealth ?? new Map(),
+    nowMs: NOW,
   });
   const interventionIndex = buildIcarusInterventionIndex({
     assessments: records.icarusAssessments ?? [],
@@ -560,13 +561,17 @@ describe("Production record projection into Command learning", () => {
   });
 
   it("projects verified Icarus treatment learning from the real page composition", () => {
+    const completedAt = "2025-04-02T12:00:00.000Z";
+    const testedAt = "2025-04-03T12:00:00.000Z";
+    const verifiedAt = "2025-04-04T12:00:00.000Z";
+    const completionEvidence = "Restoration work completed and recorded before the operating control test.";
     const record: IcarusTreatmentOutcomeRecord = {
       id: "outcome-1",
       treatmentTargetId: "target-1",
       assessmentId: "icarus-1",
       executionLinks: [{ recordType: "Action", recordId: "action-1", linkedAt: icarusTimestamp }],
       outcome: "Effective",
-      verifiedAt: icarusTimestamp,
+      verifiedAt,
       verifiedByPersonId: "person-1",
       evidence: [{
         kind: "Control test",
@@ -581,15 +586,29 @@ describe("Production record projection into Command learning", () => {
       }],
       afterState: { kind: "Control assurance", state: "Assured" },
       verificationNote: "Current evidence confirms the control is effective.",
+      completionConditions: [{
+        recordType: "Action", recordId: "action-1", completedAt,
+        source: "Operating record", basis: completionEvidence,
+      }],
+      nextObservationBy: "2025-04-20",
     };
     const records = learningRecords({
       icarusAssessments: [icarusAssessment({
         treatmentOutcomes: [record],
+        failureModes: [{
+          id: "mode-1", mechanism: "The operating control does not interrupt the failure path.",
+          vulnerability: "Protection requires verified restoration.",
+          evidence: [{
+            id: "evidence-1", statement: "Observed restored control interrupting the failure path after execution completion.",
+            origin: "Direct observation", observedAt: testedAt, recordedAt: testedAt,
+            recordedBy: "person-1", review: "Supports", reviewedAt: testedAt, reviewedBy: "person-1",
+          }],
+        }],
         controls: [{
           id: "control-1", failureModeId: "mode-1", intervention: "Restore control", lifecycle: "Active",
           effectiveness: "Unknown", evidenceIds: ["evidence-1"], linkedRecords: [],
           assuranceTests: [{
-            id: "test-1", testedAt: icarusTimestamp, testedByPersonId: "person-1",
+            id: "test-1", testedAt, testedByPersonId: "person-1",
             result: "Passed", evidenceIds: ["evidence-1"],
           }],
         }],
@@ -598,7 +617,10 @@ describe("Production record projection into Command learning", () => {
         id: "target-1", treatmentKind: "Restore control", assessmentId: "icarus-1",
         failureModeId: "mode-1", controlId: "control-1", state: "Completed — verification required",
         executionLinks: record.executionLinks,
-        executions: [{ recordType: "Action", recordId: "action-1", title: "Restore control", status: "Completed" }],
+        executions: [{
+          recordType: "Action", recordId: "action-1", title: "Restore control", status: "Completed",
+          completedAt, completionEvidence,
+        }],
       }],
       icarusVerificationContext: {
         assurance: { byAssessmentId: new Map([["icarus-1", {
@@ -607,7 +629,7 @@ describe("Production record projection into Command learning", () => {
           controls: [{
             controlId: "control-1", failureModeId: "mode-1", status: "Assured", evidence: "Current support",
             lastEvent: {
-              source: "Control test", testId: "test-1", at: icarusTimestamp,
+              source: "Control test", testId: "test-1", at: testedAt,
               result: "Passed", evidenceIds: ["evidence-1"],
             },
           }],
@@ -637,6 +659,35 @@ describe("Production record projection into Command learning", () => {
     expect(unknownCurrency[0].signal).toMatchObject({
       sourceId: "outcome-1", sourceTitle: "Restore control", outcomeState: "Unknown",
     });
+    for (const invalid of [
+      { ...record, completionConditions: undefined },
+      { ...record, nextObservationBy: "2025-04-09" },
+    ]) {
+      const projected = productionLearning({
+        ...records,
+        icarusAssessments: records.icarusAssessments!.map((assessment) => ({
+          ...assessment, treatmentOutcomes: [invalid],
+        })),
+      }).filter(({ signal }) => signal.sourceType === "Icarus Treatment");
+      expect(projected[0].signal).toMatchObject({ sourceId: record.id, outcomeState: "Unknown" });
+      expect(projected[0].signal.evidence).toContainEqual(expect.objectContaining({
+        field: "verificationCurrency", value: "Historical / superseded or currency unknown",
+      }));
+    }
+    const lateCompletion = "2025-04-03T13:00:00.000Z";
+    const preCompletionTest = productionLearning({
+      ...records,
+      icarusTreatmentTargets: records.icarusTreatmentTargets!.map((target) => ({
+        ...target, executions: target.executions!.map((execution) => ({ ...execution, completedAt: lateCompletion })),
+      })),
+      icarusAssessments: records.icarusAssessments!.map((assessment) => ({
+        ...assessment,
+        treatmentOutcomes: [{ ...record, completionConditions: record.completionConditions!.map((condition) => ({
+          ...condition, completedAt: lateCompletion,
+        })) }],
+      })),
+    }).filter(({ signal }) => signal.sourceType === "Icarus Treatment");
+    expect(preCompletionTest[0].signal).toMatchObject({ sourceId: record.id, outcomeState: "Unknown" });
   });
 
   it("leaves ordinary execution and outcomes without explicit learning conditions unchanged", () => {

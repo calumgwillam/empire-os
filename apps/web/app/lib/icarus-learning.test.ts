@@ -468,7 +468,8 @@ describe("explicit recurrence and downstream projection", () => {
     const deriveTreatment = (records: IcarusAssessmentRecord[]) => buildIcarusTreatmentIndex({
       assessments: records, assurance: source.assurance, dependencyHealth: source.dependencyHealth,
       resilience: [], recommendations: [], barrierRestorations: [],
-      actions: [{ recordType: "Action", recordId: "recovery", title: "Recovery", status: "Completed" }],
+      actions: [{ recordType: "Action", recordId: "recovery", title: "Recovery", status: "Completed",
+        completedAt: createdAt, completionEvidence: "Recovery work complete" }],
       projects: [], founderPersonId: null, nowMs: source.nowMs,
     });
     const option = deriveTreatment([record]).verification.get(targetId)!.options.find((entry) => entry.outcome === "Effective")!;
@@ -478,6 +479,7 @@ describe("explicit recurrence and downstream projection", () => {
       treatmentTargetId: targetId, assessmentId: record.id, executionLinks: record.treatmentTargets[0].executionLinks,
       outcome: "Effective", verifiedAt: testedAt, verifiedByPersonId: "reviewer",
       evidence: [...option.evidence], afterState: option.afterState, verificationNote: "Observed protection",
+      completionConditions: deriveTreatment([record]).verification.get(targetId)!.completion!.conditions.slice(),
     }];
     source.treatment = deriveTreatment([record]);
     const linked = addLearning(source, learning({

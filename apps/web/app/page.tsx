@@ -10124,6 +10124,8 @@ export default function Home() {
     dueDate: action.dueDate,
     priority: action.priority,
     context: getAreaText(action),
+    completedAt: action.completionDate,
+    completionEvidence: action.completionEvidence,
   }));
   const icarusTreatmentProjects = projects.map((project) => ({
     recordType: "Project" as const,

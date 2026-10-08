@@ -3,6 +3,7 @@ import type {
   IcarusAssessmentRecord,
   IcarusRecordReference,
   IcarusTreatmentTargetRecord,
+  IcarusTreatmentCompletionReview,
 } from "./icarus";
 import type { IcarusDependencyHealthRegistry } from "./icarus-dependency-health";
 import { getIcarusEffectiveProtection } from "./icarus-effective-protection";
@@ -33,6 +34,8 @@ export type IcarusTreatmentExecution = {
   priority?: string;
   blocked?: boolean;
   context?: string;
+  completedAt?: string;
+  completionEvidence?: string;
 };
 
 export type IcarusTreatmentRouteState =
@@ -70,6 +73,7 @@ export type IcarusTreatmentTarget = {
   state: IcarusTreatmentRouteState;
   material: boolean;
   founderOwned: boolean;
+  completionReviews?: readonly IcarusTreatmentCompletionReview[];
 };
 
 export type IcarusTreatmentAssessmentSummary = {
@@ -161,6 +165,7 @@ export function persistIcarusTreatmentTarget(
     basis: [...target.basis], affectedAssessmentIds: [...target.affectedAssessmentIds],
     objectiveIds: [...target.objectiveIds], pillarIds: [...target.pillarIds],
     provenance: { ...target.provenance }, executionLinks: [], promotedAt,
+    ...(target.completionReviews ? { completionReviews: [...target.completionReviews] } : {}),
   };
 }
 
@@ -366,6 +371,13 @@ function buildSummary(
     ...materialForAssessment.filter((target) => target.state === "Completed — verification required")
       .flatMap((target) => verification.get(target.id)?.issues?.map((issue) =>
         `Treatment verification evidence gap (${target.id}): ${issue}`) ?? []),
+    ...materialForAssessment.flatMap((target) => {
+      const view = verification.get(target.id);
+      return view?.protection === "Protection deteriorated" || view?.protection === "Observation due" || view?.protection === "Protection unknown"
+        ? [`Treatment protection requires review (${target.id}): ${view.protection}`]
+        : view?.state === "Verified effective" && !view.latest?.nextObservationBy
+          ? [`Effective treatment has no scheduled follow-up observation (${target.id})`] : [];
+    }),
     unpromotedInterventionCount > 0
       ? `${unpromotedInterventionCount} resilience/restoration intervention${unpromotedInterventionCount === 1 ? " remains" : "s remain"} a recommendation`
       : "",
@@ -432,6 +444,7 @@ export function buildIcarusTreatmentIndex(input: IcarusTreatmentIndexInput): Ica
     const route = routeState(executions, links, input.founderPersonId, nowMs);
     uniqueById.set(target.id, {
       ...previous,
+      completionReviews: [...(previous.completionReviews ?? []), ...(target.completionReviews ?? [])],
       executionLinks: links,
       executions,
       state: route.state,

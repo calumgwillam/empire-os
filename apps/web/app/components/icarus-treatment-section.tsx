@@ -20,7 +20,7 @@ import {
 import type { IcarusAssurancePersonOption } from "./icarus-assurance-section";
 import type { IcarusResilienceIntervention } from "../lib/icarus-dependency-resilience";
 import type { IcarusInterventionIndex } from "../lib/icarus-intervention-decision";
-import { getIcarusTreatmentVerificationIssues } from "../lib/icarus-treatment-outcome";
+import { getIcarusTreatmentCompletion, getIcarusTreatmentFollowUpIssues, getIcarusTreatmentVerificationIssues } from "../lib/icarus-treatment-outcome";
 
 type Props = {
   assessments: readonly IcarusAssessmentRecord[];
@@ -85,6 +85,10 @@ export default function IcarusTreatmentSection({
   const [verificationNote, setVerificationNote] = useState<Record<string, string>>({});
   const [verificationContext, setVerificationContext] = useState<Record<string, string>>({});
   const [verificationError, setVerificationError] = useState<Record<string, string>>({});
+  const [completionAt, setCompletionAt] = useState<Record<string, string>>({});
+  const [completionBy, setCompletionBy] = useState<Record<string, string>>({});
+  const [completionNote, setCompletionNote] = useState<Record<string, string>>({});
+  const [nextObservationBy, setNextObservationBy] = useState<Record<string, string>>({});
   const verificationContexts = (targetId: string) => (interventionIndex?.decisions ?? []).filter((view) =>
     view.record.status === "Recorded" && view.selectedOption?.treatmentLinks.some((link) => link.targetId === targetId)
     && !["Not structured", "Conflict", "Prerequisites unmet"].includes(view.readiness));
@@ -113,6 +117,44 @@ export default function IcarusTreatmentSection({
     .slice()
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
 
+  const recordCompletion = (target: IcarusTreatmentTarget) => {
+    const recordedAt = new Date().toISOString();
+    const at = Date.parse(completionAt[target.id] ?? "");
+    const personId = completionBy[target.id] ?? "";
+    const note = completionNote[target.id]?.trim() ?? "";
+    const fail = (message: string) => setVerificationError((current) => ({ ...current, [target.id]: message }));
+    if (!writable || target.state !== "Completed — verification required" || !Number.isFinite(at)
+      || !activePeople.some((person) => person.id === personId) || !note) {
+      fail("Record an explicit completion time, active reviewer and completion basis for completed execution.");
+      return;
+    }
+    const links = target.executionLinks.flatMap((link) => link.linkedAt
+      ? [{ recordType: link.recordType, recordId: link.recordId, linkedAt: link.linkedAt }] : []);
+    if (!links.length || links.length !== target.executionLinks.length) {
+      fail("Dated execution linkage is required before recording completion.");
+      return;
+    }
+    const review = {
+      id: createId(), completedAt: new Date(at).toISOString(), recordedAt, recordedByPersonId: personId,
+      executionLinks: links, note,
+    };
+    if ((target.completionReviews ?? []).some((entry) => entry.id === review.id)) {
+      fail("Completion review identity already exists.");
+      return;
+    }
+    const next = { ...target, completionReviews: [...(target.completionReviews ?? []), review] };
+    const issues = getIcarusTreatmentCompletion(next, Date.parse(recordedAt)).issues;
+    if (issues.length) {
+      fail(issues.join("; "));
+      return;
+    }
+    commitAssessments(changeStoredTarget(assessments, target, (stored) => ({
+      ...stored, completionReviews: [...(stored.completionReviews ?? []), review],
+    })));
+    setVerificationError((current) => ({ ...current, [target.id]: "" }));
+    setCompletionNote((current) => ({ ...current, [target.id]: "" }));
+  };
+
   const recordVerification = (target: IcarusTreatmentTarget) => {
     const view = index.verification.get(target.id);
     const selectedValue = selectedVerification[target.id] ?? "";
@@ -138,6 +180,12 @@ export default function IcarusTreatmentSection({
       return;
     }
     const verifiedAt = new Date().toISOString();
+    const deadline = nextObservationBy[target.id]?.trim();
+    if (deadline && (!Number.isFinite(Date.parse(deadline))
+      || Date.parse(`${deadline}T23:59:59.999Z`) < Date.parse(verifiedAt))) {
+      fail("The next observation date must be today or later.");
+      return;
+    }
     const issues = getIcarusTreatmentVerificationIssues(
       target, option.evidence, assessments, Date.parse(verifiedAt), Date.parse(verifiedAt),
     );
@@ -178,6 +226,8 @@ export default function IcarusTreatmentSection({
       treatmentTargetId: target.id,
       assessmentId: target.assessmentId,
       executionLinks,
+      completionConditions: getIcarusTreatmentCompletion(target, Date.parse(verifiedAt)).conditions,
+      ...(deadline ? { nextObservationBy: deadline } : {}),
       outcome: option.outcome,
       verifiedAt,
       verifiedByPersonId: verifierId,
@@ -188,6 +238,11 @@ export default function IcarusTreatmentSection({
     };
     if (assessments.some((assessment) => assessment.treatmentOutcomes?.some((entry) => entry.id === record.id))) {
       fail("Verification occurrence identity already exists. Record a new occurrence.");
+      return;
+    }
+    const followUpIssues = getIcarusTreatmentFollowUpIssues(record, view?.latest, assessments);
+    if (followUpIssues.length) {
+      fail(followUpIssues.join("; "));
       return;
     }
     commitAssessments(assessments.map((assessment) => assessment.id !== target.assessmentId
@@ -315,6 +370,35 @@ export default function IcarusTreatmentSection({
                     <p className="text-[11px] font-medium text-[#4d4944]">
                       Verification: {index.verification.get(target.id)?.state}
                     </p>
+                    <p className={itemClass}>Protection: {index.verification.get(target.id)?.protection ?? "Unknown"}</p>
+                    <p className="text-[10px] text-[#6a625d]">Repeated observations are not proof of uninterrupted protection. Completion alone never proves effectiveness.</p>
+                    {index.verification.get(target.id)?.completion?.conditions.map((condition) => (
+                      <p key={`${condition.recordType}:${condition.recordId}`} className="text-[10px] text-[#6a625d]">
+                        {`${condition.recordType} ${condition.recordId}: completed ${condition.completedAt}; ${condition.source}${condition.completionReviewId ? ` ${condition.completionReviewId}` : ""} — ${condition.basis}`}
+                      </p>
+                    ))}
+                    {writable && target.state === "Completed — verification required"
+                      && Boolean(index.verification.get(target.id)?.completion?.issues.length) ? (
+                        <div className="mt-2 flex flex-wrap items-end gap-2">
+                          <p className="w-full text-[10px] text-[#6a625d]">Record when all linked execution was complete. Existing Action completion fields remain authoritative; correct partial or invalid Action provenance in the Action record. This review supplies missing provenance, not effectiveness evidence.</p>
+                          <label className="text-[10px]">Execution completed at
+                            <input type="datetime-local" className={selectClass} value={completionAt[target.id] ?? ""}
+                              onChange={(event) => setCompletionAt((current) => ({ ...current, [target.id]: event.target.value }))} />
+                          </label>
+                          <label className="text-[10px]">Completion reviewed by
+                            <select className={selectClass} value={completionBy[target.id] ?? ""}
+                              onChange={(event) => setCompletionBy((current) => ({ ...current, [target.id]: event.target.value }))}>
+                              <option value="">Select active Person</option>
+                              {activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+                            </select>
+                          </label>
+                          <label className="text-[10px]">Completion basis
+                            <input className={selectClass} value={completionNote[target.id] ?? ""}
+                              onChange={(event) => setCompletionNote((current) => ({ ...current, [target.id]: event.target.value }))} />
+                          </label>
+                          <button type="button" className={buttonClass} onClick={() => recordCompletion(target)}>Record completion review</button>
+                        </div>
+                      ) : null}
                     {index.verification.get(target.id)?.issues?.map((issue) => (
                       <p key={issue} className="mt-1 text-[10px] text-[#8b3d28]">{issue}</p>
                     ))}
@@ -323,6 +407,7 @@ export default function IcarusTreatmentSection({
                         {`${record.outcome} · ${record.verifiedAt} · verifier ${record.verifiedByPersonId} · ${record.afterState.kind}: ${record.afterState.state} · attribution ${attribution}${current ? " · current treatment occurrence" : evidenceCurrent ? " · historical occurrence; source evidence still matches" : " · historical occurrence; support no longer current"}${record.interventionReference ? ` · recorded for intervention ${record.interventionReference.decisionId}` : " · no explicit intervention attribution"}`}
                         {record.verificationNote ? ` — ${record.verificationNote}` : ""}
                         {issues?.length ? ` — verification gap: ${issues.join("; ")}` : ""}
+                        {record.nextObservationBy ? ` — next observation by ${record.nextObservationBy}` : " — no follow-up observation scheduled"}
                       </p>
                     ))}
                     {verificationError[target.id] ? <p role="alert" className="text-[11px] text-[#8b3d28]">{verificationError[target.id]}</p> : null}
@@ -339,7 +424,7 @@ export default function IcarusTreatmentSection({
                               ))}
                             </select>
                           </label>
-                          <p className="w-full text-[10px] text-[#6a625d]">Control tests must be dated on or after every execution link and no later than this review. Operational status alone cannot verify effectiveness. A new review does not create fresh source evidence or establish intervention causation.</p>
+                          <p className="w-full text-[10px] text-[#6a625d]">Control tests must follow completion of all linked work and any intervention selection, and precede this review. Operational status alone cannot verify effectiveness. A new review does not create fresh observations or establish causation.</p>
                           <label className="text-[10px] text-[#5e5953]">
                             Evidence-supported outcome
                             <select
@@ -376,6 +461,11 @@ export default function IcarusTreatmentSection({
                               onChange={(event) => setVerificationNote((current) => ({ ...current, [target.id]: event.target.value }))}
                               placeholder="Record what the evidence establishes"
                             />
+                          </label>
+                          <label className="text-[10px] text-[#5e5953]">
+                            Next effectiveness observation by
+                            <input type="date" className={selectClass} value={nextObservationBy[target.id] ?? ""}
+                              onChange={(event) => setNextObservationBy((current) => ({ ...current, [target.id]: event.target.value }))} />
                           </label>
                           <button
                             type="button"

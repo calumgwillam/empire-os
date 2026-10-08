@@ -70,7 +70,8 @@ function target(id = "target", overrides: Partial<IcarusTreatmentTarget> = {}): 
     basis: [], affectedAssessmentIds: ["risk"], objectiveIds: [], pillarIds: [],
     provenance: { kind: "Failure-chain recommendation", finding: "Declared barrier" },
     executionLinks: [{ recordType: "Action", recordId: "action", linkedAt: at }],
-    executions: [{ recordType: "Action", recordId: "action", title: "Action", status: "Completed" }],
+    executions: [{ recordType: "Action", recordId: "action", title: "Action", status: "Completed",
+      completedAt: at, completionEvidence: "Recorded completion" }],
     state: "Completed — verification required", material: true, founderOwned: false, ...overrides,
   };
 }

@@ -151,6 +151,25 @@ export type IcarusTreatmentTargetRecord = {
   };
   executionLinks: IcarusTreatmentExecutionLink[];
   promotedAt: string;
+  completionReviews?: IcarusTreatmentCompletionReview[];
+};
+
+export type IcarusTreatmentCompletionReview = {
+  id: string;
+  completedAt: string;
+  recordedAt: string;
+  recordedByPersonId: string;
+  executionLinks: IcarusTreatmentExecutionLink[];
+  note: string;
+};
+
+export type IcarusTreatmentCompletionCondition = {
+  recordType: "Action" | "Project";
+  recordId: string;
+  completedAt: string;
+  source: "Operating record" | "Completion review";
+  basis: string;
+  completionReviewId?: string;
 };
 
 export type IcarusTreatmentOutcomeCategory =
@@ -218,6 +237,8 @@ export type IcarusTreatmentOutcomeRecord = {
   beforeState?: IcarusTreatmentOutcomeStateFact;
   afterState: IcarusTreatmentOutcomeStateFact;
   verificationNote: string;
+  completionConditions?: IcarusTreatmentCompletionCondition[];
+  nextObservationBy?: string;
 };
 
 export type IcarusInterventionScope = {
@@ -731,8 +752,27 @@ function isIcarusTreatmentTargetRecord(value: unknown): value is IcarusTreatment
     && typeof value.provenance.finding === "string"
     && Array.isArray(value.executionLinks)
     && value.executionLinks.every(isIcarusTreatmentExecutionLink)
+    && (value.completionReviews === undefined || Array.isArray(value.completionReviews)
+      && value.completionReviews.every(isIcarusTreatmentCompletionReview))
     && isNonEmptyString(value.promotedAt)
     && isValidIcarusDate(value.promotedAt);
+}
+
+function isIcarusTreatmentCompletionReview(value: unknown): value is IcarusTreatmentCompletionReview {
+  return isPlainObject(value) && isNonEmptyString(value.id)
+    && isNonEmptyString(value.completedAt) && isValidIcarusDate(value.completedAt)
+    && isNonEmptyString(value.recordedAt) && isValidIcarusDate(value.recordedAt)
+    && isNonEmptyString(value.recordedByPersonId) && isNonEmptyString(value.note)
+    && Array.isArray(value.executionLinks) && value.executionLinks.length > 0
+    && value.executionLinks.every(isIcarusTreatmentExecutionLink);
+}
+
+function isIcarusTreatmentCompletionCondition(value: unknown): value is IcarusTreatmentCompletionCondition {
+  return isPlainObject(value) && ["Action", "Project"].includes(String(value.recordType))
+    && isNonEmptyString(value.recordId) && isNonEmptyString(value.completedAt) && isValidIcarusDate(value.completedAt)
+    && isNonEmptyString(value.basis)
+    && (value.source === "Operating record" && value.completionReviewId === undefined
+      || value.source === "Completion review" && isNonEmptyString(value.completionReviewId));
 }
 
 function isIcarusTreatmentOutcomeEvidence(value: unknown): value is IcarusTreatmentOutcomeEvidence {
@@ -791,7 +831,10 @@ function isIcarusTreatmentOutcomeRecord(value: unknown): value is IcarusTreatmen
     || !value.evidence.every(isIcarusTreatmentOutcomeEvidence)
     || (value.beforeState !== undefined && !isIcarusTreatmentOutcomeStateFact(value.beforeState))
     || !isIcarusTreatmentOutcomeStateFact(value.afterState)
-    || !isNonEmptyString(value.verificationNote)) {
+    || !isNonEmptyString(value.verificationNote)
+    || (value.completionConditions !== undefined && (!Array.isArray(value.completionConditions)
+      || !value.completionConditions.every(isIcarusTreatmentCompletionCondition)))
+    || (value.nextObservationBy !== undefined && typeof value.nextObservationBy !== "string")) {
     return false;
   }
   if (value.occurrenceId !== undefined && !isNonEmptyString(value.occurrenceId)) return false;
@@ -962,7 +1005,11 @@ export function normaliseIcarusAssessmentData(value: unknown): unknown {
       if (!Array.isArray(next.treatmentTargets)) delete next.treatmentTargets;
       else {
         next.treatmentTargets = filterUniqueById(
-          next.treatmentTargets.filter(isIcarusTreatmentTargetRecord),
+          next.treatmentTargets.map((target: unknown) => {
+            if (!isPlainObject(target) || target.completionReviews === undefined) return target;
+            return { ...target, completionReviews: Array.isArray(target.completionReviews)
+              ? target.completionReviews.filter(isIcarusTreatmentCompletionReview) : [] };
+          }).filter(isIcarusTreatmentTargetRecord),
           (target) => target.id,
         );
       }
@@ -971,7 +1018,11 @@ export function normaliseIcarusAssessmentData(value: unknown): unknown {
       if (!Array.isArray(next.treatmentOutcomes)) delete next.treatmentOutcomes;
       else {
         next.treatmentOutcomes = filterUniqueById(
-          next.treatmentOutcomes.filter(isIcarusTreatmentOutcomeRecord),
+          next.treatmentOutcomes.map((outcome: unknown) => {
+            if (!isPlainObject(outcome) || outcome.completionConditions === undefined) return outcome;
+            return { ...outcome, completionConditions: Array.isArray(outcome.completionConditions)
+              && outcome.completionConditions.every(isIcarusTreatmentCompletionCondition) ? outcome.completionConditions : [] };
+          }).filter(isIcarusTreatmentOutcomeRecord),
           (outcome) => outcome.id,
         );
       }
