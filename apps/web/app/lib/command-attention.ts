@@ -1,4 +1,5 @@
 import type { StrategicRiskConvergence } from "./strategic-risk-resolution";
+import type { IcarusObservationExecutionIndex } from "./icarus-observation-action";
 import type {
   ActionRecord,
   DecisionRecord,
@@ -113,6 +114,7 @@ export type CommandAttentionInput = {
   procurementQueue: readonly CommandAttentionProcurementInput[];
   learning?: readonly LearningAttentionInput[];
   icarus?: readonly IcarusStrategicSignal[];
+  icarusObservationExecution?: IcarusObservationExecutionIndex;
   nowMs?: number;
 };
 
@@ -695,6 +697,24 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
     });
   }
 
+  input.icarusObservationExecution?.actionAttention.forEach((attention) => {
+    const action = input.actions.find((record) => record.id === attention.actionId);
+    if (!action) return;
+    const existing = uniqueByKey.get(`Action:${action.id}`);
+    addAttentionItem("ICARUS OBSERVATION EXECUTION", {
+      ...(existing ?? {
+        id: action.id, objectType: "Action" as const, title: action.actionTitle || action.title,
+        statusText: `${action.status} / Observation verification required`, area: getAreaText(action),
+        attentionRank: 3, tieWeight: 0, priorityScore: getActionPriorityScore(action, now),
+        sortDate: getDateValue(action.dueDate), sortDateAscending: true,
+        sourceIndex: input.actions.indexOf(action),
+      }),
+      reason: attention.reasons.join(" • "), reasons: [...attention.reasons],
+    });
+    const merged = uniqueByKey.get(`Action:${action.id}`);
+    if (merged) merged.attentionRank = Math.min(3, merged.attentionRank);
+  });
+
   if (input.icarus) {
     // Signals arrive in deterministic materiality order; anchor resolution uses the current Command order.
     input.icarus.forEach((signal) => {
@@ -706,7 +726,15 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
       const treatmentRank = treatmentReasons.length > 0
         ? Math.max(3, placement.attentionRank - 1)
         : placement.attentionRank;
-      const anchored = signal.anchors
+      const monitoringOnly = signal.materialFailureModes.every((mode) => mode.lifecycleOnly)
+        && signal.lifecycle?.attentionReasons.every((reason) =>
+          reason.startsWith("Observation responsibility") || reason.startsWith("Observation execution"));
+      const monitoringAnchors = monitoringOnly
+        ? [...(input.icarusObservationExecution?.byTargetId.values() ?? [])]
+          .filter((view) => view.assessmentId === signal.assessmentId)
+          .flatMap((view) => view.actionIds.map((id) => ({ objectType: "Action" as const, id })))
+        : [];
+      const anchored = [...monitoringAnchors, ...signal.anchors]
         .map((anchor) => uniqueByKey.get(`${anchor.objectType}:${anchor.id}`))
         .filter((item): item is CommandAttentionItem => Boolean(item))
         .sort(compareAttentionItems)[0];

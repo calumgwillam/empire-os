@@ -82,6 +82,7 @@ import {
 } from "./strategic-risk-resolution";
 import { buildIcarusTreatmentIndex, type IcarusTreatmentExecution, type IcarusTreatmentIndex } from "./icarus-treatment";
 import { buildIcarusStrategicLifecycleIndex, type IcarusStrategicLifecycleIndex } from "./icarus-strategic-lifecycle";
+import { buildIcarusObservationExecutionIndex, type IcarusObservationExecutionIndex } from "./icarus-observation-action";
 
 // Only live objectives confer strategic consequence (see IcarusStrategicObjectiveContext.isLive).
 const LIVE_OBJECTIVE_STATUSES: ReadonlySet<string> = new Set(["Active", "Watching"]);
@@ -115,6 +116,7 @@ export type IcarusStrategicIntelligenceInput = {
   includeExposureSnapshot?: boolean;
   treatmentActions?: readonly IcarusTreatmentExecution[];
   treatmentProjects?: readonly IcarusTreatmentExecution[];
+  observationActions?: readonly IcarusTreatmentExecution[];
   hypothetical?: boolean;
 };
 
@@ -129,6 +131,7 @@ export type IcarusStrategicIntelligence = {
   assessmentStatuses: ReadonlyMap<string, IcarusAssessmentStatus>;
   assurance: IcarusAssuranceResult;
   treatment: IcarusTreatmentIndex;
+  observationExecution?: IcarusObservationExecutionIndex;
   lifecycle: IcarusStrategicLifecycleIndex;
   assuranceRollup: IcarusAssuranceRollup;
   dependencyHealth: IcarusDependencyHealthRegistry;
@@ -243,6 +246,9 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
   const significantAssessmentIds = new Set(input.assessments.filter((assessment) => assessment.linkedRecords.some((reference) =>
     reference.recordType === "Strategic Objective" && strategicObjectives.get(reference.recordId)?.isLive
     && strategicObjectives.get(reference.recordId)?.importance === "Critical")).map((assessment) => assessment.id));
+  const observationExecution = input.observationActions ? buildIcarusObservationExecutionIndex({
+    assessments: input.assessments, treatment, actions: input.observationActions, people: input.people, nowMs,
+  }) : undefined;
   const lifecycle = buildIcarusStrategicLifecycleIndex({
     assessments: input.assessments, assurance, treatment, signals: exposureSignals, dependencyHealth,
     people: input.people, nowMs, significantAssessmentIds,
@@ -268,6 +274,19 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     lifecycleAttention.set(target.assessmentId, {
       failureModeIds: [...new Set([...(previous?.failureModeIds ?? []), ...modeIds])],
       reasons: [...new Set([...(previous?.reasons ?? []), ...reasons])],
+    });
+  });
+  observationExecution?.byTargetId.forEach((view, targetId) => {
+    if (view.state === "Scheduled") return;
+    const target = treatment.targets.find((entry) => entry.id === targetId);
+    if (!target) return;
+    const previous = lifecycleAttention.get(view.assessmentId);
+    const modeIds = input.assessments.find((assessment) => assessment.id === view.assessmentId)?.failureModes
+      .filter((mode) => !target.failureModeId || mode.id === target.failureModeId).map((mode) => mode.id) ?? [];
+    lifecycleAttention.set(view.assessmentId, {
+      failureModeIds: [...new Set([...(previous?.failureModeIds ?? []), ...modeIds])],
+      reasons: [...new Set([...(previous?.reasons ?? []),
+        `Observation execution: ${view.state}; ${view.issues.join("; ") || "Link an accountable protection-observation Action"}`])],
     });
   });
   const finalExposureSignals = buildIcarusStrategicAttention({
@@ -322,6 +341,7 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     assessmentStatuses,
     assurance,
     treatment,
+    ...(observationExecution ? { observationExecution } : {}),
     lifecycle,
     assuranceRollup: buildIcarusAssuranceRollup(assurance.assessments.filter((assessment) =>
       assessmentStatuses.get(assessment.assessmentId) !== "Closed" || lifecycleAttention.has(assessment.assessmentId))),

@@ -1,4 +1,5 @@
 import { assertIcarusDataStructure, ICARUS_STORAGE_KEY, normaliseIcarusAssessmentData } from "./icarus";
+import { assertIcarusObservationActionLinks } from "./icarus-observation-action";
 
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
@@ -249,6 +250,7 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
     if (Array.isArray(conversions)) {
       conversions.forEach((record: unknown) => {
         if (!isPlainObject(record) || record.targetType !== "Convert to Action") return;
+        assertIcarusObservationActionLinks(record.icarusObservationLinks);
         if (Object.prototype.hasOwnProperty.call(record, "responsibilityOutcomeEvidence")) {
           assertActionResponsibilityOutcomeEvidenceStructure(record.responsibilityOutcomeEvidence);
         }

@@ -7,6 +7,7 @@ import type {
   IcarusObservationPlan,
 } from "./icarus";
 import type { IcarusDependencyHealthRegistry } from "./icarus-dependency-health";
+import type { IcarusObservationActionLink } from "./icarus-observation-action";
 import { getIcarusEffectiveProtection } from "./icarus-effective-protection";
 import type {
   IcarusAcceptanceAssurance,
@@ -37,6 +38,7 @@ export type IcarusTreatmentExecution = {
   context?: string;
   completedAt?: string;
   completionEvidence?: string;
+  icarusObservationLinks?: readonly IcarusObservationActionLink[];
 };
 
 export type IcarusTreatmentRouteState =

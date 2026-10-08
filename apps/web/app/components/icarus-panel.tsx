@@ -45,6 +45,7 @@ import IcarusLearningSection from "./icarus-learning-section";
 import type { IcarusLearningInput, IcarusLearningIndex, IcarusLessonLearning } from "../lib/icarus-learning";
 import type { IcarusStrategicLifecycleIndex, IcarusStrategicLifecycleInput } from "../lib/icarus-strategic-lifecycle";
 import type { IcarusInterventionIndex } from "../lib/icarus-intervention-decision";
+import type { IcarusObservationExecutionIndex } from "../lib/icarus-observation-action";
 import {
   createIcarusStressTreatmentTarget,
   type IcarusTreatmentExecution,
@@ -73,6 +74,9 @@ type IcarusPanelProps = {
   stressTestingInput?: IcarusStressTestingInput;
   stressBaseline?: IcarusStrategicIntelligence;
   treatmentIndex?: IcarusTreatmentIndex;
+  observationExecution?: IcarusObservationExecutionIndex;
+  observationActionsWritable?: boolean;
+  onRouteObservationAction?: (targetId: string, actionId: string | undefined, recordedByPersonId: string) => void;
   interventionIndex?: IcarusInterventionIndex;
   lifecycleIndex?: IcarusStrategicLifecycleIndex;
   lifecycleInput?: IcarusStrategicLifecycleInput;
@@ -154,6 +158,9 @@ export default function IcarusPanel({
   stressTestingInput,
   stressBaseline,
   treatmentIndex,
+  observationExecution,
+  observationActionsWritable = false,
+  onRouteObservationAction,
   interventionIndex,
   lifecycleIndex,
   lifecycleInput,
@@ -451,6 +458,9 @@ export default function IcarusPanel({
         <IcarusTreatmentSection
           assessments={assessments}
           index={treatmentIndex}
+          observationExecution={observationExecution}
+          observationActionsWritable={observationActionsWritable}
+          onRouteObservationAction={onRouteObservationAction}
           interventionIndex={interventionIndex}
           createId={createId}
           actions={actions}

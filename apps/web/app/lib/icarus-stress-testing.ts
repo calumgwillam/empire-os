@@ -195,6 +195,9 @@ function applyOverrides(input: IcarusStressTestingInput, overrides: readonly Ica
     treatmentActions: input.treatmentActions?.map((action) => actionStates.has(action.recordId)
       ? { ...action, status: actionStates.get(action.recordId)! }
       : action),
+    observationActions: input.observationActions?.map((action) => actionStates.has(action.recordId)
+      ? { ...action, status: actionStates.get(action.recordId)! }
+      : action),
     treatmentProjects: input.treatmentProjects?.map((project) => projectStates.has(project.recordId)
       ? { ...project, status: projectStates.get(project.recordId) === "Operating" ? "In Progress" : "Blocked" }
       : project),

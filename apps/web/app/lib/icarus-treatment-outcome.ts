@@ -40,6 +40,7 @@ export type IcarusTreatmentOutcomeView = {
     record: IcarusTreatmentOutcomeRecord;
     current: boolean;
     evidenceCurrent?: boolean;
+    observationCompleted?: boolean;
     attribution: "Supported" | "Uncertain" | "Not attributable";
     issues?: readonly string[];
   }[];
@@ -474,10 +475,40 @@ export function buildIcarusTreatmentOutcomeIndex(
         && target.state === "Completed — verification required"
         && recordIssues.length === 0);
       if (!currentOption && !recordIssues.length) recordIssues.push("Recorded outcome no longer matches current source evidence or execution state");
+      const retainedPlan = target.observationPlans?.find((entry) => entry.id === record.observationPlan?.id);
+      const recordedTests = record.evidence.filter((entry) => entry.kind === "Control test");
+      const historicalOutcomeConsistent = Boolean(currentOption)
+        || record.outcome === "Inconclusive"
+        || record.outcome === "Effective" && recordedTests.length > 0
+          && recordedTests.every((test) => test.result === "Passed" && test.assuranceStatus === "Assured"
+            && test.evidenceStatus === "Current support")
+          && record.afterState.kind === "Control assurance" && record.afterState.state === "Assured"
+        || record.outcome === "Ineffective" && recordedTests.some((test) => test.result === "Failed")
+          && record.afterState.kind === "Control assurance" && record.afterState.state === "Failed"
+        || record.outcome === "Partially effective"
+          && recordedTests.some((test) => test.result === "Passed" && test.assuranceStatus === "Assured" && test.evidenceStatus === "Current support")
+          && recordedTests.some((test) => test.result === "Failed")
+          && record.afterState.kind === "Control assurance" && record.afterState.state === "Partially assured";
+      // Historical observation completion is not current assurance. Evaluate its evidence at the review time.
+      const observationCompleted = Boolean(retainedPlan && record.observationPlan
+        && historicalOutcomeConsistent
+        && record.assessmentId === target.assessmentId
+        && outcomes.filter((outcome) => outcome.id === record.id).length === 1
+        && record.completionConditions?.length && sameCompletion(record.completionConditions, completion.conditions)
+        && sameExecutionLinks(record.executionLinks, target.executionLinks)
+        && Date.parse(record.verifiedAt) <= nowMs
+        && !getIcarusTreatmentVerificationIssues(
+          target, record.evidence, input.assessments, Date.parse(record.verifiedAt), Date.parse(record.verifiedAt),
+        ).length
+        && !getIcarusTreatmentFollowUpIssues(record, records[recordIndex - 1], input.assessments).length
+        && !getIcarusPlannedObservationIssues(
+          target, retainedPlan, record, records[recordIndex - 1], input.assessments, people, Date.parse(record.verifiedAt),
+        ).length);
       return {
         record,
         current: recordIndex === records.length - 1 && Boolean(currentOption),
         evidenceCurrent: Boolean(currentOption),
+        ...(record.observationPlan ? { observationCompleted } : {}),
         attribution: currentOption?.attribution ?? "Not attributable" as const,
         issues: recordIssues,
       };

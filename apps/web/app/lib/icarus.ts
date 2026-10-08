@@ -776,7 +776,7 @@ function isIcarusTreatmentTargetRecord(value: unknown): value is IcarusTreatment
     && isValidIcarusDate(value.promotedAt);
 }
 
-function isIcarusObservationPlan(value: unknown): value is IcarusObservationPlan {
+export function isIcarusObservationPlan(value: unknown): value is IcarusObservationPlan {
   return isPlainObject(value) && isNonEmptyString(value.id)
     && typeof value.recordedAt === "string" && typeof value.recordedByPersonId === "string"
     && typeof value.ownerPersonId === "string" && typeof value.protection === "string"

@@ -23,10 +23,14 @@ import type { IcarusResilienceIntervention } from "../lib/icarus-dependency-resi
 import type { IcarusInterventionIndex } from "../lib/icarus-intervention-decision";
 import { getIcarusTreatmentCompletion, getIcarusTreatmentFollowUpIssues, getIcarusTreatmentVerificationIssues } from "../lib/icarus-treatment-outcome";
 import { getIcarusCurrentObservationPlan, getIcarusObservationPlanIssues, getIcarusPlannedObservationIssues } from "../lib/icarus-observation-plan";
+import { getIcarusObservationActionOutcome, type IcarusObservationExecutionIndex } from "../lib/icarus-observation-action";
 
 type Props = {
   assessments: readonly IcarusAssessmentRecord[];
   index: IcarusTreatmentIndex;
+  observationExecution?: IcarusObservationExecutionIndex;
+  observationActionsWritable?: boolean;
+  onRouteObservationAction?: (targetId: string, actionId: string | undefined, recordedByPersonId: string) => void;
   interventionIndex?: IcarusInterventionIndex;
   createId: () => string;
   actions: readonly IcarusTreatmentExecution[];
@@ -72,6 +76,9 @@ function stateTone(state: IcarusTreatmentTarget["state"]): string {
 export default function IcarusTreatmentSection({
   assessments,
   index,
+  observationExecution,
+  observationActionsWritable = false,
+  onRouteObservationAction,
   interventionIndex,
   createId,
   actions,
@@ -82,6 +89,7 @@ export default function IcarusTreatmentSection({
   onOpenRecord,
 }: Props) {
   const [selectedExecution, setSelectedExecution] = useState<Record<string, string>>({});
+  const [observationActionId, setObservationActionId] = useState<Record<string, string>>({});
   const [selectedVerification, setSelectedVerification] = useState<Record<string, string>>({});
   const [verificationBy, setVerificationBy] = useState<Record<string, string>>({});
   const [verificationNote, setVerificationNote] = useState<Record<string, string>>({});
@@ -117,7 +125,7 @@ export default function IcarusTreatmentSection({
   });
   const barrierRestorations = index.barrierRestorations.filter((restoration) =>
     !promotedIds.has(getIcarusBarrierRestorationTreatmentTargetId(restoration)));
-  const displayTargets = index.targets.filter((target) => target.material || target.executionLinks.length > 0);
+  const displayTargets = index.targets.filter((target) => target.material || target.executionLinks.length > 0 || target.observationPlans?.length);
   const resolutionEligible = assessments.filter((assessment) =>
     index.summaries.get(assessment.id)?.resolutionEligibility === "Eligible");
   const closedAssessments = assessments.filter((assessment) => assessment.status === "Closed");
@@ -430,6 +438,64 @@ export default function IcarusTreatmentSection({
                   {index.verification.get(target.id)?.observation?.issues.map((issue) => (
                     <p key={issue} className="text-[10px] text-[#8b3d28]">{issue}</p>
                   ))}
+                  {observationExecution?.byTargetId.get(target.id) ? (
+                    <div className="mt-2">
+                      <p className={itemClass}>Monitoring Action: {observationExecution.byTargetId.get(target.id)?.state}</p>
+                      <p className="text-[10px]">Action completion records execution only. Fresh evidence and an admissible Icarus review are still required; completion never renews assurance.</p>
+                      {observationExecution.byTargetId.get(target.id)?.actionIds.map((id) => (
+                        <button key={id} type="button" className={`${buttonClass} mr-2`} onClick={() => onOpenRecord("Action", id)}>
+                          {actions.find((action) => action.recordId === id)?.title ?? id} — open / reassign
+                        </button>
+                      ))}
+                      {observationExecution.byTargetId.get(target.id)?.issues.map((issue) => (
+                        <p key={issue} className="text-[10px] text-[#8b3d28]">{issue}</p>
+                      ))}
+                      <details className="mt-2 text-[10px]">
+                        <summary>Action linkage and review-cycle history</summary>
+                        {actions.flatMap((action) => (action.icarusObservationLinks ?? [])
+                          .filter((link) => link.treatmentTargetId === target.id && link.assessmentId === target.assessmentId)
+                          .map((link, position) => {
+                            const outcome = getIcarusObservationActionOutcome(link, index.verification.get(target.id), assessments);
+                            return (
+                              <p key={`${action.recordId}:${position}`}>
+                                <button type="button" className="underline" onClick={() => onOpenRecord("Action", action.recordId)}>{action.title}</button>
+                                {` — ${action.status}; plan ${link.plan.id}; observer ${link.plan.ownerPersonId}; deadline ${link.reviewBy}; linked ${link.linkedAt} by ${link.linkedByPersonId}; after outcome ${link.afterOutcomeId ?? "initial observation"}`}
+                                {outcome ? `; evidence review ${outcome.id}: ${outcome.outcome}, verified ${outcome.verifiedAt}` : "; no admissible post-link observation"}
+                              </p>
+                            );
+                          }))}
+                      </details>
+                      {observationActionsWritable && onRouteObservationAction ? (
+                        <div className="mt-2 flex flex-wrap items-end gap-2">
+                          <label className="text-[10px]">Existing monitoring Action
+                            <select className={selectClass} value={observationActionId[target.id] ?? ""}
+                              onChange={(event) => setObservationActionId((current) => ({ ...current, [target.id]: event.target.value }))}>
+                              <option value="">Select Action</option>
+                              {actions.filter((action) => !["Completed", "Cancelled"].includes(action.status)
+                                && !target.executionLinks.some((link) => link.recordType === "Action" && link.recordId === action.recordId))
+                                .map((action) => <option key={action.recordId} value={action.recordId}>{action.title} ({action.status})</option>)}
+                            </select>
+                          </label>
+                          <label className="text-[10px]">Link recorded by
+                            <select className={selectClass} value={verificationBy[target.id] ?? ""}
+                              onChange={(event) => setVerificationBy((current) => ({ ...current, [target.id]: event.target.value }))}>
+                              <option value="">Select Person</option>
+                              {activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+                            </select>
+                          </label>
+                          <button type="button" className={buttonClass} disabled={!observationActionId[target.id]}
+                            onClick={() => onRouteObservationAction(target.id, observationActionId[target.id], verificationBy[target.id] ?? "")}>
+                            Link / relink existing Action
+                          </button>
+                          <button type="button" className={buttonClass}
+                            disabled={Boolean(observationExecution.byTargetId.get(target.id)?.actionIds.length)}
+                            onClick={() => onRouteObservationAction(target.id, undefined, verificationBy[target.id] ?? "")}>
+                            Create monitoring Action
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {writable ? (
                     <details className="mt-2">
                       <summary className="text-[11px]">Record observation plan / replacement</summary>

@@ -1,4 +1,5 @@
 import { normaliseIcarusLessonLearning, type IcarusLessonLearning } from "./icarus-learning";
+import type { IcarusObservationActionLink } from "./icarus-observation-action";
 
 export const reviewOutcomes = [
   "Keep as Capture",
@@ -50,6 +51,7 @@ export type CaptureConversionRecord = {
   relatedPillar?: string;
   completionEvidence?: string;
   completionDate?: string;
+  icarusObservationLinks?: IcarusObservationActionLink[];
   releaseSourceType?: "Action" | "Project" | "Lead" | "Problem";
   releaseSourceId?: string;
   releaseIntent?: "Prepare to Delegate" | "Unblock First";

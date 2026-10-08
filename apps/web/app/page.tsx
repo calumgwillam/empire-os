@@ -231,6 +231,11 @@ import {
   type IcarusExposureSnapshotEntry,
 } from "./lib/icarus-exposure-history";
 import { buildIcarusInterventionIndex } from "./lib/icarus-intervention-decision";
+import {
+  assertIcarusObservationActionLinks,
+  createIcarusObservationAction,
+  linkIcarusObservationAction,
+} from "./lib/icarus-observation-action";
 import { buildIcarusLearningIndex, getIcarusLearningMechanismRevision, type IcarusLearningInput, type IcarusLessonLearning } from "./lib/icarus-learning";
 import {
   attachIndividualOperatingUnderstandings,
@@ -9019,7 +9024,6 @@ export default function Home() {
       if (storedConversions) {
         const parsedConversions = JSON.parse(storedConversions);
         if (Array.isArray(parsedConversions)) {
-          setConversions(parsedConversions);
           const conversionRecordTypes: Record<string, string> = {
             "Convert to Action": "Action",
             "Convert to Decision": "Decision",
@@ -9035,6 +9039,7 @@ export default function Home() {
             if (!recordType) return;
             addOperationalRecord(recordType, record.id);
             if (recordType === "Action") {
+              assertIcarusObservationActionLinks(record.icarusObservationLinks);
               if (Object.prototype.hasOwnProperty.call(record, "responsibilityOutcomeEvidence")) {
                 assertActionResponsibilityOutcomeEvidenceStructure(record.responsibilityOutcomeEvidence);
               }
@@ -9044,6 +9049,7 @@ export default function Home() {
               addWorkItem(recordType, record.id);
             }
           });
+          setConversions(parsedConversions);
         }
       }
       let loadedPeople: PersonRecord[] = [];
@@ -10126,6 +10132,7 @@ export default function Home() {
     context: getAreaText(action),
     completedAt: action.completionDate,
     completionEvidence: action.completionEvidence,
+    icarusObservationLinks: action.icarusObservationLinks,
   }));
   const icarusTreatmentProjects = projects.map((project) => ({
     recordType: "Project" as const,
@@ -10144,6 +10151,7 @@ export default function Home() {
     people: people.map(({ id, status }) => ({ id, status })),
     actions: actionRecords.map(({ id, status, dueDate }) => ({ id, status, dueDate })),
     treatmentActions: icarusTreatmentActions,
+    observationActions: icarusTreatmentActions,
     treatmentProjects: icarusTreatmentProjects,
     primaryFounderId: founderPerson?.id ?? null,
     founderDependencyActive: founderDependentWork.length > 0,
@@ -10213,6 +10221,9 @@ export default function Home() {
     strategicObjectives,
     people: people.map(({ id, status }) => ({ id, status })),
     actions: actionRecords.map(({ id, status, dueDate }) => ({ id, status, dueDate })),
+    treatmentActions: icarusTreatmentActions,
+    treatmentProjects: icarusTreatmentProjects,
+    observationActions: icarusTreatmentActions,
     primaryFounderId: founderPerson?.id ?? null,
     founderDependencyActive: founderDependentWork.length > 0,
     founderDependentWork,
@@ -11249,6 +11260,7 @@ export default function Home() {
     procurementQueue: capitalAllocation.procurementQueue,
     learning: commandLearningInput,
     icarus: icarusSignalsWithTreatment,
+    icarusObservationExecution: icarusIntelligence.observationExecution,
     nowMs: Date.now(),
   });
   const toCommandAttentionItem = (item: CommandAttentionItem): AttentionItem => {
@@ -14528,6 +14540,43 @@ export default function Home() {
     }
     setConversions((current) => current.map((record) =>
       record.id === lessonId && record.targetType === "Convert to Lesson" ? { ...record, icarusLearning: history } : record));
+  };
+
+  const handleRouteIcarusObservationAction = (targetId: string, actionId: string | undefined, recordedByPersonId: string) => {
+    try {
+      if (!operatingDataLoaded || !icarusLoaded || !conversionsWritableRef.current || !icarusWritableRef.current) {
+        throw new Error("Action or Icarus storage is not writable; existing records were left untouched.");
+      }
+      const context = {
+        assessments: icarusAssessments, treatment: icarusTreatmentIndex, actions: icarusTreatmentActions,
+        people, nowMs: Date.now(),
+      };
+      const existing = actionId ? actionRecords.filter((action) => action.id === actionId) : [];
+      if (actionId && existing.length !== 1) throw new Error("Selected Action is missing or ambiguous.");
+      if (existing.length) {
+        const owner = people.filter((person) => person.id === existing[0].ownerPersonId && person.status === "Active");
+        if (owner.length !== 1) throw new Error("Assign the Action to a unique active Person through its existing ownership workflow.");
+        const missingFields = getDelegationReadinessMissingFields(owner[0]);
+        if (missingFields.length) throw new Error(`Observer delegation readiness is incomplete: ${missingFields.join(", ")}.`);
+      }
+      const view = icarusIntelligence.observationExecution?.byTargetId.get(targetId);
+      const newId = `icarus-observation:${encodeURIComponent(targetId)}:${encodeURIComponent(view?.plan?.id ?? "")}:${encodeURIComponent(view?.afterOutcomeId ?? "initial")}`;
+      if (!existing.length && conversions.some((record) => record.id === newId)) {
+        throw new Error("The monitoring Action identity already exists. Open and review that record instead of creating a duplicate.");
+      }
+      const next = existing.length
+        ? linkIcarusObservationAction(context, targetId, existing[0], recordedByPersonId)
+        : createIcarusObservationAction(context, targetId, newId, recordedByPersonId, people);
+      setConversions((current) => {
+        if (existing.length) return current.map((record) => record.id === next.id ? next : record);
+        return current.some((record) => record.id === next.id) ? current : [next, ...current];
+      });
+      setFeedback({ type: "success", message: existing.length
+        ? "Observation Action linked. Ownership and execution remain managed through Actions."
+        : "Accountable monitoring Action created. Completion still requires separate evidence-based Icarus verification." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Observation Action routing failed; no records were changed." });
+    }
   };
 
   const handleLessonSave = () => {
@@ -19870,6 +19919,9 @@ export default function Home() {
               stressTestingInput={icarusStressTestingInput}
               stressBaseline={icarusIntelligence}
               treatmentIndex={icarusTreatmentIndex}
+              observationExecution={icarusIntelligence.observationExecution}
+              observationActionsWritable={operatingDataLoaded && conversionsWritableRef.current && icarusLoaded && icarusWritableRef.current}
+              onRouteObservationAction={handleRouteIcarusObservationAction}
               interventionIndex={icarusInterventionIndex}
               lifecycleInput={{
                 assessments: icarusAssessments, assurance: icarusIntelligence.assurance,
