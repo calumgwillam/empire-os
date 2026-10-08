@@ -43,6 +43,9 @@ export type LearningEvidenceField =
   | "evidenceReference" | "verificationNote"
   | "interventionDecisionId" | "interventionOptionId" | "causeId" | "verificationCurrency"
   | "interventionAttribution" | "treatmentAttribution"
+  | "observationPlanId" | "observationOwnerPersonId" | "monitoredProtection"
+  | "observationEvidenceRequirements" | "observationAcceptanceCriteria"
+  | "observationCriteriaResult" | "observationCriteriaNote" | "nextObservationBy"
   | "assessmentId" | "resolutionReviewId" | "regressionId" | "lifecycleValidity" | "humanExplanation";
 
 export type LearningEvidence = {
@@ -220,6 +223,16 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
     const outcomeState = treatmentEvidence?.current ? recordedOutcome : "Unknown";
     const sourceType: LearningSourceType = "Icarus Treatment";
     const linkedLessons = input.lessons.filter((lesson) => interventionContext?.lessonIds.includes(lesson.id));
+    const observationEvidence: LearningEvidence[] = record.observationPlan ? [
+      { sourceType, sourceId: record.id, field: "observationPlanId", value: record.observationPlan.id },
+      { sourceType, sourceId: record.id, field: "observationOwnerPersonId", value: record.observationPlan.ownerPersonId },
+      { sourceType, sourceId: record.id, field: "monitoredProtection", value: record.observationPlan.protection },
+      { sourceType, sourceId: record.id, field: "observationEvidenceRequirements", value: record.observationPlan.evidenceRequirements },
+      { sourceType, sourceId: record.id, field: "observationAcceptanceCriteria", value: record.observationPlan.acceptanceCriteria },
+      { sourceType, sourceId: record.id, field: "observationCriteriaResult", value: record.observationCriteriaResult ?? "Missing" },
+      { sourceType, sourceId: record.id, field: "observationCriteriaNote", value: record.observationCriteriaNote ?? "Missing" },
+      { sourceType, sourceId: record.id, field: "nextObservationBy", value: record.nextObservationBy ?? "Missing" },
+    ] : [];
     signals.push({
       sourceType,
       sourceId: record.id,
@@ -239,6 +252,7 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
           value: treatmentEvidence?.current ? "Current" : "Historical / superseded or currency unknown" },
         { sourceType, sourceId: record.id, field: "treatmentAttribution",
           value: treatmentEvidence?.attribution ?? "Not attributable" },
+        ...observationEvidence,
         { sourceType, sourceId: record.id, field: "interventionAttribution",
           value: interventionContext?.current ? "Uncertain — current intervention context" : "Not attributable — historical or no intervention context" },
         ...record.evidence.map((entry) => ({

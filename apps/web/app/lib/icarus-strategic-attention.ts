@@ -526,7 +526,7 @@ export function getIcarusCommandPlacement(signal: IcarusStrategicSignal): Icarus
     priorityScore: signal.riskScore,
     reasons,
     anchoredReason: lifecycleOnly ? `ICARUS LIFECYCLE REVIEW: ${signal.outcome}` : `ICARUS RISK: ${signal.outcome} (${signal.exposure.toLowerCase()})`,
-    statusText: lifecycleOnly ? `${signal.status} assessment / Strategic lifecycle review / Current effective protection retained`
+    statusText: lifecycleOnly ? `${signal.status} assessment / Strategic lifecycle review / Observation and protection review required`
       : `${signal.status} assessment / ${signal.exposure} / ${modeCount} material failure mode${modeCount === 1 ? "" : "s"} / ${signal.scope}${signal.assurance ? ` / Assurance: ${signal.assurance.state}` : ""}`,
   };
 }

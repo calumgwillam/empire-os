@@ -648,6 +648,7 @@ describe("Icarus treatment verification", () => {
       treatmentTargets: [{
         ...routed, basis: [], affectedAssessmentIds: [assessmentId], objectiveIds: [], pillarIds: [],
         executionLinks: [link], promotedAt: link.linkedAt, completionReviews: [review],
+        observationPlans: routed.observationPlans ? [...routed.observationPlans] : undefined,
       }],
     });
     expect(parseIcarusAssessments(JSON.stringify([stored]))[0].treatmentTargets?.[0].completionReviews).toEqual([review]);

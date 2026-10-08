@@ -6,6 +6,7 @@ import {
   type IcarusAssessmentRecord,
   type IcarusTreatmentOutcomeRecord,
   type IcarusTreatmentTargetRecord,
+  type IcarusObservationPlan,
 } from "../lib/icarus";
 import {
   createIcarusBarrierRestorationTreatmentTarget,
@@ -21,6 +22,7 @@ import type { IcarusAssurancePersonOption } from "./icarus-assurance-section";
 import type { IcarusResilienceIntervention } from "../lib/icarus-dependency-resilience";
 import type { IcarusInterventionIndex } from "../lib/icarus-intervention-decision";
 import { getIcarusTreatmentCompletion, getIcarusTreatmentFollowUpIssues, getIcarusTreatmentVerificationIssues } from "../lib/icarus-treatment-outcome";
+import { getIcarusCurrentObservationPlan, getIcarusObservationPlanIssues, getIcarusPlannedObservationIssues } from "../lib/icarus-observation-plan";
 
 type Props = {
   assessments: readonly IcarusAssessmentRecord[];
@@ -89,6 +91,12 @@ export default function IcarusTreatmentSection({
   const [completionBy, setCompletionBy] = useState<Record<string, string>>({});
   const [completionNote, setCompletionNote] = useState<Record<string, string>>({});
   const [nextObservationBy, setNextObservationBy] = useState<Record<string, string>>({});
+  const [planDrafts, setPlanDrafts] = useState<Record<string, {
+    ownerPersonId: string; protection: string; controlIds: string[];
+    evidenceRequirements: string; acceptanceCriteria: string; firstReviewBy: string;
+  }>>({});
+  const [criteriaResult, setCriteriaResult] = useState<Record<string, "Met" | "Not met" | "Inconclusive">>({});
+  const [criteriaNote, setCriteriaNote] = useState<Record<string, string>>({});
   const verificationContexts = (targetId: string) => (interventionIndex?.decisions ?? []).filter((view) =>
     view.record.status === "Recorded" && view.selectedOption?.treatmentLinks.some((link) => link.targetId === targetId)
     && !["Not structured", "Conflict", "Prerequisites unmet"].includes(view.readiness));
@@ -116,6 +124,31 @@ export default function IcarusTreatmentSection({
   const activePeople = people.filter((person) => person.status === "Active")
     .slice()
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+
+  const planDraft = (target: IcarusTreatmentTarget) => planDrafts[target.id] ?? {
+    ownerPersonId: "", protection: "", controlIds: target.controlId ? [target.controlId] : [],
+    evidenceRequirements: "", acceptanceCriteria: "", firstReviewBy: "",
+  };
+  const updatePlanDraft = (target: IcarusTreatmentTarget, change: Partial<ReturnType<typeof planDraft>>) =>
+    setPlanDrafts((current) => ({ ...current, [target.id]: { ...planDraft(target), ...change } }));
+  const recordPlan = (target: IcarusTreatmentTarget) => {
+    if (!writable) return;
+    const plan: IcarusObservationPlan = {
+      ...planDraft(target), id: createId(), recordedAt: new Date().toISOString(),
+      recordedByPersonId: verificationBy[target.id] ?? "",
+    };
+    const candidate = { ...target, observationPlans: [...(target.observationPlans ?? []), plan] };
+    const issues = getIcarusObservationPlanIssues(candidate, plan, assessments, people, Date.parse(plan.recordedAt));
+    if (!activePeople.some((person) => person.id === plan.recordedByPersonId)) issues.push("Select an active Person to record this plan");
+    if (issues.length) {
+      setVerificationError((current) => ({ ...current, [target.id]: issues.join("; ") }));
+      return;
+    }
+    commitAssessments(changeStoredTarget(assessments, target, (stored) => ({
+      ...stored, observationPlans: [...(stored.observationPlans ?? []), plan],
+    })));
+    setVerificationError((current) => ({ ...current, [target.id]: "" }));
+  };
 
   const recordCompletion = (target: IcarusTreatmentTarget) => {
     const recordedAt = new Date().toISOString();
@@ -235,6 +268,11 @@ export default function IcarusTreatmentSection({
       ...(view?.latest ? { beforeState: { ...view.latest.afterState } } : {}),
       afterState: { ...option.afterState },
       verificationNote: note,
+      ...(getIcarusCurrentObservationPlan(target) ? {
+        observationPlan: getIcarusCurrentObservationPlan(target),
+        observationCriteriaResult: criteriaResult[target.id],
+        observationCriteriaNote: criteriaNote[target.id]?.trim(),
+      } : {}),
     };
     if (assessments.some((assessment) => assessment.treatmentOutcomes?.some((entry) => entry.id === record.id))) {
       fail("Verification occurrence identity already exists. Record a new occurrence.");
@@ -244,6 +282,16 @@ export default function IcarusTreatmentSection({
     if (followUpIssues.length) {
       fail(followUpIssues.join("; "));
       return;
+    }
+    const plan = getIcarusCurrentObservationPlan(target);
+    if (plan) {
+      const plannedIssues = getIcarusPlannedObservationIssues(
+        target, plan, record, view?.latest, assessments, people, Date.parse(verifiedAt),
+      );
+      if (plannedIssues.length) {
+        fail(plannedIssues.join("; "));
+        return;
+      }
     }
     commitAssessments(assessments.map((assessment) => assessment.id !== target.assessmentId
       ? assessment
@@ -365,6 +413,76 @@ export default function IcarusTreatmentSection({
                 <p className={itemClass}>{target.treatmentKind} — {target.reason}</p>
                 <p className="text-[10px] text-[#6a625d]">Source: {target.provenance.kind}</p>
                 <p className={`font-medium ${stateTone(target.state)}`}>{target.state}</p>
+                <div className="mt-2 rounded border border-[#d9d1c8] p-2">
+                  <p className={itemClass}>Observation responsibility: {index.verification.get(target.id)?.observation?.state ?? "Missing"}</p>
+                  {index.verification.get(target.id)?.observation?.plan ? (
+                    <div className={itemClass}>
+                      <button type="button" className="underline" onClick={() => onOpenRecord("Person", index.verification.get(target.id)!.observation!.plan!.ownerPersonId)}>
+                        Accountable observer: {people.find((person) => person.id === index.verification.get(target.id)?.observation?.plan?.ownerPersonId)?.name
+                          ?? index.verification.get(target.id)?.observation?.plan?.ownerPersonId}
+                      </button>
+                      <p>Protection: {index.verification.get(target.id)?.observation?.plan?.protection}</p>
+                      <p>Evidence required: {index.verification.get(target.id)?.observation?.plan?.evidenceRequirements}</p>
+                      <p>Acceptance criteria: {index.verification.get(target.id)?.observation?.plan?.acceptanceCriteria}</p>
+                      <p>Next review: {index.verification.get(target.id)?.observation?.nextReviewBy ?? index.verification.get(target.id)?.observation?.plan?.firstReviewBy}</p>
+                    </div>
+                  ) : null}
+                  {index.verification.get(target.id)?.observation?.issues.map((issue) => (
+                    <p key={issue} className="text-[10px] text-[#8b3d28]">{issue}</p>
+                  ))}
+                  {writable ? (
+                    <details className="mt-2">
+                      <summary className="text-[11px]">Record observation plan / replacement</summary>
+                      <p className="text-[10px]">Plans retain history. Replanning does not complete an observation or erase an overdue responsibility. New plans require fresh dated evidence for every selected control. Reviewers may differ from the accountable owner.</p>
+                      <div className="flex flex-wrap gap-2">
+                        <label className="text-[10px]">Accountable observer
+                          <select className={selectClass} value={planDraft(target).ownerPersonId}
+                            onChange={(event) => updatePlanDraft(target, { ownerPersonId: event.target.value })}>
+                            <option value="">Select active Person</option>
+                            {activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+                          </select>
+                        </label>
+                        <label className="text-[10px]">Recorded by
+                          <select className={selectClass} value={verificationBy[target.id] ?? ""}
+                            onChange={(event) => setVerificationBy((current) => ({ ...current, [target.id]: event.target.value }))}>
+                            <option value="">Select active Person</option>
+                            {activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+                          </select>
+                        </label>
+                        <label className="text-[10px]">Protection monitored
+                          <input className={selectClass} value={planDraft(target).protection}
+                            onChange={(event) => updatePlanDraft(target, { protection: event.target.value })} />
+                        </label>
+                        <label className="text-[10px]">Acceptable effectiveness evidence
+                          <input className={selectClass} value={planDraft(target).evidenceRequirements}
+                            onChange={(event) => updatePlanDraft(target, { evidenceRequirements: event.target.value })} />
+                        </label>
+                        <label className="text-[10px]">Acceptance criteria
+                          <input className={selectClass} value={planDraft(target).acceptanceCriteria}
+                            onChange={(event) => updatePlanDraft(target, { acceptanceCriteria: event.target.value })} />
+                        </label>
+                        <label className="text-[10px]">First review by
+                          <input type="date" className={selectClass} value={planDraft(target).firstReviewBy}
+                            onChange={(event) => updatePlanDraft(target, { firstReviewBy: event.target.value })} />
+                        </label>
+                      </div>
+                      <fieldset className="mt-2 text-[10px]">
+                        <legend>Exact control scope</legend>
+                        {assessment?.controls.filter((control) => (!target.controlId || control.id === target.controlId)
+                          && (!target.failureModeId || control.failureModeId === target.failureModeId)).map((control) => (
+                          <label key={control.id} className="mr-3">
+                            <input type="checkbox" checked={planDraft(target).controlIds.includes(control.id)}
+                              onChange={(event) => updatePlanDraft(target, { controlIds: event.target.checked
+                                ? [...planDraft(target).controlIds, control.id] : planDraft(target).controlIds.filter((id) => id !== control.id) })} />
+                            {control.intervention}
+                          </label>
+                        ))}
+                      </fieldset>
+                      <button type="button" className={`${buttonClass} mt-2`} onClick={() => recordPlan(target)}>Record new plan revision</button>
+                    </details>
+                  ) : null}
+                  {verificationError[target.id] ? <p role="alert" className="text-[11px] text-[#8b3d28]">{verificationError[target.id]}</p> : null}
+                </div>
                 {index.verification.get(target.id) ? (
                   <div className="mt-2 rounded border border-[#d9d1c8] bg-[#faf8f5] p-2">
                     <p className="text-[11px] font-medium text-[#4d4944]">
@@ -408,6 +526,7 @@ export default function IcarusTreatmentSection({
                         {record.verificationNote ? ` — ${record.verificationNote}` : ""}
                         {issues?.length ? ` — verification gap: ${issues.join("; ")}` : ""}
                         {record.nextObservationBy ? ` — next observation by ${record.nextObservationBy}` : " — no follow-up observation scheduled"}
+                        {record.observationPlan ? ` — plan ${record.observationPlan.id}; owner ${record.observationPlan.ownerPersonId}; criteria ${record.observationCriteriaResult ?? "missing"}; ${record.observationCriteriaNote ?? ""}` : ""}
                       </p>
                     ))}
                     {verificationError[target.id] ? <p role="alert" className="text-[11px] text-[#8b3d28]">{verificationError[target.id]}</p> : null}
@@ -467,6 +586,26 @@ export default function IcarusTreatmentSection({
                             <input type="date" className={selectClass} value={nextObservationBy[target.id] ?? ""}
                               onChange={(event) => setNextObservationBy((current) => ({ ...current, [target.id]: event.target.value }))} />
                           </label>
+                          {getIcarusCurrentObservationPlan(target) ? (
+                            <>
+                              <label className="text-[10px]">Observation criteria result
+                                <select className={selectClass} value={criteriaResult[target.id] ?? ""}
+                                  onChange={(event) => {
+                                    const value = event.target.value;
+                                    if (value === "Met" || value === "Not met" || value === "Inconclusive") {
+                                      setCriteriaResult((current) => ({ ...current, [target.id]: value }));
+                                    }
+                                  }}>
+                                  <option value="">Select reviewed result</option>
+                                  <option value="Met">Met</option><option value="Not met">Not met</option><option value="Inconclusive">Inconclusive</option>
+                                </select>
+                              </label>
+                              <label className="text-[10px]">How the cited evidence meets or fails the plan
+                                <input className={selectClass} value={criteriaNote[target.id] ?? ""}
+                                  onChange={(event) => setCriteriaNote((current) => ({ ...current, [target.id]: event.target.value }))} />
+                              </label>
+                            </>
+                          ) : null}
                           <button
                             type="button"
                             className={buttonClass}

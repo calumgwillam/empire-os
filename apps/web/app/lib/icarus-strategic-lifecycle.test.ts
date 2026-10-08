@@ -25,6 +25,7 @@ import { buildIcarusInterventionIndex, emptyIcarusInterventionScope } from "./ic
 import { buildOrganisationalLearning, type OrganisationalLearningInput } from "./organisational-learning";
 import { buildLearningAttention } from "./learning-attention";
 import { buildFounderFocus } from "./founder-focus";
+import { getIcarusCurrentExposureSignals } from "./icarus-strategic-attention";
 
 const createdAt = "2026-10-01T10:00:00.000Z";
 const reviewedAt = "2026-10-02T10:00:00.000Z";
@@ -565,7 +566,22 @@ describe("treatment, intervention and learning lifecycle integration", () => {
     expect(base.treatmentOutcomes).toEqual([outcome]);
     const closed = derive(records.map((record) => ({ ...record, status: "Closed" })), { ...overrides, nowMs: Date.parse(later) });
     expect(closed.view.reviews[0].validity).toBe("Current");
-    expect(closed.intelligence.strategicSignals).toEqual([]);
+    expect(closed.view.regressions).toEqual([]);
+    expect(closed.intelligence.treatment.verification.get(targetId)?.state).toBe("Verified effective");
+    expect(closed.intelligence.treatment.verification.get(targetId)?.observation?.state).toBe("Missing");
+    expect(getIcarusCurrentExposureSignals(closed.intelligence.strategicSignals)).toEqual([]);
+    expect(closed.intelligence.exposureSnapshot).toEqual([]);
+    expect(closed.intelligence.correlationSignals).toEqual([]);
+    expect(closed.intelligence.strategicSignals).toHaveLength(1);
+    const reminder = closed.intelligence.strategicSignals[0];
+    expect(reminder.status).toBe("Closed");
+    expect(reminder.materialFailureModes.every((mode) => mode.lifecycleOnly)).toBe(true);
+    expect(reminder.lifecycle?.attentionReasons.join()).toContain("Continued protection has no accountable observation plan");
+    const attention = command(closed.intelligence.strategicSignals).items.filter((item) => item.objectType === "Icarus");
+    expect(attention).toHaveLength(1);
+    expect(attention[0].reasons).toContain("ICARUS: STRATEGIC LIFECYCLE REVIEW");
+    expect(attention[0].reasons.join()).toContain("Observation responsibility");
+    expect(attention[0].attentionRank).toBeGreaterThanOrEqual(3);
   });
 
   it("feeds exact assessment lifecycle history into intervention context and learning without inferred cause or duplicate Command records", () => {

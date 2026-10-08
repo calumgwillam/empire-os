@@ -152,6 +152,19 @@ export type IcarusTreatmentTargetRecord = {
   executionLinks: IcarusTreatmentExecutionLink[];
   promotedAt: string;
   completionReviews?: IcarusTreatmentCompletionReview[];
+  observationPlans?: IcarusObservationPlan[];
+};
+
+export type IcarusObservationPlan = {
+  id: string;
+  recordedAt: string;
+  recordedByPersonId: string;
+  ownerPersonId: string;
+  protection: string;
+  controlIds: string[];
+  evidenceRequirements: string;
+  acceptanceCriteria: string;
+  firstReviewBy: string;
 };
 
 export type IcarusTreatmentCompletionReview = {
@@ -239,6 +252,9 @@ export type IcarusTreatmentOutcomeRecord = {
   verificationNote: string;
   completionConditions?: IcarusTreatmentCompletionCondition[];
   nextObservationBy?: string;
+  observationPlan?: IcarusObservationPlan;
+  observationCriteriaResult?: "Met" | "Not met" | "Inconclusive";
+  observationCriteriaNote?: string;
 };
 
 export type IcarusInterventionScope = {
@@ -754,8 +770,19 @@ function isIcarusTreatmentTargetRecord(value: unknown): value is IcarusTreatment
     && value.executionLinks.every(isIcarusTreatmentExecutionLink)
     && (value.completionReviews === undefined || Array.isArray(value.completionReviews)
       && value.completionReviews.every(isIcarusTreatmentCompletionReview))
+    && (value.observationPlans === undefined || Array.isArray(value.observationPlans)
+      && value.observationPlans.every(isIcarusObservationPlan))
     && isNonEmptyString(value.promotedAt)
     && isValidIcarusDate(value.promotedAt);
+}
+
+function isIcarusObservationPlan(value: unknown): value is IcarusObservationPlan {
+  return isPlainObject(value) && isNonEmptyString(value.id)
+    && typeof value.recordedAt === "string" && typeof value.recordedByPersonId === "string"
+    && typeof value.ownerPersonId === "string" && typeof value.protection === "string"
+    && Array.isArray(value.controlIds) && value.controlIds.every((id) => typeof id === "string")
+    && typeof value.evidenceRequirements === "string" && typeof value.acceptanceCriteria === "string"
+    && typeof value.firstReviewBy === "string";
 }
 
 function isIcarusTreatmentCompletionReview(value: unknown): value is IcarusTreatmentCompletionReview {
@@ -837,6 +864,10 @@ function isIcarusTreatmentOutcomeRecord(value: unknown): value is IcarusTreatmen
     || (value.nextObservationBy !== undefined && typeof value.nextObservationBy !== "string")) {
     return false;
   }
+  if (value.observationPlan !== undefined && !isIcarusObservationPlan(value.observationPlan)) return false;
+  if (value.observationCriteriaResult !== undefined
+    && !["Met", "Not met", "Inconclusive"].includes(String(value.observationCriteriaResult))) return false;
+  if (value.observationCriteriaNote !== undefined && typeof value.observationCriteriaNote !== "string") return false;
   if (value.occurrenceId !== undefined && !isNonEmptyString(value.occurrenceId)) return false;
   if (value.interventionReference !== undefined
     && (!isNonEmptyString(value.occurrenceId) || !isPlainObject(value.interventionReference)
@@ -1006,9 +1037,13 @@ export function normaliseIcarusAssessmentData(value: unknown): unknown {
       else {
         next.treatmentTargets = filterUniqueById(
           next.treatmentTargets.map((target: unknown) => {
-            if (!isPlainObject(target) || target.completionReviews === undefined) return target;
-            return { ...target, completionReviews: Array.isArray(target.completionReviews)
-              ? target.completionReviews.filter(isIcarusTreatmentCompletionReview) : [] };
+            if (!isPlainObject(target)) return target;
+            return { ...target,
+              ...(target.completionReviews !== undefined ? { completionReviews: Array.isArray(target.completionReviews)
+                ? target.completionReviews.filter(isIcarusTreatmentCompletionReview) : [] } : {}),
+              ...(target.observationPlans !== undefined ? { observationPlans: Array.isArray(target.observationPlans)
+                ? target.observationPlans.filter(isIcarusObservationPlan) : [] } : {}),
+            };
           }).filter(isIcarusTreatmentTargetRecord),
           (target) => target.id,
         );

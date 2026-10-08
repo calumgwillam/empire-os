@@ -238,7 +238,7 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     })),
     projects: input.treatmentProjects ?? input.sourceRecords.filter((record) => record.recordType === "Project")
       .map((record) => ({ recordType: "Project", recordId: record.recordId, title: record.title, status: record.status ?? "" })),
-    founderPersonId: input.primaryFounderId, nowMs,
+    founderPersonId: input.primaryFounderId, nowMs, people: input.people,
   });
   const significantAssessmentIds = new Set(input.assessments.filter((assessment) => assessment.linkedRecords.some((reference) =>
     reference.recordType === "Strategic Objective" && strategicObjectives.get(reference.recordId)?.isLive
@@ -248,7 +248,7 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
     people: input.people, nowMs, significantAssessmentIds,
     hypothetical: input.hypothetical || Boolean(input.dependencyHealthOverrides?.size || input.controlAssuranceOverrides?.size),
   });
-  const lifecycleAttention = new Map([...lifecycle.byAssessmentId].filter(([, view]) => view.attentionReasons.length)
+  const lifecycleAttention = new Map<string, { failureModeIds: string[]; reasons: readonly string[] }>([...lifecycle.byAssessmentId].filter(([, view]) => view.attentionReasons.length)
     .map(([id, view]) => [id, {
       failureModeIds: [...new Set(view.reviews.filter((review) => !["Current", "Superseded", "Not verified"].includes(review.validity))
         .flatMap((review) => review.record.scope.kind === "Whole assessment"
@@ -256,8 +256,23 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
           : review.record.scope.failureModeIds))],
       reasons: view.attentionReasons,
     }] as const));
+  treatment.targets.filter((target) => target.material).forEach((target) => {
+    const observation = treatment.verification.get(target.id)?.observation;
+    if (!observation || !["Missing", "Unowned", "Invalid", "Due", "Overdue"].includes(observation.state)
+      || observation.state === "Missing" && target.state !== "Completed — verification required") return;
+    const reasons = treatment.summaries.get(target.assessmentId)?.attentionReasons.filter((reason) =>
+      reason.startsWith("Observation responsibility")) ?? [];
+    const previous = lifecycleAttention.get(target.assessmentId);
+    const modeIds = input.assessments.find((assessment) => assessment.id === target.assessmentId)?.failureModes
+      .filter((mode) => !target.failureModeId || mode.id === target.failureModeId).map((mode) => mode.id) ?? [];
+    lifecycleAttention.set(target.assessmentId, {
+      failureModeIds: [...new Set([...(previous?.failureModeIds ?? []), ...modeIds])],
+      reasons: [...new Set([...(previous?.reasons ?? []), ...reasons])],
+    });
+  });
   const finalExposureSignals = buildIcarusStrategicAttention({
     assessments: surveillanceAssessments, reviews, strategicObjectives, dependencyHealth, lifecycleAttention,
+    includeClosedAssessments: true,
   }).filter((signal) => assessmentStatuses.get(signal.assessmentId) !== "Closed" || lifecycleAttention.has(signal.assessmentId))
     .map((signal) => ({ ...signal, status: assessmentStatuses.get(signal.assessmentId) ?? signal.status }));
   const strategicSignals = attachIcarusFailureChainToSignals(attachIcarusAssuranceToSignals(finalExposureSignals, assurance), failureChains);

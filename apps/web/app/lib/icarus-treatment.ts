@@ -4,6 +4,7 @@ import type {
   IcarusRecordReference,
   IcarusTreatmentTargetRecord,
   IcarusTreatmentCompletionReview,
+  IcarusObservationPlan,
 } from "./icarus";
 import type { IcarusDependencyHealthRegistry } from "./icarus-dependency-health";
 import { getIcarusEffectiveProtection } from "./icarus-effective-protection";
@@ -74,6 +75,7 @@ export type IcarusTreatmentTarget = {
   material: boolean;
   founderOwned: boolean;
   completionReviews?: readonly IcarusTreatmentCompletionReview[];
+  observationPlans?: readonly IcarusObservationPlan[];
 };
 
 export type IcarusTreatmentAssessmentSummary = {
@@ -131,6 +133,7 @@ export type IcarusTreatmentIndexInput = {
   projects: readonly IcarusTreatmentExecution[];
   founderPersonId: string | null;
   nowMs?: number;
+  people?: readonly { id: string; status: string }[];
 };
 
 export function getIcarusAssuranceTreatmentTargetId(obligationId: string): string {
@@ -166,6 +169,7 @@ export function persistIcarusTreatmentTarget(
     objectiveIds: [...target.objectiveIds], pillarIds: [...target.pillarIds],
     provenance: { ...target.provenance }, executionLinks: [], promotedAt,
     ...(target.completionReviews ? { completionReviews: [...target.completionReviews] } : {}),
+    ...(target.observationPlans ? { observationPlans: [...target.observationPlans] } : {}),
   };
 }
 
@@ -378,6 +382,14 @@ function buildSummary(
         : view?.state === "Verified effective" && !view.latest?.nextObservationBy
           ? [`Effective treatment has no scheduled follow-up observation (${target.id})`] : [];
     }),
+    ...materialForAssessment.flatMap((target) => {
+      const observation = verification.get(target.id)?.observation;
+      if (!observation || !["Missing", "Unowned", "Invalid", "Due", "Overdue"].includes(observation.state)) return [];
+      if (observation.state === "Missing" && target.state !== "Completed — verification required") return [];
+      return [`Observation responsibility (${target.id}): ${observation.state}${observation.plan
+        ? `; owner Person:${observation.plan.ownerPersonId}; ${observation.plan.protection}` : ""}${observation.nextReviewBy
+        ? `; review by ${observation.nextReviewBy}` : ""}${observation.issues.length ? `; ${observation.issues.join("; ")}` : ""}`];
+    }),
     unpromotedInterventionCount > 0
       ? `${unpromotedInterventionCount} resilience/restoration intervention${unpromotedInterventionCount === 1 ? " remains" : "s remain"} a recommendation`
       : "",
@@ -445,6 +457,7 @@ export function buildIcarusTreatmentIndex(input: IcarusTreatmentIndexInput): Ica
     uniqueById.set(target.id, {
       ...previous,
       completionReviews: [...(previous.completionReviews ?? []), ...(target.completionReviews ?? [])],
+      observationPlans: [...(previous.observationPlans ?? []), ...(target.observationPlans ?? [])],
       executionLinks: links,
       executions,
       state: route.state,
@@ -458,6 +471,7 @@ export function buildIcarusTreatmentIndex(input: IcarusTreatmentIndexInput): Ica
     assurance: { byAssessmentId: input.assurance.byAssessmentId },
     dependencyHealth: input.dependencyHealth,
     nowMs,
+    people: input.people,
   });
   const knownDependencies = new Set(input.resilience.map((entry) => getIcarusReferenceKey(entry.reference)));
   const recommendations = input.recommendations.filter((recommendation) =>

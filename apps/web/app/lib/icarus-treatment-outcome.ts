@@ -17,6 +17,10 @@ import type { IcarusDependencyHealthRegistry } from "./icarus-dependency-health"
 import type { IcarusTreatmentTarget } from "./icarus-treatment";
 import { getIcarusEffectiveProtection } from "./icarus-effective-protection";
 import { isValidCalendarDateInput } from "./dates";
+import {
+  deriveIcarusObservationResponsibility, getIcarusCurrentObservationPlan, getIcarusObservationPlanIssues,
+  getIcarusPlannedObservationIssues, getIcarusObservationEvidenceIssues, type IcarusObservationResponsibility,
+} from "./icarus-observation-plan";
 
 export type IcarusTreatmentVerificationOption = {
   outcome: IcarusTreatmentOutcomeCategory;
@@ -43,6 +47,7 @@ export type IcarusTreatmentOutcomeView = {
   completion?: { conditions: readonly IcarusTreatmentCompletionCondition[]; issues: readonly string[] };
   protection?: "Not observed" | "Observed — review required" | "Evidence-supported effectiveness"
     | "Repeated protection observed" | "Observation due" | "Protection deteriorated" | "Protection unknown";
+  observation?: IcarusObservationResponsibility;
 };
 
 type VerificationAssurance = {
@@ -59,6 +64,7 @@ export type IcarusTreatmentOutcomeIndexInput = {
   assurance: VerificationAssurance;
   dependencyHealth: IcarusDependencyHealthRegistry;
   nowMs?: number;
+  people?: readonly { id: string; status: string }[];
 };
 
 export function getIcarusTreatmentCompletion(
@@ -288,8 +294,10 @@ function verificationOptions(
     const status = controlAssurance.find((entry) => entry.controlId === control.id)?.status;
     return status && getIcarusEffectiveProtection(control, status, dependencyHealth).barrier !== "Active";
   });
-  const hasReferencedControlTest = Boolean(target.controlId) && controlRecords.some((control) => controlAssurance.some((entry) =>
-    entry.controlId === control.id && entry.lastEvent?.source === "Control test"));
+  const observationControlIds = getIcarusCurrentObservationPlan(target)?.controlIds ?? [];
+  const hasReferencedControlTest = controlRecords.some((control) =>
+    (Boolean(target.controlId) || observationControlIds.includes(control.id))
+    && controlAssurance.some((entry) => entry.controlId === control.id && entry.lastEvent?.source === "Control test"));
   // Loss of mode materiality does not replace a directly verifiable control-treatment observation.
   if (mode && !mode.material && target.failureModeId && !protectionImpaired && !hasReferencedControlTest) {
     const evidence: IcarusTreatmentOutcomeEvidence = {
@@ -390,23 +398,48 @@ export function buildIcarusTreatmentOutcomeIndex(
   const result = new Map<string, IcarusTreatmentOutcomeView>();
 
   input.targets.forEach((target) => {
+    const plan = getIcarusCurrentObservationPlan(target);
+    const people = input.people ?? [];
+    const records = outcomes.filter((outcome) => outcome.treatmentTargetId === target.id)
+      .slice()
+      .sort((left, right) => left.verifiedAt.localeCompare(right.verifiedAt) || left.id.localeCompare(right.id));
     const completion = getIcarusTreatmentCompletion(target, nowMs);
     const assessment = assessmentsById.get(target.assessmentId);
-    const candidates = target.state === "Completed — verification required"
+    let candidates = target.state === "Completed — verification required"
       ? verificationOptions(target, assessment, input.assurance, input.dependencyHealth)
       : [];
+    if (plan) {
+      const scoped = plan.controlIds.flatMap((controlId) => candidates.filter((option) =>
+        option.evidence.some((entry) => entry.kind === "Control test" && entry.controlId === controlId)
+        && option.evidence.filter((entry) => entry.kind === "Control test").length === 1));
+      candidates = scoped.length === plan.controlIds.length && scoped.length > 0 ? [{
+        outcome: scoped.every((option) => option.outcome === "Effective") ? "Effective"
+          : scoped.some((option) => option.outcome === "Ineffective") ? "Ineffective" : "Inconclusive",
+        evidence: scoped.flatMap((option) => [...option.evidence]),
+        afterState: scoped.length === 1 ? scoped[0].afterState
+          : { kind: "Control assurance", state: scoped.every((option) => option.outcome === "Effective") ? "Assured" : "Inconclusive" },
+        attribution: scoped.every((option) => option.attribution === "Supported") ? "Supported" : "Uncertain",
+        label: `Planned observation: ${plan.protection} — ${scoped.map((option) => option.label).join("; ")}`,
+      }] : [];
+      if (candidates[0]?.outcome === "Effective") candidates.push({
+        ...candidates[0], outcome: "Inconclusive",
+        label: "Inconclusive — operating tests passed but the declared acceptance criteria are not established",
+      });
+    }
     const evaluated = candidates.map((option) => ({
-      option, issues: getIcarusTreatmentVerificationIssues(target, option.evidence, input.assessments, nowMs, nowMs),
+      option, issues: [
+        ...getIcarusTreatmentVerificationIssues(target, option.evidence, input.assessments, nowMs, nowMs),
+        ...(plan ? getIcarusObservationEvidenceIssues(target, plan, option.evidence, records.at(-1), input.assessments) : []),
+      ],
     }));
+    const planIssues = plan ? getIcarusObservationPlanIssues(target, plan, input.assessments, people, nowMs) : [];
     const issues = [...new Set([
       ...(target.state === "Completed — verification required"
         ? getIcarusTreatmentVerificationIssues(target, [], input.assessments, nowMs, nowMs) : []),
       ...evaluated.flatMap((entry) => entry.issues),
+      ...planIssues,
     ])].sort();
-    const options = evaluated.filter((entry) => !entry.issues.length).map((entry) => entry.option);
-    const records = outcomes.filter((outcome) => outcome.treatmentTargetId === target.id)
-      .slice()
-      .sort((left, right) => left.verifiedAt.localeCompare(right.verifiedAt) || left.id.localeCompare(right.id));
+    const options = evaluated.filter((entry) => !entry.issues.length && !planIssues.length).map((entry) => entry.option);
     const history = records.map((record, recordIndex) => {
       const recordIssues = getIcarusTreatmentVerificationIssues(
         target, record.evidence, input.assessments, Date.parse(record.verifiedAt), nowMs,
@@ -425,11 +458,17 @@ export function buildIcarusTreatmentOutcomeIndex(
         recordIssues.push("Observation deadline is invalid");
       }
       recordIssues.push(...getIcarusTreatmentFollowUpIssues(record, records[recordIndex - 1], input.assessments));
+      if (plan) recordIssues.push(...getIcarusPlannedObservationIssues(
+        target, plan, record, records[recordIndex - 1], input.assessments, people, nowMs,
+      ));
+      else if (record.observationPlan) recordIssues.push("Recorded observation plan is no longer attached to the treatment");
       if (record.nextObservationBy && Date.parse(record.nextObservationBy.length === 10
         ? `${record.nextObservationBy}T23:59:59.999Z` : record.nextObservationBy) < nowMs) {
         recordIssues.push("Follow-up effectiveness observation is due");
       }
-      const currentOption = options.find((option) => option.outcome === record.outcome
+      const currentOption = evaluated.filter((entry) => !planIssues.length
+        && !getIcarusTreatmentVerificationIssues(target, entry.option.evidence, input.assessments, nowMs, nowMs).length)
+        .map((entry) => entry.option).find((option) => option.outcome === record.outcome
         && sameEvidence(option.evidence, record.evidence)
         && sameAfterState(record.afterState, option.afterState)
         && target.state === "Completed — verification required"
@@ -488,6 +527,7 @@ export function buildIcarusTreatmentOutcomeIndex(
       history,
       completion,
       protection,
+      observation: deriveIcarusObservationResponsibility(target, input.assessments, people, history, nowMs),
       ...(latest ? { latest: latest.record } : {}),
     });
   });
