@@ -43,6 +43,7 @@ export type CaptureConversionRecord = {
   priority?: string;
   relatedProblem?: string;
   relatedDecision?: string;
+  relatedLeadId?: string;
   // Exact Lesson ID intentionally designated for this Action to implement its required change.
   // Optional: one Lesson may have many Actions; each Action implements at most one Lesson.
   implementsLessonId?: string;
@@ -336,6 +337,12 @@ export function isValidActionImplementationLessonId(
   return lessonId === "" || lessons.some((lesson) => lesson.id === lessonId);
 }
 
+export function assertActionLeadLink(value: unknown): void {
+  if (value !== undefined && typeof value !== "string") {
+    throw new Error("Action relatedLeadId must be an optional string; commercial traceability cannot be loaded safely.");
+  }
+}
+
 export function normalizeActionRecord(record: CaptureConversionRecord): ActionRecord {
   // record.status holds the generic conversion status (e.g. "Converted") until
   // set to a real ActionStatus, so it must be validated rather than passed through via `??`.
@@ -346,6 +353,7 @@ export function normalizeActionRecord(record: CaptureConversionRecord): ActionRe
 
   return {
     ...record,
+    ...(record.relatedLeadId !== undefined ? { relatedLeadId: record.relatedLeadId.trim() } : {}),
     ...(record.implementsLessonId !== undefined
       ? { implementsLessonId: record.implementsLessonId.trim() }
       : {}),

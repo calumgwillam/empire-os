@@ -218,6 +218,14 @@ function issueSummaries(input: IntegrityAuditInput) {
 }
 
 describe("runIntegrityAudit", () => {
+  it("audits broken commercial Action-to-Lead relationships without altering legacy Actions", () => {
+    const issues = runIntegrityAudit(makeInput({ actions: [makeAction({ relatedLeadId: "missing-lead" })] })).issues;
+    expect(issues).toEqual(expect.arrayContaining([expect.objectContaining({
+      category: "Broken relationships", recordType: "Action", recordId: "action-1",
+      reason: "Related Lead references missing ID missing-lead.",
+    })]));
+    expect(runIntegrityAudit(makeInput({ actions: [makeAction()] })).issues.some((issue) => issue.reason.includes("Related Lead"))).toBe(false);
+  });
   it("returns a healthy report for empty records and null stores", () => {
     expect(runIntegrityAudit(makeInput())).toEqual({
       auditedAt: "2026-10-01T12:00:00.000Z",

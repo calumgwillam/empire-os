@@ -1,5 +1,6 @@
 import type { StrategicRiskConvergence } from "./strategic-risk-resolution";
 import type { IcarusObservationExecutionIndex } from "./icarus-observation-action";
+import { buildLeadFollowThrough, type LeadFollowThroughInput } from "./lead-follow-through";
 import type {
   ActionRecord,
   DecisionRecord,
@@ -102,7 +103,10 @@ type CommandAttentionProcurementInput = {
 
 export type CommandAttentionInput = {
   problems: readonly Pick<ProblemRecord, "id" | "severity" | "frequency" | "problemStatus" | "problemStatement" | "title" | "owner" | "createdAt" | "relatedArea" | "relatedPillar">[];
-  actions: readonly Pick<ActionRecord, "id" | "status" | "priority" | "dueDate" | "followUpDate" | "followUpNote" | "createdDate" | "createdAt" | "actionTitle" | "title" | "relatedPillar" | "relatedArea" | "relatedProblem" | "relatedDecision">[];
+  actions: readonly (Pick<ActionRecord, "id" | "status" | "priority" | "dueDate" | "followUpDate" | "followUpNote" | "createdDate" | "createdAt" | "actionTitle" | "title" | "relatedPillar" | "relatedArea" | "relatedProblem" | "relatedDecision">
+    & Partial<Pick<ActionRecord, "relatedLeadId" | "owner" | "ownerPersonId" | "completionEvidence" | "completionDate">>)[];
+  leads?: LeadFollowThroughInput["leads"];
+  commercialPeople?: LeadFollowThroughInput["people"];
   outreach: readonly Pick<OutreachRecord, "id" | "businessName" | "status" | "nextFollowUpDate">[];
   projects: readonly Pick<ProjectRecord, "id" | "projectName" | "area" | "status" | "health" | "nextReviewDate" | "reviewNote" | "targetCompletionDate" | "startDate">[];
   decisions: readonly Pick<DecisionRecord, "id" | "decisionTitle" | "title" | "decisionStatus" | "reviewDate" | "createdAt" | "relatedArea" | "relatedPillar">[];
@@ -409,6 +413,60 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
       });
     }
   });
+
+  if (input.leads) {
+    const commercial = buildLeadFollowThrough({
+      leads: input.leads, actions: input.actions, people: input.commercialPeople ?? [], nowMs: now,
+    });
+    commercial.filter((view) => view.reasons.length).forEach((view) => {
+      const lead = input.leads?.find((record) => record.id === view.leadId);
+      if (!lead) return;
+      const linked = [...view.activeActionIds, ...view.completedActionIds]
+        .map((id) => uniqueByKey.get(`Action:${id}`))
+        .filter((item): item is CommandAttentionItem => Boolean(item)).sort(compareAttentionItems)[0];
+      const nextStepAction = input.actions.find((action) => view.activeActionIds.includes(action.id));
+      const rank = view.state === "Blocked" ? 1 : view.overdue ? 2 : 4;
+      if (linked) {
+        addAttentionItem("COMMERCIAL FOLLOW-THROUGH", { ...linked, reasons: [...view.reasons], reason: view.reasons.join(" • ") });
+        linked.attentionRank = Math.min(linked.attentionRank, rank);
+      } else if (nextStepAction) {
+        addAttentionItem("COMMERCIAL FOLLOW-THROUGH", {
+          id: nextStepAction.id, objectType: "Action", title: nextStepAction.actionTitle || nextStepAction.title,
+          reasons: [...view.reasons], reason: view.reasons.join(" • "),
+          statusText: `${nextStepAction.status} / ${view.state}`, area: getAreaText(nextStepAction),
+          attentionRank: rank, tieWeight: 0, priorityScore: getActionPriorityScore(nextStepAction, now),
+          sortDate: getDateValue(view.nextStepBy), sortDateAscending: true,
+          sourceIndex: input.actions.indexOf(nextStepAction),
+        });
+      } else {
+        addAttentionItem("COMMERCIAL FOLLOW-THROUGH", {
+          id: lead.id, objectType: "Lead", title: lead.leadName,
+          reasons: [...view.reasons], reason: view.reasons.join(" • "),
+          statusText: `${lead.status} / ${view.state} / ${lead.owner || "Unassigned"}`,
+          area: lead.relatedPillar, attentionRank: rank, tieWeight: 0, priorityScore: 100,
+          sortDate: getDateValue(view.nextStepBy || lead.dateReceived || lead.dateCreated),
+          sortDateAscending: true, navigationMode: "record-handler",
+        });
+      }
+    });
+    input.actions.filter((action) => {
+      if (!action.relatedLeadId) return false;
+      const leads = input.leads?.filter((lead) => lead.id === action.relatedLeadId) ?? [];
+      return leads.length !== 1 || (Boolean(leads[0].archived || ["Won", "Lost"].includes(leads[0].status))
+        && ["Open", "In Progress", "Blocked", "Waiting"].includes(action.status));
+    }).forEach((action) => {
+      const related = input.leads?.filter((lead) => lead.id === action.relatedLeadId) ?? [];
+      const reason = related.length !== 1 ? "COMMERCIAL: Linked Lead is missing or ambiguous"
+        : "COMMERCIAL: Sales scope is closed or archived; review the outstanding next-step Action";
+      addAttentionItem("COMMERCIAL LINKAGE REVIEW", {
+        id: action.id, objectType: "Action", title: action.actionTitle || action.title,
+        reason, reasons: [reason],
+        statusText: `${action.status} / Commercial linkage review`, area: getAreaText(action),
+        attentionRank: 4, tieWeight: 0, priorityScore: 100, sortDate: 0, sortDateAscending: false,
+        sourceIndex: input.actions.indexOf(action),
+      });
+    });
+  }
 
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);

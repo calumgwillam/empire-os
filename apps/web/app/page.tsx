@@ -212,6 +212,9 @@ import {
   type IntegrityAuditResult as DomainIntegrityAuditResult,
 } from "./lib/integrity-audit";
 import { persistJsonArray, persistJsonValue, persistJsonArraysTransaction } from "./lib/persistence";
+import { buildLeadFollowThrough, createLeadFollowThroughAction, linkLeadFollowThroughAction, type LeadFollowThroughView } from "./lib/lead-follow-through";
+import LeadFollowThroughSection, { type LeadFollowThroughRequest } from "./components/lead-follow-through-section";
+import { assertActionLeadLink } from "./lib/capture-conversions";
 import {
   assertIcarusDataStructure,
   normaliseIcarusAssessmentData,
@@ -2715,13 +2718,18 @@ function ProjectHealthReviewPanel({ project, people, onClose, onSubmit }: {
   );
 }
 
-function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveToggle }: {
+function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveToggle, followThrough, actions, followThroughWritable, onRouteFollowThrough, onOpenAction }: {
   lead: LeadRecord;
   people: PersonRecord[];
   onClose: () => void;
   onChange: (field: keyof LeadRecord, value: string) => void;
   onSave: () => boolean;
   onArchiveToggle: (lead: LeadRecord, archived: boolean) => void;
+  followThrough?: LeadFollowThroughView;
+  actions: readonly ActionRecord[];
+  followThroughWritable: boolean;
+  onRouteFollowThrough: (request: LeadFollowThroughRequest) => void;
+  onOpenAction: (id: string) => void;
 }) {
   const hasInvalidLeadName = !lead.leadName.trim();
   const [hasSaved, setHasSaved] = useState(false);
@@ -2749,6 +2757,8 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
           <button type="button" onClick={onClose} className="text-[12px] uppercase tracking-[0.16em] text-[#4d4944]">Close</button>
         </div>
 
+        <LeadFollowThroughSection lead={lead} view={followThrough} actions={actions} people={people}
+          writable={followThroughWritable} onRoute={onRouteFollowThrough} onOpenAction={onOpenAction} />
         {hasSaved ? (
           <div aria-live="polite" className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">
             Lead details saved.
@@ -6628,9 +6638,10 @@ type ActionDetailPanelProps = {
   onReviewFollowThrough: () => void;
   onOpenRelatedProblem?: () => void;
   onOpenRelatedDecision?: () => void;
+  onOpenRelatedLead?: () => void;
 };
 
-function ActionDetailPanel({ action, people, responsibilities, problems, decisions, upstream, downstream, onClose, onChange, onOwnerChange, onAddResponsibilityOutcomeEvidence, onSave, onReviewFollowThrough, onOpenRelatedProblem, onOpenRelatedDecision }: ActionDetailPanelProps) {
+function ActionDetailPanel({ action, people, responsibilities, problems, decisions, upstream, downstream, onClose, onChange, onOwnerChange, onAddResponsibilityOutcomeEvidence, onSave, onReviewFollowThrough, onOpenRelatedProblem, onOpenRelatedDecision, onOpenRelatedLead }: ActionDetailPanelProps) {
   const isCompleted = action.status === "Completed";
   const activePeople = people.filter((person) => person.status === "Active");
   const [responsibilityId, setResponsibilityId] = useState("");
@@ -7070,6 +7081,10 @@ function ActionDetailPanel({ action, people, responsibilities, problems, decisio
             <div className="mt-2 space-y-2 text-[12px] text-[#2f2b28]">
               <div><span className="font-medium">Related Problem ID:</span> {action.relatedProblem || "Not linked"}</div>
               <div><span className="font-medium">Related Decision ID:</span> {action.relatedDecision || "Not linked"}</div>
+              {action.relatedLeadId ? <div><span className="font-medium">Commercial Lead:</span> {action.relatedLeadId}
+                <button type="button" className="ml-2 underline" onClick={onOpenRelatedLead}>Open Lead</button>
+                <p className="mt-1 text-[11px]">Action completion does not confirm a sale. Review and update the Lead outcome separately; ownership changes must also be reconciled with the Lead.</p>
+              </div> : null}
               <div><span className="font-medium">Source Capture relationship:</span> {action.relatedCapture || "Not linked"}</div>
               <div><span className="font-medium">Original Capture title:</span> {action.title}</div>
               <div><span className="font-medium">Original raw note:</span> {action.originalRawNote}</div>
@@ -9044,6 +9059,7 @@ export default function Home() {
             addOperationalRecord(recordType, record.id);
             if (recordType === "Action") {
               assertIcarusObservationActionLinks(record.icarusObservationLinks);
+              assertActionLeadLink(record.relatedLeadId);
               assertIcarusObservationHandoffs(record.icarusObservationHandoffs);
               if (Object.prototype.hasOwnProperty.call(record, "responsibilityOutcomeEvidence")) {
                 assertActionResponsibilityOutcomeEvidenceStructure(record.responsibilityOutcomeEvidence);
@@ -9924,6 +9940,8 @@ export default function Home() {
   const activeOwnershipActions = actionRecords.filter((action) => isActionActive(action) && !isReleaseInterventionAction(action));
   const activeOwnershipProjects = projects.filter(isProjectActive);
   const activeOwnershipLeads = activeLeads.filter((lead) => !["Won", "Lost"].includes(lead.status));
+  const commercialNowMs = Date.now();
+  const leadFollowThrough = buildLeadFollowThrough({ leads, actions: actionRecords, people, nowMs: commercialNowMs });
   const activeOwnershipProblems = problemRecords.filter(isProblemUnresolved);
 
   const {
@@ -10855,14 +10873,10 @@ export default function Home() {
       .filter((lead) => !["Won", "Lost"].includes(lead.status))
       .map((lead) => {
         const quoteAmount = parseFinanceAmount(lead.quoteValue);
-        const followUpTime = getDateValue(lead.followUpDate);
         const receivedAge = ageDays(lead.dateReceived || lead.dateCreated);
-
-        if (lead.status === "Quote Sent" && !lead.followUpDate) {
-          return { lead, quoteAmount, reason: "Quote sent with no follow-up scheduled", ageDays: ageDays(lead.quoteSentDate || lead.dateReceived || lead.dateCreated) };
-        }
-        if (lead.status === "Quote Sent" && followUpTime > 0 && followUpTime < now) {
-          return { lead, quoteAmount, reason: "Follow-up date passed with no resolution", ageDays: ageDays(lead.followUpDate) };
+        const followThrough = leadFollowThrough.find((view) => view.leadId === lead.id);
+        if (followThrough?.reasons.length) {
+          return { lead, quoteAmount, reason: followThrough.reasons.join(" • "), ageDays: ageDays(followThrough.nextStepBy || lead.dateReceived || lead.dateCreated) };
         }
         if (lead.status === "New" && receivedAge >= newLeadThresholdDays) {
           return { lead, quoteAmount, reason: "New lead with no contact progress", ageDays: receivedAge };
@@ -11241,6 +11255,8 @@ export default function Home() {
   const commandAttentionPolicy = buildCommandAttention({
     problems: problemRecords,
     actions: actionRecords,
+    leads,
+    commercialPeople: people,
     outreach: outreachContacts,
     projects,
     decisions: decisionRecords,
@@ -11267,7 +11283,7 @@ export default function Home() {
     learning: commandLearningInput,
     icarus: icarusSignalsWithTreatment,
     icarusObservationExecution: icarusIntelligence.observationExecution,
-    nowMs: Date.now(),
+    nowMs: commercialNowMs,
   });
   const toCommandAttentionItem = (item: CommandAttentionItem): AttentionItem => {
     const dependencyAction = item.dependencyAction;
@@ -15606,6 +15622,30 @@ export default function Home() {
       message: isNewLead ? "Lead created." : "Lead details saved.",
     });
     return true;
+  };
+
+  const handleRouteLeadFollowThrough = (request: LeadFollowThroughRequest) => {
+    try {
+      if (!operatingDataLoaded || !conversionsWritableRef.current) throw new Error("Action storage is not writable; commercial execution was not changed.");
+      const context = { leads, actions: actionRecords, people, nowMs: Date.now() };
+      const matches = request.kind === "Link" ? actionRecords.filter((action) => action.id === request.actionId) : [];
+      if (request.kind === "Link" && matches.length !== 1) throw new Error("Selected Action is missing or ambiguous.");
+      const action = request.kind === "Create"
+        ? createLeadFollowThroughAction(context, { ...request, id: generateConversionId() }, people)
+        : linkLeadFollowThroughAction(context, request.leadId, matches[0]);
+      const storedMatches = conversions.filter((record) => record.id === action.id);
+      if (request.kind === "Create" ? storedMatches.length > 0 : storedMatches.length !== 1) {
+        throw new Error("Commercial Action identity conflicts with stored operating records; review integrity before routing.");
+      }
+      const next = request.kind === "Create" ? [action, ...conversions]
+        : conversions.map((record) => record.id === action.id ? action : record);
+      persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+      setConversions(next);
+      setFeedback({ type: "success", message: request.kind === "Create" ? "Commercial next-step Action created. Lead status and outcome remain unchanged."
+        : "Existing Action linked to the Lead. Execution ownership remains managed through Actions." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Commercial follow-through routing failed." });
+    }
   };
 
   const handleCreateLead = () => {
@@ -20214,6 +20254,7 @@ export default function Home() {
           onReviewFollowThrough={() => setFollowThroughReviewActionId(actionEditor.id)}
           onOpenRelatedProblem={() => handleOpenRelatedProblem(actionEditor)}
           onOpenRelatedDecision={() => handleOpenRelatedDecision(actionEditor)}
+          onOpenRelatedLead={() => { if (actionEditor.relatedLeadId) handleOpenAttentionRecord("Lead", actionEditor.relatedLeadId); }}
         />
       ) : null}
 
@@ -20460,6 +20501,11 @@ export default function Home() {
           onChange={handleLeadEditorChange}
           onSave={handleLeadSave}
           onArchiveToggle={handleLeadArchiveToggle}
+          followThrough={leadFollowThrough.find((view) => view.leadId === leadEditor.id)}
+          actions={actionRecords}
+          followThroughWritable={operatingDataLoaded && conversionsWritableRef.current && leads.some((lead) => lead.id === leadEditor.id)}
+          onRouteFollowThrough={handleRouteLeadFollowThrough}
+          onOpenAction={(id) => handleOpenAttentionRecord("Action", id)}
         />
       ) : null}
 

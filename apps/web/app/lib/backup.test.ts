@@ -44,6 +44,18 @@ const makeBackup = (overrides: Record<string, unknown> = {}, storage: Record<str
 });
 
 describe("validateEmpireOsBackup", () => {
+  it("preserves optional commercial Action linkage and rejects malformed values before restoring", () => {
+    for (const relatedLeadId of [undefined, "", "lead-1"]) {
+      const records = [{ id: "action-1", targetType: "Convert to Action", relatedLeadId }];
+      const result = validateEmpireOsBackup(makeBackup({}, { [CONVERSION_STORAGE_KEY]: JSON.stringify(records) }));
+      expect(JSON.parse(result.storage[CONVERSION_STORAGE_KEY] ?? "[]")).toEqual(JSON.parse(JSON.stringify(records)));
+    }
+    for (const relatedLeadId of [null, 1, {}, []]) {
+      expect(() => validateEmpireOsBackup(makeBackup({}, {
+        [CONVERSION_STORAGE_KEY]: JSON.stringify([{ id: "action-1", targetType: "Convert to Action", relatedLeadId }]),
+      }))).toThrow("relatedLeadId");
+    }
+  });
   it("accepts a correct backup and returns normalised storage", () => {
     const input = makeBackup();
     const result = validateEmpireOsBackup(input);

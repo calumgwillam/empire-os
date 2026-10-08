@@ -306,6 +306,7 @@ export function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditRes
     checkNamedOwner("Action", title, action.id, action.owner, !["Completed", "Cancelled"].includes(action.status), "Action");
     checkReference({ value: action.relatedProblem, validIds: problemIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: "Related Problem", openObjectType: "Action" });
     checkReference({ value: action.relatedDecision, validIds: decisionIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: "Related Decision", openObjectType: "Action" });
+    checkReference({ value: action.relatedLeadId, validIds: leadIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: "Related Lead", openObjectType: "Action" });
     checkReference({ value: action.relatedOpportunity, validIds: opportunityIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: "Related Opportunity", openObjectType: "Action" });
     if (action.releaseSourceType && action.releaseSourceId) {
       const releaseIds = action.releaseSourceType === "Action" ? actionIds : action.releaseSourceType === "Project" ? projectIds : action.releaseSourceType === "Lead" ? leadIds : problemIds;
