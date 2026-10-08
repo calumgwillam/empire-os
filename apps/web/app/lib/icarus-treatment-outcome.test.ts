@@ -7,6 +7,7 @@ import {
 } from "./icarus";
 import {
   buildIcarusTreatmentOutcomeIndex,
+  getIcarusTreatmentVerificationIssues,
   type IcarusTreatmentOutcomeIndexInput,
 } from "./icarus-treatment-outcome";
 import type { IcarusTreatmentTarget } from "./icarus-treatment";
@@ -120,6 +121,7 @@ function indexInput(
       }]]),
     },
     dependencyHealth: new Map(),
+    nowMs: Date.parse("2026-05-20T12:00:00.000Z"),
     ...overrides,
   };
 }
@@ -269,8 +271,13 @@ describe("Icarus treatment verification", () => {
 
   it("marks a formerly verified result superseded when current assurance regresses", () => {
     const outcome = effectiveOutcome();
+    const regressed = assessment({ treatmentOutcomes: [outcome] });
+    regressed.controls[0].assuranceTests!.push({
+      id: "test-2", testedAt: "2026-05-05T00:00:00.000Z",
+      testedByPersonId: "person-2", result: "Failed", evidenceIds: [evidenceId],
+    });
     const input = indexInput({
-      assessments: [assessment({ treatmentOutcomes: [outcome] })],
+      assessments: [regressed],
       assurance: {
         byAssessmentId: new Map([[assessmentId, {
           assessmentId,
@@ -427,5 +434,119 @@ describe("Icarus treatment verification", () => {
     });
     expect(buildIcarusTreatmentOutcomeIndex(input).get(target().id)?.options.map((option) => option.outcome))
       .toEqual(["No longer applicable"]);
+  });
+
+  it.each([
+    [undefined, "Execution linkage date is missing or invalid"],
+    ["not-a-date", "Execution linkage date is missing or invalid"],
+    ["2026-05-04T00:00:00.000Z", "Source control test predates treatment routing or intervention selection: test-1"],
+    ["2026-05-21T00:00:00.000Z", "Verification precedes execution linkage"],
+  ])("rejects inadmissible execution linkage %s without discarding history", (linkedAt, reason) => {
+    const recorded = effectiveOutcome();
+    const source = indexInput({
+      assessments: [assessment({ treatmentOutcomes: [recorded] })],
+      targets: [target({ executionLinks: [{ recordType: "Action", recordId: "action-1", linkedAt }] })],
+    });
+    const view = buildIcarusTreatmentOutcomeIndex(source).get(target().id)!;
+    expect(view.options).toEqual([]);
+    expect(view.issues).toContain(reason);
+    expect(view.state).toBe("Superseded");
+    expect(view.history[0]).toMatchObject({ current: false, evidenceCurrent: false, record: recorded });
+  });
+
+  it("accepts the exact routing/test/review boundary and is deterministic without mutating records", () => {
+    const source = indexInput();
+    const recorded = { ...effectiveOutcome(), verifiedAt: "2026-05-03T00:00:00.000Z" };
+    source.targets = [target({ executionLinks: [{ ...target().executionLinks[0], linkedAt: recorded.verifiedAt }] })];
+    recorded.executionLinks = [{ recordType: "Action", recordId: "action-1", linkedAt: recorded.verifiedAt }];
+    source.assessments = [assessment({ treatmentOutcomes: [recorded] })];
+    source.nowMs = Date.parse(recorded.verifiedAt);
+    const before = JSON.stringify(source.assessments);
+    const result = buildIcarusTreatmentOutcomeIndex(source);
+    expect(result.get(target().id)?.state).toBe("Verified effective");
+    expect(result).toEqual(buildIcarusTreatmentOutcomeIndex(source));
+    expect(JSON.stringify(source.assessments)).toBe(before);
+  });
+
+  it.each([
+    ["2026-05-02T00:00:00.000Z", "Source control test postdates verification or has an invalid date: test-1"],
+    ["2026-05-21T00:00:00.000Z", "Verification date is invalid or in the future"],
+  ])("rejects invalid review chronology %s", (verifiedAt, issue) => {
+    const recorded = { ...effectiveOutcome(), verifiedAt };
+    const view = buildIcarusTreatmentOutcomeIndex(indexInput({
+      assessments: [assessment({ treatmentOutcomes: [recorded] })],
+    })).get(target().id)!;
+    expect(view.state).toBe("Superseded");
+    expect(view.history[0].issues).toContain(issue);
+    expect(view.history[0].evidenceCurrent).toBe(false);
+  });
+
+  it("rejects future source tests and supporting evidence independently of a claimed Assured status", () => {
+    const source = indexInput({ nowMs: Date.parse("2026-05-02T00:00:00.000Z") });
+    expect(buildIcarusTreatmentOutcomeIndex(source).get(target().id)?.options).toEqual([]);
+    const recorded = effectiveOutcome();
+    const changed = assessment({ treatmentOutcomes: [recorded] });
+    changed.failureModes[0].evidence[0].reviewedAt = "2026-05-05T00:00:00.000Z";
+    const view = buildIcarusTreatmentOutcomeIndex(indexInput({ assessments: [changed] })).get(target().id)!;
+    expect(view.history[0].issues).toContain(`Supporting evidence postdates verification or has an invalid date: ${evidenceId}`);
+    expect(view.history[0].current).toBe(false);
+  });
+
+  it("invalidates relinked execution even when its identity and evidence are unchanged", () => {
+    const view = buildIcarusTreatmentOutcomeIndex(indexInput({
+      assessments: [assessment({ treatmentOutcomes: [effectiveOutcome()] })],
+      targets: [target({ executionLinks: [{ ...target().executionLinks[0], linkedAt: "2026-05-02T00:00:00.000Z" }] })],
+    })).get(target().id)!;
+    expect(view.options.map((option) => option.outcome)).toEqual(["Effective"]);
+    expect(view.history[0].issues).toContain("Execution linkage provenance has changed");
+    expect(view.state).toBe("Superseded");
+  });
+
+  it("does not verify treatment effectiveness from Healthy / on-track project status", () => {
+    const reference = { recordType: "Project" as const, recordId: "dependency" };
+    const currentTarget = target({ dependencyReference: reference });
+    const source = indexInput({
+      targets: [currentTarget],
+      dependencyHealth: new Map([["Project:dependency", {
+        reference, health: "Healthy", source: "Derived", basis: ["on-track-project"], supportingRecords: [reference],
+      }]]),
+    });
+    const option = buildIcarusTreatmentOutcomeIndex(source).get(currentTarget.id)!.options[0];
+    expect(option.outcome).toBe("Inconclusive");
+    const old = { ...effectiveOutcome(), outcome: "Effective" as const, evidence: [...option.evidence], afterState: option.afterState };
+    source.assessments = [assessment({ treatmentOutcomes: [old] })];
+    expect(buildIcarusTreatmentOutcomeIndex(source).get(currentTarget.id)?.state).toBe("Superseded");
+  });
+
+  it("rejects ambiguous outcome identities and mismatched assessment provenance", () => {
+    const recorded = effectiveOutcome();
+    const source = indexInput({ assessments: [assessment({ treatmentOutcomes: [recorded, { ...recorded }] })] });
+    expect(buildIcarusTreatmentOutcomeIndex(source).get(target().id)?.history.every((entry) =>
+      !entry.current && !entry.evidenceCurrent && entry.issues?.includes("Ambiguous treatment outcome identity"))).toBe(true);
+    const wrong = { ...recorded, assessmentId: "different" };
+    source.assessments = [assessment({ treatmentOutcomes: [wrong] })];
+    expect(buildIcarusTreatmentOutcomeIndex(source).get(target().id)?.history[0].issues)
+      .toContain("Outcome belongs to a different assessment");
+  });
+
+  it.each(["Missing", "Duplicated"] as const)("rejects %s source control tests despite a claimed current assurance event", (state) => {
+    const record = assessment();
+    record.controls[0].assuranceTests = state === "Missing" ? [] : [
+      ...record.controls[0].assuranceTests!, { ...record.controls[0].assuranceTests![0] },
+    ];
+    const source = indexInput({ assessments: [record] });
+    const view = buildIcarusTreatmentOutcomeIndex(source).get(target().id)!;
+    expect(view.options).toEqual([]);
+    expect(view.issues).toContain(`Missing or ambiguous source control test: ${controlId}/${testId}`);
+  });
+
+  it("does not turn an old test into post-selection evidence by recording a fresh review", () => {
+    const source = indexInput();
+    const issues = getIcarusTreatmentVerificationIssues(
+      source.targets[0], effectiveOutcome().evidence, source.assessments,
+      Date.parse("2026-05-05T00:00:00.000Z"), source.nowMs!,
+      Date.parse("2026-05-04T00:00:00.000Z"),
+    );
+    expect(issues).toContain(`Source control test predates treatment routing or intervention selection: ${testId}`);
   });
 });

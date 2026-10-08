@@ -29,11 +29,13 @@ export type IcarusTreatmentOutcomeView = {
     | "Partially effective" | "Verified ineffective" | "Verification inconclusive"
     | "No longer applicable" | "Superseded";
   options: readonly IcarusTreatmentVerificationOption[];
+  issues?: readonly string[];
   history: readonly {
     record: IcarusTreatmentOutcomeRecord;
     current: boolean;
     evidenceCurrent?: boolean;
     attribution: "Supported" | "Uncertain" | "Not attributable";
+    issues?: readonly string[];
   }[];
   latest?: IcarusTreatmentOutcomeRecord;
 };
@@ -51,7 +53,58 @@ export type IcarusTreatmentOutcomeIndexInput = {
   targets: readonly IcarusTreatmentTarget[];
   assurance: VerificationAssurance;
   dependencyHealth: IcarusDependencyHealthRegistry;
+  nowMs?: number;
 };
+
+// A new review cannot make a pre-treatment observation into treatment evidence.
+export function getIcarusTreatmentVerificationIssues(
+  target: IcarusTreatmentTarget,
+  evidence: readonly IcarusTreatmentOutcomeEvidence[],
+  assessments: readonly IcarusAssessmentRecord[],
+  verifiedAtMs: number,
+  nowMs: number,
+  evidenceNotBeforeMs = -Infinity,
+): string[] {
+  const issues: string[] = [];
+  if (!Number.isFinite(nowMs) || Number.isNaN(evidenceNotBeforeMs)) issues.push("Verification evidence clock is invalid");
+  const matches = assessments.filter((assessment) => assessment.id === target.assessmentId);
+  if (matches.length !== 1) issues.push("Missing or ambiguous treatment assessment");
+  if (!Number.isFinite(verifiedAtMs) || verifiedAtMs > nowMs) issues.push("Verification date is invalid or in the future");
+  if (!target.executionLinks.length) issues.push("No dated execution linkage");
+  const linkedDates = target.executionLinks.map((link) => Date.parse(link.linkedAt ?? ""));
+  if (linkedDates.some((at) => !Number.isFinite(at))) issues.push("Execution linkage date is missing or invalid");
+  if (linkedDates.some((at) => at > verifiedAtMs)) issues.push("Verification precedes execution linkage");
+  const routedAt = Math.max(...linkedDates, evidenceNotBeforeMs);
+  evidence.forEach((entry) => {
+    if (entry.kind !== "Control test") return;
+    const controls = matches[0]?.controls.filter((control) =>
+      control.id === entry.controlId && control.failureModeId === entry.failureModeId) ?? [];
+    const tests = controls.flatMap((control) => control.assuranceTests ?? []).filter((test) => test.id === entry.testId);
+    if (entry.assessmentId !== target.assessmentId || controls.length !== 1 || tests.length !== 1) {
+      issues.push(`Missing or ambiguous source control test: ${entry.controlId}/${entry.testId}`);
+      return;
+    }
+    const testedAt = Date.parse(tests[0].testedAt);
+    if (!Number.isFinite(testedAt) || testedAt > verifiedAtMs) {
+      issues.push(`Source control test postdates verification or has an invalid date: ${entry.testId}`);
+    }
+    if (testedAt < routedAt) issues.push(`Source control test predates treatment routing or intervention selection: ${entry.testId}`);
+    entry.evidenceIds.forEach((id) => {
+      const modes = matches[0]?.failureModes.filter((mode) => mode.id === entry.failureModeId) ?? [];
+      const sources = modes.flatMap((mode) => mode.evidence).filter((source) => source.id === id);
+      if (modes.length !== 1 || sources.length !== 1) {
+        issues.push(`Missing or ambiguous supporting evidence: ${id}`);
+        return;
+      }
+      const source = sources[0];
+      if ([source.recordedAt, source.observedAt, source.reviewedAt].filter((at) => at !== undefined)
+        .some((at) => !Number.isFinite(Date.parse(at)) || Date.parse(at) > verifiedAtMs)) {
+        issues.push(`Supporting evidence postdates verification or has an invalid date: ${id}`);
+      }
+    });
+  });
+  return [...new Set(issues)].sort();
+}
 
 function sameEvidence(
   left: readonly IcarusTreatmentOutcomeEvidence[],
@@ -66,8 +119,8 @@ function sameExecutionLinks(
   left: IcarusTreatmentOutcomeRecord["executionLinks"],
   right: IcarusTreatmentTarget["executionLinks"],
 ): boolean {
-  const keys = (links: readonly { recordType: "Action" | "Project"; recordId: string }[]) =>
-    [...new Set(links.map((link) => `${link.recordType}:${link.recordId}`))].sort();
+  const keys = (links: IcarusTreatmentTarget["executionLinks"]) =>
+    [...new Set(links.map((link) => JSON.stringify([link.recordType, link.recordId, link.linkedAt])))].sort();
   return JSON.stringify(keys(left)) === JSON.stringify(keys(right));
 }
 
@@ -114,14 +167,14 @@ function verificationOptions(
         source: health.source,
         basis: [...health.basis].sort(),
       };
-      const outcome = health.health === "Healthy" && health.basis.includes("on-track-project") ? "Effective"
-        : health.health === "Failed" ? "Ineffective" : "Inconclusive";
+      // Operational status is context, not observed evidence of a treatment's effectiveness.
+      const outcome = health.health === "Failed" ? "Ineffective" : "Inconclusive";
       options.push({
         outcome,
         evidence: [evidence],
         afterState: { kind: "Dependency health", state: health.health },
         attribution: "Uncertain",
-        label: `${outcome} — dependency is ${health.health} (${health.basis.join(", ")})`,
+        label: `${outcome} — dependency is ${health.health} (${health.basis.join(", ")}); operational status alone is not effectiveness evidence`,
       });
       return options;
     }
@@ -233,29 +286,47 @@ function verifiedState(outcome: IcarusTreatmentOutcomeCategory): IcarusTreatment
 export function buildIcarusTreatmentOutcomeIndex(
   input: IcarusTreatmentOutcomeIndexInput,
 ): ReadonlyMap<string, IcarusTreatmentOutcomeView> {
+  const nowMs = input.nowMs ?? Date.now();
   const assessmentsById = new Map(input.assessments.map((assessment) => [assessment.id, assessment] as const));
   const outcomes = input.assessments.flatMap((assessment) => assessment.treatmentOutcomes ?? []);
   const result = new Map<string, IcarusTreatmentOutcomeView>();
 
   input.targets.forEach((target) => {
     const assessment = assessmentsById.get(target.assessmentId);
-    const options = target.state === "Completed — verification required"
+    const candidates = target.state === "Completed — verification required"
       ? verificationOptions(target, assessment, input.assurance, input.dependencyHealth)
       : [];
+    const evaluated = candidates.map((option) => ({
+      option, issues: getIcarusTreatmentVerificationIssues(target, option.evidence, input.assessments, nowMs, nowMs),
+    }));
+    const issues = [...new Set([
+      ...(target.state === "Completed — verification required"
+        ? getIcarusTreatmentVerificationIssues(target, [], input.assessments, nowMs, nowMs) : []),
+      ...evaluated.flatMap((entry) => entry.issues),
+    ])].sort();
+    const options = evaluated.filter((entry) => !entry.issues.length).map((entry) => entry.option);
     const records = outcomes.filter((outcome) => outcome.treatmentTargetId === target.id)
       .slice()
       .sort((left, right) => left.verifiedAt.localeCompare(right.verifiedAt) || left.id.localeCompare(right.id));
     const history = records.map((record, recordIndex) => {
+      const recordIssues = getIcarusTreatmentVerificationIssues(
+        target, record.evidence, input.assessments, Date.parse(record.verifiedAt), nowMs,
+      );
+      if (record.assessmentId !== target.assessmentId) recordIssues.push("Outcome belongs to a different assessment");
+      if (outcomes.filter((outcome) => outcome.id === record.id).length !== 1) recordIssues.push("Ambiguous treatment outcome identity");
+      if (!sameExecutionLinks(record.executionLinks, target.executionLinks)) recordIssues.push("Execution linkage provenance has changed");
       const currentOption = options.find((option) => option.outcome === record.outcome
         && sameEvidence(option.evidence, record.evidence)
         && sameAfterState(record.afterState, option.afterState)
         && target.state === "Completed — verification required"
-        && sameExecutionLinks(record.executionLinks, target.executionLinks));
+        && recordIssues.length === 0);
+      if (!currentOption && !recordIssues.length) recordIssues.push("Recorded outcome no longer matches current source evidence or execution state");
       return {
         record,
         current: recordIndex === records.length - 1 && Boolean(currentOption),
         evidenceCurrent: Boolean(currentOption),
         attribution: currentOption?.attribution ?? "Not attributable" as const,
+        issues: recordIssues,
       };
     });
     const latest = history[history.length - 1];
@@ -267,6 +338,7 @@ export function buildIcarusTreatmentOutcomeIndex(
     result.set(target.id, {
       state,
       options,
+      issues,
       history,
       ...(latest ? { latest: latest.record } : {}),
     });

@@ -20,6 +20,7 @@ import {
 import type { IcarusAssurancePersonOption } from "./icarus-assurance-section";
 import type { IcarusResilienceIntervention } from "../lib/icarus-dependency-resilience";
 import type { IcarusInterventionIndex } from "../lib/icarus-intervention-decision";
+import { getIcarusTreatmentVerificationIssues } from "../lib/icarus-treatment-outcome";
 
 type Props = {
   assessments: readonly IcarusAssessmentRecord[];
@@ -137,6 +138,13 @@ export default function IcarusTreatmentSection({
       return;
     }
     const verifiedAt = new Date().toISOString();
+    const issues = getIcarusTreatmentVerificationIssues(
+      target, option.evidence, assessments, Date.parse(verifiedAt), Date.parse(verifiedAt),
+    );
+    if (issues.length) {
+      fail(issues.join("; "));
+      return;
+    }
     const contextId = verificationContext[target.id] ?? "";
     const context = verificationContexts(target.id).find((view) => view.record.id === contextId);
     const selection = context?.record.selectionHistory[context.record.selectionHistory.length - 1];
@@ -149,6 +157,16 @@ export default function IcarusTreatmentSection({
       || Date.parse(contextLink.linkedAt) > Date.parse(verifiedAt))) {
       fail("Verification cannot precede the intervention selection or treatment linkage. Correct future-dated provenance first.");
       return;
+    }
+    if (selection && contextLink) {
+      const contextIssues = getIcarusTreatmentVerificationIssues(
+        target, option.evidence, assessments, Date.parse(verifiedAt), Date.parse(verifiedAt),
+        Math.max(Date.parse(selection.selectedAt), Date.parse(contextLink.linkedAt)),
+      );
+      if (contextIssues.length) {
+        fail(contextIssues.join("; "));
+        return;
+      }
     }
     const occurrenceId = createId();
     const record: IcarusTreatmentOutcomeRecord = {
@@ -297,10 +315,14 @@ export default function IcarusTreatmentSection({
                     <p className="text-[11px] font-medium text-[#4d4944]">
                       Verification: {index.verification.get(target.id)?.state}
                     </p>
-                    {index.verification.get(target.id)?.history.map(({ record, current, evidenceCurrent, attribution }) => (
+                    {index.verification.get(target.id)?.issues?.map((issue) => (
+                      <p key={issue} className="mt-1 text-[10px] text-[#8b3d28]">{issue}</p>
+                    ))}
+                    {index.verification.get(target.id)?.history.map(({ record, current, evidenceCurrent, attribution, issues }) => (
                       <p key={record.id} className="mt-1 text-[10px] leading-4 text-[#6a625d]">
                         {`${record.outcome} · ${record.verifiedAt} · verifier ${record.verifiedByPersonId} · ${record.afterState.kind}: ${record.afterState.state} · attribution ${attribution}${current ? " · current treatment occurrence" : evidenceCurrent ? " · historical occurrence; source evidence still matches" : " · historical occurrence; support no longer current"}${record.interventionReference ? ` · recorded for intervention ${record.interventionReference.decisionId}` : " · no explicit intervention attribution"}`}
                         {record.verificationNote ? ` — ${record.verificationNote}` : ""}
+                        {issues?.length ? ` — verification gap: ${issues.join("; ")}` : ""}
                       </p>
                     ))}
                     {verificationError[target.id] ? <p role="alert" className="text-[11px] text-[#8b3d28]">{verificationError[target.id]}</p> : null}
@@ -317,7 +339,7 @@ export default function IcarusTreatmentSection({
                               ))}
                             </select>
                           </label>
-                          <p className="w-full text-[10px] text-[#6a625d]">Record an explicit new review of the current evidence. This does not create fresh source evidence or establish intervention causation.</p>
+                          <p className="w-full text-[10px] text-[#6a625d]">Control tests must be dated on or after every execution link and no later than this review. Operational status alone cannot verify effectiveness. A new review does not create fresh source evidence or establish intervention causation.</p>
                           <label className="text-[10px] text-[#5e5953]">
                             Evidence-supported outcome
                             <select

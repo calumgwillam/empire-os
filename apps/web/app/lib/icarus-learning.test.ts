@@ -12,7 +12,8 @@ import {
   type IcarusLearningInput, type IcarusLearningReview, type IcarusInstitutionalisationReview,
   type IcarusLearningEvidenceReference, type IcarusLearningMechanism,
 } from "./icarus-learning";
-import type { IcarusAssessmentRecord, IcarusResolutionScope } from "./icarus";
+import { getIcarusTreatmentOutcomeId, getIcarusTreatmentTargetId, type IcarusAssessmentRecord, type IcarusResolutionScope } from "./icarus";
+import { buildIcarusTreatmentIndex } from "./icarus-treatment";
 import { buildOrganisationalLearning } from "./organisational-learning";
 import { buildLearningAttention } from "./learning-attention";
 import { buildCommandAttention, type CommandAttentionInput } from "./command-attention";
@@ -451,6 +452,46 @@ describe("explicit recurrence and downstream projection", () => {
     expect(saved.icarusLearning).toEqual(current.icarusLearning);
     expect(normalizeLessonRecord(JSON.parse(JSON.stringify(saved)) as CaptureConversionRecord).icarusLearning).toEqual(current.icarusLearning);
     expect(applyLessonEditorChanges(olderEditor, { ...edited, icarusLearning: current.icarusLearning }).icarusLearning).toBeUndefined();
+  });
+
+  it("withdraws validated learning when its treatment review predates the cited test without deleting the Lesson", () => {
+    const record = risk();
+    const targetId = getIcarusTreatmentTargetId("Failure-chain restoration", "recovery");
+    record.treatmentTargets = [{
+      id: targetId, sourceKind: "Failure-chain restoration", sourceId: "recovery", assessmentId: record.id,
+      failureModeId: "mode", controlId: "control", treatmentKind: "Restore protection", reason: "Corrective action",
+      basis: [], affectedAssessmentIds: [record.id], objectiveIds: [], pillarIds: [],
+      provenance: { kind: "Failure-chain recommendation", finding: "Restore protection" },
+      executionLinks: [{ recordType: "Action", recordId: "recovery", linkedAt: createdAt }], promotedAt: createdAt,
+    }];
+    const source = input([record]);
+    const deriveTreatment = (records: IcarusAssessmentRecord[]) => buildIcarusTreatmentIndex({
+      assessments: records, assurance: source.assurance, dependencyHealth: source.dependencyHealth,
+      resilience: [], recommendations: [], barrierRestorations: [],
+      actions: [{ recordType: "Action", recordId: "recovery", title: "Recovery", status: "Completed" }],
+      projects: [], founderPersonId: null, nowMs: source.nowMs,
+    });
+    const option = deriveTreatment([record]).verification.get(targetId)!.options.find((entry) => entry.outcome === "Effective")!;
+    expect(option).toBeDefined();
+    record.treatmentOutcomes = [{
+      id: getIcarusTreatmentOutcomeId(targetId, "reviewer", option.evidence),
+      treatmentTargetId: targetId, assessmentId: record.id, executionLinks: record.treatmentTargets[0].executionLinks,
+      outcome: "Effective", verifiedAt: testedAt, verifiedByPersonId: "reviewer",
+      evidence: [...option.evidence], afterState: option.afterState, verificationNote: "Observed protection",
+    }];
+    source.treatment = deriveTreatment([record]);
+    const linked = addLearning(source, learning({
+      evidence: [{ kind: "Treatment outcome", assessmentId: record.id, outcomeId: record.treatmentOutcomes[0].id }],
+    }));
+    expect(buildIcarusLearningIndex(linked).lessons[0].validity).toBe("Validated");
+    const changed = { ...record, treatmentOutcomes: [{ ...record.treatmentOutcomes[0], verifiedAt: createdAt }] };
+    const stale = { ...linked, assessments: [changed], treatment: deriveTreatment([changed]) };
+    const view = buildIcarusLearningIndex(stale).lessons[0];
+    expect(view.validity).toBe("Invalid / insufficient evidence");
+    expect(view.reviews[0].issues).toContain("Supporting evidence is stale, unknown or no longer current; this is not contradiction");
+    expect(buildIcarusLearningIndex(stale).attention).not.toEqual([]);
+    expect(stale.lessons[0].icarusLearning).toEqual(linked.lessons[0].icarusLearning);
+    expect(changed.treatmentOutcomes).toHaveLength(1);
   });
 
   it("imported supersession branches stay observable and cannot establish current validated guidance", () => {

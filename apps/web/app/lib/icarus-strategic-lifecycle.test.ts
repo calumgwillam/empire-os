@@ -394,6 +394,29 @@ describe("durable Icarus strategic lifecycle", () => {
     expect(records[0].confirmedRegressions).toBeUndefined();
   });
 
+  it("keeps pre-routing protection tests from resolving a completed treatment and surfaces its evidence gap", () => {
+    const base = assessment();
+    const targetId = getIcarusTreatmentTargetId("Failure-chain restoration", "late-routing");
+    base.treatmentTargets = [{
+      id: targetId, sourceKind: "Failure-chain restoration", sourceId: "late-routing", assessmentId: base.id,
+      failureModeId: "mode", controlId: "control", treatmentKind: "Restore protection", reason: "Corrective action",
+      basis: [], affectedAssessmentIds: [base.id], objectiveIds: [], pillarIds: [],
+      provenance: { kind: "Failure-chain recommendation", finding: "Restore barrier" },
+      executionLinks: [{ recordType: "Action", recordId: "recovery", linkedAt: reviewedAt }], promotedAt: reviewedAt,
+    }];
+    const result = derive([base], {
+      actions: [{ id: "recovery", status: "Completed" }],
+      treatmentActions: [{ recordType: "Action", recordId: "recovery", title: "Recovery", status: "Completed" }],
+    });
+    expect(result.intelligence.assurance.byAssessmentId.get(base.id)?.controls[0].status).toBe("Assured");
+    expect(result.intelligence.treatment.verification.get(targetId)?.options).toEqual([]);
+    expect(result.view.eligibility.state).toBe("Insufficient evidence");
+    expect(result.view.eligibility.reasons).toContain(`Treatment is not currently verified effective: ${targetId}`);
+    expect(result.intelligence.treatment.summaries.get(base.id)?.attentionReasons.join("; "))
+      .toContain("Source control test predates treatment routing");
+    expect(base.treatmentOutcomes).toBeUndefined();
+  });
+
   it("legacy parsing never invents lifecycle and malformed optional entries do not destroy assessment data", () => {
     const legacy = assessment({ status: "Closed" });
     const parsed = parseIcarusAssessments(JSON.stringify([legacy]));

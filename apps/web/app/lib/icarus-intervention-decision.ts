@@ -17,6 +17,7 @@ import type { IcarusStrategicSignal } from "./icarus-strategic-attention";
 import type { OrganisationalLearningInput } from "./organisational-learning";
 import type { IcarusLifecycleAssessmentView, IcarusStrategicLifecycleIndex } from "./icarus-strategic-lifecycle";
 import type { IcarusLearningIndex, IcarusLessonLearningView } from "./icarus-learning";
+import { getIcarusTreatmentVerificationIssues } from "./icarus-treatment-outcome";
 
 export type IcarusInterventionReadiness =
   | "Not structured" | "Alternatives incomplete" | "Conflict" | "Prerequisites unmet"
@@ -186,11 +187,16 @@ export function buildIcarusInterventionIndex(input: IcarusInterventionIndexInput
     const selection = decision.selectionHistory.filter((event) => event.optionId === option.id).at(-1);
     const link = option.treatmentLinks.find((entry) => entry.targetId === record.treatmentTargetId);
     const reference = record.interventionReference;
+    const target = input.treatment.targets.find((entry) => entry.id === record.treatmentTargetId);
     const occurrenceMatches = !record.occurrenceId || (reference?.decisionId === decision.id
       && reference.optionId === option.id && reference.selectionEventId === selection?.id);
     return Boolean(selection && link && occurrenceMatches
       && Date.parse(record.verifiedAt) >= Date.parse(selection.selectedAt)
-      && Date.parse(record.verifiedAt) >= Date.parse(link.linkedAt));
+      && Date.parse(record.verifiedAt) >= Date.parse(link.linkedAt)
+      && target && !getIcarusTreatmentVerificationIssues(
+        target, record.evidence, input.assessments, Date.parse(record.verifiedAt), input.nowMs,
+        Math.max(Date.parse(selection.selectedAt), Date.parse(link.linkedAt)),
+      ).length);
   }
 
   function optionOutcomes(decision: IcarusInterventionDecisionRecord, option: IcarusInterventionOption): IcarusInterventionOutcome[] {

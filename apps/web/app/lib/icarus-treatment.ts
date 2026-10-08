@@ -363,6 +363,9 @@ function buildSummary(
     verifiedIneffectiveCount > 0 ? `${verifiedIneffectiveCount} treatment${verifiedIneffectiveCount === 1 ? " is" : "s are"} verified ineffective` : "",
     partiallyEffectiveCount > 0 ? `${partiallyEffectiveCount} treatment${partiallyEffectiveCount === 1 ? " is" : "s are"} only partially effective` : "",
     verificationInconclusiveCount > 0 ? `${verificationInconclusiveCount} treatment verification${verificationInconclusiveCount === 1 ? " is" : "s are"} inconclusive or superseded` : "",
+    ...materialForAssessment.filter((target) => target.state === "Completed — verification required")
+      .flatMap((target) => verification.get(target.id)?.issues?.map((issue) =>
+        `Treatment verification evidence gap (${target.id}): ${issue}`) ?? []),
     unpromotedInterventionCount > 0
       ? `${unpromotedInterventionCount} resilience/restoration intervention${unpromotedInterventionCount === 1 ? " remains" : "s remain"} a recommendation`
       : "",
@@ -441,6 +444,7 @@ export function buildIcarusTreatmentIndex(input: IcarusTreatmentIndexInput): Ica
     targets: uniqueTargets,
     assurance: { byAssessmentId: input.assurance.byAssessmentId },
     dependencyHealth: input.dependencyHealth,
+    nowMs,
   });
   const knownDependencies = new Set(input.resilience.map((entry) => getIcarusReferenceKey(entry.reference)));
   const recommendations = input.recommendations.filter((recommendation) =>
