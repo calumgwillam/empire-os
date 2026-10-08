@@ -288,6 +288,14 @@ export type IncomeRecord = {
   status: IncomeStatus;
   notes: string;
   dateCreated: string;
+  relatedLeadId?: string;
+  earnedDate?: string;
+  earnedEvidence?: string;
+  invoiceIssuedDate?: string;
+  invoiceReference?: string;
+  invoiceEvidence?: string;
+  receiptReference?: string;
+  receiptEvidence?: string;
 };
 
 export const expenseStatusOptions = ["Planned", "Paid"] as const;
@@ -340,6 +348,14 @@ export function sanitizeIncomeRecord(
     status: incomeStatusOptions.includes(record.status as IncomeStatus) ? record.status : "Expected",
     notes: record.notes.trim(),
     dateCreated: record.dateCreated || deps.nowIso(),
+    ...(record.relatedLeadId !== undefined ? { relatedLeadId: record.relatedLeadId.trim() } : {}),
+    ...(record.earnedDate !== undefined ? { earnedDate: record.earnedDate.trim() } : {}),
+    ...(record.earnedEvidence !== undefined ? { earnedEvidence: record.earnedEvidence.trim() } : {}),
+    ...(record.invoiceIssuedDate !== undefined ? { invoiceIssuedDate: record.invoiceIssuedDate.trim() } : {}),
+    ...(record.invoiceReference !== undefined ? { invoiceReference: record.invoiceReference.trim() } : {}),
+    ...(record.invoiceEvidence !== undefined ? { invoiceEvidence: record.invoiceEvidence.trim() } : {}),
+    ...(record.receiptReference !== undefined ? { receiptReference: record.receiptReference.trim() } : {}),
+    ...(record.receiptEvidence !== undefined ? { receiptEvidence: record.receiptEvidence.trim() } : {}),
   };
 }
 

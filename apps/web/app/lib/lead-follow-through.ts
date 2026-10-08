@@ -119,6 +119,7 @@ export function linkLeadFollowThroughAction(input: LeadFollowThroughInput, leadI
     || existing[0].ownerPersonId !== action.ownerPersonId || existing[0].owner !== action.owner
     || existing[0].dueDate !== action.dueDate) throw new Error("Selected Action changed; reload before linking commercial responsibility.");
   if (action.icarusObservationLinks?.length) throw new Error("Protection-monitoring Actions cannot be repurposed as commercial next-step execution.");
+  if (action.deliveryLeadId) throw new Error("Customer delivery Actions cannot be repurposed as sales follow-through.");
   if (action.relatedLeadId && action.relatedLeadId !== leadId) throw new Error("Action is already linked to a different Lead.");
   if (input.actions.some((entry) => entry.relatedLeadId === leadId && entry.id !== action.id && activeStatuses.has(entry.status))) {
     throw new Error("An active next-step Action already exists. Open or review it instead of creating a duplicate.");

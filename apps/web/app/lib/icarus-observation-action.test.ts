@@ -405,6 +405,13 @@ describe("Icarus observation responsibility execution through Actions", () => {
     expect(current.icarusObservationLinks).toBeUndefined();
     expect(normalizeActionRecord(JSON.parse(JSON.stringify(linked)))).toEqual(linked);
   });
+  it("does not repurpose committed customer delivery execution as a protection-monitoring Action", () => {
+    const current = { ...monitoring(), id: "delivery", icarusObservationLinks: undefined, deliveryLeadId: "customer-lead" };
+    expect(() => linkIcarusObservationAction(context(source(), [execution(current)], linkedMs), targetId, current, "reviewer"))
+      .toThrow("Customer delivery Actions");
+    expect(current.icarusObservationLinks).toBeUndefined();
+    expect(current.deliveryLeadId).toBe("customer-lead");
+  });
 
   it.each([
     ["Inactive", [{ ...people[1], status: "Inactive" }]],

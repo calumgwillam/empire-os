@@ -1,6 +1,7 @@
 import type { StrategicRiskConvergence } from "./strategic-risk-resolution";
 import type { IcarusObservationExecutionIndex } from "./icarus-observation-action";
 import { buildLeadFollowThrough, type LeadFollowThroughInput } from "./lead-follow-through";
+import { buildLeadDelivery, type LeadDeliveryInput } from "./lead-delivery";
 import type {
   ActionRecord,
   DecisionRecord,
@@ -107,6 +108,7 @@ export type CommandAttentionInput = {
     & Partial<Pick<ActionRecord, "relatedLeadId" | "owner" | "ownerPersonId" | "completionEvidence" | "completionDate">>)[];
   leads?: LeadFollowThroughInput["leads"];
   commercialPeople?: LeadFollowThroughInput["people"];
+  delivery?: Omit<LeadDeliveryInput, "nowMs">;
   outreach: readonly Pick<OutreachRecord, "id" | "businessName" | "status" | "nextFollowUpDate">[];
   projects: readonly Pick<ProjectRecord, "id" | "projectName" | "area" | "status" | "health" | "nextReviewDate" | "reviewNote" | "targetCompletionDate" | "startDate">[];
   decisions: readonly Pick<DecisionRecord, "id" | "decisionTitle" | "title" | "decisionStatus" | "reviewDate" | "createdAt" | "relatedArea" | "relatedPillar">[];
@@ -465,6 +467,40 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
         attentionRank: 4, tieWeight: 0, priorityScore: 100, sortDate: 0, sortDateAscending: false,
         sourceIndex: input.actions.indexOf(action),
       });
+    });
+  }
+
+  if (input.delivery) {
+    const delivery = { ...input.delivery, nowMs: now };
+    const addDeliveryAttention = (id: string, objectType: "Lead" | "Action" | "Finance", title: string,
+      area: string, reasons: string[], rank: number) => {
+      const existing = uniqueByKey.get(`${objectType}:${id}`);
+      addAttentionItem("CUSTOMER DELIVERY", existing ? { ...existing, reasons } : {
+        id, objectType, title, area, reasons, reason: reasons.join(" • "), statusText: "Delivery accountability review",
+        attentionRank: rank, tieWeight: 0, priorityScore: 100, sortDate: 0, sortDateAscending: false,
+        navigationMode: "record-handler",
+      });
+      if (existing) existing.attentionRank = Math.min(existing.attentionRank, rank);
+    };
+    buildLeadDelivery(delivery).filter((view) => view.reasons.length).forEach((view) => {
+      const lead = delivery.leads.find((entry) => entry.id === view.leadId);
+      if (!lead) return;
+      const action = delivery.actions.filter((entry) => entry.id === view.actionId);
+      const host = view.executionLinked && action.length === 1 ? action[0] : undefined;
+      addDeliveryAttention(host?.id || lead.id, host ? "Action" : "Lead", host?.title || lead.leadName,
+        lead.relatedPillar, view.reasons, view.blocked ? 1 : view.overdue || view.financial.some((record) => record.overdue) ? 2 : 4);
+    });
+    delivery.actions.filter((action) => action.deliveryLeadId).forEach((action) => {
+      const leads = delivery.leads.filter((lead) => lead.id === action.deliveryLeadId
+        && lead.deliveryCommitment?.actionId === action.id);
+      if (leads.length !== 1) addDeliveryAttention(action.id, "Action", action.title, "", [
+        "DELIVERY: Action customer commitment is missing, ambiguous or mismatched",
+      ], 4);
+    });
+    delivery.income.filter((record) => record.relatedLeadId).forEach((record) => {
+      const leads = delivery.leads.filter((lead) => lead.id === record.relatedLeadId);
+      if (leads.length !== 1 || !leads[0].deliveryCommitment) addDeliveryAttention(`income:${record.id}`, "Finance",
+        record.description, record.area, ["DELIVERY FINANCE: Linked customer commitment is missing or ambiguous"], 4);
     });
   }
 

@@ -54,6 +54,8 @@ import {
   type StrategicReview,
 } from "./strategic-reviews";
 import type { ReviewOutcome } from "./capture-conversions";
+import type { IncomeRecord } from "./finance";
+import { buildLeadDelivery } from "./lead-delivery";
 
 export type IntegrityIssue = {
   id: string;
@@ -87,6 +89,9 @@ export type IntegrityAuditPerson = {
   id: string;
   name: string;
   status: string;
+  role?: string;
+  responsibilities?: string;
+  authority?: string;
 };
 
 export type IntegrityAuditHandoff = {
@@ -112,6 +117,7 @@ export type IntegrityAuditInput = {
   sops: SopRecord[];
   people: IntegrityAuditPerson[];
   leads: LeadRecord[];
+  income?: IncomeRecord[];
   commitments: CommitmentRecord[];
   outreach: OutreachRecord[];
   handoffs: IntegrityAuditHandoff[];
@@ -125,6 +131,7 @@ export type IntegrityAuditInput = {
 };
 
 export function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditResult {
+  const auditedAt = input.nowIso ? input.nowIso() : new Date().toISOString();
   const issues: IntegrityIssue[] = [];
   let issueSequence = 0;
   const addIssue = (issue: Omit<IntegrityIssue, "id">) => {
@@ -307,6 +314,7 @@ export function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditRes
     checkReference({ value: action.relatedProblem, validIds: problemIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: "Related Problem", openObjectType: "Action" });
     checkReference({ value: action.relatedDecision, validIds: decisionIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: "Related Decision", openObjectType: "Action" });
     checkReference({ value: action.relatedLeadId, validIds: leadIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: "Related Lead", openObjectType: "Action" });
+    checkReference({ value: action.deliveryLeadId, validIds: leadIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: "Delivery Lead", openObjectType: "Action" });
     checkReference({ value: action.relatedOpportunity, validIds: opportunityIds, recordType: "Action", recordTitle: title, recordId: action.id, fieldLabel: "Related Opportunity", openObjectType: "Action" });
     if (action.releaseSourceType && action.releaseSourceId) {
       const releaseIds = action.releaseSourceType === "Action" ? actionIds : action.releaseSourceType === "Project" ? projectIds : action.releaseSourceType === "Lead" ? leadIds : problemIds;
@@ -332,6 +340,45 @@ export function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditRes
   for (const problem of input.problems) checkNamedOwner("Problem", problem.problemStatement || problem.title, problem.id, problem.owner, !["Resolved", "Closed"].includes(problem.problemStatus), "Problem");
   for (const opportunity of input.opportunities) checkNamedOwner("Opportunity", opportunity.opportunityTitle || opportunity.title, opportunity.id, opportunity.owner, !["Rejected", "Completed"].includes(opportunity.status), "Opportunity");
   for (const lead of input.leads) checkNamedOwner("Lead", lead.leadName, lead.id, lead.owner, !lead.archived && !["Won", "Lost"].includes(lead.status), "Lead");
+  const deliveryViews = buildLeadDelivery({
+    leads: input.leads, actions: input.actions, income: input.income ?? [], nowMs: Date.parse(auditedAt),
+    people: input.people.map((person) => ({ ...person, role: person.role ?? "",
+      responsibilities: person.responsibilities ?? "", authority: person.authority ?? "" })),
+  });
+  for (const view of deliveryViews) {
+    const lead = input.leads.find((record) => record.id === view.leadId);
+    if (!lead) continue;
+    const structural = view.reasons.filter((reason) => !reason.includes("is due") && !reason.includes("is overdue"));
+    if (structural.length) addIssue({ severity: "Material", category: "Customer delivery", recordType: "Lead",
+      recordTitle: lead.leadName, recordId: lead.id, reason: structural.join("; "),
+      nextStep: "Reconcile accepted customer scope, delivery execution, ownership and financial evidence; do not infer outcomes.",
+      openObjectType: "Lead", openId: lead.id });
+    if (lead.deliveryCommitment) {
+      checkPersonId("Lead", lead.leadName, lead.id, "Delivery acceptance Person", lead.deliveryCommitment.acceptedByPersonId, "Lead");
+      checkPersonId("Lead", lead.leadName, lead.id, "Initial delivery Person", lead.deliveryCommitment.assignedPersonId, "Lead");
+      checkReference({ value: lead.deliveryCommitment.actionId, validIds: actionIds, recordType: "Lead",
+        recordTitle: lead.leadName, recordId: lead.id, fieldLabel: "Delivery Action", openObjectType: "Lead" });
+    }
+  }
+  for (const action of input.actions.filter((record) => record.deliveryLeadId)) {
+    if (input.leads.filter((lead) => lead.id === action.deliveryLeadId
+      && lead.deliveryCommitment?.actionId === action.id).length !== 1) addIssue({
+      severity: "Material", category: "Customer delivery", recordType: "Action", recordTitle: action.actionTitle,
+      recordId: action.id, reason: "Delivery Action has no unique matching customer commitment.",
+      nextStep: "Reconcile both sides of the customer delivery relationship.", openObjectType: "Action", openId: action.id,
+    });
+  }
+  for (const record of input.income ?? []) {
+    checkReference({ value: record.relatedLeadId, validIds: leadIds, recordType: "Income", recordTitle: record.description,
+      recordId: record.id, fieldLabel: "Delivery Lead", openObjectType: "Finance", openId: `income:${record.id}` });
+    if (record.relatedLeadId && input.leads.filter((lead) => lead.id === record.relatedLeadId
+      && lead.deliveryCommitment).length !== 1) addIssue({
+      severity: "Material", category: "Customer delivery", recordType: "Income", recordTitle: record.description,
+      recordId: record.id, reason: "Income has no unique accepted customer commitment.",
+      nextStep: "Reconcile the Income-to-Lead delivery relationship without inferring payment or completion.",
+      openObjectType: "Finance", openId: `income:${record.id}`,
+    });
+  }
   for (const contact of input.outreach) {
     checkNamedOwner("Outreach", contact.businessName, contact.id, contact.owner, !["Converted to Lead", "Closed / Not Pursuing", "Closed Supplier Network"].includes(contact.status), "Outreach");
     checkReference({ value: contact.linkedLeadId, validIds: leadIds, recordType: "Outreach", recordTitle: contact.businessName, recordId: contact.id, fieldLabel: "Linked Lead", openObjectType: "Outreach" });
@@ -502,7 +549,7 @@ export function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditRes
 
   const { status, severityCounts, categoryCounts } = summarizeIntegrityIssues(issues);
   return {
-    auditedAt: input.nowIso ? input.nowIso() : new Date().toISOString(),
+    auditedAt,
     status,
     issues,
     severityCounts,

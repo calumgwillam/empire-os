@@ -10,6 +10,7 @@ export function getWonLeadValue(
   lead: LeadRecord,
   parseAmount: AmountParser,
 ): number {
+  // Commercial value only: neither a Won stage nor a quote establishes earned or received income.
   return parseAmount(lead.finalJobValue) || parseAmount(lead.quoteValue);
 }
 

@@ -6,7 +6,8 @@ import {
   STORAGE_KEY,
 } from "./backup";
 import type { ActionRecord, CaptureConversionRecord, DecisionRecord, LessonRecord, OpportunityRecord, ProblemRecord, SopRecord, SystemRecord } from "./capture-conversions";
-import type { LeadRecord, OutreachRecord } from "./crm";
+import { defaultLeadForm, type LeadRecord, type OutreachRecord } from "./crm";
+import { acceptLeadDelivery } from "./lead-delivery";
 import type { CommitmentRecord } from "./finance";
 import { isValidChangeEvent } from "./backup";
 import type { ProjectRecord } from "./projects";
@@ -218,6 +219,31 @@ function issueSummaries(input: IntegrityAuditInput) {
 }
 
 describe("runIntegrityAudit", () => {
+  it("audits accepted customer commitments and orphaned financial or delivery execution relationships", () => {
+    const person = { id: "person-delivery", name: "Delivery owner", status: "Active", role: "Delivery",
+      responsibilities: "Deliver accepted scope", authority: "Schedule agreed work" };
+    const lead: LeadRecord = { ...defaultLeadForm, id: "won-lead", leadName: "Customer commitment",
+      status: "Won", dateCreated: "2026-09-30T10:00:00Z" };
+    const accepted = acceptLeadDelivery({ leads: [lead], actions: [], income: [], people: [person],
+      nowMs: Date.parse("2026-10-01T12:00:00Z") }, {
+      leadId: lead.id, actionId: "delivery-action", ownerPersonId: person.id, acceptedByPersonId: person.id,
+      acceptedAt: "2026-09-30", acceptanceEvidence: "Written acceptance", scope: "Agreed customer work", promisedBy: "2026-10-05",
+    });
+    const report = runIntegrityAudit(makeInput({ people: [person], leads: [accepted.lead], actions: [accepted.action] }));
+    expect(report.issues).toEqual(expect.arrayContaining([expect.objectContaining({
+      category: "Customer delivery", recordType: "Lead", recordId: lead.id,
+      reason: "DELIVERY: Accepted work has no evidenced schedule",
+    })]));
+    const orphaned = runIntegrityAudit(makeInput({ actions: [makeAction({ deliveryLeadId: "missing-lead" })],
+      income: [{ id: "income-delivery", relatedLeadId: "missing-lead", date: "2026-10-01", amount: "100",
+        description: "Customer income", customerSource: "", area: "Garden Maintenance", status: "Expected",
+        notes: "", dateCreated: "2026-10-01T10:00:00Z" }] }));
+    expect(orphaned.issues.some((issue) => issue.reason === "Delivery Action has no unique matching customer commitment.")).toBe(true);
+    expect(orphaned.issues).toEqual(expect.arrayContaining([expect.objectContaining({
+      recordType: "Income", openObjectType: "Finance", openId: "income:income-delivery",
+      reason: "Income has no unique accepted customer commitment.",
+    })]));
+  });
   it("audits broken commercial Action-to-Lead relationships without altering legacy Actions", () => {
     const issues = runIntegrityAudit(makeInput({ actions: [makeAction({ relatedLeadId: "missing-lead" })] })).issues;
     expect(issues).toEqual(expect.arrayContaining([expect.objectContaining({

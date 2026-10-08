@@ -60,7 +60,7 @@ export default function LeadFollowThroughSection({ lead, view, actions, people, 
               <select className={fieldClass} value={actionId} onChange={(event) => setActionId(event.target.value)}>
                 <option value="">Select active Action</option>
                 {actions.filter((action) => ["Open", "In Progress", "Blocked", "Waiting"].includes(action.status)
-                  && (!action.relatedLeadId || action.relatedLeadId === lead.id)).map((action) =>
+                  && !action.deliveryLeadId && (!action.relatedLeadId || action.relatedLeadId === lead.id)).map((action) =>
                   <option key={action.id} value={action.id}>{action.actionTitle}</option>)}
               </select>
             </label>

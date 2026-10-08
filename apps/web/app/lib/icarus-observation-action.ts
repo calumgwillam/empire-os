@@ -496,6 +496,7 @@ export function linkIcarusObservationAction(
   action: ActionRecord,
   linkedByPersonId: string,
 ): ActionRecord {
+  if (action.deliveryLeadId) throw new Error("Customer delivery Actions cannot also carry protection-monitoring responsibility.");
   const index = buildIcarusObservationExecutionIndex(context);
   const view = index.byTargetId.get(targetId);
   const target = context.treatment.targets.find((target) => target.id === targetId);

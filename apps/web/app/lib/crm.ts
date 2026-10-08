@@ -28,6 +28,7 @@ export type LeadRecord = {
   relatedPillar: string;
   dateCreated: string;
   archived?: boolean;
+  deliveryCommitment?: import("./lead-delivery").LeadDeliveryCommitment;
 };
 
 export type LeadFormValues = Omit<LeadRecord, "id" | "dateCreated">;

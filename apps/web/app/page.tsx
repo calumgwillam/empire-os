@@ -215,6 +215,10 @@ import { persistJsonArray, persistJsonValue, persistJsonArraysTransaction } from
 import { buildLeadFollowThrough, createLeadFollowThroughAction, linkLeadFollowThroughAction, type LeadFollowThroughView } from "./lib/lead-follow-through";
 import LeadFollowThroughSection, { type LeadFollowThroughRequest } from "./components/lead-follow-through-section";
 import { assertActionLeadLink } from "./lib/capture-conversions";
+import { acceptLeadDelivery, assertIncomeCommercialEvidence, assertLeadDeliveryCommitment, buildLeadDelivery,
+  linkLeadDelivery, scheduleLeadDelivery, validateDeliveryIncomeSave, type LeadDeliveryView } from "./lib/lead-delivery";
+import LeadDeliverySection, { type LeadDeliveryRequest } from "./components/lead-delivery-section";
+import IncomeCommercialEvidenceSection from "./components/income-commercial-evidence-section";
 import {
   assertIcarusDataStructure,
   normaliseIcarusAssessmentData,
@@ -2718,7 +2722,7 @@ function ProjectHealthReviewPanel({ project, people, onClose, onSubmit }: {
   );
 }
 
-function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveToggle, followThrough, actions, followThroughWritable, onRouteFollowThrough, onOpenAction }: {
+function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveToggle, followThrough, actions, followThroughWritable, onRouteFollowThrough, onOpenAction, delivery, onRecordDelivery, onOpenIncome, onPrepareIncome }: {
   lead: LeadRecord;
   people: PersonRecord[];
   onClose: () => void;
@@ -2730,6 +2734,10 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
   followThroughWritable: boolean;
   onRouteFollowThrough: (request: LeadFollowThroughRequest) => void;
   onOpenAction: (id: string) => void;
+  delivery?: LeadDeliveryView;
+  onRecordDelivery: (request: LeadDeliveryRequest) => void;
+  onOpenIncome: (id: string) => void;
+  onPrepareIncome: (leadId: string) => void;
 }) {
   const hasInvalidLeadName = !lead.leadName.trim();
   const [hasSaved, setHasSaved] = useState(false);
@@ -2759,6 +2767,8 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
 
         <LeadFollowThroughSection lead={lead} view={followThrough} actions={actions} people={people}
           writable={followThroughWritable} onRoute={onRouteFollowThrough} onOpenAction={onOpenAction} />
+        <LeadDeliverySection key={lead.id} lead={lead} view={delivery} actions={actions} people={people}
+          writable={followThroughWritable} onRecord={onRecordDelivery} onOpenAction={onOpenAction} onOpenIncome={onOpenIncome} onPrepareIncome={onPrepareIncome} />
         {hasSaved ? (
           <div aria-live="polite" className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">
             Lead details saved.
@@ -3138,13 +3148,15 @@ function CashPositionPanel({ value, validationError, onClose, onChange, onSave }
   );
 }
 
-function IncomeDetailPanel({ income, canDelete, onClose, onChange, onSave, onDelete }: {
+function IncomeDetailPanel({ income, leads, canDelete, onClose, onChange, onSave, onDelete, onOpenLead }: {
   income: IncomeRecord;
+  leads: readonly LeadRecord[];
   canDelete: boolean;
   onClose: () => void;
   onChange: (field: keyof IncomeRecord, value: string) => void;
-  onSave: () => void;
+  onSave: () => boolean;
   onDelete: () => void;
+  onOpenLead: (id: string) => void;
 }) {
   const hasInvalidDescription = !income.description.trim();
   const hasInvalidDate = !isValidCalendarDateInput(income.date);
@@ -3211,11 +3223,12 @@ function IncomeDetailPanel({ income, canDelete, onClose, onChange, onSave, onDel
           </div>
         </div>
 
+        <IncomeCommercialEvidenceSection income={income} leads={leads} onChange={onChange} onOpenLead={onOpenLead} />
         <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
           <FinanceDeleteControl canDelete={canDelete} label="Delete income record" onDelete={onDelete} />
           <div className="flex justify-end gap-2">
             <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save income"}</button>
+            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } if (onSave()) markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save income"}</button>
           </div>
         </div>
         <RecordChangeHistory recordType="Income" recordId={income.id} />
@@ -7081,9 +7094,9 @@ function ActionDetailPanel({ action, people, responsibilities, problems, decisio
             <div className="mt-2 space-y-2 text-[12px] text-[#2f2b28]">
               <div><span className="font-medium">Related Problem ID:</span> {action.relatedProblem || "Not linked"}</div>
               <div><span className="font-medium">Related Decision ID:</span> {action.relatedDecision || "Not linked"}</div>
-              {action.relatedLeadId ? <div><span className="font-medium">Commercial Lead:</span> {action.relatedLeadId}
+              {action.relatedLeadId || action.deliveryLeadId ? <div><span className="font-medium">{action.deliveryLeadId ? "Customer delivery Lead:" : "Commercial Lead:"}</span> {action.deliveryLeadId || action.relatedLeadId}
                 <button type="button" className="ml-2 underline" onClick={onOpenRelatedLead}>Open Lead</button>
-                <p className="mt-1 text-[11px]">Action completion does not confirm a sale. Review and update the Lead outcome separately; ownership changes must also be reconciled with the Lead.</p>
+                <p className="mt-1 text-[11px]">Action completion does not confirm commercial or financial outcomes. Delivery requires dated completion evidence; invoice issue and payment receipt remain separate Finance facts.</p>
               </div> : null}
               <div><span className="font-medium">Source Capture relationship:</span> {action.relatedCapture || "Not linked"}</div>
               <div><span className="font-medium">Original Capture title:</span> {action.title}</div>
@@ -8784,6 +8797,8 @@ export default function Home() {
   const [operatingDataLoaded, setOperatingDataLoaded] = useState(false);
   const peopleWritableRef = useRef(false);
   const conversionsWritableRef = useRef(false);
+  const leadsWritableRef = useRef(false);
+  const incomeWritableRef = useRef(false);
   const founderIntelligenceWritableRef = useRef(false);
   const founderIntelligenceContextRef = useRef<FounderIntelligenceContext | null>(null);
   const [changeHistory, setChangeHistory] = useState<ChangeEvent[]>([]);
@@ -9060,6 +9075,7 @@ export default function Home() {
             if (recordType === "Action") {
               assertIcarusObservationActionLinks(record.icarusObservationLinks);
               assertActionLeadLink(record.relatedLeadId);
+              assertActionLeadLink(record.deliveryLeadId, "deliveryLeadId");
               assertIcarusObservationHandoffs(record.icarusObservationHandoffs);
               if (Object.prototype.hasOwnProperty.call(record, "responsibilityOutcomeEvidence")) {
                 assertActionResponsibilityOutcomeEvidenceStructure(record.responsibilityOutcomeEvidence);
@@ -9196,22 +9212,24 @@ export default function Home() {
         }
       }
 
-      if (storedLeads) {
-        const parsedLeads = JSON.parse(storedLeads);
+      try {
+        if (storedLeads) {
+          const parsedLeads = JSON.parse(storedLeads);
 
-        if (Array.isArray(parsedLeads)) {
+          if (!Array.isArray(parsedLeads)) throw new Error("Lead storage is not an array.");
           parsedLeads.forEach((lead: unknown) => {
-            if (isPlainObject(lead) && typeof lead.id === "string") {
-              addWorkItem("Lead", lead.id);
-            }
+            if (!isPlainObject(lead)) throw new Error("Lead storage contains a malformed record.");
+            assertLeadDeliveryCommitment(lead.deliveryCommitment);
+            if (typeof lead.id === "string") addWorkItem("Lead", lead.id);
           });
-          setLeads(
-  parsedLeads.map((lead) => ({
-    ...lead,
-    sourceDetail: typeof lead.sourceDetail === "string" ? lead.sourceDetail : "",
-  })),
-);
+          setLeads(parsedLeads.map((lead) => ({
+            ...lead, sourceDetail: typeof lead.sourceDetail === "string" ? lead.sourceDetail : "",
+          })));
         }
+        leadsWritableRef.current = true;
+      } catch (error) {
+        leadsWritableRef.current = false;
+        setFeedback({ type: "error", message: `Lead storage could not be loaded; existing data is preserved and Lead saves are disabled. ${error instanceof Error ? error.message : String(error)}` });
       }
 
       const loadedFounderIntelligenceContext: FounderIntelligenceContext = {
@@ -9307,12 +9325,17 @@ export default function Home() {
         }
       }
 
-      if (storedIncome) {
-        const parsedIncome = JSON.parse(storedIncome);
-
-        if (Array.isArray(parsedIncome)) {
+      try {
+        if (storedIncome) {
+          const parsedIncome = JSON.parse(storedIncome);
+          if (!Array.isArray(parsedIncome)) throw new Error("Income storage is not an array.");
+          parsedIncome.forEach(assertIncomeCommercialEvidence);
           setIncomeRecords(parsedIncome);
         }
+        incomeWritableRef.current = true;
+      } catch (error) {
+        incomeWritableRef.current = false;
+        setFeedback({ type: "error", message: `Income storage could not be loaded; existing data is preserved and Income saves are disabled. ${error instanceof Error ? error.message : String(error)}` });
       }
 
       if (storedExpenses) {
@@ -9485,6 +9508,7 @@ export default function Home() {
       return;
     }
 
+    if (!leadsWritableRef.current) return;
     persistJsonArray(window.localStorage, LEAD_STORAGE_KEY, leads);
   }, [leads, operatingDataLoaded]);
 
@@ -9526,6 +9550,7 @@ export default function Home() {
       return;
     }
 
+    if (!incomeWritableRef.current) return;
     persistJsonArray(window.localStorage, INCOME_STORAGE_KEY, incomeRecords);
   }, [incomeRecords, operatingDataLoaded]);
 
@@ -9830,6 +9855,7 @@ export default function Home() {
       sops: sopRecords,
       people,
       leads,
+      income: incomeRecords,
       commitments: commitmentRecords,
       outreach: outreachContacts,
       handoffs: delegationHandoffs,
@@ -9846,7 +9872,7 @@ export default function Home() {
     if (!operatingDataLoaded) return;
     executeIntegrityAudit(initialIntegrityStorageRef.current || undefined);
     initialIntegrityStorageRef.current = null;
-  }, [operatingDataLoaded, captures, conversions, projects, people, leads, commitmentRecords, outreachContacts, delegationHandoffs, strategicObjectives, strategicReviews]);
+  }, [operatingDataLoaded, captures, conversions, projects, people, leads, incomeRecords, commitmentRecords, outreachContacts, delegationHandoffs, strategicObjectives, strategicReviews]);
 
   type AttentionItem = {
     id: string;
@@ -9942,6 +9968,7 @@ export default function Home() {
   const activeOwnershipLeads = activeLeads.filter((lead) => !["Won", "Lost"].includes(lead.status));
   const commercialNowMs = Date.now();
   const leadFollowThrough = buildLeadFollowThrough({ leads, actions: actionRecords, people, nowMs: commercialNowMs });
+  const leadDelivery = buildLeadDelivery({ leads, actions: actionRecords, people, income: incomeRecords, nowMs: commercialNowMs });
   const activeOwnershipProblems = problemRecords.filter(isProblemUnresolved);
 
   const {
@@ -11257,6 +11284,7 @@ export default function Home() {
     actions: actionRecords,
     leads,
     commercialPeople: people,
+    delivery: { leads, actions: actionRecords, people, income: incomeRecords },
     outreach: outreachContacts,
     projects,
     decisions: decisionRecords,
@@ -15574,6 +15602,10 @@ export default function Home() {
   };
 
   const handleLeadSave = () => {
+    if (!leadsWritableRef.current) {
+      setFeedback({ type: "error", message: "Lead storage is not writable; stored customer commitments have been preserved." });
+      return false;
+    }
     if (!leadEditor) {
       return false;
     }
@@ -15595,13 +15627,14 @@ export default function Home() {
     });
     const isNewLead = !leads.some((lead) => lead.id === nextLead.id);
     const persistedLead = leads.find((lead) => lead.id === nextLead.id);
-    const applySave = () => setLeads((currentLeads) =>
-      isNewLead
-        ? [nextLead, ...currentLeads]
-        : currentLeads.map((lead) => lead.id === nextLead.id ? nextLead : lead),
-    );
-    const saveSucceeded = persistedLead
-      ? applyOwnershipChangeWithDelegationIntegrity({
+    const applySave = () => {
+      if (leads.filter((lead) => lead.id === nextLead.id).length > 1) throw new Error("Lead identity is duplicated; reconcile customer commitments before saving.");
+      const next = isNewLead ? [nextLead, ...leads] : leads.map((lead) => lead.id === nextLead.id ? nextLead : lead);
+      persistJsonArraysTransaction(window.localStorage, [{ key: LEAD_STORAGE_KEY, records: next }]);
+      setLeads(next);
+    };
+    try {
+      const saveSucceeded = persistedLead ? applyOwnershipChangeWithDelegationIntegrity({
           objectType: "Lead",
           objectId: nextLead.id,
           title: nextLead.leadName,
@@ -15610,10 +15643,12 @@ export default function Home() {
           newOwner: nextLead.owner,
           handoffContext: `${nextLead.serviceRequested.trim() || nextLead.leadName}${nextLead.followUpDate ? `; follow up ${nextLead.followUpDate}` : ""}`,
           applyOwnershipChange: applySave,
-        })
-      : (applySave(), true);
-
-    if (!saveSucceeded) return false;
+        }) : (applySave(), true);
+      if (!saveSucceeded) return false;
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Lead could not be saved; customer commitment state was not changed." });
+      return false;
+    }
 
     setSelectedLeadId(nextLead.id);
     setLeadEditor(nextLead);
@@ -15648,6 +15683,47 @@ export default function Home() {
     }
   };
 
+  const handleRecordLeadDelivery = (request: LeadDeliveryRequest) => {
+    try {
+      if (!operatingDataLoaded || !conversionsWritableRef.current || !leadsWritableRef.current) throw new Error("Operating storage is not writable; delivery accountability was not changed.");
+      const persisted = leads.filter((lead) => lead.id === request.leadId);
+      if (persisted.length !== 1 || !leadEditor || JSON.stringify(leadEditor) !== JSON.stringify(persisted[0])) {
+        throw new Error("Save or reload the Lead before recording customer delivery; unsaved changes must not be overwritten.");
+      }
+      const input = { leads, actions: actionRecords, people, income: incomeRecords, nowMs: Date.now() };
+      if (request.kind === "Schedule") {
+        const nextLead = scheduleLeadDelivery(input, request.leadId, request);
+        const nextLeads = leads.map((lead) => lead.id === nextLead.id ? nextLead : lead);
+        persistJsonArraysTransaction(window.localStorage, [{ key: LEAD_STORAGE_KEY, records: nextLeads }]);
+        setLeads(nextLeads);
+        setLeadEditor(nextLead);
+      } else {
+        const actionId = request.kind === "Create" ? `lead-delivery:${request.leadId}` : request.actionId;
+        if (!actionId) throw new Error("Select an existing delivery Action.");
+        const acceptance = { ...request, actionId };
+        const matches = actionRecords.filter((action) => action.id === actionId);
+        if (request.kind === "Link" && matches.length !== 1) throw new Error("Delivery Action is missing or ambiguous.");
+        const result = request.kind === "Create" ? acceptLeadDelivery(input, acceptance)
+          : linkLeadDelivery(input, acceptance, matches[0]);
+        const stored = conversions.filter((record) => record.id === actionId);
+        if (request.kind === "Create" ? stored.length > 0 : stored.length !== 1) throw new Error("Delivery Action identity conflicts with stored records; review integrity before routing.");
+        const nextLeads = leads.map((lead) => lead.id === result.lead.id ? result.lead : lead);
+        const nextActions = request.kind === "Create" ? [result.action, ...conversions]
+          : conversions.map((record) => record.id === actionId ? result.action : record);
+        persistJsonArraysTransaction(window.localStorage, [
+          { key: LEAD_STORAGE_KEY, records: nextLeads }, { key: CONVERSION_STORAGE_KEY, records: nextActions },
+        ]);
+        setLeads(nextLeads);
+        setConversions(nextActions);
+        setLeadEditor(result.lead);
+      }
+      setFeedback({ type: "success", message: request.kind === "Schedule" ? "Delivery schedule recorded; customer deadline preserved."
+        : "Customer acceptance and accountable delivery linked. Schedule, completion and financial outcomes remain separate." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Delivery accountability could not be recorded." });
+    }
+  };
+
   const handleCreateLead = () => {
     const newLead: LeadRecord = {
       ...defaultLeadForm,
@@ -15660,9 +15736,15 @@ export default function Home() {
   };
 
   const handleLeadArchiveToggle = (lead: LeadRecord, archived: boolean) => {
-    setLeads((currentLeads) =>
-      currentLeads.map((entry) => entry.id === lead.id ? { ...entry, archived } : entry),
-    );
+    try {
+      if (!leadsWritableRef.current || leads.filter((entry) => entry.id === lead.id).length !== 1) throw new Error("Lead storage or identity is not safe to update; customer commitments have been preserved.");
+      const next = leads.map((entry) => entry.id === lead.id ? { ...entry, archived } : entry);
+      persistJsonArraysTransaction(window.localStorage, [{ key: LEAD_STORAGE_KEY, records: next }]);
+      setLeads(next);
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Lead archive change could not be saved." });
+      return;
+    }
 
     if (selectedLeadId === lead.id) {
       setSelectedLeadId(null);
@@ -15733,6 +15815,10 @@ export default function Home() {
 
   // Converts an outreach contact into a genuine Lead without duplicating or removing the outreach record.
   const handleConvertOutreachToLead = (contact: OutreachRecord) => {
+    if (!leadsWritableRef.current) {
+      setFeedback({ type: "error", message: "Lead storage is not writable; Outreach was not converted and stored customer commitments are preserved." });
+      return;
+    }
     const { lead: newLead, outreach: updatedContact } = convertOutreachToLead(contact, {
       generateLeadId,
       today: () => new Date().toISOString().slice(0, 10),
@@ -15831,7 +15917,7 @@ export default function Home() {
 
   const handleIncomeSave = () => {
     if (!incomeEditor || !incomeEditor.description.trim()) {
-      return;
+      return false;
     }
 
     const nextIncome = sanitizeIncomeRecord(incomeEditor, {
@@ -15840,12 +15926,21 @@ export default function Home() {
     });
     const isNew = !incomeRecords.some((record) => record.id === nextIncome.id);
 
-    setIncomeRecords((current) =>
-      isNew ? [nextIncome, ...current] : current.map((record) => record.id === nextIncome.id ? nextIncome : record),
-    );
+    try {
+      if (!operatingDataLoaded || !incomeWritableRef.current) throw new Error("Income storage is not writable; the record was not saved.");
+      validateDeliveryIncomeSave(nextIncome, { leads, actions: actionRecords, people, income: incomeRecords, nowMs: Date.now() });
+      if (incomeRecords.filter((record) => record.id === nextIncome.id).length > 1) throw new Error("Income identity is duplicated; reconcile before saving.");
+      const next = isNew ? [nextIncome, ...incomeRecords] : incomeRecords.map((record) => record.id === nextIncome.id ? nextIncome : record);
+      persistJsonArraysTransaction(window.localStorage, [{ key: INCOME_STORAGE_KEY, records: next }]);
+      setIncomeRecords(next);
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Income evidence could not be saved." });
+      return false;
+    }
     setSelectedIncomeId(nextIncome.id);
     setIncomeEditor(nextIncome);
     setFeedback({ type: "success", message: isNew ? "Income record created." : "Income record saved." });
+    return true;
   };
 
   const handleIncomeDelete = () => {
@@ -15854,21 +15949,38 @@ export default function Home() {
     }
 
     const targetId = incomeEditor.id;
-    setIncomeRecords((current) => current.filter((record) => record.id !== targetId));
+    try {
+      if (!incomeWritableRef.current || incomeRecords.filter((record) => record.id === targetId).length !== 1) throw new Error("Income storage or identity is not safe to update; financial evidence has been preserved.");
+      const next = incomeRecords.filter((record) => record.id !== targetId);
+      persistJsonArraysTransaction(window.localStorage, [{ key: INCOME_STORAGE_KEY, records: next }]);
+      setIncomeRecords(next);
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Income deletion could not be saved." });
+      return;
+    }
     setSelectedIncomeId(null);
     setIncomeEditor(null);
     setFeedback({ type: "success", message: "Income record deleted." });
   };
 
-  const handleCreateIncome = () => {
+  const handleCreateIncome = (relatedLeadId?: string) => {
+    if (relatedLeadId && leads.filter((lead) => lead.id === relatedLeadId && lead.deliveryCommitment).length !== 1) {
+      setFeedback({ type: "error", message: "Customer commitment is missing or ambiguous; no Income draft was prepared." });
+      return;
+    }
     const newIncome: IncomeRecord = {
       ...defaultIncomeForm,
       id: generateFinanceRecordId("income"),
       dateCreated: new Date().toISOString(),
+      ...(relatedLeadId ? { relatedLeadId } : {}),
     };
 
     setSelectedIncomeId(newIncome.id);
     setIncomeEditor(newIncome);
+    if (relatedLeadId) {
+      setSelectedLeadId(null);
+      setLeadEditor(null);
+    }
   };
 
   const handleExpenseEditOpen = (expense: ExpenseRecord) => {
@@ -18187,7 +18299,7 @@ export default function Home() {
                             <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Quotes sent: {entry.quotesSent}</span>
                             <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Jobs won: {entry.jobsWon}</span>
                             <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Conversion: {formatMetricPercent(entry.conversionRate)}</span>
-                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Revenue: {formatFinanceAmount(entry.revenue)}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Won value (final / quote fallback): {formatFinanceAmount(entry.revenue)}</span>
                             <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Avg won job: {entry.jobsWon === 0 ? "—" : formatFinanceAmount(entry.averageWonJobValue)}</span>
                           </div>
                         </div>
@@ -18217,7 +18329,7 @@ export default function Home() {
                             <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Leads: {entry.leadCount}</span>
                             <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Jobs won: {entry.jobsWon}</span>
                             <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Conversion: {formatMetricPercent(entry.conversionRate)}</span>
-                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Revenue: {formatFinanceAmount(entry.revenue)}</span>
+                            <span className="rounded-full border border-[#d3cbc3] bg-white px-2 py-1.5">Won value (final / quote fallback): {formatFinanceAmount(entry.revenue)}</span>
                           </div>
                         </div>
                       ))}
@@ -18459,6 +18571,7 @@ export default function Home() {
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Total received income</div>
                   <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(totalReceivedIncome)}</div>
+                  <p className="mt-2 text-[11px] text-[#5d584f]">Recorded Received statuses, including legacy income without receipt evidence. This is not the evidence-verified customer receipts total.</p>
                 </div>
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Total paid expenses</div>
@@ -18629,7 +18742,7 @@ export default function Home() {
               <section className="mt-8">
                 <div className="flex items-center justify-between gap-3 border-b border-[#d7d1ca] pb-2.5">
                   <h2 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Income records</h2>
-                  <button type="button" onClick={handleCreateIncome} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Add income</button>
+                  <button type="button" onClick={() => handleCreateIncome()} className="rounded-lg border border-[#171717] bg-[#171717] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition hover:bg-[#2a2724]">Add income</button>
                 </div>
                 {orderedIncome.length === 0 ? (
                   <div className="mt-4 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] px-4 py-6 text-[14px] text-[#4d4944]">No income records yet.</div>
@@ -18884,7 +18997,7 @@ export default function Home() {
                   <MetricCard label="Quotes sent" value={String(metricsQuotesSent)} />
                   <MetricCard label="Jobs won" value={String(metricsJobsWon)} />
                   <MetricCard label="Lead-to-job conversion" value={formatMetricPercent(metricsLeadToJobConversion)} />
-                  <MetricCard label="Revenue from won leads" value={formatFinanceAmount(metricsRevenueFromWonLeads)} />
+                  <MetricCard label="Won value (final / quote fallback, not realised income)" value={formatFinanceAmount(metricsRevenueFromWonLeads)} />
                   <MetricCard label="Average job value" value={formatFinanceAmount(metricsAverageJobValue)} />
                 </div>
                 <div className="mt-3 rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
@@ -18917,6 +19030,7 @@ export default function Home() {
 
               <section className="mt-8">
                 <h2 className="border-b border-[#d7d1ca] pb-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Finance</h2>
+                <p className="mt-2 text-[11px] text-[#5d584f]">Income totals preserve recorded Finance statuses; customer delivery evidence is assessed separately. Won or quoted value is never added to received income.</p>
                 <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   <MetricCard label="Total received income" value={formatFinanceAmount(totalReceivedIncome)} />
                   <MetricCard label="Total paid expenses" value={formatFinanceAmount(totalPaidExpenses)} />
@@ -20254,7 +20368,10 @@ export default function Home() {
           onReviewFollowThrough={() => setFollowThroughReviewActionId(actionEditor.id)}
           onOpenRelatedProblem={() => handleOpenRelatedProblem(actionEditor)}
           onOpenRelatedDecision={() => handleOpenRelatedDecision(actionEditor)}
-          onOpenRelatedLead={() => { if (actionEditor.relatedLeadId) handleOpenAttentionRecord("Lead", actionEditor.relatedLeadId); }}
+          onOpenRelatedLead={() => {
+            const id = actionEditor.deliveryLeadId || actionEditor.relatedLeadId;
+            if (id) handleOpenAttentionRecord("Lead", id);
+          }}
         />
       ) : null}
 
@@ -20506,6 +20623,10 @@ export default function Home() {
           followThroughWritable={operatingDataLoaded && conversionsWritableRef.current && leads.some((lead) => lead.id === leadEditor.id)}
           onRouteFollowThrough={handleRouteLeadFollowThrough}
           onOpenAction={(id) => handleOpenAttentionRecord("Action", id)}
+          delivery={leadDelivery.find((view) => view.leadId === leadEditor.id)}
+          onRecordDelivery={handleRecordLeadDelivery}
+          onOpenIncome={(id) => handleOpenAttentionRecord("Finance", `income:${id}`)}
+          onPrepareIncome={handleCreateIncome}
         />
       ) : null}
 
@@ -20541,6 +20662,7 @@ export default function Home() {
       {selectedIncomeId && incomeEditor ? (
         <IncomeDetailPanel
           income={incomeEditor}
+          leads={leads}
           canDelete={incomeRecords.some((record) => record.id === incomeEditor.id)}
           onClose={() => {
             setSelectedIncomeId(null);
@@ -20549,6 +20671,7 @@ export default function Home() {
           onChange={handleIncomeEditorChange}
           onSave={handleIncomeSave}
           onDelete={handleIncomeDelete}
+          onOpenLead={(id) => handleOpenAttentionRecord("Lead", id)}
         />
       ) : null}
 

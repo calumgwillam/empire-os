@@ -1,6 +1,7 @@
 import { assertIcarusDataStructure, ICARUS_STORAGE_KEY, normaliseIcarusAssessmentData } from "./icarus";
 import { assertIcarusObservationActionLinks, assertIcarusObservationHandoffs } from "./icarus-observation-action";
 import { assertActionLeadLink } from "./capture-conversions";
+import { assertIncomeCommercialEvidence, assertLeadDeliveryCommitment } from "./lead-delivery";
 
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
@@ -253,12 +254,26 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
         if (!isPlainObject(record) || record.targetType !== "Convert to Action") return;
         assertIcarusObservationActionLinks(record.icarusObservationLinks);
         assertActionLeadLink(record.relatedLeadId);
+        assertActionLeadLink(record.deliveryLeadId, "deliveryLeadId");
         assertIcarusObservationHandoffs(record.icarusObservationHandoffs);
         if (Object.prototype.hasOwnProperty.call(record, "responsibilityOutcomeEvidence")) {
           assertActionResponsibilityOutcomeEvidenceStructure(record.responsibilityOutcomeEvidence);
         }
       });
     }
+  }
+
+  for (const key of [LEAD_STORAGE_KEY, INCOME_STORAGE_KEY]) {
+    const stored = storage[key];
+    if (typeof stored !== "string") continue;
+    const records: unknown = JSON.parse(stored);
+    if (!Array.isArray(records)) continue;
+    records.forEach((record: unknown) => {
+      if (key === LEAD_STORAGE_KEY) {
+        if (!isPlainObject(record)) throw new Error("The backup contains a malformed Lead.");
+        assertLeadDeliveryCommitment(record.deliveryCommitment);
+      } else assertIncomeCommercialEvidence(record);
+    });
   }
 
   if (typeof storage[CHANGE_HISTORY_STORAGE_KEY] === "string") {
