@@ -289,6 +289,20 @@ export function buildIcarusStrategicIntelligence(input: IcarusStrategicIntellige
         `Observation execution: ${view.state}; ${view.issues.join("; ") || "Link an accountable protection-observation Action"}`])],
     });
   });
+  observationExecution?.handoffs?.forEach((view) => {
+    if (view.state === "Accepted") return;
+    const attention = observationExecution.actionAttention.find((entry) => entry.actionId === view.record.actionId
+      && entry.reasons.some((reason) => reason.startsWith("Observation handoff")));
+    if (!attention) return;
+    const previous = lifecycleAttention.get(attention.assessmentId);
+    const assessment = input.assessments.find((assessment) => assessment.id === attention.assessmentId);
+    const modeIds = assessment?.failureModes.filter((mode) => assessment.controls.some((control) =>
+      control.failureModeId === mode.id && view.record.link.plan.controlIds.includes(control.id))).map((mode) => mode.id) ?? [];
+    lifecycleAttention.set(attention.assessmentId, {
+      failureModeIds: [...new Set([...(previous?.failureModeIds ?? []), ...modeIds])],
+      reasons: [...new Set([...(previous?.reasons ?? []), ...attention.reasons])],
+    });
+  });
   const finalExposureSignals = buildIcarusStrategicAttention({
     assessments: surveillanceAssessments, reviews, strategicObjectives, dependencyHealth, lifecycleAttention,
     includeClosedAssessments: true,

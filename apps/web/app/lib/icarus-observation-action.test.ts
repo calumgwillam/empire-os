@@ -9,6 +9,7 @@ import type { IcarusTreatmentExecution } from "./icarus-treatment";
 import {
   assertIcarusObservationActionLinks, buildIcarusObservationExecutionIndex,
   createIcarusObservationAction, getIcarusObservationActionOutcome, linkIcarusObservationAction,
+  assertIcarusObservationHandoffs, deriveIcarusObservationHandoffs, proposeIcarusObservationHandoff, respondIcarusObservationHandoff,
 } from "./icarus-observation-action";
 import { buildCommandAttention, type CommandAttentionInput } from "./command-attention";
 import { getIcarusCurrentExposureSignals } from "./icarus-strategic-attention";
@@ -80,6 +81,7 @@ function execution(action: ActionRecord): IcarusTreatmentExecution {
     ownerPersonId: action.ownerPersonId, owner: action.owner, dueDate: action.dueDate,
     completedAt: action.completionDate, completionEvidence: action.completionEvidence,
     icarusObservationLinks: action.icarusObservationLinks,
+    icarusObservationHandoffs: action.icarusObservationHandoffs,
   };
 }
 
@@ -125,6 +127,256 @@ function command(input: IcarusStrategicIntelligenceInput, actions: ActionRecord[
   };
   return { intelligence, attention: buildCommandAttention(commandInput) };
 }
+
+describe("controlled Icarus observation handoffs", () => {
+  const propose = (input = source(), action = monitoring(input), clock = nowMs) =>
+    proposeIcarusObservationHandoff(context(input, [execution(action)], clock), action, {
+      id: "transfer", receivingOwnerPersonId: "delegate", initiatedByPersonId: "reviewer",
+      reason: "Transfer ongoing monitoring responsibility", expiresBy: "2026-05-09",
+    }, people);
+  const respond = (input: IcarusStrategicIntelligenceInput, action: ActionRecord, decision: "Accepted" | "Rejected" = "Accepted", clock = nowMs + 1000) =>
+    respondIcarusObservationHandoff(context(input, [execution(action)], clock), action, {
+      handoffId: "transfer", decision, respondedByPersonId: "delegate", note: "Receiving Person reviewed scope, evidence requirements and retained deadline",
+    }, people);
+  const handoffs = (input: IcarusStrategicIntelligenceInput, action: ActionRecord, clock = nowMs) =>
+    deriveIcarusObservationHandoffs(context(input, [execution(action)], clock));
+
+  it("keeps the outgoing owner accountable during proposal and transfers only through explicit receiving-person acceptance", () => {
+    const input = source();
+    const original = monitoring(input);
+    const proposed = propose(input, original);
+    expect(proposed.ownerPersonId).toBe("observer");
+    expect(proposed.icarusObservationLinks).toEqual(original.icarusObservationLinks);
+    expect(input.assessments[0].treatmentTargets![0].observationPlans).toHaveLength(1);
+    expect(handoffs(input, proposed)[0]).toMatchObject({ state: "Proposed", record: {
+      previousOwnerPersonId: "observer", receivingOwnerPersonId: "delegate", initiatedByPersonId: "reviewer", responses: [],
+    } });
+    const result = respond(input, proposed);
+    const acceptedInput = { ...input, assessments: result.assessments };
+    const revision = result.assessments[0].treatmentTargets![0].observationPlans!.at(-1)!;
+    expect(result.action).toMatchObject({ id: original.id, status: "Open", ownerPersonId: "delegate", dueDate: plan.firstReviewBy });
+    expect(revision).toMatchObject({
+      ownerPersonId: "delegate", recordedByPersonId: "delegate", protection: plan.protection,
+      controlIds: plan.controlIds, evidenceRequirements: plan.evidenceRequirements, acceptanceCriteria: plan.acceptanceCriteria,
+      firstReviewBy: plan.firstReviewBy, handoffFromPlanId: plan.id, handoffId: "transfer",
+    });
+    expect(handoffs(acceptedInput, result.action, nowMs + 1000)[0].state).toBe("Accepted");
+    expect(result.action.icarusObservationLinks).toHaveLength(2);
+    expect(result.action.icarusObservationLinks![0]).toEqual(original.icarusObservationLinks![0]);
+    expect(view(acceptedInput, [result.action], nowMs + 1000).state).toBe("Scheduled");
+    expect(buildIcarusStrategicIntelligence(acceptedInput).treatment.verification.get(targetId)?.state).not.toBe("Verified effective");
+    expect(proposed.icarusObservationHandoffs![0].responses).toEqual([]);
+    expect(input.assessments[0].treatmentTargets![0].observationPlans).toHaveLength(1);
+  });
+
+  it("rejects explicitly without changing owner, deadline, scope or Action count", () => {
+    const input = source();
+    const proposed = propose(input);
+    const result = respond(input, proposed, "Rejected");
+    expect(result.assessments).toEqual(input.assessments);
+    expect(result.action.ownerPersonId).toBe("observer");
+    expect(result.action.dueDate).toBe(proposed.dueDate);
+    expect(result.action.icarusObservationLinks).toEqual(proposed.icarusObservationLinks);
+    expect(handoffs(input, result.action, nowMs + 1000)[0].state).toBe("Rejected");
+    const { attention } = command({ ...input, nowMs: nowMs + 1000 }, [result.action]);
+    expect(attention.items.filter((item) => item.id === result.action.id)).toHaveLength(1);
+    expect(attention.items.find((item) => item.id === result.action.id)?.reason).toContain("Rejected");
+  });
+
+  it("expires at the explicit deadline, never transfers automatically, and preserves overdue monitoring", () => {
+    const input = source();
+    const proposed = propose(input);
+    const boundary = Date.parse("2026-05-09T23:59:59.999Z");
+    expect(handoffs(input, proposed, boundary)[0].state).toBe("Proposed");
+    expect(handoffs(input, proposed, boundary + 1)[0].state).toBe("Expired");
+    expect(() => respond(input, proposed, "Accepted", boundary + 1)).toThrow("expired");
+    expect(proposed.ownerPersonId).toBe("observer");
+    expect(view(input, [proposed], boundary + 1)).toMatchObject({ state: "Overdue", reviewBy: plan.firstReviewBy });
+  });
+
+  it("carries an overdue deadline into an accepted ownership revision without inventing fresh assurance", () => {
+    const input = source();
+    const proposed = propose(input);
+    const clock = Date.parse("2026-05-08T10:00:00Z");
+    const result = respond(input, proposed, "Accepted", clock);
+    const acceptedInput = { ...input, assessments: result.assessments, nowMs: clock };
+    expect(view(acceptedInput, [result.action], clock)).toMatchObject({ state: "Overdue", reviewBy: plan.firstReviewBy });
+    expect(handoffs(acceptedInput, result.action, clock)[0].state).toBe("Accepted");
+    expect(result.action.completionEvidence).toBe("");
+    expect(result.action.dueDate).toBe(plan.firstReviewBy);
+    expect(buildIcarusStrategicIntelligence(acceptedInput).treatment.verification.get(targetId)?.observation?.issues)
+      .not.toContain("First observation deadline is missing, invalid or precedes the plan");
+  });
+
+  it("exposes an accountability gap when the outgoing Person becomes unavailable, then permits explicit valid recovery", () => {
+    const input = source();
+    const proposed = propose(input);
+    const unavailable = { ...input, people: people.map((person) => person.id === "observer" ? { ...person, status: "Inactive" } : person) };
+    expect(handoffs(unavailable, proposed)[0].state).toBe("Unowned");
+    const result = respond(unavailable, proposed);
+    expect(handoffs({ ...unavailable, assessments: result.assessments }, result.action, nowMs + 1000)[0].state).toBe("Accepted");
+  });
+
+  it.each(["Missing", "Inactive", "Duplicate", "Not ready"])("rejects a %s receiving Person", (kind) => {
+    const input = source();
+    const updatedPeople = kind === "Missing" ? people.filter((person) => person.id !== "delegate")
+      : kind === "Duplicate" ? [...people, people[2]]
+        : people.map((person) => person.id !== "delegate" ? person : kind === "Inactive" ? { ...person, status: "Inactive" } : { ...person, authority: "" });
+    const action = monitoring(input);
+    expect(() => proposeIcarusObservationHandoff(context({ ...input, people: updatedPeople }, [execution(action)]), action, {
+      id: "transfer", receivingOwnerPersonId: "delegate", initiatedByPersonId: "reviewer", reason: "Transfer", expiresBy: "2026-05-09",
+    }, updatedPeople)).toThrow("delegation-ready");
+  });
+
+  it("requires explicit receiver attribution and rechecks receiving-person availability and readiness at acceptance", () => {
+    const input = source();
+    const proposed = propose(input);
+    const request = { handoffId: "transfer", decision: "Accepted" as const, respondedByPersonId: "reviewer", note: "Responded" };
+    expect(() => respondIcarusObservationHandoff(context(input, [execution(proposed)], nowMs + 1000), proposed, request, people)).toThrow("receiving Person");
+    const inactive = { ...input, people: people.map((person) => person.id === "delegate" ? { ...person, status: "Inactive" } : person) };
+    expect(handoffs(inactive, proposed)[0].state).toBe("Invalid");
+    expect(() => respond(inactive, proposed)).toThrow();
+    expect(() => respondIcarusObservationHandoff(context(input, [execution(proposed)], nowMs + 1000), proposed,
+      { ...request, respondedByPersonId: "delegate" }, people.map((person) => person.id === "delegate" ? { ...person, authority: "" } : person))).toThrow("readiness");
+  });
+
+  it("never infers plan transfer from Action reassignment and refuses acceptance while owners disagree", () => {
+    const input = source();
+    const proposed = propose(input);
+    const reassigned = { ...proposed, ownerPersonId: "delegate", owner: "Delegate" };
+    expect(handoffs(input, reassigned)[0].state).toBe("Unowned");
+    expect(view(input, [reassigned]).state).toBe("Unowned");
+    expect(() => respond(input, reassigned)).toThrow("owner mismatch");
+    expect(input.assessments[0].treatmentTargets![0].observationPlans![0].ownerPersonId).toBe("observer");
+  });
+
+  it("prevents duplicate active proposals and duplicate responses and detects imported conflicts", () => {
+    const input = source();
+    const proposed = propose(input);
+    expect(() => propose(input, proposed)).toThrow("identity already exists");
+    expect(() => proposeIcarusObservationHandoff(context(input, [execution(proposed)]), proposed, {
+      id: "second", receivingOwnerPersonId: "delegate", initiatedByPersonId: "reviewer", reason: "Transfer again", expiresBy: "2026-05-09",
+    }, people)).toThrow("active handoff already exists");
+    const duplicate = { ...proposed, icarusObservationHandoffs: [...proposed.icarusObservationHandoffs!,
+      { ...proposed.icarusObservationHandoffs![0], id: "conflict" }] };
+    expect(handoffs(input, duplicate).every((view) => view.state === "Invalid")).toBe(true);
+    const accepted = respond(input, proposed);
+    expect(() => respond({ ...input, assessments: accepted.assessments }, accepted.action, "Accepted", nowMs + 2000)).toThrow("already answered");
+    const record = accepted.action.icarusObservationHandoffs![0];
+    const conflicting = { ...accepted.action, icarusObservationHandoffs: [{ ...record, responses: [...record.responses, ...record.responses] }] };
+    expect(handoffs({ ...input, assessments: accepted.assessments }, conflicting, nowMs + 1000)[0].state).toBe("Invalid");
+  });
+
+  it("does not let changed plan scope, deadlines or intervening reviews silently transfer responsibilities", () => {
+    const input = source();
+    const proposed = propose(input);
+    input.assessments[0].treatmentTargets![0].observationPlans!.push({
+      ...plan, id: "replacement", recordedAt: "2026-05-06T10:00:00.500Z", acceptanceCriteria: "Changed criteria", firstReviewBy: "2026-05-20",
+    });
+    expect(handoffs(input, proposed, nowMs + 1000)[0].state).toBe("Invalid");
+    expect(() => respond(input, proposed)).toThrow("invalid handoff");
+    expect(proposed.dueDate).toBe(plan.firstReviewBy);
+  });
+
+  it("detects interrupted or corrupted accepted transfers and keeps a single Command accountability item", () => {
+    const input = source();
+    const proposed = propose(input);
+    const result = respond(input, proposed);
+    expect(handoffs(input, result.action, nowMs + 1000)[0].state).toBe("Invalid");
+    const acceptedInput = { ...input, assessments: result.assessments, nowMs: nowMs + 1000 };
+    const missingLink = { ...result.action, icarusObservationLinks: proposed.icarusObservationLinks };
+    expect(handoffs(acceptedInput, missingLink, nowMs + 1000)[0].state).toBe("Invalid");
+    const { attention } = command(input, [proposed]);
+    expect(attention.items.filter((item) => item.id === proposed.id)).toHaveLength(1);
+    expect(attention.items.find((item) => item.id === proposed.id)?.reason).toContain("Proposed");
+    expect(attention.items.some((item) => item.objectType === "Icarus")).toBe(false);
+  });
+
+  it("exposes accepted transfer tampering and unavailable receiving ownership without weakening assurance", () => {
+    const input = source();
+    const accepted = respond(input, propose(input));
+    const updated = { ...input, assessments: accepted.assessments };
+    const unavailable = { ...updated, people: people.map((person) => person.id === "delegate" ? { ...person, status: "Inactive" } : person) };
+    expect(handoffs(unavailable, accepted.action, nowMs + 1000)[0].state).toBe("Unowned");
+    const corrupt: ActionRecord = { ...accepted.action, icarusObservationHandoffs: accepted.action.icarusObservationHandoffs!.map((record) => ({
+      ...record, responses: record.responses.map((response) => ({
+        ...response, acceptedPlan: response.acceptedPlan ? { ...response.acceptedPlan, firstReviewBy: "2026-06-01" } : undefined,
+      })),
+    })) };
+    expect(handoffs(updated, corrupt, nowMs + 1000)[0].state).toBe("Invalid");
+    expect(buildIcarusObservationExecutionIndex(context(updated, [execution(corrupt)], nowMs + 1000)).actionAttention
+      .some((entry) => entry.reasons.some((reason) => reason.includes("Invalid")))).toBe(true);
+  });
+
+  it("retains failed proposal history while allowing a new explicit attempt after expiration", () => {
+    const input = source();
+    const expired = propose(input);
+    const clock = Date.parse("2026-05-10T10:00:00Z");
+    const retry = proposeIcarusObservationHandoff(context(input, [execution(expired)], clock), expired, {
+      id: "retry", receivingOwnerPersonId: "delegate", initiatedByPersonId: "reviewer",
+      reason: "Renew the proposal without postponing monitoring", expiresBy: "2026-05-11",
+    }, people);
+    expect(handoffs(input, retry, clock).map((view) => view.state)).toEqual(["Expired", "Proposed"]);
+    expect(retry.icarusObservationHandoffs![0]).toEqual(expired.icarusObservationHandoffs![0]);
+    expect(retry.dueDate).toBe(plan.firstReviewBy);
+    const { attention } = command({ ...input, nowMs: clock }, [retry]);
+    expect(attention.items.filter((item) => item.id === retry.id)).toHaveLength(1);
+  });
+
+  it("preserves append-only transfer and plan history through normalisation and backup, rejecting malformed responses", () => {
+    const input = source();
+    const result = respond(input, propose(input));
+    expect(normalizeActionRecord(JSON.parse(JSON.stringify(result.action))).icarusObservationHandoffs).toEqual(result.action.icarusObservationHandoffs);
+    expect(parseIcarusAssessments(JSON.stringify(result.assessments))).toEqual(result.assessments);
+    expect(validateEmpireOsBackup({
+      format: BACKUP_FORMAT, version: BACKUP_VERSION, createdAt: verifiedAt,
+      storage: { [CONVERSION_STORAGE_KEY]: JSON.stringify([result.action]) },
+    }).version).toBe(BACKUP_VERSION);
+    expect(() => assertIcarusObservationHandoffs(undefined)).not.toThrow();
+    expect(() => assertIcarusObservationHandoffs([{ responses: [] }])).toThrow("malformed");
+    expect(() => validateEmpireOsBackup({
+      format: BACKUP_FORMAT, version: BACKUP_VERSION, createdAt: verifiedAt,
+      storage: { [CONVERSION_STORAGE_KEY]: JSON.stringify([{ ...result.action, icarusObservationHandoffs: [{}] }]) },
+    })).toThrow("malformed");
+  });
+
+  it("never treats completed monitoring execution as acceptance or effectiveness", () => {
+    const input = source();
+    const proposed = propose(input);
+    const completed: ActionRecord = { ...proposed, status: "Completed", completionDate: testedAt, completionEvidence: "Monitoring work recorded" };
+    expect(handoffs(input, completed)[0].state).toBe("Proposed");
+    expect(() => respond(input, completed)).toThrow("execution changed");
+    expect(buildIcarusStrategicIntelligence({ ...input, observationActions: [execution(completed)] })
+      .treatment.verification.get(targetId)?.state).toBe("Awaiting verification");
+  });
+
+  it("retains accepted transfer history through subsequent handoffs without creating another monitoring Action", () => {
+    const input = source();
+    const accepted = respond(input, propose(input));
+    const nextInput = { ...input, assessments: accepted.assessments };
+    const proposed = proposeIcarusObservationHandoff(context(nextInput, [execution(accepted.action)], nowMs + 2000),
+      accepted.action, { id: "return-transfer", receivingOwnerPersonId: "observer", initiatedByPersonId: "reviewer",
+        reason: "Return the responsibility with explicit acceptance", expiresBy: "2026-05-09" }, people);
+    const result = respondIcarusObservationHandoff(context(nextInput, [execution(proposed)], nowMs + 3000),
+      proposed, { handoffId: "return-transfer", decision: "Accepted", respondedByPersonId: "observer", note: "Accepting continued monitoring" }, people);
+    expect(result.action.id).toBe(accepted.action.id);
+    expect(result.action.icarusObservationHandoffs).toHaveLength(2);
+    expect(result.action.icarusObservationHandoffs![0]).toEqual(accepted.action.icarusObservationHandoffs![0]);
+    expect(result.action.icarusObservationLinks).toHaveLength(3);
+    expect(result.action.dueDate).toBe(plan.firstReviewBy);
+    const updated = { ...nextInput, assessments: result.assessments };
+    expect(handoffs(updated, result.action, nowMs + 3000).map((view) => view.state)).toEqual(["Accepted", "Accepted"]);
+  });
+
+  it("rejects stale Action inputs instead of overwriting newer handoff history", () => {
+    const input = source();
+    const original = monitoring(input);
+    const proposed = propose(input, original);
+    expect(() => respondIcarusObservationHandoff(context(input, [execution(proposed)], nowMs + 1000), original, {
+      handoffId: "transfer", decision: "Accepted", respondedByPersonId: "delegate", note: "Accepted",
+    }, people)).toThrow("Action changed");
+  });
+});
 
 describe("Icarus observation responsibility execution through Actions", () => {
   it("creates an ordinary delegated Action with immutable plan, owner, deadline and review-cycle provenance", () => {

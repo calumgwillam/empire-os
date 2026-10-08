@@ -728,7 +728,10 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
         : placement.attentionRank;
       const monitoringOnly = signal.materialFailureModes.every((mode) => mode.lifecycleOnly)
         && signal.lifecycle?.attentionReasons.every((reason) =>
-          reason.startsWith("Observation responsibility") || reason.startsWith("Observation execution"));
+          reason.startsWith("Observation responsibility") || reason.startsWith("Observation execution")
+          || reason.startsWith("Observation handoff") || reason.startsWith("Accountability gap")
+          || input.icarusObservationExecution?.actionAttention.some((entry) =>
+            entry.assessmentId === signal.assessmentId && entry.reasons.includes(reason)));
       const monitoringAnchors = monitoringOnly
         ? [...(input.icarusObservationExecution?.byTargetId.values() ?? [])]
           .filter((view) => view.assessmentId === signal.assessmentId)

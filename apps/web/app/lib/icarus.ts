@@ -165,6 +165,8 @@ export type IcarusObservationPlan = {
   evidenceRequirements: string;
   acceptanceCriteria: string;
   firstReviewBy: string;
+  handoffFromPlanId?: string;
+  handoffId?: string;
 };
 
 export type IcarusTreatmentCompletionReview = {
@@ -782,7 +784,9 @@ export function isIcarusObservationPlan(value: unknown): value is IcarusObservat
     && typeof value.ownerPersonId === "string" && typeof value.protection === "string"
     && Array.isArray(value.controlIds) && value.controlIds.every((id) => typeof id === "string")
     && typeof value.evidenceRequirements === "string" && typeof value.acceptanceCriteria === "string"
-    && typeof value.firstReviewBy === "string";
+    && typeof value.firstReviewBy === "string"
+    && isOptionalNonEmptyString(value.handoffFromPlanId)
+    && isOptionalNonEmptyString(value.handoffId);
 }
 
 function isIcarusTreatmentCompletionReview(value: unknown): value is IcarusTreatmentCompletionReview {

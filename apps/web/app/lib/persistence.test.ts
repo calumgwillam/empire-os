@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { persistJsonArray, persistJsonValue, type PersistenceStorage } from "./persistence";
+import { persistJsonArray, persistJsonValue, persistJsonArraysTransaction, type PersistenceStorage } from "./persistence";
 
 const createStorage = (initial: Record<string, string> = {}) => {
   const data = new Map(Object.entries(initial));
@@ -80,6 +80,53 @@ describe("persistJsonValue", () => {
       ["array-key", "[]"],
     ]);
     expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+
+  describe("persistJsonArraysTransaction", () => {
+    it("writes and verifies related stores without touching unrelated records", () => {
+      const storage = createStorage({ other: "retained" });
+      persistJsonArraysTransaction(storage, [{ key: "actions", records: [{ id: "a" }] }, { key: "plans", records: [{ id: "p" }] }]);
+      expect(storage.getItem("actions")).toBe('[{"id":"a"}]');
+      expect(storage.getItem("plans")).toBe('[{"id":"p"}]');
+      expect(storage.getItem("other")).toBe("retained");
+    });
+
+    it("restores both stores if a later write fails", () => {
+      const storage = createStorage({ actions: '[{"id":"old-action"}]', plans: '[{"id":"old-plan"}]' });
+      storage.setItem.mockImplementationOnce((key, value) => { storage.data.set(key, value); })
+        .mockImplementationOnce(() => { throw new Error("Quota exceeded"); });
+      expect(() => persistJsonArraysTransaction(storage, [
+        { key: "actions", records: [{ id: "new-action" }] }, { key: "plans", records: [{ id: "new-plan" }] },
+      ])).toThrow("Previous storage restored");
+      expect(storage.getItem("actions")).toBe('[{"id":"old-action"}]');
+      expect(storage.getItem("plans")).toBe('[{"id":"old-plan"}]');
+    });
+
+    it("rejects silent writes and exposes failed rollback instead of claiming success", () => {
+      const storage = createStorage({ actions: "old-actions", plans: "old-plans" });
+      storage.setItem.mockImplementation(() => {});
+      expect(() => persistJsonArraysTransaction(storage, [
+        { key: "actions", records: [1] }, { key: "plans", records: [2] },
+      ])).toThrow("verification failed");
+      storage.setItem.mockImplementation(() => { throw new Error("Storage unavailable"); });
+      expect(() => persistJsonArraysTransaction(storage, [
+        { key: "actions", records: [1] }, { key: "plans", records: [2] },
+      ])).toThrow("Rollback failed");
+    });
+
+    it("rejects duplicate keys before writing and preserves absent stores after rollback", () => {
+      const storage = createStorage();
+      expect(() => persistJsonArraysTransaction(storage, [
+        { key: "actions", records: [1] }, { key: "actions", records: [2] },
+      ])).toThrow("duplicate storage keys");
+      expect(storage.setItem).not.toHaveBeenCalled();
+      storage.setItem.mockImplementationOnce((key, value) => { storage.data.set(key, value); })
+        .mockImplementationOnce(() => { throw new Error("Write failed"); });
+      expect(() => persistJsonArraysTransaction(storage, [
+        { key: "actions", records: [1] }, { key: "plans", records: [2] },
+      ])).toThrow("Previous storage restored");
+      expect(storage.data.size).toBe(0);
+    });
   });
 
   it("does not mutate the input value", () => {

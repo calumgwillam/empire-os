@@ -211,7 +211,7 @@ import {
   runIntegrityAudit as runIntegrityAuditFromDomain,
   type IntegrityAuditResult as DomainIntegrityAuditResult,
 } from "./lib/integrity-audit";
-import { persistJsonArray, persistJsonValue } from "./lib/persistence";
+import { persistJsonArray, persistJsonValue, persistJsonArraysTransaction } from "./lib/persistence";
 import {
   assertIcarusDataStructure,
   normaliseIcarusAssessmentData,
@@ -233,8 +233,12 @@ import {
 import { buildIcarusInterventionIndex } from "./lib/icarus-intervention-decision";
 import {
   assertIcarusObservationActionLinks,
+  assertIcarusObservationHandoffs,
   createIcarusObservationAction,
   linkIcarusObservationAction,
+  proposeIcarusObservationHandoff,
+  respondIcarusObservationHandoff,
+  type IcarusObservationHandoffCommand,
 } from "./lib/icarus-observation-action";
 import { buildIcarusLearningIndex, getIcarusLearningMechanismRevision, type IcarusLearningInput, type IcarusLessonLearning } from "./lib/icarus-learning";
 import {
@@ -9040,6 +9044,7 @@ export default function Home() {
             addOperationalRecord(recordType, record.id);
             if (recordType === "Action") {
               assertIcarusObservationActionLinks(record.icarusObservationLinks);
+              assertIcarusObservationHandoffs(record.icarusObservationHandoffs);
               if (Object.prototype.hasOwnProperty.call(record, "responsibilityOutcomeEvidence")) {
                 assertActionResponsibilityOutcomeEvidenceStructure(record.responsibilityOutcomeEvidence);
               }
@@ -10133,6 +10138,7 @@ export default function Home() {
     completedAt: action.completionDate,
     completionEvidence: action.completionEvidence,
     icarusObservationLinks: action.icarusObservationLinks,
+    icarusObservationHandoffs: action.icarusObservationHandoffs,
   }));
   const icarusTreatmentProjects = projects.map((project) => ({
     recordType: "Project" as const,
@@ -13412,6 +13418,7 @@ export default function Home() {
     newOwner,
     newOwnerPersonId,
     handoffContext,
+    acceptedObservation = false,
     applyOwnershipChange,
   }: {
     objectType: DelegationHandoffRecord["objectType"];
@@ -13423,6 +13430,7 @@ export default function Home() {
     newOwner: string;
     newOwnerPersonId?: string;
     handoffContext: string;
+    acceptedObservation?: boolean;
     applyOwnershipChange: () => void;
   }) => {
     const previousOwnerName = previousOwner.trim() || "Unassigned";
@@ -13439,14 +13447,16 @@ export default function Home() {
       return true;
     }
 
-    const destinationPerson = delegationReadyPeople.find((person) =>
+    const candidates = acceptedObservation ? orderedPeople.filter((person) =>
+      person.status === "Active" && !getDelegationReadinessMissingFields(person).length) : delegationReadyPeople;
+    const destinationPerson = candidates.find((person) =>
       newOwnerPersonId
         ? person.id === newOwnerPersonId
         : person.name.trim().toLowerCase() === newOwnerName.toLowerCase(),
     );
-    const isAreaEligible = destinationPerson
+    const isAreaEligible = acceptedObservation || (destinationPerson
       ? getDelegationReadyPeopleForArea(area).some((person) => person.id === destinationPerson.id)
-      : false;
+      : false);
 
     if (!destinationPerson || !isAreaEligible) {
       setFeedback({
@@ -14576,6 +14586,51 @@ export default function Home() {
         : "Accountable monitoring Action created. Completion still requires separate evidence-based Icarus verification." });
     } catch (error) {
       setFeedback({ type: "error", message: error instanceof Error ? error.message : "Observation Action routing failed; no records were changed." });
+    }
+  };
+
+  const handleIcarusObservationHandoff = (command: IcarusObservationHandoffCommand) => {
+    try {
+      if (!operatingDataLoaded || !icarusLoaded || !conversionsWritableRef.current || !icarusWritableRef.current) {
+        throw new Error("Action or Icarus storage is not writable; handoff was not recorded.");
+      }
+      const matches = actionRecords.filter((action) => action.id === command.actionId);
+      if (matches.length !== 1) throw new Error("Monitoring Action is missing or ambiguous.");
+      const action = matches[0];
+      const context = { assessments: icarusAssessments, treatment: icarusTreatmentIndex,
+        actions: icarusTreatmentActions, people, nowMs: Date.now() };
+      const result = command.kind === "Propose"
+        ? { action: proposeIcarusObservationHandoff(context, action, {
+          id: generateCaptureId(), receivingOwnerPersonId: command.receivingOwnerPersonId,
+          initiatedByPersonId: command.initiatedByPersonId, reason: command.reason, expiresBy: command.expiresBy,
+        }, people),
+          assessments: icarusAssessments }
+        : respondIcarusObservationHandoff(context, action, command, people);
+      const nextConversions = conversions.map((record) => record.id === action.id ? result.action : record);
+      const commit = () => {
+        persistJsonArraysTransaction(window.localStorage, [
+          { key: CONVERSION_STORAGE_KEY, records: nextConversions },
+          { key: ICARUS_STORAGE_KEY, records: result.assessments },
+        ]);
+        setConversions(nextConversions);
+        setIcarusAssessments(result.assessments);
+        setActionEditor((current) => current?.id === action.id ? result.action : current);
+      };
+      const saved = command.kind === "Respond" && command.decision === "Accepted"
+        ? applyOwnershipChangeWithDelegationIntegrity({
+          objectType: "Action", objectId: action.id, title: action.actionTitle, area: getAreaText(action),
+          previousOwner: action.owner, previousOwnerPersonId: action.ownerPersonId,
+          newOwner: result.action.owner, newOwnerPersonId: result.action.ownerPersonId,
+          handoffContext: command.note, acceptedObservation: true, applyOwnershipChange: commit,
+        })
+        : (commit(), true);
+      if (!saved) return;
+      setFeedback({ type: "success", message: command.kind === "Propose"
+        ? "Observation handoff proposed. The outgoing owner remains accountable until explicit acceptance."
+        : command.decision === "Rejected" ? "Handoff rejected and retained. The outgoing owner and monitoring deadline remain unchanged."
+          : "Observation handoff accepted. Plan and Action ownership transferred together; scope, evidence requirements and outstanding deadlines remain." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Observation handoff failed; review persisted accountability before continuing." });
     }
   };
 
@@ -19922,6 +19977,7 @@ export default function Home() {
               observationExecution={icarusIntelligence.observationExecution}
               observationActionsWritable={operatingDataLoaded && conversionsWritableRef.current && icarusLoaded && icarusWritableRef.current}
               onRouteObservationAction={handleRouteIcarusObservationAction}
+              onObservationHandoff={handleIcarusObservationHandoff}
               interventionIndex={icarusInterventionIndex}
               lifecycleInput={{
                 assessments: icarusAssessments, assurance: icarusIntelligence.assurance,

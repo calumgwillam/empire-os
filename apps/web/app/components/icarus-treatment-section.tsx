@@ -23,7 +23,7 @@ import type { IcarusResilienceIntervention } from "../lib/icarus-dependency-resi
 import type { IcarusInterventionIndex } from "../lib/icarus-intervention-decision";
 import { getIcarusTreatmentCompletion, getIcarusTreatmentFollowUpIssues, getIcarusTreatmentVerificationIssues } from "../lib/icarus-treatment-outcome";
 import { getIcarusCurrentObservationPlan, getIcarusObservationPlanIssues, getIcarusPlannedObservationIssues } from "../lib/icarus-observation-plan";
-import { getIcarusObservationActionOutcome, type IcarusObservationExecutionIndex } from "../lib/icarus-observation-action";
+import { getIcarusObservationActionOutcome, type IcarusObservationExecutionIndex, type IcarusObservationHandoffCommand } from "../lib/icarus-observation-action";
 
 type Props = {
   assessments: readonly IcarusAssessmentRecord[];
@@ -31,6 +31,7 @@ type Props = {
   observationExecution?: IcarusObservationExecutionIndex;
   observationActionsWritable?: boolean;
   onRouteObservationAction?: (targetId: string, actionId: string | undefined, recordedByPersonId: string) => void;
+  onObservationHandoff?: (command: IcarusObservationHandoffCommand) => void;
   interventionIndex?: IcarusInterventionIndex;
   createId: () => string;
   actions: readonly IcarusTreatmentExecution[];
@@ -79,6 +80,7 @@ export default function IcarusTreatmentSection({
   observationExecution,
   observationActionsWritable = false,
   onRouteObservationAction,
+  onObservationHandoff,
   interventionIndex,
   createId,
   actions,
@@ -90,6 +92,14 @@ export default function IcarusTreatmentSection({
 }: Props) {
   const [selectedExecution, setSelectedExecution] = useState<Record<string, string>>({});
   const [observationActionId, setObservationActionId] = useState<Record<string, string>>({});
+  const [handoffDrafts, setHandoffDrafts] = useState<Record<string, {
+    receiver: string; author: string; reason: string; expiresBy: string; responder: string; note: string;
+  }>>({});
+  const handoffDraft = (id: string) => handoffDrafts[id] ?? {
+    receiver: "", author: "", reason: "", expiresBy: "", responder: "", note: "",
+  };
+  const updateHandoffDraft = (id: string, change: Partial<ReturnType<typeof handoffDraft>>) =>
+    setHandoffDrafts((current) => ({ ...current, [id]: { ...handoffDraft(id), ...change } }));
   const [selectedVerification, setSelectedVerification] = useState<Record<string, string>>({});
   const [verificationBy, setVerificationBy] = useState<Record<string, string>>({});
   const [verificationNote, setVerificationNote] = useState<Record<string, string>>({});
@@ -147,6 +157,11 @@ export default function IcarusTreatmentSection({
     };
     const candidate = { ...target, observationPlans: [...(target.observationPlans ?? []), plan] };
     const issues = getIcarusObservationPlanIssues(candidate, plan, assessments, people, Date.parse(plan.recordedAt));
+    const previous = getIcarusCurrentObservationPlan(target);
+    if (previous && previous.ownerPersonId !== plan.ownerPersonId
+      && observationExecution?.byTargetId.get(target.id)?.actionIds.length) {
+      issues.push("Use the controlled observation handoff to change the accountable owner of an outstanding monitoring Action");
+    }
     if (!activePeople.some((person) => person.id === plan.recordedByPersonId)) issues.push("Select an active Person to record this plan");
     if (issues.length) {
       setVerificationError((current) => ({ ...current, [target.id]: issues.join("; ") }));
@@ -464,6 +479,80 @@ export default function IcarusTreatmentSection({
                               </p>
                             );
                           }))}
+                      </details>
+                      <details className="mt-2 text-[10px]">
+                        <summary>Controlled observation handoff</summary>
+                        <p>Proposal does not transfer accountability. Only the receiving Person can record acceptance. Plan scope, evidence obligations and outstanding deadlines are retained. Reassigning the Action alone is not an accepted Icarus transfer.</p>
+                        {observationExecution.handoffs?.filter((view) => view.record.link.treatmentTargetId === target.id)
+                          .map((view) => (
+                            <div key={view.record.id} className="mt-2 rounded border border-[#d9d1c8] p-2">
+                              <p>{view.state}: {people.find((person) => person.id === view.record.previousOwnerPersonId)?.name ?? view.record.previousOwnerPersonId}
+                                {" → "}{people.find((person) => person.id === view.record.receivingOwnerPersonId)?.name ?? view.record.receivingOwnerPersonId}</p>
+                              <p>{view.record.reason}; initiated {view.record.initiatedAt} by {view.record.initiatedByPersonId}; acceptance deadline {view.record.expiresBy}; monitoring deadline {view.record.link.reviewBy}</p>
+                              {view.record.responses.map((response, position) => <p key={position}>{response.decision} at {response.respondedAt} by {response.respondedByPersonId}: {response.note}</p>)}
+                              {view.issues.map((issue) => <p key={issue} className="text-[#8b3d28]">{issue}</p>)}
+                              {observationActionsWritable && onObservationHandoff && !view.record.responses.length && view.state !== "Expired" ? (
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  <label>Responding Person
+                                    <select className={selectClass} value={handoffDraft(view.record.id).responder}
+                                      onChange={(event) => updateHandoffDraft(view.record.id, { responder: event.target.value })}>
+                                      <option value="">Select receiving Person</option>
+                                      {activePeople.filter((person) => person.id === view.record.receivingOwnerPersonId)
+                                        .map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+                                    </select>
+                                  </label>
+                                  <label>Response note
+                                    <input className={selectClass} value={handoffDraft(view.record.id).note}
+                                      onChange={(event) => updateHandoffDraft(view.record.id, { note: event.target.value })} />
+                                  </label>
+                                  <button type="button" className={buttonClass} disabled={!["Proposed", "Unowned"].includes(view.state)}
+                                    onClick={() => onObservationHandoff({ kind: "Respond", actionId: view.record.actionId, handoffId: view.record.id,
+                                      decision: "Accepted", respondedByPersonId: handoffDraft(view.record.id).responder, note: handoffDraft(view.record.id).note })}>
+                                    Accept responsibility
+                                  </button>
+                                  <button type="button" className={buttonClass}
+                                    onClick={() => onObservationHandoff({ kind: "Respond", actionId: view.record.actionId, handoffId: view.record.id,
+                                      decision: "Rejected", respondedByPersonId: handoffDraft(view.record.id).responder, note: handoffDraft(view.record.id).note })}>
+                                    Reject proposal
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          ))}
+                        {observationActionsWritable && onObservationHandoff && observationExecution.byTargetId.get(target.id)?.actionIds.length === 1 ? (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <label>Receiving Person
+                              <select className={selectClass} value={handoffDraft(target.id).receiver}
+                                onChange={(event) => updateHandoffDraft(target.id, { receiver: event.target.value })}>
+                                <option value="">Select Person</option>
+                                {activePeople.filter((person) => person.id !== observationExecution.byTargetId.get(target.id)?.plan?.ownerPersonId)
+                                  .map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+                              </select>
+                            </label>
+                            <label>Initiated by
+                              <select className={selectClass} value={handoffDraft(target.id).author}
+                                onChange={(event) => updateHandoffDraft(target.id, { author: event.target.value })}>
+                                <option value="">Select Person</option>
+                                {activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+                              </select>
+                            </label>
+                            <label>Transfer reason
+                              <input className={selectClass} value={handoffDraft(target.id).reason}
+                                onChange={(event) => updateHandoffDraft(target.id, { reason: event.target.value })} />
+                            </label>
+                            <label>Acceptance deadline
+                              <input type="date" className={selectClass} value={handoffDraft(target.id).expiresBy}
+                                onChange={(event) => updateHandoffDraft(target.id, { expiresBy: event.target.value })} />
+                            </label>
+                            <button type="button" className={buttonClass}
+                              onClick={() => onObservationHandoff({ kind: "Propose",
+                                actionId: observationExecution.byTargetId.get(target.id)!.actionIds[0],
+                                receivingOwnerPersonId: handoffDraft(target.id).receiver, initiatedByPersonId: handoffDraft(target.id).author,
+                                reason: handoffDraft(target.id).reason, expiresBy: handoffDraft(target.id).expiresBy })}>
+                              Propose handoff
+                            </button>
+                          </div>
+                        ) : null}
                       </details>
                       {observationActionsWritable && onRouteObservationAction ? (
                         <div className="mt-2 flex flex-wrap items-end gap-2">

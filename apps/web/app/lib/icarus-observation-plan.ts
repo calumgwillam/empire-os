@@ -24,6 +24,7 @@ export function sameIcarusObservationPlan(left: IcarusObservationPlan, right: Ic
   const values = (plan: IcarusObservationPlan) => [
     plan.id, plan.recordedAt, plan.recordedByPersonId, plan.ownerPersonId, plan.protection,
     [...plan.controlIds].sort(), plan.evidenceRequirements, plan.acceptanceCriteria, plan.firstReviewBy,
+    plan.handoffFromPlanId, plan.handoffId,
   ];
   return JSON.stringify(values(left)) === JSON.stringify(values(right));
 }
@@ -58,8 +59,16 @@ export function getIcarusObservationPlanIssues(
     if (controls.length !== 1 || (target.failureModeId && controls[0].failureModeId !== target.failureModeId)
       || (target.controlId && id !== target.controlId)) issues.push(`Observation control is missing, ambiguous or outside treatment scope: ${id}`);
   });
+  const predecessors = (target.observationPlans ?? []).filter((entry) => entry.id === plan.handoffFromPlanId);
+  const previous = predecessors[0];
+  const carriedDeadline = Boolean(plan.handoffId && predecessors.length === 1 && previous
+    && Date.parse(previous.recordedAt) < Date.parse(plan.recordedAt)
+    && previous.protection === plan.protection && previous.evidenceRequirements === plan.evidenceRequirements
+    && previous.acceptanceCriteria === plan.acceptanceCriteria
+    && JSON.stringify([...previous.controlIds].sort()) === JSON.stringify([...plan.controlIds].sort()));
+  if ((plan.handoffId || plan.handoffFromPlanId) && !carriedDeadline) issues.push("Observation handoff revision does not preserve its predecessor scope and evidence obligations");
   if (!Number.isFinite(getIcarusObservationDeadline(plan.firstReviewBy))
-    || getIcarusObservationDeadline(plan.firstReviewBy) < Date.parse(plan.recordedAt)) {
+    || !carriedDeadline && getIcarusObservationDeadline(plan.firstReviewBy) < Date.parse(plan.recordedAt)) {
     issues.push("First observation deadline is missing, invalid or precedes the plan");
   }
   return [...new Set(issues)].sort();

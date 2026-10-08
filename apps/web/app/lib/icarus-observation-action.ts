@@ -15,6 +15,35 @@ export type IcarusObservationActionLink = {
   linkedByPersonId: string;
 };
 
+export type IcarusObservationHandoff = {
+  id: string;
+  actionId: string;
+  link: IcarusObservationActionLink;
+  previousOwnerPersonId: string;
+  receivingOwnerPersonId: string;
+  reason: string;
+  initiatedAt: string;
+  initiatedByPersonId: string;
+  expiresBy: string;
+  responses: {
+    decision: "Accepted" | "Rejected";
+    respondedAt: string;
+    respondedByPersonId: string;
+    note: string;
+    acceptedPlan?: IcarusObservationPlan;
+  }[];
+};
+
+export type IcarusObservationHandoffView = {
+  record: IcarusObservationHandoff;
+  state: "Proposed" | "Accepted" | "Rejected" | "Expired" | "Invalid" | "Unowned";
+  issues: readonly string[];
+};
+
+export type IcarusObservationHandoffCommand =
+  | { kind: "Propose"; actionId: string; receivingOwnerPersonId: string; initiatedByPersonId: string; reason: string; expiresBy: string }
+  | { kind: "Respond"; actionId: string; handoffId: string; decision: "Accepted" | "Rejected"; respondedByPersonId: string; note: string };
+
 export type IcarusObservationExecutionView = {
   targetId: string;
   assessmentId: string;
@@ -37,20 +66,35 @@ export type IcarusObservationActionAttention = {
 export type IcarusObservationExecutionIndex = {
   byTargetId: ReadonlyMap<string, IcarusObservationExecutionView>;
   actionAttention: readonly IcarusObservationActionAttention[];
+  handoffs?: readonly IcarusObservationHandoffView[];
 };
 
 type Person = { id: string; status: string };
-type Context = {
+export type IcarusObservationExecutionContext = {
   assessments: readonly IcarusAssessmentRecord[];
   treatment: Pick<IcarusTreatmentIndex, "targets" | "verification">;
   actions: readonly IcarusTreatmentExecution[];
   people: readonly Person[];
   nowMs: number;
 };
+type Context = IcarusObservationExecutionContext;
+
+function assertCurrentHandoffAction(context: Context, action: ActionRecord): void {
+  const records = context.actions.filter((entry) => entry.recordType === "Action" && entry.recordId === action.id);
+  const current = records[0];
+  if (records.length !== 1 || !current || current.ownerPersonId !== action.ownerPersonId
+    || current.status !== action.status || current.dueDate !== action.dueDate
+    || JSON.stringify(current.icarusObservationLinks ?? []) !== JSON.stringify(action.icarusObservationLinks ?? [])
+    || JSON.stringify(current.icarusObservationHandoffs ?? []) !== JSON.stringify(action.icarusObservationHandoffs ?? [])) {
+    throw new Error("Monitoring Action changed or is missing or ambiguous; reload its current handoff provenance.");
+  }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
 export function isIcarusObservationActionLink(value: unknown): value is IcarusObservationActionLink {
-  const isObject = (entry: unknown): entry is Record<string, unknown> =>
-    Boolean(entry) && typeof entry === "object" && !Array.isArray(entry);
   return isObject(value)
     && [value.assessmentId, value.treatmentTargetId, value.reviewBy, value.linkedAt, value.linkedByPersonId]
       .every((entry) => typeof entry === "string" && entry.trim().length > 0)
@@ -64,6 +108,208 @@ export function assertIcarusObservationActionLinks(value: unknown): void {
     throw new Error("An Action contains malformed Icarus observation linkage; existing data must be preserved.");
   }
 }
+
+export function assertIcarusObservationHandoffs(value: unknown): asserts value is IcarusObservationHandoff[] | undefined {
+    if (value === undefined) return;
+    const nonempty = (entry: unknown) => typeof entry === "string" && entry.trim().length > 0;
+    if (!Array.isArray(value) || !value.every((entry: unknown) => isObject(entry)
+      && [entry.id, entry.actionId, entry.previousOwnerPersonId, entry.receivingOwnerPersonId, entry.reason,
+        entry.initiatedAt, entry.initiatedByPersonId, entry.expiresBy].every(nonempty)
+      && isIcarusObservationActionLink(entry.link)
+      && Array.isArray(entry.responses) && entry.responses.every((response: unknown) => isObject(response)
+        && ["Accepted", "Rejected"].includes(String(response.decision))
+        && [response.respondedAt, response.respondedByPersonId, response.note].every(nonempty)
+        && (response.acceptedPlan === undefined || isIcarusObservationPlan(response.acceptedPlan))))) {
+      throw new Error("An Action contains malformed Icarus observation handoff provenance; existing data must be preserved.");
+    }
+  }
+
+export function deriveIcarusObservationHandoffs(context: Context): IcarusObservationHandoffView[] {
+    if (!Number.isFinite(context.nowMs)) throw new Error("Observation handoffs require a valid explicit clock.");
+    const records = context.actions.flatMap((action) => {
+      assertIcarusObservationHandoffs(action.icarusObservationHandoffs);
+      return (action.icarusObservationHandoffs ?? []).map((record) => ({ action, record }));
+    });
+    return records.map(({ action, record }) => {
+      const issues: string[] = [];
+      const target = context.treatment.targets.find((target) => target.id === record.link.treatmentTargetId);
+      const plans = target?.observationPlans ?? [];
+      const sourcePlan = plans.filter((plan) => plan.id === record.link.plan.id);
+      const identity = (id: string) => context.people.filter((person) => person.id === id);
+      const uniqueActive = (id: string) => identity(id).length === 1 && identity(id)[0].status === "Active";
+      const initiatedAt = getIcarusObservationDeadline(record.initiatedAt);
+      const expiresAt = getIcarusObservationDeadline(record.expiresBy);
+      if (records.filter((entry) => entry.record.id === record.id).length !== 1
+        || record.actionId !== action.recordId
+        || context.actions.filter((entry) => entry.recordId === record.actionId).length !== 1) issues.push("Handoff or Action identity is ambiguous");
+      if (!target || target.assessmentId !== record.link.assessmentId
+        || sourcePlan.length !== 1 || !sameIcarusObservationPlan(sourcePlan[0], record.link.plan)
+        || record.previousOwnerPersonId !== record.link.plan.ownerPersonId
+        || record.previousOwnerPersonId === record.receivingOwnerPersonId) issues.push("Handoff does not match its retained observation responsibility");
+      const sourceLinks = action.icarusObservationLinks?.filter((link) => sameCycle(link, record.link)
+        && link.linkedAt === record.link.linkedAt && link.linkedByPersonId === record.link.linkedByPersonId) ?? [];
+      if (sourceLinks.length !== 1) issues.push("Handoff source Action linkage is missing or ambiguous");
+      if (identity(record.initiatedByPersonId).length !== 1) issues.push("Handoff initiation author is missing or ambiguous");
+      if (!Number.isFinite(initiatedAt) || initiatedAt > context.nowMs || initiatedAt < Date.parse(record.link.linkedAt)
+        || !Number.isFinite(expiresAt) || expiresAt <= initiatedAt) issues.push("Handoff initiation or expiration chronology is invalid");
+      const response = record.responses[0];
+      if (record.responses.length > 1) issues.push("Conflicting or duplicate handoff responses");
+      if (response && (response.respondedByPersonId !== record.receivingOwnerPersonId
+        || identity(response.respondedByPersonId).length !== 1
+        || !Number.isFinite(Date.parse(response.respondedAt))
+        || Date.parse(response.respondedAt) < initiatedAt || Date.parse(response.respondedAt) > expiresAt
+        || Date.parse(response.respondedAt) > context.nowMs)) issues.push("Handoff response is not attributable to the receiver or has invalid chronology");
+      if (response?.decision === "Rejected" && response.acceptedPlan) issues.push("Rejected handoff cannot establish a transferred plan");
+      if (response?.decision === "Accepted") {
+        const accepted = response.acceptedPlan;
+        const retained = plans.filter((plan) => plan.id === accepted?.id);
+        if (!accepted || retained.length !== 1 || !sameIcarusObservationPlan(retained[0], accepted)
+          || accepted.ownerPersonId !== record.receivingOwnerPersonId
+          || accepted.recordedByPersonId !== record.receivingOwnerPersonId
+          || accepted.recordedAt !== response.respondedAt
+          || accepted.handoffId !== record.id || accepted.handoffFromPlanId !== record.link.plan.id
+          || accepted.protection !== record.link.plan.protection
+          || accepted.evidenceRequirements !== record.link.plan.evidenceRequirements
+          || accepted.acceptanceCriteria !== record.link.plan.acceptanceCriteria
+          || JSON.stringify([...accepted.controlIds].sort()) !== JSON.stringify([...record.link.plan.controlIds].sort())
+          || getIcarusObservationDeadline(accepted.firstReviewBy) > getIcarusObservationDeadline(record.link.reviewBy)) {
+          issues.push("Accepted handoff plan is missing or changes the retained scope, evidence obligations or deadline");
+        }
+        const acceptedLinks = action.icarusObservationLinks?.filter((link) => accepted
+          && sameIcarusObservationPlan(link.plan, accepted)
+          && link.assessmentId === record.link.assessmentId && link.treatmentTargetId === record.link.treatmentTargetId
+          && link.afterOutcomeId === record.link.afterOutcomeId && link.linkedByPersonId === record.receivingOwnerPersonId
+          && link.linkedAt === response.respondedAt && link.reviewBy === accepted.firstReviewBy) ?? [];
+        if (acceptedLinks.length !== 1) issues.push("Accepted handoff is not matched by unique Action linkage");
+      } else if (!response && action.icarusObservationHandoffs?.at(-1)?.id === record.id) {
+        const current = context.treatment.verification.get(record.link.treatmentTargetId)?.observation?.plan;
+        const lastLink = action.icarusObservationLinks?.at(-1);
+        if (!current || !sameIcarusObservationPlan(current, record.link.plan) || !lastLink
+          || !sameCycle(lastLink, record.link)) issues.push("Observation plan or review cycle changed before handoff acceptance");
+      }
+      const pending = records.filter((entry) => entry.record.link.treatmentTargetId === record.link.treatmentTargetId
+        && entry.record.link.assessmentId === record.link.assessmentId && !entry.record.responses.length
+        && getIcarusObservationDeadline(entry.record.expiresBy) >= context.nowMs);
+      if (!response && pending.length > 1) issues.push("Conflicting active transfers claim the same observation responsibility");
+      const currentPlan = context.treatment.verification.get(record.link.treatmentTargetId)?.observation?.plan;
+      const accountable = response?.decision === "Accepted" ? record.receivingOwnerPersonId : record.previousOwnerPersonId;
+      const latest = action.icarusObservationHandoffs?.at(-1)?.id === record.id;
+      const ownerGap = latest && (!uniqueActive(accountable)
+        || currentPlan?.ownerPersonId !== accountable || action.ownerPersonId !== accountable);
+      if (ownerGap) issues.push("Accountability gap: the active Person, observation plan and Action owner do not agree");
+      if (!response && !uniqueActive(record.receivingOwnerPersonId)) issues.push("Receiving Person is unavailable, missing or ambiguous");
+      const state: IcarusObservationHandoffView["state"] = issues.some((issue) => !issue.startsWith("Accountability gap"))
+        ? "Invalid" : ownerGap ? "Unowned" : response?.decision ?? (expiresAt < context.nowMs ? "Expired" : "Proposed");
+      return { record, state, issues: [...new Set(issues)].sort() };
+    });
+  }
+
+  type HandoffPerson = Person & { name: string; role: string; responsibilities: string; authority: string };
+
+export function proposeIcarusObservationHandoff(
+    context: Context, action: ActionRecord,
+    request: { id: string; receivingOwnerPersonId: string; initiatedByPersonId: string; reason: string; expiresBy: string },
+    people: readonly HandoffPerson[],
+  ): ActionRecord {
+      assertCurrentHandoffAction(context, action);
+    const link = action.icarusObservationLinks?.at(-1);
+    if (!link) throw new Error("Select an Action with a current observation responsibility.");
+    const view = buildIcarusObservationExecutionIndex(context).byTargetId.get(link.treatmentTargetId);
+    if (!view?.plan || !view.actionIds.includes(action.id) || view.actionIds.length !== 1
+      || ["Invalid", "Unowned", "Stale", "Missing", "Completed without evidence", "Awaiting verified observation"].includes(view.state)
+      || !sameIcarusObservationPlan(view.plan, link.plan)) throw new Error("Resolve observation execution linkage and ownership before proposing a handoff.");
+    const receiving = people.filter((person) => person.id === request.receivingOwnerPersonId && person.status === "Active");
+    if (receiving.length !== 1 || receiving[0].id === link.plan.ownerPersonId
+      || context.people.filter((person) => person.id === request.receivingOwnerPersonId && person.status === "Active").length !== 1
+      || getDelegationReadinessMissingFields(receiving[0]).length) throw new Error("Select a different unique active delegation-ready receiving Person.");
+    if (context.people.filter((person) => person.id === request.initiatedByPersonId && person.status === "Active").length !== 1) {
+      throw new Error("Handoff initiation requires a unique active Person.");
+    }
+    if (!request.id.trim() || !request.reason.trim()
+      || getIcarusObservationDeadline(request.expiresBy) <= context.nowMs
+      || !Number.isFinite(getIcarusObservationDeadline(request.expiresBy))) throw new Error("Handoff requires an identity, reason and future acceptance deadline.");
+    const existing = deriveIcarusObservationHandoffs(context);
+    if (existing.some(({ record }) => record.id === request.id)) throw new Error("Handoff identity already exists.");
+    if (existing.some(({ record }) => record.link.treatmentTargetId === link.treatmentTargetId
+      && !record.responses.length && getIcarusObservationDeadline(record.expiresBy) >= context.nowMs)) {
+      throw new Error("An active handoff already exists for this observation responsibility.");
+    }
+    const record: IcarusObservationHandoff = {
+      ...request, actionId: action.id, previousOwnerPersonId: link.plan.ownerPersonId,
+      link: { ...link, reviewBy: view.reviewBy ?? link.reviewBy,
+        plan: { ...link.plan, controlIds: [...link.plan.controlIds] } },
+      initiatedAt: new Date(context.nowMs).toISOString(), responses: [],
+    };
+    return { ...action, icarusObservationHandoffs: [...(action.icarusObservationHandoffs ?? []), record] };
+  }
+
+export function respondIcarusObservationHandoff(
+    context: Context, action: ActionRecord,
+    request: { handoffId: string; decision: "Accepted" | "Rejected"; respondedByPersonId: string; note: string },
+    people: readonly HandoffPerson[],
+  ): { action: ActionRecord; assessments: IcarusAssessmentRecord[] } {
+      assertCurrentHandoffAction(context, action);
+    const handoff = deriveIcarusObservationHandoffs(context).find((view) => view.record.id === request.handoffId);
+    if (!handoff || handoff.record.actionId !== action.id || handoff.record.responses.length
+      || Date.parse(handoff.record.initiatedAt) > context.nowMs
+      || getIcarusObservationDeadline(handoff.record.expiresBy) < context.nowMs) throw new Error("Handoff is missing, already answered or expired.");
+    const record = handoff.record;
+    const receiver = people.filter((person) => person.id === request.respondedByPersonId && person.status === "Active");
+    if (request.respondedByPersonId !== record.receivingOwnerPersonId || receiver.length !== 1
+      || context.people.filter((person) => person.id === request.respondedByPersonId && person.status === "Active").length !== 1
+      || !request.note.trim()) {
+      throw new Error("Only the unique active receiving Person can explicitly accept or reject, with a recorded response note.");
+    }
+    const respondedAt = new Date(context.nowMs).toISOString();
+    if (request.decision === "Rejected") return {
+      assessments: [...context.assessments],
+      action: { ...action, icarusObservationHandoffs: (action.icarusObservationHandoffs ?? []).map((entry) =>
+        entry.id === record.id ? { ...entry, responses: [{
+          decision: "Rejected", respondedAt, respondedByPersonId: request.respondedByPersonId, note: request.note,
+        }] } : entry) },
+    };
+    if (!["Proposed", "Unowned"].includes(handoff.state)
+      || action.ownerPersonId !== record.previousOwnerPersonId
+      || getDelegationReadinessMissingFields(receiver[0]).length) {
+      throw new Error("Resolve invalid handoff, owner mismatch or receiving-person readiness before acceptance.");
+    }
+    const target = context.treatment.targets.find((entry) => entry.id === record.link.treatmentTargetId);
+    const execution = buildIcarusObservationExecutionIndex(context).byTargetId.get(record.link.treatmentTargetId);
+    if (!target || !execution?.plan || execution.actionIds.length !== 1 || execution.actionIds[0] !== action.id
+      || ["Completed", "Cancelled"].includes(action.status)
+      || ["Invalid", "Stale", "Missing", "Completed without evidence", "Awaiting verified observation"].includes(execution.state)
+      || !sameIcarusObservationPlan(execution.plan, record.link.plan)) throw new Error("Observation execution changed before acceptance.");
+    const firstReviewBy = [record.link.reviewBy, execution.reviewBy ?? record.link.reviewBy, action.dueDate]
+      .sort((a, b) => getIcarusObservationDeadline(a) - getIcarusObservationDeadline(b))[0];
+    const acceptedPlan: IcarusObservationPlan = {
+      ...record.link.plan, controlIds: [...record.link.plan.controlIds], id: `handoff:${record.id}:plan`,
+      ownerPersonId: receiver[0].id, recordedAt: respondedAt, recordedByPersonId: receiver[0].id, firstReviewBy,
+      handoffId: record.id, handoffFromPlanId: record.link.plan.id,
+    };
+    if (target.observationPlans?.some((plan) => plan.id === acceptedPlan.id || plan.recordedAt === respondedAt)
+      || Date.parse(respondedAt) <= Date.parse(record.link.plan.recordedAt)) throw new Error("Accepted plan revision identity or chronology conflicts with existing history.");
+    // Only ownership and revision provenance change; scope, evidence criteria and outstanding deadlines are retained.
+    const assessments = context.assessments.map((assessment) => assessment.id !== target.assessmentId ? assessment : {
+      ...assessment, updatedAt: respondedAt,
+      treatmentTargets: (assessment.treatmentTargets ?? []).map((stored) => stored.id !== target.id ? stored : {
+        ...stored, observationPlans: [...(stored.observationPlans ?? []), acceptedPlan],
+      }),
+    });
+    if (!assessments.some((assessment) => assessment.treatmentTargets?.some((stored) =>
+      stored.observationPlans?.some((plan) => plan.id === acceptedPlan.id)))) throw new Error("Authoritative persisted treatment target is missing.");
+    const nextLink: IcarusObservationActionLink = {
+      ...record.link, plan: acceptedPlan, reviewBy: firstReviewBy, linkedAt: respondedAt, linkedByPersonId: receiver[0].id,
+    };
+    return {
+      assessments,
+      action: { ...action, owner: receiver[0].name, ownerPersonId: receiver[0].id, dueDate: firstReviewBy,
+        icarusObservationLinks: [...(action.icarusObservationLinks ?? []), nextLink],
+        icarusObservationHandoffs: (action.icarusObservationHandoffs ?? []).map((entry) => entry.id !== record.id ? entry : {
+          ...entry, responses: [{ decision: "Accepted", respondedAt, respondedByPersonId: receiver[0].id, note: request.note, acceptedPlan }],
+        }),
+      },
+    };
+  }
 
 function sameCycle(left: IcarusObservationActionLink, right: IcarusObservationActionLink): boolean {
   return left.assessmentId === right.assessmentId && left.treatmentTargetId === right.treatmentTargetId
@@ -139,6 +385,7 @@ export function buildIcarusObservationExecutionIndex(context: Context): IcarusOb
   const byTargetId = new Map<string, IcarusObservationExecutionView>();
   const actionAttention: IcarusObservationActionAttention[] = [];
   const actions = context.actions.filter((action) => action.recordType === "Action");
+  const handoffs = deriveIcarusObservationHandoffs(context);
   actions.forEach((action) => {
     assertIcarusObservationActionLinks(action.icarusObservationLinks);
     const link = action.icarusObservationLinks?.at(-1);
@@ -230,7 +477,17 @@ export function buildIcarusObservationExecutionIndex(context: Context): IcarusOb
       reasons: [`ICARUS OBSERVATION: ${state}`, ...view.issues],
     }));
   });
-  return { byTargetId, actionAttention };
+  handoffs.forEach((view) => {
+    const latest = actions.find((action) => action.recordId === view.record.actionId)?.icarusObservationHandoffs?.at(-1);
+    const unresolvedActive = !view.record.responses.length && getIcarusObservationDeadline(view.record.expiresBy) >= context.nowMs;
+    if (latest?.id !== view.record.id && !unresolvedActive || view.state === "Accepted") return;
+    actionAttention.push({
+      actionId: view.record.actionId, assessmentId: view.record.link.assessmentId, targetId: view.record.link.treatmentTargetId,
+      reasons: [`Observation handoff: ${view.state}; outgoing Person:${view.record.previousOwnerPersonId}; receiving Person:${view.record.receivingOwnerPersonId}`,
+        ...view.issues],
+    });
+  });
+  return { byTargetId, actionAttention, ...(handoffs.length ? { handoffs } : {}) };
 }
 
 export function linkIcarusObservationAction(
