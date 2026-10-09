@@ -94,6 +94,24 @@ export type BackupRestoreResult =
   | { ok: true }
   | { ok: false; error: unknown; writesStarted: boolean; rollbackFailures: string[] };
 
+export function assertBackupRecoveryReferences(storage: EmpireOsBackup["storage"]): void {
+  const referenceIssues = getRecoveryReferenceIssues({
+    conversions: storage[CONVERSION_STORAGE_KEY], leads: storage[LEAD_STORAGE_KEY],
+    people: storage[PERSON_STORAGE_KEY], projects: storage[PROJECT_STORAGE_KEY],
+    income: storage[INCOME_STORAGE_KEY], expenses: storage[EXPENSE_STORAGE_KEY],
+    commitments: storage[COMMITMENT_STORAGE_KEY], icarus: storage[ICARUS_STORAGE_KEY],
+  });
+  if (referenceIssues.length) throw new Error(`Restore would leave inconsistent record references: ${referenceIssues.join("; ")}`);
+}
+
+export function validateStandaloneBackup(value: unknown): EmpireOsBackup {
+  const backup = validateEmpireOsBackup(value);
+  const missing = EMPIRE_OS_BACKUP_STORAGE_KEYS.filter((key) => !Object.prototype.hasOwnProperty.call(backup.storage, key));
+  if (missing.length) throw new Error(`This file cannot establish complete independent recovery; missing business stores: ${missing.join(", ")}. Legacy restore remains available.`);
+  assertBackupRecoveryReferences(backup.storage);
+  return backup;
+}
+
 // beforeWrites runs after the pre-restore snapshot and before any live write; if it throws, nothing is written.
 export function runBackupRestoreTransaction(target: BackupStorage, backup: EmpireOsBackup, beforeWrites?: (safetyBackup: EmpireOsBackup) => void): BackupRestoreResult {
   const previousStorage: Record<string, string | null> = {};
@@ -103,13 +121,7 @@ export function runBackupRestoreTransaction(target: BackupStorage, backup: Empir
     const validated = validateEmpireOsBackup(backup);
     for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) previousStorage[key] = target.getItem(key);
     const effective = validateEmpireOsBackup({ ...validated, storage: { ...previousStorage, ...validated.storage } });
-    const referenceIssues = getRecoveryReferenceIssues({
-      conversions: effective.storage[CONVERSION_STORAGE_KEY], leads: effective.storage[LEAD_STORAGE_KEY],
-      people: effective.storage[PERSON_STORAGE_KEY], projects: effective.storage[PROJECT_STORAGE_KEY],
-      income: effective.storage[INCOME_STORAGE_KEY], expenses: effective.storage[EXPENSE_STORAGE_KEY],
-      commitments: effective.storage[COMMITMENT_STORAGE_KEY], icarus: effective.storage[ICARUS_STORAGE_KEY],
-    });
-    if (referenceIssues.length) throw new Error(`Restore would leave inconsistent record references: ${referenceIssues.join("; ")}`);
+    assertBackupRecoveryReferences(effective.storage);
     const safetyBackup: EmpireOsBackup = { format: BACKUP_FORMAT, version: BACKUP_VERSION,
       createdAt: new Date().toISOString(), storage: { ...previousStorage }, includedStorageKeys: [...EMPIRE_OS_BACKUP_STORAGE_KEYS] };
     beforeWrites?.({ ...safetyBackup, storage: { ...previousStorage }, includedStorageKeys: [...EMPIRE_OS_BACKUP_STORAGE_KEYS] });

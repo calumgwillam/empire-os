@@ -187,7 +187,6 @@ import {
   EMPIRE_OS_BACKUP_STORAGE_KEYS,
   EXPENSE_STORAGE_KEY,
   FOUNDER_INTELLIGENCE_STORAGE_KEY,
-  getBackupHealth,
   INCOME_STORAGE_KEY,
   isPlainObject,
   isValidChangeEvent,
@@ -204,11 +203,13 @@ import {
   STRATEGIC_REVIEWS_STORAGE_KEY,
   TAX_PAYMENT_STORAGE_KEY,
   validateEmpireOsBackup,
+  validateStandaloneBackup,
   WORKING_RELATIONSHIP_STORAGE_KEY,
   type ChangeEvent,
   type ChangeField,
   type EmpireOsBackup,
 } from "./lib/backup";
+import { IndependentBackupSection } from "./components/independent-backup-section";
 import {
   type IntegritySeverity,
 } from "./lib/integrity-core";
@@ -16750,9 +16751,9 @@ export default function Home() {
       anchor.click();
       anchor.remove();
 
-      const completedAt = new Date().toISOString();
-      window.localStorage.setItem(LAST_BACKUP_AT_STORAGE_KEY, completedAt);
-      setLastBackupAt(completedAt);
+      const requestedAt = new Date().toISOString();
+      window.localStorage.setItem(LAST_BACKUP_AT_STORAGE_KEY, requestedAt);
+      setLastBackupAt(requestedAt);
     } finally {
       if (url) URL.revokeObjectURL(url);
     }
@@ -16760,13 +16761,23 @@ export default function Home() {
 
   function handleDownloadFullBackup() {
     try {
-      downloadBackup(createFullBackup(), "empire-os-backup");
+      downloadBackup(validateStandaloneBackup(createFullBackup()), "empire-os-backup");
       setFeedback({ type: "success", message: "Full Empire OS backup download requested. Confirm that the file was saved; no cloud backup is performed." });
     } catch (error) {
       setFeedback({
         type: "error",
-        message: error instanceof Error ? `Backup could not be created: ${error.message}` : "Backup could not be created.",
+        message: error instanceof Error ? `Backup could not be created: ${error.message} Use the explicitly unverified raw recovery export to preserve damaged data for inspection.`
+          : "Backup could not be created. Raw recovery export remains available for preserving damaged data.",
       });
+    }
+  }
+
+  function handleDownloadRawRecoveryCopy() {
+    try {
+      downloadBackup(createFullBackup(), "empire-os-unverified-raw-recovery");
+      setFeedback({ type: "success", message: "Unverified raw recovery download requested. Confirm the file was saved; it may contain damaged or inconsistent data and does not establish recovery readiness or an independently verified backup." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? `Raw recovery export failed: ${error.message}` : "Raw recovery export failed." });
     }
   }
 
@@ -16970,7 +16981,6 @@ export default function Home() {
     handleSystemEditOpen,
     handleSopEditOpen,
   );
-  const backupHealth = getBackupHealth(lastBackupAt);
   const hasValidLastBackupAt = Boolean(lastBackupAt) && !Number.isNaN(new Date(lastBackupAt).getTime());
   const integrityNeedsFounderAttention = Boolean(
     integrityAudit
@@ -17155,9 +17165,20 @@ export default function Home() {
             </button>
 
             <div className="mt-2 px-1 text-[10px] leading-4 text-[#6b655f]">
-              <div>{hasValidLastBackupAt ? `Last full backup: ${new Date(lastBackupAt).toLocaleString()}` : "No backup recorded"}</div>
-              <div className={`font-medium ${backupHealth.tone}`}>Backup health: {backupHealth.label}</div>
+              <div>{hasValidLastBackupAt ? `Last download request (not file verification): ${new Date(lastBackupAt).toLocaleString()}` : "No download request recorded"}</div>
             </div>
+            <IndependentBackupSection disabled={isRestoringBackup || restoreInProgressRef.current}
+              revision={[captures, conversions, people, projects, leads, incomeRecords, expenseRecords, commitmentRecords,
+                taxPaymentRecords, outreachContacts, delegationHandoffs, cashPosition, dailyPostureSnapshots, changeHistory,
+                strategicObjectives, strategicReviews, workingRelationships, founderIntelligence, icarusAssessments]} />
+            <details className="mt-2 px-1 text-[10px] leading-4 text-[#6b655f]">
+              <summary>Preserve damaged data for recovery</summary>
+              <p className="mt-2">Raw export preserves stored strings without claiming they are complete or recovery-ready. It never marks an external backup as verified.</p>
+              <button type="button" disabled={isRestoringBackup || restoreInProgressRef.current}
+                className="mt-2 rounded border border-[#cfc8c1] px-3 py-2 disabled:opacity-45" onClick={handleDownloadRawRecoveryCopy}>
+                Download unverified raw recovery copy
+              </button>
+            </details>
           </div>
         </aside>
 
