@@ -224,6 +224,10 @@ import IncomeCommercialEvidenceSection from "./components/income-commercial-evid
 import JobPerformanceSection from "./components/job-performance-section";
 import ExpenseJobEvidenceSection from "./components/expense-job-evidence-section";
 import JobPerformanceReport from "./components/job-performance-report";
+import { LeadCommercialLearningSection, CommercialLessonSection,
+  type CommercialDiagnosisRequest, type CommercialLessonCommand } from "./components/commercial-learning-section";
+import { assertCommercialLearning, assertCommercialLessonRecord, approveCommercialProposal, assignCommercialResponsibility, buildCommercialLearning, commercialLearningValidity, createCommercialImplementation,
+  createCommercialLesson, evaluateCommercialChange, prepareCommercialDecision, type CommercialLearningInput, type CommercialLearningView } from "./lib/commercial-learning";
 import { assertExpenseJobEvidence, assertLeadJobFinancialEvidence, buildJobPerformance,
   recordJobFinancialReview, validateJobExpenseSave, type JobFinancialReview, type JobPerformanceView } from "./lib/job-performance";
 import {
@@ -2730,7 +2734,7 @@ function ProjectHealthReviewPanel({ project, people, onClose, onSubmit }: {
   );
 }
 
-function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveToggle, followThrough, actions, followThroughWritable, onRouteFollowThrough, onOpenAction, delivery, onRecordDelivery, onOpenIncome, onPrepareIncome, jobPerformance, onReviewJob, onOpenExpense, onPrepareExpense }: {
+function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveToggle, followThrough, actions, followThroughWritable, onRouteFollowThrough, onOpenAction, delivery, onRecordDelivery, onOpenIncome, onPrepareIncome, jobPerformance, onReviewJob, onOpenExpense, onPrepareExpense, commercialViews, onDiagnose, onOpenLesson }: {
   lead: LeadRecord;
   people: PersonRecord[];
   onClose: () => void;
@@ -2750,6 +2754,9 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
   onReviewJob: (request: Omit<JobFinancialReview, "reviewedAt" | "financialSnapshot">) => void;
   onOpenExpense: (id: string) => void;
   onPrepareExpense: (leadId: string) => void;
+  commercialViews: readonly CommercialLearningView[];
+  onDiagnose: (request: CommercialDiagnosisRequest) => void;
+  onOpenLesson: (id: string) => void;
 }) {
   const hasInvalidLeadName = !lead.leadName.trim();
   const [hasSaved, setHasSaved] = useState(false);
@@ -2784,6 +2791,8 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
         <JobPerformanceSection key={`job:${lead.id}`} lead={lead} view={jobPerformance} people={people}
           writable={followThroughWritable} onReview={onReviewJob} onOpenIncome={onOpenIncome}
           onOpenExpense={onOpenExpense} onPrepareExpense={onPrepareExpense} />
+        <LeadCommercialLearningSection key={`commercial:${lead.id}`} lead={lead} job={jobPerformance} views={commercialViews}
+          people={people} onDiagnose={onDiagnose} onOpenLesson={onOpenLesson} />
         {hasSaved ? (
           <div aria-live="polite" className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">
             Lead details saved.
@@ -7603,9 +7612,14 @@ type LessonDetailPanelProps = {
   onSave: () => void;
   onCreateLinkedSystem: () => void;
   onOpenLinkedSystem: (system: SystemRecord) => void;
+  commercialInput: CommercialLearningInput;
+  commercialView?: CommercialLearningView;
+  onCommercialCommand: (command: CommercialLessonCommand) => void;
+  onOpenCommercialRecord: (type: string, id: string) => void;
 };
 
-function LessonDetailPanel({ lesson, linkedSystems, upstream, downstream, onClose, onChange, onSave, onCreateLinkedSystem, onOpenLinkedSystem }: LessonDetailPanelProps) {
+function LessonDetailPanel({ lesson, linkedSystems, upstream, downstream, onClose, onChange, onSave, onCreateLinkedSystem, onOpenLinkedSystem,
+  commercialInput, commercialView, onCommercialCommand, onOpenCommercialRecord }: LessonDetailPanelProps) {
   const existingLinkedSystem = linkedSystems[0];
   const hasLinkedSystem = linkedSystems.length > 0;
 
@@ -7791,6 +7805,8 @@ function LessonDetailPanel({ lesson, linkedSystems, upstream, downstream, onClos
           </div>
         </div>
 
+        <CommercialLessonSection key={`commercial:${lesson.id}`} lesson={lesson} view={commercialView} input={commercialInput}
+          onCommand={onCommercialCommand} onOpen={onOpenCommercialRecord} />
         <div className="mt-5 flex justify-end gap-2">
           <button
             type="button"
@@ -9098,6 +9114,7 @@ export default function Home() {
           };
           parsedConversions.forEach((record: unknown) => {
             if (!isPlainObject(record) || typeof record.targetType !== "string") return;
+            assertCommercialLessonRecord(record);
             const recordType = conversionRecordTypes[record.targetType];
             if (!recordType) return;
             addOperationalRecord(recordType, record.id);
@@ -10012,6 +10029,8 @@ export default function Home() {
   const leadDelivery = buildLeadDelivery({ leads, actions: actionRecords, people, income: incomeRecords, nowMs: commercialNowMs });
   const jobPerformanceInput = { leads, actions: actionRecords, people, income: incomeRecords, expenses: expenseRecords, nowMs: commercialNowMs };
   const jobPerformance = buildJobPerformance(jobPerformanceInput);
+  const commercialLearningInput: CommercialLearningInput = { ...jobPerformanceInput, lessons: lessonRecords, decisions: decisionRecords };
+  const commercialLearningViews = buildCommercialLearning(commercialLearningInput);
   const incomeEvidenceViews = incomeRecords.map((record) => getDeliveryIncomeEvidence(record, {
     leads, actions: actionRecords, people, income: incomeRecords, nowMs: commercialNowMs,
   }));
@@ -10380,7 +10399,9 @@ export default function Home() {
       byArea.set(area, entry);
     });
     const decisionsWithMeaningfulLessons = reviewedDecisions.filter((decision) =>
-      lessonRecords.some((lesson) => lesson.relatedDecision === decision.id && ["Reviewed", "Implemented"].includes(lesson.status)),
+      lessonRecords.some((lesson) => lesson.relatedDecision === decision.id && (lesson.commercialLearning
+        ? commercialLearningViews.some((view) => view.lessonId === lesson.id && view.evaluationCurrent && view.outcome === "Improved")
+        : ["Reviewed", "Implemented"].includes(lesson.status))),
     ).length;
     const actualOutcomeRecorded = reviewedDecisions.filter((decision) => decision.actualOutcome.trim() !== "").length;
     return {
@@ -10411,7 +10432,7 @@ export default function Home() {
       isUnresolved: isProblemUnresolved(problem),
     })),
     lessons: lessonRecords.map(({ id, relatedProblem, relatedSystem, status }) => ({ id, relatedProblem, relatedSystem, status })),
-    learningValidity: icarusLearningIndex.maturityByLessonId,
+    learningValidity: commercialLearningValidity(icarusLearningIndex.maturityByLessonId, commercialLearningViews, lessonRecords, systemRecords),
     systems: systemRecords.map(({ id, relatedLesson, status }) => ({ id, relatedLesson, status })),
     sops: sopRecords.map(({ relatedLesson, relatedSystem, status }) => ({ relatedLesson, relatedSystem, status })),
   });
@@ -11315,6 +11336,7 @@ export default function Home() {
   const unlinkedStrategicProjects = projects.filter((project) => isProjectActive(project) && !strategicObjectives.some((objective) => objective.linkedProjectIds.includes(project.id)));
 
   const commandLearningInput = buildOrganisationalLearning({
+    commercialLearning: commercialLearningViews,
     actions: actionRecords,
     projects,
     decisions: decisionRecords.map((decision) => ({
@@ -11340,6 +11362,7 @@ export default function Home() {
     commercialPeople: people,
     delivery: { leads, actions: actionRecords, people, income: incomeRecords },
     jobPerformance: { leads, actions: actionRecords, people, income: incomeRecords, expenses: expenseRecords },
+    commercialLearning: commercialLearningInput,
     outreach: outreachContacts,
     projects,
     decisions: decisionRecords,
@@ -14744,6 +14767,7 @@ export default function Home() {
 
     const updatedLesson = normalizeLessonRecord({
       ...lessonEditor,
+      ...(lessonEditor.commercialLearning ? { lessonDescription: lessonEditor.description } : {}),
       status: lessonEditor.status,
       owner: lessonEditor.owner,
       relatedProblem: lessonEditor.relatedProblem,
@@ -14753,6 +14777,23 @@ export default function Home() {
       lessonStatus: lessonEditor.status,
     });
 
+    if (lessonEditor.commercialLearning) {
+      try {
+        if (!conversionsWritableRef.current || conversions.filter((entry) => entry.id === selectedLessonId).length !== 1) throw new Error("Lesson storage or identity is not safe to update.");
+        const current = conversions.find((entry) => entry.id === selectedLessonId)!;
+        const nextLesson = applyLessonEditorChanges(current, updatedLesson);
+        assertCommercialLearning(nextLesson.commercialLearning);
+        const next = conversions.map((entry) => entry.id === selectedLessonId ? nextLesson : entry);
+        persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+        setConversions(next);
+        setSelectedLessonId(null);
+        setLessonEditor(null);
+        setFeedback({ type: "success", message: "Commercial Lesson saved. Changes to the proposal or Decision require fresh approval and outcome evaluation; evidence history is retained." });
+      } catch (error) {
+        setFeedback({ type: "error", message: error instanceof Error ? error.message : "Commercial Lesson could not be saved." });
+      }
+      return;
+    }
     setConversions((currentConversions) =>
       currentConversions.map((conversion) =>
         conversion.id === selectedLessonId ? applyLessonEditorChanges(conversion, updatedLesson) : conversion,
@@ -16197,6 +16238,84 @@ export default function Home() {
     }
   };
 
+  const requireCommercialStores = () => {
+    if (!operatingDataLoaded || !conversionsWritableRef.current || !leadsWritableRef.current || !incomeWritableRef.current
+      || !expensesWritableRef.current) throw new Error("Commercial evidence stores are not safely loaded/writable; no changes were recorded.");
+  };
+  const handleDiagnoseCommercialJob = (request: CommercialDiagnosisRequest) => {
+    try {
+      requireCommercialStores();
+      const lead = leads.find((entry) => entry.id === leadEditor?.id);
+      if (!leadEditor || !lead || JSON.stringify(leadEditor) !== JSON.stringify(lead)) throw new Error("Save or reload the Lead before commercial diagnosis; unsaved changes must not be lost.");
+      const id = generateConversionId();
+      if (conversions.some((entry) => entry.id === id)) throw new Error("Lesson identity already exists.");
+      const lesson = createCommercialLesson({ ...commercialLearningInput, nowMs: Date.now() }, id, lead.id, request);
+      const next = [lesson, ...conversions];
+      persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+      setConversions(next);
+      setSelectedLeadId(null);
+      setLeadEditor(null);
+      setSelectedLessonId(lesson.id);
+      setLessonEditor(lesson);
+      setFeedback({ type: "success", message: "Evidence-linked commercial Lesson recorded with named responsibility. The change is a proposal, not approved pricing." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Commercial diagnosis could not be recorded." });
+    }
+  };
+  const handleCommercialLessonCommand = (command: CommercialLessonCommand) => {
+    try {
+      requireCommercialStores();
+      const current = lessonRecords.find((entry) => entry.id === lessonEditor?.id);
+      if (!lessonEditor || !current || JSON.stringify(lessonEditor) !== JSON.stringify(current)
+        || conversions.filter((entry) => entry.id === current.id).length !== 1) throw new Error("Save or reload the Lesson first; unsaved changes or ambiguous identity must not be overwritten.");
+      const input = { ...commercialLearningInput, nowMs: Date.now() };
+      let nextLesson = current;
+      let newRecord: CaptureConversionRecord | undefined;
+      if (command.kind === "Implement" || command.kind === "PrepareDecision") {
+        const id = generateConversionId();
+        if (conversions.some((entry) => entry.id === id)) throw new Error("Corrective record identity already exists.");
+        if (command.kind === "Implement") newRecord = createCommercialImplementation(input, current.id, id, command.ownerPersonId, command.dueDate);
+        else {
+          const prepared = prepareCommercialDecision(input, current.id, id);
+          nextLesson = prepared.lesson;
+          newRecord = prepared.decision;
+        }
+      } else nextLesson = command.kind === "Approve" ? approveCommercialProposal(input, current.id, command.request)
+        : command.kind === "AssignOwner" ? assignCommercialResponsibility(input, current.id, command.personId)
+          : evaluateCommercialChange(input, current.id, command.request);
+      const next = conversions.map((entry) => entry.id === current.id ? nextLesson : entry);
+      if (newRecord) next.unshift(newRecord);
+      persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+      setConversions(next);
+      setLessonEditor(nextLesson);
+      setFeedback({ type: "success", message: command.kind === "AssignOwner" ? "Corrective Lesson responsibility explicitly assigned. Historical diagnosis and approval attribution remain unchanged."
+        : command.kind === "PrepareDecision" ? "Draft Decision linked. Open it to record reasoning, alternatives and human judgment; no policy is approved."
+        : command.kind === "Implement" ? "Owned implementation Action created. Completion alone will not establish adoption or effectiveness."
+          : command.kind === "Approve" ? "Explicit approval evidence retained against this exact proposal and Decision. Quote prices remain unchanged."
+            : "Comparable-job outcome review retained. Observed improvement is not demonstrated causation." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Commercial learning step could not be saved." });
+    }
+  };
+  const handleOpenCommercialRecord = (type: string, id: string) => {
+    const records = type === "Lead" ? leads : type === "Lesson" ? lessonRecords : type === "Action" ? actionRecords
+      : type === "Decision" ? decisionRecords : [];
+    if (records.filter((record) => record.id === id).length !== 1) {
+      setFeedback({ type: "error", message: "Commercial source/corrective record is missing or ambiguous; reconcile its reference." });
+      return;
+    }
+    if ((leadEditor && JSON.stringify(leadEditor) !== JSON.stringify(leads.find((record) => record.id === leadEditor.id)))
+      || (lessonEditor && JSON.stringify(lessonEditor) !== JSON.stringify(lessonRecords.find((record) => record.id === lessonEditor.id)))) {
+      setFeedback({ type: "error", message: "Save or close unsaved Lead/Lesson edits before opening a linked commercial record." });
+      return;
+    }
+    setSelectedLeadId(null);
+    setLeadEditor(null);
+    setSelectedLessonId(null);
+    setLessonEditor(null);
+    handleOpenAttentionRecord(type, id);
+  };
+
   const handleCommitmentEditOpen = (commitment: CommitmentRecord) => {
     setSelectedCommitmentId(commitment.id);
     setCommitmentEditor(commitment);
@@ -16677,6 +16796,7 @@ export default function Home() {
             throw new Error(`Expected an array for: ${key}`);
           }
           if (key === EXPENSE_STORAGE_KEY) decoded.forEach(assertExpenseJobEvidence);
+          if (key === CONVERSION_STORAGE_KEY) decoded.forEach(assertCommercialLessonRecord);
           if (key === INCOME_STORAGE_KEY) decoded.forEach(assertIncomeCommercialEvidence);
           if (key === LEAD_STORAGE_KEY) decoded.forEach((record: unknown) => {
             if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error("Emergency snapshot contains a malformed Lead.");
@@ -20670,6 +20790,10 @@ export default function Home() {
           onSave={handleLessonSave}
           onCreateLinkedSystem={() => handleCreateLinkedSystem(lessonEditor)}
           onOpenLinkedSystem={(system) => handleSystemEditOpen(system)}
+          commercialInput={commercialLearningInput}
+          commercialView={commercialLearningViews.find((view) => view.lessonId === lessonEditor.id)}
+          onCommercialCommand={handleCommercialLessonCommand}
+          onOpenCommercialRecord={handleOpenCommercialRecord}
         />
       ) : null}
 
@@ -20817,6 +20941,9 @@ export default function Home() {
           onReviewJob={handleReviewJobFinancials}
           onOpenExpense={(id) => handleOpenAttentionRecord("Finance", `expense:${id}`)}
           onPrepareExpense={handlePrepareJobExpense}
+          commercialViews={commercialLearningViews}
+          onDiagnose={handleDiagnoseCommercialJob}
+          onOpenLesson={(id) => handleOpenCommercialRecord("Lesson", id)}
         />
       ) : null}
 

@@ -33,6 +33,7 @@ export type CaptureConversionRecord = {
   rootCauseStatus?: string;
   rootCause?: string;
   owner?: string;
+  ownerPersonId?: string;
   resolution?: string;
   problemStatus?: string;
   actionTitle?: string;
@@ -50,6 +51,7 @@ export type CaptureConversionRecord = {
   // Exact Lesson ID intentionally designated for this Action to implement its required change.
   // Optional: one Lesson may have many Actions; each Action implements at most one Lesson.
   implementsLessonId?: string;
+  commercialImplementation?: { recordedAt: string; proposalSnapshot: string };
   relatedOpportunity?: string;
   relatedCapture?: string;
   relatedPillar?: string;
@@ -101,6 +103,7 @@ export type CaptureConversionRecord = {
   relatedSystem?: string;
   lessonStatus?: string;
   icarusLearning?: IcarusLessonLearning;
+  commercialLearning?: import("./commercial-learning").CommercialLearning;
   systemName?: string;
   purpose?: string;
   area?: string;
@@ -489,7 +492,7 @@ export function normalizeLessonRecord(record: CaptureConversionRecord): LessonRe
 }
 
 export function applyLessonEditorChanges(current: CaptureConversionRecord, edited: LessonRecord): LessonRecord {
-  return { ...edited, icarusLearning: current.icarusLearning };
+  return { ...edited, icarusLearning: current.icarusLearning, commercialLearning: current.commercialLearning };
 }
 
 export function normalizeSystemRecord(record: CaptureConversionRecord): SystemRecord {

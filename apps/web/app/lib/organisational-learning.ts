@@ -1,4 +1,5 @@
 import type { ActionRecord, DecisionRecord, LessonRecord } from "./capture-conversions";
+import { commercialLearningValidity, type CommercialLearningView } from "./commercial-learning";
 import { getIcarusTreatmentOutcomeEvidenceKey, type IcarusTreatmentOutcomeRecord } from "./icarus";
 import type { ProjectRecord } from "./projects";
 import type { IcarusStrategicLifecycleIndex } from "./icarus-strategic-lifecycle";
@@ -85,6 +86,7 @@ export type LearningLessonInput = Pick<LessonRecord,
   | "relatedProblem" | "relatedProject" | "relatedDecision" | "relatedSystem">;
 
 export type OrganisationalLearningInput = {
+  commercialLearning?: readonly CommercialLearningView[];
   icarusLifecycle?: IcarusStrategicLifecycleIndex;
   icarusLearning?: IcarusLearningIndex;
   actions: readonly LearningActionInput[];
@@ -138,9 +140,15 @@ function decisionOutcome(decision: LearningDecisionInput): LearningOutcomeState 
 
 // Reviews and completion evidence do not, on their own, establish outcome quality.
 export function buildOrganisationalLearning(input: OrganisationalLearningInput): LearningSignal[] {
-  const recurrence = buildRecurringProblemLearning({ ...input, learningValidity: input.icarusLearning?.maturityByLessonId });
-  const meaningful = (lesson: LearningLessonInput) => input.icarusLearning?.maturityByLessonId.has(lesson.id)
-    ? input.icarusLearning.maturityByLessonId.get(lesson.id)!.validated : meaningfulLesson(lesson);
+  const recurrence = buildRecurringProblemLearning({ ...input, learningValidity: commercialLearningValidity(
+    input.icarusLearning?.maturityByLessonId, input.commercialLearning ?? [], input.lessons, input.systems) });
+  const meaningful = (lesson: LearningLessonInput) => {
+    const commercial = input.commercialLearning?.find((view) => view.lessonId === lesson.id);
+    const icarus = input.icarusLearning?.maturityByLessonId.get(lesson.id);
+    if (commercial) return !commercial.archived && commercial.diagnosisCurrent && commercial.evaluationCurrent
+      && commercial.outcome === "Improved" && (icarus?.validated ?? true);
+    return icarus ? icarus.validated : meaningfulLesson(lesson);
+  };
   const signals: LearningSignal[] = [];
 
   function signal(
@@ -213,6 +221,23 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
     ], [lesson]);
     const learning = input.icarusLearning?.byLessonId.get(lesson.id);
     if (learning?.reviews.length) item.icarusLearning = learning;
+    const commercial = input.commercialLearning?.find((view) => view.lessonId === lesson.id);
+    if (commercial) {
+      item.executionState = commercial.implementationComplete ? "Completed execution" : commercial.actionIds.length ? "Active execution" : "No execution path";
+      item.outcomeState = commercial.evaluationCurrent
+        ? commercial.outcome === "Improved" ? "Worked" : commercial.outcome === "Mixed" ? "Partially worked"
+          : commercial.outcome === "Not improved" ? "Failed" : "Unknown" : "Missing evidence";
+      item.recommendedNextTransition = commercial.reasons.length ? "Review existing Lesson" : "Consider System/SOP change";
+      item.evidence.push(
+        { sourceType: "Lesson", sourceId: lesson.id, field: "evidenceReference", value: `Commercial baseline job: ${commercial.leadId}` },
+        { sourceType: "Lesson", sourceId: lesson.id, field: "outcomeRating", value: commercial.outcome },
+        { sourceType: "Lesson", sourceId: lesson.id, field: "humanExplanation",
+          value: "Commercial outcome is an attributed human review of observed comparable-job economics, not demonstrated causation or automatic pricing approval." },
+      );
+      if (commercial.subsequent) item.evidence.push({
+        sourceType: "Lesson", sourceId: lesson.id, field: "evidenceReference", value: `Comparative job: ${commercial.subsequent.leadId}; evaluation ${commercial.evaluationCurrent ? "current" : "historical / unsupported"}`,
+      });
+    }
     signals.push(item);
   });
 

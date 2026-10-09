@@ -57,6 +57,7 @@ import type { ReviewOutcome } from "./capture-conversions";
 import type { IncomeRecord } from "./finance";
 import type { ExpenseRecord } from "./finance";
 import { buildJobPerformance, getJobExpenseErrors } from "./job-performance";
+import { buildCommercialLearning } from "./commercial-learning";
 import { buildLeadDelivery, getDeliveryIncomeEvidence, hasSupportedFinanceActionCompletion, type LeadDeliveryInput } from "./lead-delivery";
 
 export type IntegrityIssue = {
@@ -421,6 +422,36 @@ export function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditRes
       recordTitle: job.title, recordId: job.leadId, reason: "Job financial coverage review is stale or improperly attributed.",
       nextStep: "Review current financial records and completion evidence before relying on contribution or profit.",
       openObjectType: "Lead", openId: job.leadId,
+    });
+  }
+  for (const action of input.actions.filter((record) => record.commercialImplementation)) {
+    checkReference({ value: action.implementsLessonId, validIds: lessonIds, recordType: "Action",
+      recordTitle: action.actionTitle || action.title, recordId: action.id, fieldLabel: "Commercial implementation Lesson", openObjectType: "Action" });
+    if (!input.lessons.some((lesson) => lesson.id === action.implementsLessonId && lesson.commercialLearning)) addIssue({
+      severity: "Material", category: "Commercial learning evidence", recordType: "Action", recordTitle: action.actionTitle || action.title,
+      recordId: action.id, reason: "Commercial implementation Action has no evidence-linked commercial Lesson.",
+      nextStep: "Reconcile the authoritative Lesson link without inventing a diagnosis or replacing historical evidence.",
+      openObjectType: "Action", openId: action.id,
+    });
+  }
+  for (const view of buildCommercialLearning({ ...jobInput, actions: input.actions, lessons: input.lessons, decisions: input.decisions })) {
+    const lesson = input.lessons.find((entry) => entry.id === view.lessonId);
+    const learning = lesson?.commercialLearning;
+    if (!learning) continue;
+    checkReference({ value: view.leadId, validIds: leadIds, recordType: "Lesson", recordTitle: view.title,
+      recordId: view.lessonId, fieldLabel: "Commercial source job", openObjectType: "Lesson" });
+    learning.evaluations.forEach((evaluation) => checkReference({ value: evaluation.leadId, validIds: leadIds,
+      recordType: "Lesson", recordTitle: view.title, recordId: view.lessonId,
+      fieldLabel: "Commercial comparative job", openObjectType: "Lesson" }));
+    checkPersonId("Lesson", view.title, view.lessonId, "Commercial diagnosis Person", learning.diagnosis.recordedByPersonId);
+    learning.approvals.forEach((approval) => checkPersonId("Lesson", view.title, view.lessonId, "Commercial approval Person", approval.personId));
+    learning.evaluations.forEach((evaluation) => checkPersonId("Lesson", view.title, view.lessonId, "Commercial outcome reviewer", evaluation.personId));
+    if (!view.diagnosisCurrent || (learning.approvals.length > 0 && !view.approvalCurrent)
+      || (learning.evaluations.length > 0 && !view.evaluationCurrent)) addIssue({
+      severity: "Material", category: "Commercial learning evidence", recordType: "Lesson",
+      recordTitle: view.title, recordId: view.lessonId, reason: "Commercial diagnosis, approval or comparative outcome evidence is stale or unsupported.",
+      nextStep: "Reconcile current job/Decision/Action evidence. Retain historical findings; do not treat a proposal or completed Action as a successful approved policy.",
+      openObjectType: "Lesson", openId: view.lessonId,
     });
   }
   for (const contact of input.outreach) {

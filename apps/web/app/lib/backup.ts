@@ -3,6 +3,7 @@ import { assertIcarusObservationActionLinks, assertIcarusObservationHandoffs } f
 import { assertActionFinanceLink, assertActionLeadLink } from "./capture-conversions";
 import { assertIncomeCommercialEvidence, assertLeadDeliveryCommitment } from "./lead-delivery";
 import { assertExpenseJobEvidence, assertLeadJobFinancialEvidence } from "./job-performance";
+import { assertCommercialLessonRecord } from "./commercial-learning";
 
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
@@ -252,6 +253,7 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
     const conversions: unknown = JSON.parse(storedConversions);
     if (Array.isArray(conversions)) {
       conversions.forEach((record: unknown) => {
+        assertCommercialLessonRecord(record);
         if (!isPlainObject(record) || record.targetType !== "Convert to Action") return;
         assertIcarusObservationActionLinks(record.icarusObservationLinks);
         assertActionLeadLink(record.relatedLeadId);

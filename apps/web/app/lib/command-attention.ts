@@ -3,6 +3,7 @@ import type { IcarusObservationExecutionIndex } from "./icarus-observation-actio
 import { buildLeadFollowThrough, type LeadFollowThroughInput } from "./lead-follow-through";
 import { buildLeadDelivery, getDeliveryIncomeEvidence, hasSupportedFinanceActionCompletion, type LeadDeliveryInput } from "./lead-delivery";
 import { buildJobPerformance, getJobExpenseErrors, type JobPerformanceInput } from "./job-performance";
+import { buildCommercialLearning, type CommercialLearningInput } from "./commercial-learning";
 import type {
   ActionRecord,
   DecisionRecord,
@@ -111,6 +112,7 @@ export type CommandAttentionInput = {
   commercialPeople?: LeadFollowThroughInput["people"];
   delivery?: Omit<LeadDeliveryInput, "nowMs">;
   jobPerformance?: Omit<JobPerformanceInput, "nowMs">;
+  commercialLearning?: Omit<CommercialLearningInput, "nowMs">;
   outreach: readonly Pick<OutreachRecord, "id" | "businessName" | "status" | "nextFollowUpDate">[];
   projects: readonly Pick<ProjectRecord, "id" | "projectName" | "area" | "status" | "health" | "nextReviewDate" | "reviewNote" | "targetCompletionDate" | "startDate">[];
   decisions: readonly Pick<DecisionRecord, "id" | "decisionTitle" | "title" | "decisionStatus" | "reviewDate" | "createdAt" | "relatedArea" | "relatedPillar">[];
@@ -557,6 +559,21 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
     });
   }
 
+  if (input.commercialLearning) {
+    const context = { ...input.commercialLearning, nowMs: now };
+    buildCommercialLearning(context).filter((view) => view.reasons.length).forEach((view) => {
+      const lesson = context.lessons.find((entry) => entry.id === view.lessonId);
+      if (lesson?.status === "Archived") return;
+      const rank = view.baseline?.knownCostsExceedEarned || (view.evaluationCurrent && view.outcome === "Not improved") ? 2 : 4;
+      const existing = uniqueByKey.get(`Lesson:${view.lessonId}`);
+      addAttentionItem("COMMERCIAL LEARNING", {
+        id: view.lessonId, objectType: "Lesson", title: view.title, area: view.area, reasons: view.reasons,
+        reason: view.reasons.join(" • "), statusText: "Commercial corrective review", attentionRank: rank,
+        tieWeight: 0, priorityScore: 100, sortDate: 0, sortDateAscending: false, navigationMode: "record-handler",
+      });
+      if (existing) existing.attentionRank = Math.min(existing.attentionRank, rank);
+    });
+  }
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);
   const startOfEightDaysFromNow = new Date(startOfToday);

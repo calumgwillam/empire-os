@@ -54,16 +54,15 @@ export type LearningChangeTraceability = {
 /**
  * Reports only recorded requirements and explicit operating-record ID links.
  *
- * Structural gap: Action.relatedLesson is inherited from CaptureConversionRecord,
- * but Action normalization, creation/save handlers and relationship policies do not
- * establish it as a Lesson implementation link. Actions therefore cannot establish
- * implementation, accountability or completion for a Lesson here.
+ * Action.relatedLesson is not an authoritative implementation link. This legacy
+ * projection lacks the clock, People readiness and bound proposal evidence needed
+ * to validate Action.implementsLessonId. Commercial Lessons use commercial-learning
+ * and feed their validated results into organisational-learning instead.
  *
  * Lesson statuses have no explicit no-change assessment. SOP completionEvidence
  * records completion, not adoption; no existing field assesses learning-change
  * adoption or effectiveness. These stages remain unknown, even for active documents
- * or Implemented Lessons. Future implementation tracing needs an explicitly defined,
- * maintained Lesson-to-Action implementation relationship; no legacy links are inferred.
+ * or Implemented Lessons. No legacy implementation, adoption or effectiveness is inferred.
  */
 export function buildLearningChangeTraceability(
   input: LearningChangeTraceabilityInput,
