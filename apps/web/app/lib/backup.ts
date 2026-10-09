@@ -1,6 +1,6 @@
 import { assertIcarusDataStructure, ICARUS_STORAGE_KEY, normaliseIcarusAssessmentData } from "./icarus";
 import { assertIcarusObservationActionLinks, assertIcarusObservationHandoffs } from "./icarus-observation-action";
-import { assertActionLeadLink } from "./capture-conversions";
+import { assertActionFinanceLink, assertActionLeadLink } from "./capture-conversions";
 import { assertIncomeCommercialEvidence, assertLeadDeliveryCommitment } from "./lead-delivery";
 
 export const STORAGE_KEY = "empire-os-captures";
@@ -255,6 +255,7 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
         assertIcarusObservationActionLinks(record.icarusObservationLinks);
         assertActionLeadLink(record.relatedLeadId);
         assertActionLeadLink(record.deliveryLeadId, "deliveryLeadId");
+        assertActionFinanceLink(record.financeIncomeId, record.financeIncomeRole);
         assertIcarusObservationHandoffs(record.icarusObservationHandoffs);
         if (Object.prototype.hasOwnProperty.call(record, "responsibilityOutcomeEvidence")) {
           assertActionResponsibilityOutcomeEvidenceStructure(record.responsibilityOutcomeEvidence);

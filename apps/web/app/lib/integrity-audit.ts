@@ -55,7 +55,7 @@ import {
 } from "./strategic-reviews";
 import type { ReviewOutcome } from "./capture-conversions";
 import type { IncomeRecord } from "./finance";
-import { buildLeadDelivery } from "./lead-delivery";
+import { buildLeadDelivery, getDeliveryIncomeEvidence, hasSupportedFinanceActionCompletion, type LeadDeliveryInput } from "./lead-delivery";
 
 export type IntegrityIssue = {
   id: string;
@@ -340,11 +340,12 @@ export function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditRes
   for (const problem of input.problems) checkNamedOwner("Problem", problem.problemStatement || problem.title, problem.id, problem.owner, !["Resolved", "Closed"].includes(problem.problemStatus), "Problem");
   for (const opportunity of input.opportunities) checkNamedOwner("Opportunity", opportunity.opportunityTitle || opportunity.title, opportunity.id, opportunity.owner, !["Rejected", "Completed"].includes(opportunity.status), "Opportunity");
   for (const lead of input.leads) checkNamedOwner("Lead", lead.leadName, lead.id, lead.owner, !lead.archived && !["Won", "Lost"].includes(lead.status), "Lead");
-  const deliveryViews = buildLeadDelivery({
+  const deliveryInput: LeadDeliveryInput = {
     leads: input.leads, actions: input.actions, income: input.income ?? [], nowMs: Date.parse(auditedAt),
     people: input.people.map((person) => ({ ...person, role: person.role ?? "",
       responsibilities: person.responsibilities ?? "", authority: person.authority ?? "" })),
-  });
+  };
+  const deliveryViews = buildLeadDelivery(deliveryInput);
   for (const view of deliveryViews) {
     const lead = input.leads.find((record) => record.id === view.leadId);
     if (!lead) continue;
@@ -368,9 +369,32 @@ export function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditRes
       nextStep: "Reconcile both sides of the customer delivery relationship.", openObjectType: "Action", openId: action.id,
     });
   }
+  for (const action of input.actions.filter((record) => record.financeIncomeId || record.financeIncomeRole)) {
+    const records = (input.income ?? []).filter((record) => record.id === action.financeIncomeId);
+    const reference = action.financeIncomeRole === "Billing" ? records[0]?.billingActionId
+      : action.financeIncomeRole === "Collection" ? records[0]?.collectionActionId : undefined;
+    const completedHistory = hasSupportedFinanceActionCompletion(action, deliveryInput);
+    if (records.length !== 1 || (reference !== action.id && !completedHistory)) addIssue({
+      severity: "Material", category: "Customer finance", recordType: "Action", recordTitle: action.actionTitle,
+      recordId: action.id, reason: "Finance Action has no unique matching Income responsibility.",
+      nextStep: "Reconcile both sides of the billing or collection Action relationship.", openObjectType: "Action", openId: action.id,
+    });
+  }
   for (const record of input.income ?? []) {
     checkReference({ value: record.relatedLeadId, validIds: leadIds, recordType: "Income", recordTitle: record.description,
       recordId: record.id, fieldLabel: "Delivery Lead", openObjectType: "Finance", openId: `income:${record.id}` });
+    checkPersonId("Income", record.description, record.id, "Billing owner", record.billingOwnerPersonId, "Finance", `income:${record.id}`);
+    checkPersonId("Income", record.description, record.id, "Collection owner", record.collectionOwnerPersonId, "Finance", `income:${record.id}`);
+    checkReference({ value: record.billingActionId, validIds: actionIds, recordType: "Income", recordTitle: record.description,
+      recordId: record.id, fieldLabel: "Billing Action", openObjectType: "Finance", openId: `income:${record.id}` });
+    checkReference({ value: record.collectionActionId, validIds: actionIds, recordType: "Income", recordTitle: record.description,
+      recordId: record.id, fieldLabel: "Collection Action", openObjectType: "Finance", openId: `income:${record.id}` });
+    const finance = getDeliveryIncomeEvidence(record, deliveryInput);
+    const financeStructural = finance.reasons.filter((reason) => !reason.includes("is due") && !reason.includes("is overdue"));
+    if (financeStructural.length) addIssue({ severity: "Material", category: "Customer finance", recordType: "Income",
+      recordTitle: record.description, recordId: record.id, reason: [...new Set(financeStructural)].join("; "),
+      nextStep: "Reconcile billing ownership, invoice evidence, collection follow-up and receipt evidence without inferring financial outcomes.",
+      openObjectType: "Finance", openId: `income:${record.id}` });
     if (record.relatedLeadId && input.leads.filter((lead) => lead.id === record.relatedLeadId
       && lead.deliveryCommitment).length !== 1) addIssue({
       severity: "Material", category: "Customer delivery", recordType: "Income", recordTitle: record.description,

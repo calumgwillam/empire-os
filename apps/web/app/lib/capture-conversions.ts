@@ -45,6 +45,8 @@ export type CaptureConversionRecord = {
   relatedDecision?: string;
   relatedLeadId?: string;
   deliveryLeadId?: string;
+  financeIncomeId?: string;
+  financeIncomeRole?: "Billing" | "Collection";
   // Exact Lesson ID intentionally designated for this Action to implement its required change.
   // Optional: one Lesson may have many Actions; each Action implements at most one Lesson.
   implementsLessonId?: string;
@@ -338,9 +340,23 @@ export function isValidActionImplementationLessonId(
   return lessonId === "" || lessons.some((lesson) => lesson.id === lessonId);
 }
 
-export function assertActionLeadLink(value: unknown, field: "relatedLeadId" | "deliveryLeadId" = "relatedLeadId"): void {
+export function assertActionLeadLink(value: unknown, field: "relatedLeadId" | "deliveryLeadId" | "financeIncomeId" = "relatedLeadId"): void {
   if (value !== undefined && typeof value !== "string") {
     throw new Error(`Action ${field} must be an optional string; commercial traceability cannot be loaded safely.`);
+  }
+}
+
+export function assertActionFinanceRole(value: unknown): void {
+  if (value !== undefined && value !== "Billing" && value !== "Collection") {
+    throw new Error("Action financeIncomeRole must be Billing or Collection; commercial traceability cannot be loaded safely.");
+  }
+}
+
+export function assertActionFinanceLink(incomeId: unknown, role: unknown): void {
+  assertActionLeadLink(incomeId, "financeIncomeId");
+  assertActionFinanceRole(role);
+  if ((incomeId === undefined) !== (role === undefined)) {
+    throw new Error("Action finance Income linkage and role must be recorded together; commercial traceability cannot be loaded safely.");
   }
 }
 
@@ -356,6 +372,7 @@ export function normalizeActionRecord(record: CaptureConversionRecord): ActionRe
     ...record,
     ...(record.relatedLeadId !== undefined ? { relatedLeadId: record.relatedLeadId.trim() } : {}),
     ...(record.deliveryLeadId !== undefined ? { deliveryLeadId: record.deliveryLeadId.trim() } : {}),
+    ...(record.financeIncomeId !== undefined ? { financeIncomeId: record.financeIncomeId.trim() } : {}),
     ...(record.implementsLessonId !== undefined
       ? { implementsLessonId: record.implementsLessonId.trim() }
       : {}),

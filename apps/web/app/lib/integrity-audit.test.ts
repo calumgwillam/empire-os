@@ -252,6 +252,16 @@ describe("runIntegrityAudit", () => {
     })]));
     expect(runIntegrityAudit(makeInput({ actions: [makeAction()] })).issues.some((issue) => issue.reason.includes("Related Lead"))).toBe(false);
   });
+  it("audits orphaned billing and collection Action relationships", () => {
+    const report = runIntegrityAudit(makeInput({ actions: [
+      makeAction({ financeIncomeId: "missing-income", financeIncomeRole: "Collection" }),
+    ] }));
+    expect(report.issues).toEqual(expect.arrayContaining([expect.objectContaining({
+      category: "Customer finance",
+      recordType: "Action",
+      reason: "Finance Action has no unique matching Income responsibility.",
+    })]));
+  });
   it("returns a healthy report for empty records and null stores", () => {
     expect(runIntegrityAudit(makeInput())).toEqual({
       auditedAt: "2026-10-01T12:00:00.000Z",

@@ -277,6 +277,8 @@ export function applyCapitalDecision(commitment: CommitmentRecord, decision: Cap
 
 export const incomeStatusOptions = ["Expected", "Received"] as const;
 export type IncomeStatus = (typeof incomeStatusOptions)[number];
+export const incomeCollectionStatusOptions = ["Open", "Disputed", "Blocked"] as const;
+export type IncomeCollectionStatus = (typeof incomeCollectionStatusOptions)[number];
 
 export type IncomeRecord = {
   id: string;
@@ -296,6 +298,13 @@ export type IncomeRecord = {
   invoiceEvidence?: string;
   receiptReference?: string;
   receiptEvidence?: string;
+  billingOwnerPersonId?: string;
+  billingActionId?: string;
+  paymentDueDate?: string;
+  collectionOwnerPersonId?: string;
+  collectionActionId?: string;
+  collectionStatus?: IncomeCollectionStatus;
+  collectionStatusEvidence?: string;
 };
 
 export const expenseStatusOptions = ["Planned", "Paid"] as const;
@@ -356,6 +365,12 @@ export function sanitizeIncomeRecord(
     ...(record.invoiceEvidence !== undefined ? { invoiceEvidence: record.invoiceEvidence.trim() } : {}),
     ...(record.receiptReference !== undefined ? { receiptReference: record.receiptReference.trim() } : {}),
     ...(record.receiptEvidence !== undefined ? { receiptEvidence: record.receiptEvidence.trim() } : {}),
+    ...(record.billingOwnerPersonId !== undefined ? { billingOwnerPersonId: record.billingOwnerPersonId.trim() } : {}),
+    ...(record.billingActionId !== undefined ? { billingActionId: record.billingActionId.trim() } : {}),
+    ...(record.paymentDueDate !== undefined ? { paymentDueDate: record.paymentDueDate.trim() } : {}),
+    ...(record.collectionOwnerPersonId !== undefined ? { collectionOwnerPersonId: record.collectionOwnerPersonId.trim() } : {}),
+    ...(record.collectionActionId !== undefined ? { collectionActionId: record.collectionActionId.trim() } : {}),
+    ...(record.collectionStatusEvidence !== undefined ? { collectionStatusEvidence: record.collectionStatusEvidence.trim() } : {}),
   };
 }
 

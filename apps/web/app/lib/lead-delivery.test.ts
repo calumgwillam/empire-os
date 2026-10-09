@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { defaultLeadForm, type LeadRecord } from "./crm";
-import { normalizeActionRecord, type ActionRecord } from "./capture-conversions";
+import { assertActionFinanceLink, normalizeActionRecord, type ActionRecord } from "./capture-conversions";
 import { sanitizeIncomeRecord, type IncomeRecord } from "./finance";
 import {
   acceptLeadDelivery, assertIncomeCommercialEvidence, assertLeadDeliveryCommitment, buildLeadDelivery,
-  getDeliveryIncomeEvidence, linkLeadDelivery, scheduleLeadDelivery, validateDeliveryIncomeSave,
-  type AcceptLeadDeliveryRequest, type DeliveryAction, type LeadDeliveryInput,
+  createIncomeWorkflowAction, getDeliveryIncomeEvidence, linkLeadDelivery, scheduleLeadDelivery,
+  validateDeliveryIncomeSave, type AcceptLeadDeliveryRequest, type DeliveryAction, type LeadDeliveryInput,
 } from "./lead-delivery";
 import { buildCommandAttention, type CommandAttentionInput } from "./command-attention";
 import { linkLeadFollowThroughAction } from "./lead-follow-through";
@@ -42,6 +42,13 @@ const income = (overrides: Partial<IncomeRecord> = {}): IncomeRecord => ({
   dateCreated: "2026-10-08T10:00:00Z", ...overrides,
 });
 const withIncome = (record: IncomeRecord): LeadDeliveryInput => ({ ...accepted(), income: [record] });
+const withBilling = (record: IncomeRecord, status: ActionRecord["status"] = "Completed"): { record: IncomeRecord; input: LeadDeliveryInput } => {
+  const actionId = `billing-${record.id}`;
+  const linked = { ...record, billingOwnerPersonId: person.id, billingActionId: actionId };
+  const action = persistedAction({ id: actionId, financeIncomeId: record.id, financeIncomeRole: "Billing", status,
+    ...(status === "Completed" ? { completionDate: "2026-10-08T11:00:00Z", completionEvidence: "Invoice issuance recorded" } : {}) });
+  return { record: linked, input: { ...accepted(), income: [linked], actions: [...accepted().actions, action] } };
+};
 const command = (overrides: Partial<CommandAttentionInput> = {}): CommandAttentionInput => ({
   problems: [], actions: [], outreach: [], projects: [], decisions: [], opportunities: [], lessons: [],
   systems: [], sops: [], handoffs: [], procurementQueue: [], nowMs: NOW, ...overrides,
@@ -184,7 +191,7 @@ describe("Accepted customer delivery accountability", () => {
       schedules: commitment.schedules.map((entry, index) => index === 0 ? { ...entry, evidence: "" } : entry) } };
     expect(buildLeadDelivery({ ...next, leads: [corrupted] })[0].scheduled).toBe(false);
   });
-  it.each(["2026-10-07T12:00:00Z", "2026-10-09", "2026-02-30"])(
+  it.each(["2026-10-07T12:00:00Z", "2026-10-08T11:00:00Z", "2026-10-09", "2026-02-30"])(
     "rejects pre-link, future or invalid completion evidence (%s)", (completionDate) => {
       const source = accepted();
       expect(buildLeadDelivery({ ...source, actions: source.actions.map((action): DeliveryAction => ({
@@ -217,13 +224,15 @@ describe("Commercial financial evidence, not an accounting engine", () => {
     expect(buildLeadDelivery(withIncome(record))[0].completionSupported).toBe(false);
   });
   it("requires separate evidence for every financial state, without implying operational completion", () => {
-    const record = income({ earnedDate: "2026-10-08", earnedEvidence: "Explicit recognition basis",
+    const sourceRecord = income({ earnedDate: "2026-10-08", earnedEvidence: "Explicit recognition basis",
       invoiceIssuedDate: "2026-10-08", invoiceReference: "INV-1", invoiceEvidence: "Invoice sent reference",
       status: "Received", receiptReference: "BANK-1", receiptEvidence: "Bank receipt reference" });
-    const source = withIncome(record);
-    expect(getDeliveryIncomeEvidence(record, source)).toMatchObject({ earned: true, invoiced: true, received: true, reasons: [] });
-    expect(buildLeadDelivery(source)[0]).toMatchObject({ scheduled: false, completed: false, completionSupported: false });
-    expect(() => validateDeliveryIncomeSave(record, source)).not.toThrow();
+    const { record, input: source } = withBilling(sourceRecord);
+    const receivedRecord = { ...record, status: "Received" as const, receiptReference: "BANK-1", receiptEvidence: "Bank receipt reference" };
+    const withReceipt = { ...source, income: [receivedRecord] };
+    expect(getDeliveryIncomeEvidence(receivedRecord, withReceipt)).toMatchObject({ earned: true, invoiced: true, received: true, reasons: [] });
+    expect(buildLeadDelivery(withReceipt)[0]).toMatchObject({ scheduled: false, completed: false, completionSupported: false });
+    expect(() => validateDeliveryIncomeSave(receivedRecord, withReceipt)).not.toThrow();
   });
   it("supports advance payment without inferring earned income or invoicing", () => {
     const record = income({ status: "Received", receiptReference: "BANK-1", receiptEvidence: "Deposit received" });
@@ -265,10 +274,115 @@ describe("Commercial financial evidence, not an accounting engine", () => {
     const record = income({ date: "2026-10-07" });
     const source = withIncome(record);
     const view = getDeliveryIncomeEvidence(record, source);
-    expect(view).toMatchObject({ overdue: true, earned: false, invoiced: false, received: false });
+    expect(view).toMatchObject({ overdue: true, earned: false, invoiced: false, received: false,
+      valid: true, validationErrors: [] });
     expect(view.reasons.join(" ")).toContain("payment receipt is not established");
+    expect(view.workflowReasons.join(" ")).toContain("payment receipt is not established");
     expect(() => validateDeliveryIncomeSave(record, source)).not.toThrow();
     expect(buildCommandAttention(command({ delivery: source })).items[0].attentionRank).toBe(2);
+  });
+  it("creates a linked, explicitly owned billing Action and requires it before a new invoice", () => {
+    const record = income();
+    const source = withIncome(record);
+    const invoiceWithoutOwner = { ...record, invoiceIssuedDate: "2026-10-08", invoiceReference: "INV-1", invoiceEvidence: "Sent" };
+    expect(() => validateDeliveryIncomeSave(invoiceWithoutOwner, source)).toThrow("billing Person");
+    expect(() => createIncomeWorkflowAction({ ...source, people: [{ ...person, status: "Inactive" }] }, {
+      incomeId: record.id, actionId: "billing-inactive", role: "Billing", ownerPersonId: person.id, dueDate: "2026-10-10",
+    })).toThrow("delegation-ready");
+    const routed = createIncomeWorkflowAction(source, { incomeId: record.id, actionId: "billing-1", role: "Billing",
+      ownerPersonId: person.id, dueDate: "2026-10-10" });
+    expect(routed.income).toMatchObject({ billingOwnerPersonId: person.id, billingActionId: "billing-1" });
+    expect(routed.action).toMatchObject({ financeIncomeId: record.id, financeIncomeRole: "Billing",
+      ownerPersonId: person.id, status: "Open", dueDate: "2026-10-10" });
+    const issued = { ...routed.income, invoiceIssuedDate: "2026-10-08", invoiceReference: "INV-1", invoiceEvidence: "Sent" };
+    const issuing = { ...source, income: [routed.income], actions: [routed.action] };
+    expect(() => validateDeliveryIncomeSave(issued, issuing)).not.toThrow();
+    const issuedSource = { ...issuing, income: [issued] };
+    const issuedView = getDeliveryIncomeEvidence(issued, issuedSource);
+    expect(issuedView).toMatchObject({ invoiced: true, received: false, valid: true, validationErrors: [] });
+    expect(issuedView.workflowReasons).toEqual(expect.arrayContaining([
+      "DELIVERY FINANCE: Billing Action remains open after invoice issue",
+      "DELIVERY FINANCE: Invoiced balance has no valid payment deadline",
+      "DELIVERY FINANCE: Invoiced balance has no active delegation-ready collection owner",
+      "DELIVERY FINANCE: Invoiced balance has no uniquely linked collection follow-up Action",
+      "DELIVERY FINANCE: Invoiced customer balance remains unpaid",
+    ]));
+    expect(buildCommandAttention(command({ delivery: issuedSource })).items)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ objectType: "Finance", id: "income:income-1",
+        reasons: expect.arrayContaining(issuedView.workflowReasons) })]));
+    expect(() => createIncomeWorkflowAction({ ...source, income: [routed.income], actions: [routed.action] },
+      { incomeId: record.id, actionId: "billing-2", role: "Billing", ownerPersonId: person.id, dueDate: "2026-10-10" }))
+      .toThrow("still active");
+  });
+  it("tracks payment deadlines and raises unpaid, disputed, blocked, and unowned collection obligations", () => {
+    const invoice = income({ invoiceIssuedDate: "2026-10-07", invoiceReference: "INV-1", invoiceEvidence: "Sent" });
+    const { record, input: billed } = withBilling(invoice);
+    const collection = createIncomeWorkflowAction(billed, { incomeId: record.id, actionId: "collection-1", role: "Collection",
+      ownerPersonId: person.id, dueDate: "2026-10-09", paymentDueDate: "2026-10-10" });
+    const complete = { ...billed, income: [collection.income], actions: [...billed.actions, collection.action] };
+    expect(getDeliveryIncomeEvidence(collection.income, complete).workflowReasons)
+      .toContain("DELIVERY FINANCE: Invoiced customer balance remains unpaid");
+    expect(buildCommandAttention(command({ delivery: complete })).items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ objectType: "Finance", id: "income:income-1" }),
+    ]));
+    const overdue = { ...collection.income, paymentDueDate: "2026-10-07" };
+    expect(getDeliveryIncomeEvidence(overdue, { ...complete, income: [overdue] }).overdue).toBe(true);
+    expect(() => validateDeliveryIncomeSave(overdue, complete)).not.toThrow();
+    const disputed = { ...collection.income, collectionStatus: "Disputed" as const, collectionStatusEvidence: "Customer queried scope" };
+    expect(getDeliveryIncomeEvidence(disputed, { ...complete, income: [disputed] }).workflowReasons)
+      .toContain("DELIVERY FINANCE: Customer payment is disputed; resolve and evidence the next step");
+    expect(() => validateDeliveryIncomeSave(disputed, complete)).not.toThrow();
+    const blocked = { ...collection.income, collectionStatus: "Blocked" as const, collectionStatusEvidence: "Awaiting account reconciliation" };
+    const blockedAction = { ...collection.action, status: "Blocked" as const };
+    expect(getDeliveryIncomeEvidence(blocked, { ...complete, income: [blocked],
+      actions: [...billed.actions, blockedAction] }).workflowReasons)
+      .toContain("DELIVERY FINANCE: Customer collection is blocked; resolve and evidence the next step");
+    expect(() => validateDeliveryIncomeSave(blocked, { ...complete,
+      actions: [...billed.actions, blockedAction] })).not.toThrow();
+    const unowned = { ...collection.income, collectionOwnerPersonId: undefined, collectionActionId: undefined };
+    expect(getDeliveryIncomeEvidence(unowned, { ...complete, income: [unowned] }).workflowReasons)
+      .toContain("DELIVERY FINANCE: Invoiced balance has no active delegation-ready collection owner");
+    expect(() => validateDeliveryIncomeSave(unowned, complete)).not.toThrow();
+    const completedFollowUp = { ...collection.action, status: "Completed" as const,
+      completionDate: "2026-10-08T11:30:00Z", completionEvidence: "Customer contacted; awaiting response" };
+    const nextStep = createIncomeWorkflowAction({ ...complete,
+      actions: [...billed.actions, completedFollowUp] }, { incomeId: record.id, actionId: "collection-2",
+      role: "Collection", ownerPersonId: person.id, dueDate: "2026-10-12", paymentDueDate: "2026-10-10" });
+    expect(nextStep.income.collectionActionId).toBe("collection-2");
+    expect(getDeliveryIncomeEvidence(nextStep.income, { ...complete,
+      income: [nextStep.income], actions: [...billed.actions, completedFollowUp, nextStep.action] }).collectionActionTracked).toBe(true);
+  });
+  it.each([
+    { invoiceReference: "" },
+    { invoiceIssuedDate: "2026-10-09" },
+    { receiptReference: "BANK-1", receiptEvidence: "Claimed payment while Expected" },
+    { billingActionId: "missing-billing-action" },
+    { collectionActionId: "missing-collection-action" },
+  ])("still rejects hard evidence errors alongside collection attention (%j)", (overrides) => {
+    const invoice = income({ invoiceIssuedDate: "2026-10-08", invoiceReference: "INV-1", invoiceEvidence: "Sent" });
+    const { record, input: source } = withBilling(invoice);
+    const invalid = { ...record, ...overrides };
+    const view = getDeliveryIncomeEvidence(invalid, { ...source, income: [invalid] });
+    expect(view.valid).toBe(false);
+    expect(view.validationErrors.length).toBeGreaterThan(0);
+    expect(() => validateDeliveryIncomeSave(invalid, source)).toThrow(view.validationErrors.join("; "));
+  });
+  it("routes evidence-supported completed delivery into explicit billing accountability", () => {
+    const source = accepted();
+    const scheduled = scheduleLeadDelivery(source, "lead-1", { date: "2026-10-08",
+      evidence: "Customer and crew schedule confirmed", recordedByPersonId: person.id });
+    const finished = persistedAction({ id: "delivery-1", deliveryLeadId: "lead-1", dueDate: request.promisedBy,
+      status: "Completed", completionDate: new Date(NOW).toISOString(), completionEvidence: "Customer completion evidence" });
+    const record = income();
+    const completed = { ...source, leads: [scheduled], actions: [finished], income: [record] };
+    expect(buildLeadDelivery(completed)[0].completionSupported).toBe(true);
+    expect(buildLeadDelivery(completed)[0].reasons).toEqual(expect.arrayContaining([
+      "DELIVERY FINANCE: Completed delivery has no evidenced invoice; review billing responsibility",
+      "DELIVERY FINANCE: Completed delivery has no billing owner",
+      "DELIVERY FINANCE: Completed delivery has no tracked billing Action",
+    ]));
+    expect(buildCommandAttention(command({ actions: [finished], delivery: completed })).items)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ objectType: "Finance", id: "income:income-1" })]));
   });
   it("preserves optional evidence through existing sanitisation without manufacturing fields for legacy income", () => {
     const legacy = income({ relatedLeadId: undefined });
@@ -295,7 +409,9 @@ describe("Delivery Command integration and persistence", () => {
       status: "Completed", completionDate: "2026-10-08T12:00:00Z", completionEvidence: "Customer completion evidence" });
     const record = income({ status: "Received", invoiceIssuedDate: "2026-10-08", invoiceReference: "INV-1",
       invoiceEvidence: "Invoice sent", receiptReference: "BANK-1", receiptEvidence: "Payment received" });
-    const completed = { ...source, leads: [{ ...scheduled, archived: true }], actions: [finished], income: [record] };
+    const { record: billedRecord, input: billed } = withBilling(record);
+    const completed = { ...source, leads: [{ ...scheduled, archived: true }], actions: [finished, billed.actions.at(-1)!],
+      income: [billedRecord] };
     const view = buildLeadDelivery(completed)[0];
     expect(view).toMatchObject({ accepted: true, assigned: true, scheduled: true, completed: true,
       completionSupported: true, overdue: false, reasons: [] });
@@ -359,6 +475,8 @@ describe("Delivery Command integration and persistence", () => {
     const source = accepted();
     expect(() => assertLeadDeliveryCommitment({ ...source.leads[0].deliveryCommitment, schedules: [{}] })).toThrow("malformed");
     expect(() => assertIncomeCommercialEvidence({ ...income(), receiptEvidence: 42 })).toThrow("malformed");
+    expect(() => assertIncomeCommercialEvidence({ ...income(), collectionStatus: "Paid" })).toThrow("collection status");
+    expect(() => assertActionFinanceLink(undefined, "Billing")).toThrow("recorded together");
     const backup = { format: BACKUP_FORMAT, version: BACKUP_VERSION, createdAt: new Date(NOW).toISOString(),
       storage: { [LEAD_STORAGE_KEY]: JSON.stringify([{ ...lead(), deliveryCommitment: {} }]) } };
     expect(() => validateEmpireOsBackup(backup)).toThrow("malformed");
@@ -368,6 +486,9 @@ describe("Delivery Command integration and persistence", () => {
     expect(() => validateEmpireOsBackup({ ...backup, storage: {
       [CONVERSION_STORAGE_KEY]: JSON.stringify([{ ...persistedAction(), deliveryLeadId: 42 }]),
     } })).toThrow("optional string");
+    expect(() => validateEmpireOsBackup({ ...backup, storage: {
+      [CONVERSION_STORAGE_KEY]: JSON.stringify([{ ...persistedAction(), financeIncomeId: "income-1" }]),
+    } })).toThrow("recorded together");
   });
   it("restores both previous stores if persisting the delivery Action fails after the Lead write", () => {
     const source = accepted();

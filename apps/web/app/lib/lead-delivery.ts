@@ -1,6 +1,6 @@
 import type { LeadRecord } from "./crm";
 import { normalizeActionRecord, type ActionRecord } from "./capture-conversions";
-import { parseFinanceAmountInput, type IncomeRecord } from "./finance";
+import { incomeCollectionStatusOptions, parseFinanceAmountInput, type IncomeRecord } from "./finance";
 import { getDelegationReadinessMissingFields } from "./execution-release";
 import { getLeadFollowThroughDate } from "./lead-follow-through";
 
@@ -22,7 +22,8 @@ export type LeadDeliveryCommitment = {
   schedules: DeliverySchedule[];
 };
 export type DeliveryAction = Pick<ActionRecord, "id" | "status" | "title" | "dueDate">
-  & Partial<Pick<ActionRecord, "deliveryLeadId" | "relatedLeadId" | "owner" | "ownerPersonId" | "completionDate" | "completionEvidence" | "icarusObservationLinks">>;
+  & Partial<Pick<ActionRecord, "deliveryLeadId" | "relatedLeadId" | "financeIncomeId" | "financeIncomeRole"
+    | "owner" | "ownerPersonId" | "completionDate" | "completionEvidence" | "icarusObservationLinks">>;
 export type LeadDeliveryInput = {
   leads: readonly LeadRecord[];
   actions: readonly DeliveryAction[];
@@ -37,6 +38,13 @@ export type DeliveryFinanceView = {
   earned: boolean;
   invoiced: boolean;
   received: boolean;
+  billingOwnerAssigned: boolean;
+  billingActionTracked: boolean;
+  collectionOwnerAssigned: boolean;
+  collectionActionTracked: boolean;
+  collectionStatus: "Open" | "Disputed" | "Blocked";
+  validationErrors: string[];
+  workflowReasons: string[];
   overdue: boolean;
   valid: boolean;
   reasons: string[];
@@ -71,10 +79,15 @@ export function assertLeadDeliveryCommitment(value: unknown): asserts value is L
   }
 }
 const incomeEvidenceFields = ["relatedLeadId", "earnedDate", "earnedEvidence", "invoiceIssuedDate",
-  "invoiceReference", "invoiceEvidence", "receiptReference", "receiptEvidence"] as const;
+  "invoiceReference", "invoiceEvidence", "receiptReference", "receiptEvidence", "billingOwnerPersonId",
+  "billingActionId", "paymentDueDate", "collectionOwnerPersonId", "collectionActionId",
+  "collectionStatusEvidence"] as const;
 export function assertIncomeCommercialEvidence(value: unknown): void {
   if (!object(value) || incomeEvidenceFields.some((field) => value[field] !== undefined && typeof value[field] !== "string")) {
     throw new Error("Income commercial linkage or evidence is malformed; restore was not applied.");
+  }
+  if (value.collectionStatus !== undefined && !incomeCollectionStatusOptions.some((status) => status === value.collectionStatus)) {
+    throw new Error("Income collection status is malformed; restore was not applied.");
   }
 }
 function requireClock(nowMs: number): void {
@@ -97,10 +110,15 @@ function readyOwner(input: LeadDeliveryInput, id: string | undefined): DeliveryP
 function knownPerson(input: LeadDeliveryInput, id: string): boolean {
   return Boolean(id.trim()) && input.people.filter((person) => person.id === id).length === 1;
 }
+export function hasSupportedFinanceActionCompletion(action: DeliveryAction, input: LeadDeliveryInput): boolean {
+  return action.status === "Completed" && Boolean(action.completionEvidence?.trim())
+    && validEvent(action.completionDate || "", input.nowMs);
+}
 
 export function getDeliveryIncomeEvidence(record: IncomeRecord, input: LeadDeliveryInput): DeliveryFinanceView {
   requireClock(input.nowMs);
   const reasons: string[] = [];
+  const workflowReasons: string[] = [];
   const amount = parseFinanceAmountInput(record.amount);
   const unique = Boolean(record.id.trim()) && input.income.filter((entry) => entry.id === record.id).length === 1;
   if (!unique) reasons.push("DELIVERY FINANCE: Income identity is missing or duplicated");
@@ -117,15 +135,99 @@ export function getDeliveryIncomeEvidence(record: IncomeRecord, input: LeadDeliv
     && record.invoiceEvidence?.trim()) && validEvent(record.invoiceIssuedDate || "", input.nowMs);
   const received = unique && amount !== null && receiptUnique && record.status === "Received"
     && Boolean(record.receiptReference?.trim() && record.receiptEvidence?.trim()) && validEvent(record.date, input.nowMs);
+  const billingPerson = readyOwner(input, record.billingOwnerPersonId);
+  const billingOwnerAssigned = Boolean(billingPerson);
+  const billingActionMatches = record.billingActionId
+    ? input.actions.filter((action) => action.id === record.billingActionId && action.financeIncomeId === record.id
+      && action.financeIncomeRole === "Billing")
+    : [];
+  const billingAction = billingActionMatches.length === 1 ? billingActionMatches[0] : undefined;
+  const billingHistoryValid = input.actions.filter((action) => action.financeIncomeId === record.id
+    && action.financeIncomeRole === "Billing" && action.id !== record.billingActionId)
+    .every((action) => hasSupportedFinanceActionCompletion(action, input));
+  const billingActionTracked = Boolean(billingAction && billingPerson
+    && billingAction.ownerPersonId === billingPerson.id && !billingAction.relatedLeadId
+    && !billingAction.deliveryLeadId && !billingAction.icarusObservationLinks?.length
+    && Number.isFinite(getLeadFollowThroughDate(billingAction.dueDate))
+    && billingHistoryValid);
+  const collectionPerson = readyOwner(input, record.collectionOwnerPersonId);
+  const collectionOwnerAssigned = Boolean(collectionPerson);
+  const collectionActionMatches = record.collectionActionId
+    ? input.actions.filter((action) => action.id === record.collectionActionId && action.financeIncomeId === record.id
+      && action.financeIncomeRole === "Collection")
+    : [];
+  const collectionAction = collectionActionMatches.length === 1 ? collectionActionMatches[0] : undefined;
+  const collectionHistoryValid = input.actions.filter((action) => action.financeIncomeId === record.id
+    && action.financeIncomeRole === "Collection" && action.id !== record.collectionActionId)
+    .every((action) => hasSupportedFinanceActionCompletion(action, input));
+  const collectionActionTracked = Boolean(collectionAction && collectionPerson
+    && collectionAction.ownerPersonId === collectionPerson.id && !collectionAction.relatedLeadId
+    && !collectionAction.deliveryLeadId && !collectionAction.icarusObservationLinks?.length
+    && Number.isFinite(getLeadFollowThroughDate(collectionAction.dueDate))
+    && collectionHistoryValid);
+  const collectionStatus = record.collectionStatus || "Open";
   if ((record.earnedDate || record.earnedEvidence) && !earned) reasons.push("DELIVERY FINANCE: Earned-income claim lacks valid dated evidence");
   if ((record.invoiceIssuedDate || record.invoiceReference || record.invoiceEvidence) && !invoiced) reasons.push("DELIVERY FINANCE: Invoice claim is incomplete, invalid or duplicated");
   if (record.status === "Received" && !received) reasons.push("DELIVERY FINANCE: Recorded receipt lacks unique dated payment evidence");
   if (!receiptUnique) reasons.push("DELIVERY FINANCE: Payment reference is duplicated");
   if (record.status === "Expected" && (record.receiptReference || record.receiptEvidence)) reasons.push("DELIVERY FINANCE: Payment evidence conflicts with Expected status");
+  if (record.collectionStatus !== undefined && !incomeCollectionStatusOptions.includes(record.collectionStatus)) {
+    reasons.push("DELIVERY FINANCE: Collection status is invalid");
+  }
+  if (record.billingActionId && !billingActionTracked) reasons.push("DELIVERY FINANCE: Billing Action is missing, duplicated, mismatched or not owned by the billing Person");
+  if (record.collectionActionId && !collectionActionTracked) reasons.push("DELIVERY FINANCE: Collection Action is missing, duplicated, mismatched or not owned by the collection Person");
+  if (invoiced) {
+    if (!billingOwnerAssigned) workflowReasons.push("DELIVERY FINANCE: Invoice has no active delegation-ready billing Person");
+    if (!billingActionTracked) workflowReasons.push("DELIVERY FINANCE: Invoice has no uniquely linked billing Action");
+    if (billingAction?.status === "Blocked") workflowReasons.push("DELIVERY FINANCE: Billing Action is blocked");
+    if (billingAction?.status === "Cancelled") workflowReasons.push("DELIVERY FINANCE: Billing Action was cancelled");
+    else if (billingAction && billingAction.status !== "Completed") {
+      workflowReasons.push("DELIVERY FINANCE: Billing Action remains open after invoice issue");
+    }
+    if (billingAction?.status === "Completed"
+      && (!billingAction.completionEvidence?.trim() || !validEvent(billingAction.completionDate || "", input.nowMs))) {
+      workflowReasons.push("DELIVERY FINANCE: Completed billing Action lacks dated completion evidence");
+    }
+  }
+  const collectionOpen = invoiced && !received;
+  if (collectionOpen) {
+    if (!Number.isFinite(getLeadFollowThroughDate(record.paymentDueDate || ""))) {
+      workflowReasons.push("DELIVERY FINANCE: Invoiced balance has no valid payment deadline");
+    }
+    if (!collectionOwnerAssigned) workflowReasons.push("DELIVERY FINANCE: Invoiced balance has no active delegation-ready collection owner");
+    if (!collectionActionTracked) workflowReasons.push("DELIVERY FINANCE: Invoiced balance has no uniquely linked collection follow-up Action");
+    if (collectionStatus === "Disputed" && !record.collectionStatusEvidence?.trim()) {
+      workflowReasons.push("DELIVERY FINANCE: Disputed balance has no supporting evidence");
+    }
+    if (collectionStatus === "Blocked" && !record.collectionStatusEvidence?.trim()) {
+      workflowReasons.push("DELIVERY FINANCE: Blocked collection has no supporting evidence");
+    }
+    if (collectionStatus === "Blocked" && collectionAction?.status !== "Blocked") {
+      workflowReasons.push("DELIVERY FINANCE: Blocked collection has no Blocked follow-up Action");
+    }
+    if (collectionAction?.status === "Blocked" && collectionStatus !== "Blocked") {
+      workflowReasons.push("DELIVERY FINANCE: Collection follow-up Action is blocked");
+    }
+    if (collectionAction?.status === "Cancelled") workflowReasons.push("DELIVERY FINANCE: Collection follow-up Action was cancelled");
+    if (collectionStatus === "Disputed") workflowReasons.push("DELIVERY FINANCE: Customer payment is disputed; resolve and evidence the next step");
+    else if (collectionStatus === "Blocked") workflowReasons.push("DELIVERY FINANCE: Customer collection is blocked; resolve and evidence the next step");
+    else workflowReasons.push("DELIVERY FINANCE: Invoiced customer balance remains unpaid");
+  }
+  if (collectionOpen && collectionAction?.status === "Completed") {
+    workflowReasons.push("DELIVERY FINANCE: Collection Action is complete but payment receipt is not evidenced");
+  }
+  if (received && collectionAction && collectionAction.status !== "Completed") {
+    workflowReasons.push("DELIVERY FINANCE: Close the collection Action with receipt evidence");
+  }
   const valid = reasons.length === 0;
-  const overdue = record.status === "Expected" && dateValid && getLeadFollowThroughDate(record.date) < input.nowMs;
-  if (overdue) reasons.push("DELIVERY FINANCE: Expected customer income is overdue; payment receipt is not established");
-  return { incomeId: record.id, amount, status: record.status, earned, invoiced, received, overdue, valid, reasons };
+  const paymentDeadline = invoiced ? record.paymentDueDate ?? "" : record.date;
+  const overdue = (record.status === "Expected" || collectionOpen) && Number.isFinite(getLeadFollowThroughDate(paymentDeadline))
+    && getLeadFollowThroughDate(paymentDeadline) < input.nowMs;
+  if (overdue) workflowReasons.push("DELIVERY FINANCE: Customer payment is overdue; payment receipt is not established with evidence");
+  if (overdue && invoiced) workflowReasons.push("DELIVERY FINANCE: Customer payment deadline is overdue; payment receipt is not established");
+  return { incomeId: record.id, amount, status: record.status, earned, invoiced, received,
+    billingOwnerAssigned, billingActionTracked, collectionOwnerAssigned, collectionActionTracked, collectionStatus,
+    validationErrors: reasons, workflowReasons, overdue, valid, reasons: [...reasons, ...workflowReasons] };
 }
 
 export function buildLeadDelivery(input: LeadDeliveryInput): LeadDeliveryView[] {
@@ -190,7 +292,11 @@ export function buildLeadDelivery(input: LeadDeliveryInput): LeadDeliveryView[] 
       .map((record) => getDeliveryIncomeEvidence(record, input));
     financial.forEach((record) => reasons.push(...record.reasons));
     if (completionSupported && !financial.length) reasons.push("DELIVERY FINANCE: Completed delivery has no linked financial record; review billing responsibility");
-    else if (completionSupported && !financial.some((record) => record.invoiced)) reasons.push("DELIVERY FINANCE: Completed delivery has no evidenced invoice; review billing responsibility");
+    else if (completionSupported && !financial.some((record) => record.invoiced)) {
+      reasons.push("DELIVERY FINANCE: Completed delivery has no evidenced invoice; review billing responsibility");
+      if (!financial.some((record) => record.billingOwnerAssigned)) reasons.push("DELIVERY FINANCE: Completed delivery has no billing owner");
+      if (!financial.some((record) => record.billingActionTracked)) reasons.push("DELIVERY FINANCE: Completed delivery has no tracked billing Action");
+    }
     return { leadId: lead.id, ...(commitment ? { actionId: commitment.actionId } : {}), won: lead.status === "Won",
       accepted, executionLinked: linked, assigned, scheduled, completed, completionSupported, blocked, overdue, due, financial, reasons: [...new Set(reasons)] };
   });
@@ -258,13 +364,102 @@ export function scheduleLeadDelivery(input: LeadDeliveryInput, leadId: string, s
       evidence: schedule.evidence.trim(), recordedAt: new Date(input.nowMs).toISOString() }] } };
 }
 
+export type CreateIncomeWorkflowActionRequest = {
+  incomeId: string;
+  actionId: string;
+  role: "Billing" | "Collection";
+  ownerPersonId: string;
+  dueDate: string;
+  paymentDueDate?: string;
+};
+
+export function createIncomeWorkflowAction(
+  input: LeadDeliveryInput,
+  request: CreateIncomeWorkflowActionRequest,
+): { income: IncomeRecord; action: ActionRecord } {
+  requireClock(input.nowMs);
+  const records = input.income.filter((entry) => entry.id === request.incomeId);
+  if (records.length !== 1) throw new Error("Select a unique persisted Income record before routing billing or collection.");
+  const income = records[0];
+  if (input.actions.some((action) => action.id === request.actionId)) throw new Error("Finance Action identity already exists.");
+  const referencedActionId = income[request.role === "Billing" ? "billingActionId" : "collectionActionId"];
+  const roleActions = input.actions.filter((action) => action.financeIncomeId === income.id && action.financeIncomeRole === request.role);
+  const referencedActions = referencedActionId ? input.actions.filter((action) => action.id === referencedActionId) : [];
+  if (referencedActions.length > 1 || referencedActions.some((action) => action.financeIncomeId !== income.id
+    || action.financeIncomeRole !== request.role)) {
+    throw new Error(`${request.role} Action reference is ambiguous or conflicting; reconcile it before routing another step.`);
+  }
+  if (roleActions.some((action) => action.id !== referencedActionId && !hasSupportedFinanceActionCompletion(action, input))
+    || referencedActions.some((action) => !hasSupportedFinanceActionCompletion(action, input))) {
+    throw new Error(`${request.role} Action is still active or lacks completion evidence; finish or reconcile it before routing the next step.`);
+  }
+  const owner = readyOwner(input, request.ownerPersonId);
+  if (!owner) throw new Error(`${request.role} responsibility requires an active delegation-ready Person.`);
+  if (!request.actionId.trim() || !Number.isFinite(getLeadFollowThroughDate(request.dueDate))) {
+    throw new Error(`Record a valid due date and identity for the ${request.role.toLowerCase()} Action.`);
+  }
+  if (request.role === "Billing" && getDeliveryIncomeEvidence(income, input).invoiced) {
+    throw new Error("Invoice issuance is already evidenced; use collection follow-up rather than creating another billing Action.");
+  }
+  if (request.role === "Collection") {
+    const evidence = getDeliveryIncomeEvidence(income, input);
+    if (!evidence.invoiced || evidence.received) {
+      throw new Error("Create collection follow-up only for a uniquely evidenced unpaid invoice.");
+    }
+    if (!Number.isFinite(getLeadFollowThroughDate(request.paymentDueDate || ""))
+      || getLeadFollowThroughDate(request.paymentDueDate || "") < getLeadFollowThroughDate(income.invoiceIssuedDate || "")) {
+      throw new Error("Record a valid payment deadline on or after invoice issue.");
+    }
+  }
+  const title = request.role === "Billing"
+    ? `Prepare and issue invoice: ${income.description}`
+    : `Collect customer payment: ${income.description}`;
+  const action = {
+    ...normalizeActionRecord({
+      id: request.actionId,
+      sourceCaptureId: "",
+      targetType: "Convert to Action",
+      createdAt: new Date(input.nowMs).toISOString(),
+      title,
+      originalRawNote: title,
+      actionDescription: title,
+      relatedArea: income.area,
+      relatedPillar: income.area,
+      importance: "Medium",
+      priority: "Medium",
+      status: "Open",
+      owner: owner.name,
+      dueDate: request.dueDate,
+      financeIncomeId: income.id,
+      financeIncomeRole: request.role,
+    }),
+    ownerPersonId: owner.id,
+  };
+  const updatedIncome = request.role === "Billing"
+    ? { ...income, billingOwnerPersonId: owner.id, billingActionId: action.id }
+    : { ...income, collectionOwnerPersonId: owner.id, collectionActionId: action.id,
+      paymentDueDate: request.paymentDueDate, collectionStatus: income.collectionStatus || "Open" as const };
+  return { income: updatedIncome, action };
+}
+
 export function validateDeliveryIncomeSave(record: IncomeRecord, input: LeadDeliveryInput): void {
   requireClock(input.nowMs);
   assertIncomeCommercialEvidence(record);
-  if (!record.relatedLeadId) return;
-  const leads = input.leads.filter((lead) => lead.id === record.relatedLeadId);
-  if (leads.length !== 1 || !leads[0].deliveryCommitment) throw new Error("Select a unique Lead with an explicit delivery commitment for financial traceability.");
+  if (record.relatedLeadId) {
+    const leads = input.leads.filter((lead) => lead.id === record.relatedLeadId);
+    if (leads.length !== 1 || !leads[0].deliveryCommitment) throw new Error("Select a unique Lead with an explicit delivery commitment for financial traceability.");
+  }
   if (input.income.filter((entry) => entry.id === record.id).length > 1) throw new Error("Income identity is duplicated; reconcile before attaching financial evidence.");
   const view = getDeliveryIncomeEvidence(record, { ...input, income: [...input.income.filter((entry) => entry.id !== record.id), record] });
-  if (!view.valid) throw new Error(view.reasons.join("; "));
+  const previous = input.income.find((entry) => entry.id === record.id);
+  const legacyReceiptUnknown = !record.relatedLeadId && previous?.status === "Received" && record.status === "Received"
+    && !previous.receiptReference && !previous.receiptEvidence && !record.receiptReference && !record.receiptEvidence;
+  const invalidReasons = view.validationErrors.filter((reason) => !(legacyReceiptUnknown
+    && reason === "DELIVERY FINANCE: Recorded receipt lacks unique dated payment evidence"));
+  if (invalidReasons.length) throw new Error(invalidReasons.join("; "));
+  const previouslyInvoiced = Boolean(previous?.invoiceIssuedDate || previous?.invoiceReference || previous?.invoiceEvidence);
+  if (view.invoiced && !previouslyInvoiced
+    && (!view.billingOwnerAssigned || !view.billingActionTracked)) {
+    throw new Error("Assign an active delegation-ready billing Person and create its linked Action before recording a new invoice.");
+  }
 }

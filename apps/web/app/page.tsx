@@ -26,6 +26,7 @@ import {
   decisionRiskOptions,
   decisionStatusOptions,
   isValidActionImplementationLessonId,
+  assertActionFinanceLink,
   lessonStatusOptions,
   normalizeActionRecord,
   normalizeDecisionRecord,
@@ -216,7 +217,8 @@ import { buildLeadFollowThrough, createLeadFollowThroughAction, linkLeadFollowTh
 import LeadFollowThroughSection, { type LeadFollowThroughRequest } from "./components/lead-follow-through-section";
 import { assertActionLeadLink } from "./lib/capture-conversions";
 import { acceptLeadDelivery, assertIncomeCommercialEvidence, assertLeadDeliveryCommitment, buildLeadDelivery,
-  linkLeadDelivery, scheduleLeadDelivery, validateDeliveryIncomeSave, type LeadDeliveryView } from "./lib/lead-delivery";
+  createIncomeWorkflowAction, getDeliveryIncomeEvidence, linkLeadDelivery, scheduleLeadDelivery,
+  validateDeliveryIncomeSave, type LeadDeliveryView } from "./lib/lead-delivery";
 import LeadDeliverySection, { type LeadDeliveryRequest } from "./components/lead-delivery-section";
 import IncomeCommercialEvidenceSection from "./components/income-commercial-evidence-section";
 import {
@@ -3148,15 +3150,20 @@ function CashPositionPanel({ value, validationError, onClose, onChange, onSave }
   );
 }
 
-function IncomeDetailPanel({ income, leads, canDelete, onClose, onChange, onSave, onDelete, onOpenLead }: {
+function IncomeDetailPanel({ income, leads, people, actions, evidence, canDelete, onClose, onChange, onSave, onDelete, onOpenLead, onOpenAction, onCreateAction }: {
   income: IncomeRecord;
   leads: readonly LeadRecord[];
+  people: PersonRecord[];
+  actions: readonly ActionRecord[];
+  evidence?: ReturnType<typeof getDeliveryIncomeEvidence>;
   canDelete: boolean;
   onClose: () => void;
   onChange: (field: keyof IncomeRecord, value: string) => void;
   onSave: () => boolean;
   onDelete: () => void;
   onOpenLead: (id: string) => void;
+  onOpenAction: (id: string) => void;
+  onCreateAction: (request: { role: "Billing" | "Collection"; ownerPersonId: string; dueDate: string; paymentDueDate?: string }) => void;
 }) {
   const hasInvalidDescription = !income.description.trim();
   const hasInvalidDate = !isValidCalendarDateInput(income.date);
@@ -3223,7 +3230,8 @@ function IncomeDetailPanel({ income, leads, canDelete, onClose, onChange, onSave
           </div>
         </div>
 
-        <IncomeCommercialEvidenceSection income={income} leads={leads} onChange={onChange} onOpenLead={onOpenLead} />
+        <IncomeCommercialEvidenceSection key={income.id} income={income} leads={leads} people={people} actions={actions} evidence={evidence}
+          onChange={onChange} onOpenLead={onOpenLead} onOpenAction={onOpenAction} onCreateAction={onCreateAction} />
         <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
           <FinanceDeleteControl canDelete={canDelete} label="Delete income record" onDelete={onDelete} />
           <div className="flex justify-end gap-2">
@@ -6652,9 +6660,10 @@ type ActionDetailPanelProps = {
   onOpenRelatedProblem?: () => void;
   onOpenRelatedDecision?: () => void;
   onOpenRelatedLead?: () => void;
+  onOpenRelatedIncome?: () => void;
 };
 
-function ActionDetailPanel({ action, people, responsibilities, problems, decisions, upstream, downstream, onClose, onChange, onOwnerChange, onAddResponsibilityOutcomeEvidence, onSave, onReviewFollowThrough, onOpenRelatedProblem, onOpenRelatedDecision, onOpenRelatedLead }: ActionDetailPanelProps) {
+function ActionDetailPanel({ action, people, responsibilities, problems, decisions, upstream, downstream, onClose, onChange, onOwnerChange, onAddResponsibilityOutcomeEvidence, onSave, onReviewFollowThrough, onOpenRelatedProblem, onOpenRelatedDecision, onOpenRelatedLead, onOpenRelatedIncome }: ActionDetailPanelProps) {
   const isCompleted = action.status === "Completed";
   const activePeople = people.filter((person) => person.status === "Active");
   const [responsibilityId, setResponsibilityId] = useState("");
@@ -7097,6 +7106,9 @@ function ActionDetailPanel({ action, people, responsibilities, problems, decisio
               {action.relatedLeadId || action.deliveryLeadId ? <div><span className="font-medium">{action.deliveryLeadId ? "Customer delivery Lead:" : "Commercial Lead:"}</span> {action.deliveryLeadId || action.relatedLeadId}
                 <button type="button" className="ml-2 underline" onClick={onOpenRelatedLead}>Open Lead</button>
                 <p className="mt-1 text-[11px]">Action completion does not confirm commercial or financial outcomes. Delivery requires dated completion evidence; invoice issue and payment receipt remain separate Finance facts.</p>
+              </div> : null}
+              {action.financeIncomeId ? <div><span className="font-medium">{action.financeIncomeRole || "Finance"} Income:</span> {action.financeIncomeId}
+                <button type="button" className="ml-2 underline" onClick={onOpenRelatedIncome}>Open Income</button>
               </div> : null}
               <div><span className="font-medium">Source Capture relationship:</span> {action.relatedCapture || "Not linked"}</div>
               <div><span className="font-medium">Original Capture title:</span> {action.title}</div>
@@ -9076,6 +9088,7 @@ export default function Home() {
               assertIcarusObservationActionLinks(record.icarusObservationLinks);
               assertActionLeadLink(record.relatedLeadId);
               assertActionLeadLink(record.deliveryLeadId, "deliveryLeadId");
+              assertActionFinanceLink(record.financeIncomeId, record.financeIncomeRole);
               assertIcarusObservationHandoffs(record.icarusObservationHandoffs);
               if (Object.prototype.hasOwnProperty.call(record, "responsibilityOutcomeEvidence")) {
                 assertActionResponsibilityOutcomeEvidenceStructure(record.responsibilityOutcomeEvidence);
@@ -9733,6 +9746,9 @@ export default function Home() {
   const totalReceivedIncome = incomeRecords
     .filter((record) => record.status === "Received")
     .reduce((total, record) => total + parseFinanceAmount(record.amount), 0);
+  const totalExpectedIncome = incomeRecords
+    .filter((record) => record.status === "Expected")
+    .reduce((total, record) => total + parseFinanceAmount(record.amount), 0);
   const totalPaidExpenses = expenseRecords
     .filter((record) => record.status === "Paid")
     .reduce((total, record) => total + parseFinanceAmount(record.amount), 0);
@@ -9969,6 +9985,17 @@ export default function Home() {
   const commercialNowMs = Date.now();
   const leadFollowThrough = buildLeadFollowThrough({ leads, actions: actionRecords, people, nowMs: commercialNowMs });
   const leadDelivery = buildLeadDelivery({ leads, actions: actionRecords, people, income: incomeRecords, nowMs: commercialNowMs });
+  const incomeEvidenceViews = incomeRecords.map((record) => getDeliveryIncomeEvidence(record, {
+    leads, actions: actionRecords, people, income: incomeRecords, nowMs: commercialNowMs,
+  }));
+  const totalEvidenceSupportedEarnedIncome = incomeRecords.reduce((total, record, index) =>
+    total + (incomeEvidenceViews[index].earned ? parseFinanceAmount(record.amount) : 0), 0);
+  const totalEvidenceSupportedInvoicedIncome = incomeRecords.reduce((total, record, index) =>
+    total + (incomeEvidenceViews[index].invoiced ? parseFinanceAmount(record.amount) : 0), 0);
+  const totalEvidenceSupportedReceivedIncome = incomeRecords.reduce((total, record, index) =>
+    total + (incomeEvidenceViews[index].received ? parseFinanceAmount(record.amount) : 0), 0);
+  const outstandingInvoicedIncome = incomeRecords.reduce((total, record, index) =>
+    total + (incomeEvidenceViews[index].invoiced && !incomeEvidenceViews[index].received ? parseFinanceAmount(record.amount) : 0), 0);
   const activeOwnershipProblems = problemRecords.filter(isProblemUnresolved);
 
   const {
@@ -15951,6 +15978,9 @@ export default function Home() {
     const targetId = incomeEditor.id;
     try {
       if (!incomeWritableRef.current || incomeRecords.filter((record) => record.id === targetId).length !== 1) throw new Error("Income storage or identity is not safe to update; financial evidence has been preserved.");
+      if (actionRecords.some((action) => action.financeIncomeId === targetId)) {
+        throw new Error("Income has linked billing or collection Actions; reconcile those relationships before deleting the financial record.");
+      }
       const next = incomeRecords.filter((record) => record.id !== targetId);
       persistJsonArraysTransaction(window.localStorage, [{ key: INCOME_STORAGE_KEY, records: next }]);
       setIncomeRecords(next);
@@ -15961,6 +15991,45 @@ export default function Home() {
     setSelectedIncomeId(null);
     setIncomeEditor(null);
     setFeedback({ type: "success", message: "Income record deleted." });
+  };
+
+  const handleCreateIncomeWorkflowAction = (request: {
+    role: "Billing" | "Collection";
+    ownerPersonId: string;
+    dueDate: string;
+    paymentDueDate?: string;
+  }) => {
+    try {
+      if (!operatingDataLoaded || !incomeWritableRef.current || !conversionsWritableRef.current) {
+        throw new Error("Income or Action storage is not writable; financial accountability was not changed.");
+      }
+      const persisted = incomeEditor ? incomeRecords.filter((record) => record.id === incomeEditor.id) : [];
+      if (persisted.length !== 1 || !incomeEditor || JSON.stringify(incomeEditor) !== JSON.stringify(persisted[0])) {
+        throw new Error("Save the Income record and its ownership fields before creating a billing or collection Action.");
+      }
+      const result = createIncomeWorkflowAction({
+        leads, actions: actionRecords, people, income: incomeRecords, nowMs: Date.now(),
+      }, {
+        ...request,
+        incomeId: incomeEditor.id,
+        actionId: generateConversionId(),
+      });
+      if (conversions.some((record) => record.id === result.action.id)) {
+        throw new Error("Finance Action identity conflicts with a stored operating record; review integrity before routing.");
+      }
+      const nextIncome = incomeRecords.map((record) => record.id === result.income.id ? result.income : record);
+      const nextConversions = [result.action, ...conversions];
+      persistJsonArraysTransaction(window.localStorage, [
+        { key: INCOME_STORAGE_KEY, records: nextIncome },
+        { key: CONVERSION_STORAGE_KEY, records: nextConversions },
+      ]);
+      setIncomeRecords(nextIncome);
+      setConversions(nextConversions);
+      setIncomeEditor(result.income);
+      setFeedback({ type: "success", message: `${request.role} Action created and linked to Income.` });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Financial accountability Action could not be created." });
+    }
   };
 
   const handleCreateIncome = (relatedLeadId?: string) => {
@@ -18574,6 +18643,16 @@ export default function Home() {
                   <p className="mt-2 text-[11px] text-[#5d584f]">Recorded Received statuses, including legacy income without receipt evidence. This is not the evidence-verified customer receipts total.</p>
                 </div>
                 <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Expected income (recorded)</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(totalExpectedIncome)}</div>
+                  <p className="mt-2 text-[11px] text-[#5d584f]">Expected is not earned, invoiced or received income.</p>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Evidence-supported customer receipts</div>
+                  <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(totalEvidenceSupportedReceivedIncome)}</div>
+                  <p className="mt-2 text-[11px] text-[#5d584f]">Dated receipt evidence and unique references recorded; not independently verified against bank statements.</p>
+                </div>
+                <div className="rounded-2xl border border-[#d3cbc3] bg-[#f9f7f4] p-3">
                   <div className="text-[10px] uppercase tracking-[0.18em] text-[#4d4944]">Total paid expenses</div>
                   <div className="mt-2 text-[26px] font-semibold tracking-[-0.06em] text-[#171717]">{formatFinanceAmount(totalPaidExpenses)}</div>
                 </div>
@@ -19030,9 +19109,14 @@ export default function Home() {
 
               <section className="mt-8">
                 <h2 className="border-b border-[#d7d1ca] pb-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Finance</h2>
-                <p className="mt-2 text-[11px] text-[#5d584f]">Income totals preserve recorded Finance statuses; customer delivery evidence is assessed separately. Won or quoted value is never added to received income.</p>
+                <p className="mt-2 text-[11px] text-[#5d584f]">Won or quoted value is never added to realised income. Recorded statuses remain separate from evidence-supported earned, invoiced and received amounts; receipt evidence is not independently bank-verified.</p>
                 <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   <MetricCard label="Total received income" value={formatFinanceAmount(totalReceivedIncome)} />
+                  <MetricCard label="Expected income (recorded)" value={formatFinanceAmount(totalExpectedIncome)} />
+                  <MetricCard label="Evidence-supported receipts" value={formatFinanceAmount(totalEvidenceSupportedReceivedIncome)} />
+                  <MetricCard label="Evidence-supported earned income" value={formatFinanceAmount(totalEvidenceSupportedEarnedIncome)} />
+                  <MetricCard label="Evidence-supported invoices issued" value={formatFinanceAmount(totalEvidenceSupportedInvoicedIncome)} />
+                  <MetricCard label="Evidence-supported invoiced balance outstanding" value={formatFinanceAmount(outstandingInvoicedIncome)} />
                   <MetricCard label="Total paid expenses" value={formatFinanceAmount(totalPaidExpenses)} />
                   <MetricCard label="Net cash movement" value={formatFinanceAmount(netCashMovement)} />
                   <MetricCard label="Reserved tax" value={formatFinanceAmount(reservedTaxAmount)} />
@@ -20372,6 +20456,9 @@ export default function Home() {
             const id = actionEditor.deliveryLeadId || actionEditor.relatedLeadId;
             if (id) handleOpenAttentionRecord("Lead", id);
           }}
+          onOpenRelatedIncome={() => {
+            if (actionEditor.financeIncomeId) handleOpenAttentionRecord("Finance", `income:${actionEditor.financeIncomeId}`);
+          }}
         />
       ) : null}
 
@@ -20663,6 +20750,9 @@ export default function Home() {
         <IncomeDetailPanel
           income={incomeEditor}
           leads={leads}
+          people={people}
+          actions={actionRecords}
+          evidence={incomeEvidenceViews.find((entry) => entry.incomeId === incomeEditor.id)}
           canDelete={incomeRecords.some((record) => record.id === incomeEditor.id)}
           onClose={() => {
             setSelectedIncomeId(null);
@@ -20672,6 +20762,8 @@ export default function Home() {
           onSave={handleIncomeSave}
           onDelete={handleIncomeDelete}
           onOpenLead={(id) => handleOpenAttentionRecord("Lead", id)}
+          onOpenAction={(id) => handleOpenAttentionRecord("Action", id)}
+          onCreateAction={handleCreateIncomeWorkflowAction}
         />
       ) : null}
 

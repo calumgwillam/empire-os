@@ -1,7 +1,7 @@
 import type { StrategicRiskConvergence } from "./strategic-risk-resolution";
 import type { IcarusObservationExecutionIndex } from "./icarus-observation-action";
 import { buildLeadFollowThrough, type LeadFollowThroughInput } from "./lead-follow-through";
-import { buildLeadDelivery, type LeadDeliveryInput } from "./lead-delivery";
+import { buildLeadDelivery, getDeliveryIncomeEvidence, hasSupportedFinanceActionCompletion, type LeadDeliveryInput } from "./lead-delivery";
 import type {
   ActionRecord,
   DecisionRecord,
@@ -482,7 +482,12 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
       });
       if (existing) existing.attentionRank = Math.min(existing.attentionRank, rank);
     };
-    buildLeadDelivery(delivery).filter((view) => view.reasons.length).forEach((view) => {
+    const deliveryViews = buildLeadDelivery(delivery);
+    deliveryViews.map((view) => ({
+      ...view,
+      reasons: view.reasons.filter((reason) => !reason.startsWith("DELIVERY FINANCE:")
+        || reason.includes("no linked financial record")),
+    })).filter((view) => view.reasons.length).forEach((view) => {
       const lead = delivery.leads.find((entry) => entry.id === view.leadId);
       if (!lead) return;
       const action = delivery.actions.filter((entry) => entry.id === view.actionId);
@@ -497,10 +502,31 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
         "DELIVERY: Action customer commitment is missing, ambiguous or mismatched",
       ], 4);
     });
-    delivery.income.filter((record) => record.relatedLeadId).forEach((record) => {
+    delivery.actions.filter((action) => action.financeIncomeId).forEach((action) => {
+      const incomes = delivery.income.filter((record) => record.id === action.financeIncomeId);
+      const reference = action.financeIncomeRole === "Billing" ? incomes[0]?.billingActionId
+        : action.financeIncomeRole === "Collection" ? incomes[0]?.collectionActionId : undefined;
+      const completedHistory = hasSupportedFinanceActionCompletion(action, delivery);
+      if (incomes.length !== 1 || (reference !== action.id && !completedHistory)) addDeliveryAttention(action.id, "Action", action.title, "", [
+        "DELIVERY FINANCE: Action Income linkage is missing, ambiguous or mismatched",
+      ], 4);
+    });
+    delivery.income.forEach((record) => {
+      const finance = getDeliveryIncomeEvidence(record, delivery);
       const leads = delivery.leads.filter((lead) => lead.id === record.relatedLeadId);
-      if (leads.length !== 1 || !leads[0].deliveryCommitment) addDeliveryAttention(`income:${record.id}`, "Finance",
-        record.description, record.area, ["DELIVERY FINANCE: Linked customer commitment is missing or ambiguous"], 4);
+      const reasons = [...finance.reasons];
+      if (deliveryViews.some((view) => view.leadId === record.relatedLeadId && view.completionSupported) && !finance.invoiced) {
+        reasons.push("DELIVERY FINANCE: Completed delivery has no evidenced invoice; review billing responsibility");
+        if (!finance.billingOwnerAssigned) reasons.push("DELIVERY FINANCE: Completed delivery has no billing owner");
+        if (!finance.billingActionTracked) reasons.push("DELIVERY FINANCE: Completed delivery has no tracked billing Action");
+      }
+      if (record.relatedLeadId && (leads.length !== 1 || !leads[0].deliveryCommitment)) {
+        reasons.push("DELIVERY FINANCE: Linked customer commitment is missing or ambiguous");
+      }
+      if (reasons.length) addDeliveryAttention(`income:${record.id}`, "Finance",
+        record.description, record.area, reasons,
+        finance.workflowReasons.some((reason) => reason.toLowerCase().includes("blocked")) ? 1
+          : finance.overdue || finance.collectionStatus === "Disputed" ? 2 : 4);
     });
   }
 
