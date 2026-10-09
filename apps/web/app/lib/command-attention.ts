@@ -2,6 +2,7 @@ import type { StrategicRiskConvergence } from "./strategic-risk-resolution";
 import type { IcarusObservationExecutionIndex } from "./icarus-observation-action";
 import { buildLeadFollowThrough, type LeadFollowThroughInput } from "./lead-follow-through";
 import { buildLeadDelivery, getDeliveryIncomeEvidence, hasSupportedFinanceActionCompletion, type LeadDeliveryInput } from "./lead-delivery";
+import { buildJobPerformance, getJobExpenseErrors, type JobPerformanceInput } from "./job-performance";
 import type {
   ActionRecord,
   DecisionRecord,
@@ -109,6 +110,7 @@ export type CommandAttentionInput = {
   leads?: LeadFollowThroughInput["leads"];
   commercialPeople?: LeadFollowThroughInput["people"];
   delivery?: Omit<LeadDeliveryInput, "nowMs">;
+  jobPerformance?: Omit<JobPerformanceInput, "nowMs">;
   outreach: readonly Pick<OutreachRecord, "id" | "businessName" | "status" | "nextFollowUpDate">[];
   projects: readonly Pick<ProjectRecord, "id" | "projectName" | "area" | "status" | "health" | "nextReviewDate" | "reviewNote" | "targetCompletionDate" | "startDate">[];
   decisions: readonly Pick<DecisionRecord, "id" | "decisionTitle" | "title" | "decisionStatus" | "reviewDate" | "createdAt" | "relatedArea" | "relatedPillar">[];
@@ -527,6 +529,31 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
         record.description, record.area, reasons,
         finance.workflowReasons.some((reason) => reason.toLowerCase().includes("blocked")) ? 1
           : finance.overdue || finance.collectionStatus === "Disputed" ? 2 : 4);
+    });
+  }
+
+  if (input.jobPerformance) {
+    buildJobPerformance({ ...input.jobPerformance, nowMs: now }).filter((job) => job.reasons.length).forEach((job) => {
+      const rank = job.knownCostsExceedEarned || (job.contribution !== null && job.contribution < 0)
+        || (job.profitAfterAllocatedCosts !== null && job.profitAfterAllocatedCosts < 0) ? 2 : 4;
+      const existing = uniqueByKey.get(`Lead:${job.leadId}`);
+      addAttentionItem("JOB FINANCIAL PERFORMANCE", {
+        id: job.leadId, objectType: "Lead", title: job.title, area: job.area,
+        reasons: job.reasons, reason: job.reasons.join(" • "), statusText: "Job financial review",
+        attentionRank: rank,
+        tieWeight: 0, priorityScore: 100, sortDate: 0, sortDateAscending: false, navigationMode: "record-handler",
+      });
+      if (existing) existing.attentionRank = Math.min(existing.attentionRank, rank);
+    });
+    const jobInput = { ...input.jobPerformance, nowMs: now };
+    jobInput.expenses.filter((expense) => expense.relatedLeadId && jobInput.leads.filter((lead) =>
+      lead.id === expense.relatedLeadId && lead.deliveryCommitment).length !== 1).forEach((expense) => {
+      const reasons = getJobExpenseErrors(expense, jobInput).map((reason) => `JOB FINANCE: ${reason}`);
+      addAttentionItem("JOB FINANCIAL PERFORMANCE", {
+        id: `expense:${expense.id}`, objectType: "Finance", title: expense.description, area: expense.area,
+        reasons, reason: reasons.join(" • "), statusText: "Job cost attribution review",
+        attentionRank: 4, tieWeight: 0, priorityScore: 100, sortDate: 0, sortDateAscending: false, navigationMode: "record-handler",
+      });
     });
   }
 

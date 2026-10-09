@@ -499,7 +499,7 @@ function productionLearning(records: ProductionLearningRecords): LearningAttenti
   }
   const source = [
     section("function isActionWaiting(", "\nconst personStatusOptions"),
-    section("function deriveDecisionExecutionState(", "\nconst expenseCategoryOptions"),
+    section("function deriveDecisionExecutionState(", "\nconst commitmentTypeOptions"),
     section("  const isProblemUnresolved =", "  const isDecisionActive ="),
     section("  const commandLearningInput =", "  const commandAttentionPolicy ="),
     "result = commandLearningInput;",

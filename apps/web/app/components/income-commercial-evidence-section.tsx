@@ -33,6 +33,7 @@ export default function IncomeCommercialEvidenceSection({ income, leads, people,
   const fields = [
     ["earnedDate", "Earned on (explicit recognition date)", "date"],
     ["earnedEvidence", "Earned-income evidence / recognition basis", "text"],
+    ["earnedReference", "Unique revenue recognition reference (job profitability)", "text"],
     ["invoiceIssuedDate", "Invoice issued on", "date"],
     ["invoiceReference", "Unique invoice reference", "text"],
     ["invoiceEvidence", "Invoice issue evidence", "text"],

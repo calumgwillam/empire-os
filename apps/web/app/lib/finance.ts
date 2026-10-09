@@ -293,6 +293,7 @@ export type IncomeRecord = {
   relatedLeadId?: string;
   earnedDate?: string;
   earnedEvidence?: string;
+  earnedReference?: string;
   invoiceIssuedDate?: string;
   invoiceReference?: string;
   invoiceEvidence?: string;
@@ -309,6 +310,9 @@ export type IncomeRecord = {
 
 export const expenseStatusOptions = ["Planned", "Paid"] as const;
 export type ExpenseStatus = (typeof expenseStatusOptions)[number];
+export const expenseCategoryOptions = ["Materials", "Equipment", "Fuel", "Labour", "Subcontractor", "Insurance", "Marketing", "Software", "Vehicle", "Other"] as const;
+export const jobCostTypeOptions = ["Direct", "Allocated overhead"] as const;
+export type JobCostType = (typeof jobCostTypeOptions)[number];
 
 export type ExpenseRecord = {
   id: string;
@@ -321,6 +325,12 @@ export type ExpenseRecord = {
   status: ExpenseStatus;
   notes: string;
   dateCreated: string;
+  relatedLeadId?: string;
+  jobCostType?: JobCostType;
+  costReference?: string;
+  incurredDate?: string;
+  incurredEvidence?: string;
+  allocationBasis?: string;
 };
 
 export const taxPaymentStatusOptions = ["Expected", "Received"] as const;
@@ -360,6 +370,7 @@ export function sanitizeIncomeRecord(
     ...(record.relatedLeadId !== undefined ? { relatedLeadId: record.relatedLeadId.trim() } : {}),
     ...(record.earnedDate !== undefined ? { earnedDate: record.earnedDate.trim() } : {}),
     ...(record.earnedEvidence !== undefined ? { earnedEvidence: record.earnedEvidence.trim() } : {}),
+    ...(record.earnedReference !== undefined ? { earnedReference: record.earnedReference.trim() } : {}),
     ...(record.invoiceIssuedDate !== undefined ? { invoiceIssuedDate: record.invoiceIssuedDate.trim() } : {}),
     ...(record.invoiceReference !== undefined ? { invoiceReference: record.invoiceReference.trim() } : {}),
     ...(record.invoiceEvidence !== undefined ? { invoiceEvidence: record.invoiceEvidence.trim() } : {}),
@@ -387,6 +398,11 @@ export function sanitizeExpenseRecord(
     status: expenseStatusOptions.includes(record.status as ExpenseStatus) ? record.status : "Planned",
     notes: record.notes.trim(),
     dateCreated: record.dateCreated || deps.nowIso(),
+    ...(record.relatedLeadId !== undefined ? { relatedLeadId: record.relatedLeadId.trim() } : {}),
+    ...(record.costReference !== undefined ? { costReference: record.costReference.trim() } : {}),
+    ...(record.incurredDate !== undefined ? { incurredDate: record.incurredDate.trim() } : {}),
+    ...(record.incurredEvidence !== undefined ? { incurredEvidence: record.incurredEvidence.trim() } : {}),
+    ...(record.allocationBasis !== undefined ? { allocationBasis: record.allocationBasis.trim() } : {}),
   };
 }
 

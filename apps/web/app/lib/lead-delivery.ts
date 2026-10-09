@@ -78,7 +78,7 @@ export function assertLeadDeliveryCommitment(value: unknown): asserts value is L
     throw new Error("Lead delivery commitment is malformed; stored delivery accountability must be preserved and reconciled.");
   }
 }
-const incomeEvidenceFields = ["relatedLeadId", "earnedDate", "earnedEvidence", "invoiceIssuedDate",
+const incomeEvidenceFields = ["relatedLeadId", "earnedDate", "earnedEvidence", "earnedReference", "invoiceIssuedDate",
   "invoiceReference", "invoiceEvidence", "receiptReference", "receiptEvidence", "billingOwnerPersonId",
   "billingActionId", "paymentDueDate", "collectionOwnerPersonId", "collectionActionId",
   "collectionStatusEvidence"] as const;
@@ -126,7 +126,10 @@ export function getDeliveryIncomeEvidence(record: IncomeRecord, input: LeadDeliv
   if (record.status !== "Expected" && record.status !== "Received") reasons.push("DELIVERY FINANCE: Income status is invalid");
   const dateValid = Number.isFinite(getLeadFollowThroughDate(record.date));
   if (!dateValid) reasons.push("DELIVERY FINANCE: Income expected or received date is missing or invalid");
-  const earned = unique && amount !== null && Boolean(record.earnedEvidence?.trim()) && validEvent(record.earnedDate || "", input.nowMs);
+  const recognitionReference = record.earnedReference?.trim().toLowerCase();
+  const recognitionUnique = !recognitionReference || input.income.filter((entry) =>
+    (entry.earnedReference?.trim() || entry.invoiceReference?.trim())?.toLowerCase() === recognitionReference).length === 1;
+  const earned = unique && amount !== null && recognitionUnique && Boolean(record.earnedEvidence?.trim()) && validEvent(record.earnedDate || "", input.nowMs);
   const invoiceUnique = !record.invoiceReference?.trim() || input.income.filter((entry) =>
     entry.invoiceReference?.trim() === record.invoiceReference?.trim()).length === 1;
   const receiptUnique = !record.receiptReference?.trim() || input.income.filter((entry) =>
@@ -167,6 +170,7 @@ export function getDeliveryIncomeEvidence(record: IncomeRecord, input: LeadDeliv
     && collectionHistoryValid);
   const collectionStatus = record.collectionStatus || "Open";
   if ((record.earnedDate || record.earnedEvidence) && !earned) reasons.push("DELIVERY FINANCE: Earned-income claim lacks valid dated evidence");
+  if (!recognitionUnique) reasons.push("DELIVERY FINANCE: Revenue recognition reference is duplicated");
   if ((record.invoiceIssuedDate || record.invoiceReference || record.invoiceEvidence) && !invoiced) reasons.push("DELIVERY FINANCE: Invoice claim is incomplete, invalid or duplicated");
   if (record.status === "Received" && !received) reasons.push("DELIVERY FINANCE: Recorded receipt lacks unique dated payment evidence");
   if (!receiptUnique) reasons.push("DELIVERY FINANCE: Payment reference is duplicated");

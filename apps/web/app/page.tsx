@@ -221,6 +221,11 @@ import { acceptLeadDelivery, assertIncomeCommercialEvidence, assertLeadDeliveryC
   validateDeliveryIncomeSave, type LeadDeliveryView } from "./lib/lead-delivery";
 import LeadDeliverySection, { type LeadDeliveryRequest } from "./components/lead-delivery-section";
 import IncomeCommercialEvidenceSection from "./components/income-commercial-evidence-section";
+import JobPerformanceSection from "./components/job-performance-section";
+import ExpenseJobEvidenceSection from "./components/expense-job-evidence-section";
+import JobPerformanceReport from "./components/job-performance-report";
+import { assertExpenseJobEvidence, assertLeadJobFinancialEvidence, buildJobPerformance,
+  recordJobFinancialReview, validateJobExpenseSave, type JobFinancialReview, type JobPerformanceView } from "./lib/job-performance";
 import {
   assertIcarusDataStructure,
   normaliseIcarusAssessmentData,
@@ -295,6 +300,8 @@ import {
   applyCapitalDecision,
   applyQuoteRevalidation,
   expenseStatusOptions,
+  expenseCategoryOptions,
+  jobCostTypeOptions,
   incomeStatusOptions,
   capitalDecisionOutcomeOptions,
   commitmentCertaintyOptions,
@@ -821,7 +828,6 @@ function deriveDecisionExecutionState(decision: DecisionRecord, actions: ActionR
 }
 
 
-const expenseCategoryOptions = ["Materials", "Equipment", "Fuel", "Labour", "Subcontractor", "Insurance", "Marketing", "Software", "Vehicle", "Other"] as const;
 
 const commitmentTypeOptions = ["Loan", "Lease", "Subscription", "Tax", "Supplier", "Insurance", "Other"] as const;
 const commitmentStatusOptions = ["Upcoming", "Due", "Paid", "Overdue", "Cancelled"] as const;
@@ -2724,7 +2730,7 @@ function ProjectHealthReviewPanel({ project, people, onClose, onSubmit }: {
   );
 }
 
-function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveToggle, followThrough, actions, followThroughWritable, onRouteFollowThrough, onOpenAction, delivery, onRecordDelivery, onOpenIncome, onPrepareIncome }: {
+function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveToggle, followThrough, actions, followThroughWritable, onRouteFollowThrough, onOpenAction, delivery, onRecordDelivery, onOpenIncome, onPrepareIncome, jobPerformance, onReviewJob, onOpenExpense, onPrepareExpense }: {
   lead: LeadRecord;
   people: PersonRecord[];
   onClose: () => void;
@@ -2740,6 +2746,10 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
   onRecordDelivery: (request: LeadDeliveryRequest) => void;
   onOpenIncome: (id: string) => void;
   onPrepareIncome: (leadId: string) => void;
+  jobPerformance?: JobPerformanceView;
+  onReviewJob: (request: Omit<JobFinancialReview, "reviewedAt" | "financialSnapshot">) => void;
+  onOpenExpense: (id: string) => void;
+  onPrepareExpense: (leadId: string) => void;
 }) {
   const hasInvalidLeadName = !lead.leadName.trim();
   const [hasSaved, setHasSaved] = useState(false);
@@ -2771,6 +2781,9 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
           writable={followThroughWritable} onRoute={onRouteFollowThrough} onOpenAction={onOpenAction} />
         <LeadDeliverySection key={lead.id} lead={lead} view={delivery} actions={actions} people={people}
           writable={followThroughWritable} onRecord={onRecordDelivery} onOpenAction={onOpenAction} onOpenIncome={onOpenIncome} onPrepareIncome={onPrepareIncome} />
+        <JobPerformanceSection key={`job:${lead.id}`} lead={lead} view={jobPerformance} people={people}
+          writable={followThroughWritable} onReview={onReviewJob} onOpenIncome={onOpenIncome}
+          onOpenExpense={onOpenExpense} onPrepareExpense={onPrepareExpense} />
         {hasSaved ? (
           <div aria-live="polite" className="mt-4 rounded-xl border border-[#cfc8c1] bg-[#f2efe9] px-3 py-2 text-[12px] font-medium text-[#2f2b28]">
             Lead details saved.
@@ -3245,12 +3258,14 @@ function IncomeDetailPanel({ income, leads, people, actions, evidence, canDelete
   );
 }
 
-function ExpenseDetailPanel({ expense, canDelete, onClose, onChange, onSave, onDelete }: {
+function ExpenseDetailPanel({ expense, leads, onOpenLead, canDelete, onClose, onChange, onSave, onDelete }: {
   expense: ExpenseRecord;
+  leads: LeadRecord[];
+  onOpenLead: (id: string) => void;
   canDelete: boolean;
   onClose: () => void;
   onChange: (field: keyof ExpenseRecord, value: string) => void;
-  onSave: () => void;
+  onSave: () => boolean;
   onDelete: () => void;
 }) {
   const hasInvalidDescription = !expense.description.trim();
@@ -3329,9 +3344,10 @@ function ExpenseDetailPanel({ expense, canDelete, onClose, onChange, onSave, onD
           <FinanceDeleteControl canDelete={canDelete} label="Delete expense record" onDelete={onDelete} />
           <div className="flex justify-end gap-2">
             <button type="button" onClick={onClose} className="rounded-lg border border-[#d3cbc3] bg-white px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#2f2b28]">Cancel</button>
-            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } onSave(); markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save expense"}</button>
+            <button type="button" onClick={() => { setHasAttemptedSave(true); if (hasInvalidDescription || hasInvalidDate || hasInvalidAmount) { return; } if (onSave()) markSaved(); }} className="rounded-lg bg-[#171717] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#f7f4f1] transition active:scale-[0.98]">{hasSaved ? "Saved" : "Save expense"}</button>
           </div>
         </div>
+        <ExpenseJobEvidenceSection expense={expense} leads={leads} onChange={onChange} onOpenLead={onOpenLead} />
         <RecordChangeHistory recordType="Expense" recordId={expense.id} />
       </div>
     </div>
@@ -8811,6 +8827,7 @@ export default function Home() {
   const conversionsWritableRef = useRef(false);
   const leadsWritableRef = useRef(false);
   const incomeWritableRef = useRef(false);
+  const expensesWritableRef = useRef(false);
   const founderIntelligenceWritableRef = useRef(false);
   const founderIntelligenceContextRef = useRef<FounderIntelligenceContext | null>(null);
   const [changeHistory, setChangeHistory] = useState<ChangeEvent[]>([]);
@@ -9233,6 +9250,7 @@ export default function Home() {
           parsedLeads.forEach((lead: unknown) => {
             if (!isPlainObject(lead)) throw new Error("Lead storage contains a malformed record.");
             assertLeadDeliveryCommitment(lead.deliveryCommitment);
+            assertLeadJobFinancialEvidence(lead);
             if (typeof lead.id === "string") addWorkItem("Lead", lead.id);
           });
           setLeads(parsedLeads.map((lead) => ({
@@ -9351,12 +9369,17 @@ export default function Home() {
         setFeedback({ type: "error", message: `Income storage could not be loaded; existing data is preserved and Income saves are disabled. ${error instanceof Error ? error.message : String(error)}` });
       }
 
-      if (storedExpenses) {
-        const parsedExpenses = JSON.parse(storedExpenses);
-
-        if (Array.isArray(parsedExpenses)) {
+      try {
+        if (storedExpenses) {
+          const parsedExpenses = JSON.parse(storedExpenses);
+          if (!Array.isArray(parsedExpenses)) throw new Error("Expense storage is not an array.");
+          parsedExpenses.forEach(assertExpenseJobEvidence);
           setExpenseRecords(parsedExpenses);
         }
+        expensesWritableRef.current = true;
+      } catch (error) {
+        expensesWritableRef.current = false;
+        setFeedback({ type: "error", message: `Expense storage could not be loaded; existing data is preserved and Expense saves are disabled. ${error instanceof Error ? error.message : String(error)}` });
       }
 
       if (storedCommitments) {
@@ -9572,6 +9595,7 @@ export default function Home() {
       return;
     }
 
+    if (!expensesWritableRef.current) return;
     persistJsonArray(window.localStorage, EXPENSE_STORAGE_KEY, expenseRecords);
   }, [expenseRecords, operatingDataLoaded]);
 
@@ -9872,6 +9896,7 @@ export default function Home() {
       people,
       leads,
       income: incomeRecords,
+      expenses: expenseRecords,
       commitments: commitmentRecords,
       outreach: outreachContacts,
       handoffs: delegationHandoffs,
@@ -9888,7 +9913,7 @@ export default function Home() {
     if (!operatingDataLoaded) return;
     executeIntegrityAudit(initialIntegrityStorageRef.current || undefined);
     initialIntegrityStorageRef.current = null;
-  }, [operatingDataLoaded, captures, conversions, projects, people, leads, incomeRecords, commitmentRecords, outreachContacts, delegationHandoffs, strategicObjectives, strategicReviews]);
+  }, [operatingDataLoaded, captures, conversions, projects, people, leads, incomeRecords, expenseRecords, commitmentRecords, outreachContacts, delegationHandoffs, strategicObjectives, strategicReviews]);
 
   type AttentionItem = {
     id: string;
@@ -9985,6 +10010,8 @@ export default function Home() {
   const commercialNowMs = Date.now();
   const leadFollowThrough = buildLeadFollowThrough({ leads, actions: actionRecords, people, nowMs: commercialNowMs });
   const leadDelivery = buildLeadDelivery({ leads, actions: actionRecords, people, income: incomeRecords, nowMs: commercialNowMs });
+  const jobPerformanceInput = { leads, actions: actionRecords, people, income: incomeRecords, expenses: expenseRecords, nowMs: commercialNowMs };
+  const jobPerformance = buildJobPerformance(jobPerformanceInput);
   const incomeEvidenceViews = incomeRecords.map((record) => getDeliveryIncomeEvidence(record, {
     leads, actions: actionRecords, people, income: incomeRecords, nowMs: commercialNowMs,
   }));
@@ -11312,6 +11339,7 @@ export default function Home() {
     leads,
     commercialPeople: people,
     delivery: { leads, actions: actionRecords, people, income: incomeRecords },
+    jobPerformance: { leads, actions: actionRecords, people, income: incomeRecords, expenses: expenseRecords },
     outreach: outreachContacts,
     projects,
     decisions: decisionRecords,
@@ -14232,6 +14260,10 @@ export default function Home() {
       } else if (id.startsWith("income:")) {
         const record = incomeRecords.find((item) => item.id === id.slice("income:".length));
         if (record) handleIncomeEditOpen(record);
+      } else if (id.startsWith("expense:")) {
+        const records = expenseRecords.filter((item) => item.id === id.slice("expense:".length));
+        if (records.length === 1) handleExpenseEditOpen(records[0]);
+        else setFeedback({ type: "error", message: "Expense record is missing or duplicated; reconcile its identity before opening." });
       }
     }
   };
@@ -16062,26 +16094,39 @@ export default function Home() {
       return;
     }
 
-    setExpenseEditor({ ...expenseEditor, [field]: value });
+    if (field === "jobCostType") {
+      const jobCostType = jobCostTypeOptions.find((option) => option === value);
+      if (value && !jobCostType) {
+        setFeedback({ type: "error", message: "Select a valid job cost treatment." });
+        return;
+      }
+      setExpenseEditor({ ...expenseEditor, jobCostType });
+    } else setExpenseEditor({ ...expenseEditor, [field]: value });
   };
 
-  const handleExpenseSave = () => {
-    if (!expenseEditor || !expenseEditor.description.trim()) {
-      return;
+  const handleExpenseSave = (): boolean => {
+    try {
+      if (!operatingDataLoaded || !expensesWritableRef.current) throw new Error("Expense storage is not writable; the record was not saved.");
+      if (!expenseEditor?.description.trim() || !isValidCalendarDateInput(expenseEditor.date)
+        || parseFinanceAmountInput(expenseEditor.amount) === null) throw new Error("Expense description, valid date and non-negative amount are required.");
+      if (expenseEditor.relatedLeadId && (!leadsWritableRef.current || !incomeWritableRef.current)) throw new Error("Job financial stores are not safely loaded; job costs cannot be changed.");
+      const nextExpense = sanitizeExpenseRecord(expenseEditor, {
+        generateId: () => generateFinanceRecordId("expense"),
+        nowIso: () => new Date().toISOString(),
+      });
+      validateJobExpenseSave(nextExpense, { ...jobPerformanceInput, nowMs: Date.now() });
+      const isNew = !expenseRecords.some((record) => record.id === nextExpense.id);
+      const next = isNew ? [nextExpense, ...expenseRecords] : expenseRecords.map((record) => record.id === nextExpense.id ? nextExpense : record);
+      persistJsonArraysTransaction(window.localStorage, [{ key: EXPENSE_STORAGE_KEY, records: next }]);
+      setExpenseRecords(next);
+      setSelectedExpenseId(nextExpense.id);
+      setExpenseEditor(nextExpense);
+      setFeedback({ type: "success", message: isNew ? "Expense record created." : "Expense record saved." });
+      return true;
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Expense could not be saved." });
+      return false;
     }
-
-    const nextExpense = sanitizeExpenseRecord(expenseEditor, {
-      generateId: () => generateFinanceRecordId("expense"),
-      nowIso: () => new Date().toISOString(),
-    });
-    const isNew = !expenseRecords.some((record) => record.id === nextExpense.id);
-
-    setExpenseRecords((current) =>
-      isNew ? [nextExpense, ...current] : current.map((record) => record.id === nextExpense.id ? nextExpense : record),
-    );
-    setSelectedExpenseId(nextExpense.id);
-    setExpenseEditor(nextExpense);
-    setFeedback({ type: "success", message: isNew ? "Expense record created." : "Expense record saved." });
   };
 
   const handleExpenseDelete = () => {
@@ -16089,11 +16134,18 @@ export default function Home() {
       return;
     }
 
-    const targetId = expenseEditor.id;
-    setExpenseRecords((current) => current.filter((record) => record.id !== targetId));
-    setSelectedExpenseId(null);
-    setExpenseEditor(null);
-    setFeedback({ type: "success", message: "Expense record deleted." });
+    try {
+      const targetId = expenseEditor.id;
+      if (!expensesWritableRef.current || expenseRecords.filter((record) => record.id === targetId).length !== 1) throw new Error("Expense storage or identity is not safe to update; cost evidence has been preserved.");
+      const next = expenseRecords.filter((record) => record.id !== targetId);
+      persistJsonArraysTransaction(window.localStorage, [{ key: EXPENSE_STORAGE_KEY, records: next }]);
+      setExpenseRecords(next);
+      setSelectedExpenseId(null);
+      setExpenseEditor(null);
+      setFeedback({ type: "success", message: "Expense record deleted. Any linked job financial coverage review now needs reassessment." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Expense could not be deleted." });
+    }
   };
 
   const handleCreateExpense = () => {
@@ -16105,6 +16157,44 @@ export default function Home() {
 
     setSelectedExpenseId(newExpense.id);
     setExpenseEditor(newExpense);
+  };
+
+  const handlePrepareJobExpense = (leadId: string) => {
+    const matches = leads.filter((record) => record.id === leadId);
+    const lead = matches[0];
+    if (matches.length !== 1 || !lead?.deliveryCommitment || !expensesWritableRef.current) {
+      setFeedback({ type: "error", message: "A saved accepted job and writable Expense storage are required." });
+      return;
+    }
+    if (!leadEditor || JSON.stringify(leadEditor) !== JSON.stringify(lead)) {
+      setFeedback({ type: "error", message: "Save or reload the Lead before preparing a linked Expense; unsaved changes must not be lost." });
+      return;
+    }
+    const draft: ExpenseRecord = { ...defaultExpenseForm, id: generateFinanceRecordId("expense"),
+      dateCreated: new Date().toISOString(), relatedLeadId: leadId, area: lead.relatedPillar };
+    setLeadEditor(null);
+    setSelectedLeadId(null);
+    setSelectedExpenseId(draft.id);
+    setExpenseEditor(draft);
+    setActiveView("Finance");
+    setFeedback({ type: "success", message: "Linked Expense draft prepared, not saved. Enter genuine amount, source reference and incurred-cost evidence." });
+  };
+
+  const handleReviewJobFinancials = (request: Omit<JobFinancialReview, "reviewedAt" | "financialSnapshot">) => {
+    try {
+      if (!operatingDataLoaded || !leadsWritableRef.current || !expensesWritableRef.current || !incomeWritableRef.current
+        || !conversionsWritableRef.current) throw new Error("Job financial stores are not writable; the review was not recorded.");
+      const persisted = leads.filter((lead) => lead.id === leadEditor?.id);
+      if (!leadEditor || persisted.length !== 1 || JSON.stringify(leadEditor) !== JSON.stringify(persisted[0])) throw new Error("Save or reload the Lead before financial review; unsaved changes must not be overwritten.");
+      const nextLead = recordJobFinancialReview({ ...jobPerformanceInput, nowMs: Date.now() }, leadEditor.id, request);
+      const next = leads.map((lead) => lead.id === nextLead.id ? nextLead : lead);
+      persistJsonArraysTransaction(window.localStorage, [{ key: LEAD_STORAGE_KEY, records: next }]);
+      setLeads(next);
+      setLeadEditor(nextLead);
+      setFeedback({ type: "success", message: "Attributed job financial coverage review recorded. Missing financial evidence still remains unknown." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Job financial coverage review failed." });
+    }
   };
 
   const handleCommitmentEditOpen = (commitment: CommitmentRecord) => {
@@ -16586,6 +16676,13 @@ export default function Home() {
           if (!Array.isArray(decoded)) {
             throw new Error(`Expected an array for: ${key}`);
           }
+          if (key === EXPENSE_STORAGE_KEY) decoded.forEach(assertExpenseJobEvidence);
+          if (key === INCOME_STORAGE_KEY) decoded.forEach(assertIncomeCommercialEvidence);
+          if (key === LEAD_STORAGE_KEY) decoded.forEach((record: unknown) => {
+            if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error("Emergency snapshot contains a malformed Lead.");
+            assertLeadDeliveryCommitment("deliveryCommitment" in record ? record.deliveryCommitment : undefined);
+            assertLeadJobFinancialEvidence(record);
+          });
         }
       }
 
@@ -18611,6 +18708,8 @@ export default function Home() {
               <p className="mt-4 max-w-3xl text-[15px] leading-7 text-[#43403b]">
                 Track cash position, income, expenses and financial commitments so the business always knows its real operating position.
               </p>
+              <JobPerformanceReport jobs={jobPerformance} unallocatedExpenseCount={expenseRecords.filter((record) => !record.relatedLeadId).length}
+                onOpenLead={(id) => handleOpenAttentionRecord("Lead", id)} />
 
               <button
                 type="button"
@@ -20714,6 +20813,10 @@ export default function Home() {
           onRecordDelivery={handleRecordLeadDelivery}
           onOpenIncome={(id) => handleOpenAttentionRecord("Finance", `income:${id}`)}
           onPrepareIncome={handleCreateIncome}
+          jobPerformance={jobPerformance.find((view) => view.leadId === leadEditor.id)}
+          onReviewJob={handleReviewJobFinancials}
+          onOpenExpense={(id) => handleOpenAttentionRecord("Finance", `expense:${id}`)}
+          onPrepareExpense={handlePrepareJobExpense}
         />
       ) : null}
 
@@ -20770,6 +20873,8 @@ export default function Home() {
       {selectedExpenseId && expenseEditor ? (
         <ExpenseDetailPanel
           expense={expenseEditor}
+          leads={leads}
+          onOpenLead={(id) => handleOpenAttentionRecord("Lead", id)}
           canDelete={expenseRecords.some((record) => record.id === expenseEditor.id)}
           onClose={() => {
             setSelectedExpenseId(null);

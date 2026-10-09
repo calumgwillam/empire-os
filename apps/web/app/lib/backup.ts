@@ -2,6 +2,7 @@ import { assertIcarusDataStructure, ICARUS_STORAGE_KEY, normaliseIcarusAssessmen
 import { assertIcarusObservationActionLinks, assertIcarusObservationHandoffs } from "./icarus-observation-action";
 import { assertActionFinanceLink, assertActionLeadLink } from "./capture-conversions";
 import { assertIncomeCommercialEvidence, assertLeadDeliveryCommitment } from "./lead-delivery";
+import { assertExpenseJobEvidence, assertLeadJobFinancialEvidence } from "./job-performance";
 
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
@@ -264,7 +265,7 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
     }
   }
 
-  for (const key of [LEAD_STORAGE_KEY, INCOME_STORAGE_KEY]) {
+  for (const key of [LEAD_STORAGE_KEY, INCOME_STORAGE_KEY, EXPENSE_STORAGE_KEY]) {
     const stored = storage[key];
     if (typeof stored !== "string") continue;
     const records: unknown = JSON.parse(stored);
@@ -273,7 +274,9 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
       if (key === LEAD_STORAGE_KEY) {
         if (!isPlainObject(record)) throw new Error("The backup contains a malformed Lead.");
         assertLeadDeliveryCommitment(record.deliveryCommitment);
-      } else assertIncomeCommercialEvidence(record);
+        assertLeadJobFinancialEvidence(record);
+      } else if (key === INCOME_STORAGE_KEY) assertIncomeCommercialEvidence(record);
+      else assertExpenseJobEvidence(record);
     });
   }
 

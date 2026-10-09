@@ -8,7 +8,8 @@ import {
 import type { ActionRecord, CaptureConversionRecord, DecisionRecord, LessonRecord, OpportunityRecord, ProblemRecord, SopRecord, SystemRecord } from "./capture-conversions";
 import { defaultLeadForm, type LeadRecord, type OutreachRecord } from "./crm";
 import { acceptLeadDelivery } from "./lead-delivery";
-import type { CommitmentRecord } from "./finance";
+import type { CommitmentRecord, ExpenseRecord, IncomeRecord } from "./finance";
+import { recordJobFinancialReview, type JobPerformanceInput } from "./job-performance";
 import { isValidChangeEvent } from "./backup";
 import type { ProjectRecord } from "./projects";
 import type { StrategicObjective, StrategicReview } from "./strategic-reviews";
@@ -49,6 +50,43 @@ function makeInput(overrides: Partial<IntegrityAuditInput> = {}): IntegrityAudit
     ...overrides,
   };
 }
+
+describe("Job financial integrity", () => {
+  it("surfaces orphaned cost attribution and stale job financial reviews using existing navigation", () => {
+    const person = { id: "finance-owner", name: "Commercial owner", status: "Active", role: "Commercial",
+      responsibilities: "Review job costs and revenue", authority: "Review source financial evidence" };
+    const lead: LeadRecord = { ...defaultLeadForm, id: "job-1", leadName: "Customer job",
+      status: "Won", dateCreated: "2026-09-29T10:00:00Z" };
+    const accepted = acceptLeadDelivery({ leads: [lead], actions: [], people: [person], income: [],
+      nowMs: Date.parse("2026-09-30T12:00:00Z") }, {
+      leadId: lead.id, actionId: "delivery-1", scope: "Accepted customer scope", acceptedAt: "2026-09-30",
+      acceptanceEvidence: "Customer written acceptance", ownerPersonId: person.id, acceptedByPersonId: person.id,
+      promisedBy: "2026-10-01",
+    });
+    const income: IncomeRecord = { id: "income-1", relatedLeadId: lead.id, date: "2026-10-05", description: "Earned job",
+      customerSource: "Customer", amount: "500", area: "Garden Maintenance", status: "Expected", notes: "",
+      dateCreated: "2026-10-01T11:00:00Z", earnedReference: "earned-1", earnedDate: "2026-10-01", earnedEvidence: "Completed scope" };
+    const expense: ExpenseRecord = { id: "expense-1", relatedLeadId: lead.id, date: "2026-10-01", description: "Job labour",
+      supplier: "Labour provider", amount: "100", category: "Labour", area: "Garden Maintenance", status: "Planned", notes: "",
+      dateCreated: "2026-10-01T11:00:00Z", jobCostType: "Direct", costReference: "cost-1",
+      incurredDate: "2026-10-01", incurredEvidence: "Dated job labour record and cost basis" };
+    const source = { leads: [accepted.lead], actions: [{ ...accepted.action, status: "Completed",
+      completionDate: "2026-10-01T10:00:00Z", completionEvidence: "Delivered scope" }],
+      people: [person], income: [income], expenses: [expense], nowMs: Date.parse("2026-10-01T12:00:00Z") } satisfies JobPerformanceInput;
+    const reviewed = recordJobFinancialReview(source, lead.id, { reviewedByPersonId: person.id,
+      revenueComplete: true, directCostsComplete: true, overheadCostsComplete: false,
+      evidence: "Reviewed labour and all remaining direct cost categories against the complete source records" });
+    const report = runIntegrityAudit(makeInput({ leads: [reviewed], actions: source.actions, people: source.people,
+      income: source.income, expenses: [{ ...expense, amount: "120" }, { ...expense, id: "orphan-cost",
+        costReference: "orphan-ref", relatedLeadId: "missing-job" }] }));
+    expect(report.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: "Job financial evidence", recordType: "Expense", recordId: "orphan-cost",
+        openObjectType: "Finance", openId: "expense:orphan-cost" }),
+      expect.objectContaining({ category: "Job financial evidence", recordType: "Lead", recordId: lead.id,
+        openObjectType: "Lead", reason: "Job financial coverage review is stale or improperly attributed." }),
+    ]));
+  });
+});
 
 function makeAction(overrides: Partial<ActionRecord> = {}): ActionRecord {
   return {

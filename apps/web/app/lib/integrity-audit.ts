@@ -55,6 +55,8 @@ import {
 } from "./strategic-reviews";
 import type { ReviewOutcome } from "./capture-conversions";
 import type { IncomeRecord } from "./finance";
+import type { ExpenseRecord } from "./finance";
+import { buildJobPerformance, getJobExpenseErrors } from "./job-performance";
 import { buildLeadDelivery, getDeliveryIncomeEvidence, hasSupportedFinanceActionCompletion, type LeadDeliveryInput } from "./lead-delivery";
 
 export type IntegrityIssue = {
@@ -118,6 +120,7 @@ export type IntegrityAuditInput = {
   people: IntegrityAuditPerson[];
   leads: LeadRecord[];
   income?: IncomeRecord[];
+  expenses?: ExpenseRecord[];
   commitments: CommitmentRecord[];
   outreach: OutreachRecord[];
   handoffs: IntegrityAuditHandoff[];
@@ -401,6 +404,23 @@ export function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditRes
       recordId: record.id, reason: "Income has no unique accepted customer commitment.",
       nextStep: "Reconcile the Income-to-Lead delivery relationship without inferring payment or completion.",
       openObjectType: "Finance", openId: `income:${record.id}`,
+    });
+  }
+  const jobInput = { ...deliveryInput, expenses: input.expenses ?? [] };
+  for (const record of input.expenses ?? []) {
+    const errors = getJobExpenseErrors(record, jobInput);
+    if (errors.length) addIssue({ severity: "Material", category: "Job financial evidence", recordType: "Expense",
+      recordTitle: record.description, recordId: record.id, reason: errors.join("; "),
+      nextStep: "Reconcile the job attribution and dated incurred-cost evidence without estimating missing costs.",
+      openObjectType: "Finance", openId: `expense:${record.id}` });
+  }
+  for (const job of buildJobPerformance(jobInput)) {
+    const lead = input.leads.find((record) => record.id === job.leadId);
+    if (lead?.jobFinancialReview && !job.reviewCurrent) addIssue({
+      severity: "Material", category: "Job financial evidence", recordType: "Lead",
+      recordTitle: job.title, recordId: job.leadId, reason: "Job financial coverage review is stale or improperly attributed.",
+      nextStep: "Review current financial records and completion evidence before relying on contribution or profit.",
+      openObjectType: "Lead", openId: job.leadId,
     });
   }
   for (const contact of input.outreach) {
