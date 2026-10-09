@@ -7,6 +7,7 @@ import { assertCommercialLessonRecord } from "./commercial-learning";
 import { assertCapacityRecord } from "./delivery-capacity";
 import { assertCapacityResolutionRecord } from "./capacity-resolution";
 import { assertDelegationHandoffs } from "./delegation-handoffs";
+import { getRecoveryReferenceIssues } from "./recovery-consistency";
 
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
@@ -28,6 +29,7 @@ export const STRATEGIC_OBJECTIVES_STORAGE_KEY = "empire-os-strategic-objectives"
 export const STRATEGIC_REVIEWS_STORAGE_KEY = "empire-os-strategic-reviews";
 export const WORKING_RELATIONSHIP_STORAGE_KEY = "empire-os-working-relationships";
 export const FOUNDER_INTELLIGENCE_STORAGE_KEY = "empire-os-founder-intelligence";
+export const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
 
 export const BACKUP_FORMAT = "empire-os-backup";
 export const BACKUP_VERSION = 1;
@@ -64,6 +66,7 @@ export type EmpireOsBackup = {
   version: number;
   createdAt: string;
   storage: Record<string, string | null>;
+  includedStorageKeys?: string[];
 };
 
 export type BackupStorage = {
@@ -83,6 +86,7 @@ export function buildFullBackup(source: Pick<BackupStorage, "getItem">, createdA
     version: BACKUP_VERSION,
     createdAt,
     storage,
+    includedStorageKeys: [...EMPIRE_OS_BACKUP_STORAGE_KEYS],
   };
 }
 
@@ -91,27 +95,39 @@ export type BackupRestoreResult =
   | { ok: false; error: unknown; writesStarted: boolean; rollbackFailures: string[] };
 
 // beforeWrites runs after the pre-restore snapshot and before any live write; if it throws, nothing is written.
-export function runBackupRestoreTransaction(target: BackupStorage, backup: EmpireOsBackup, beforeWrites?: () => void): BackupRestoreResult {
+export function runBackupRestoreTransaction(target: BackupStorage, backup: EmpireOsBackup, beforeWrites?: (safetyBackup: EmpireOsBackup) => void): BackupRestoreResult {
   const previousStorage: Record<string, string | null> = {};
   let writesStarted = false;
 
   try {
-    validateEmpireOsBackup(backup);
+    const validated = validateEmpireOsBackup(backup);
     for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) previousStorage[key] = target.getItem(key);
-    beforeWrites?.();
+    const effective = validateEmpireOsBackup({ ...validated, storage: { ...previousStorage, ...validated.storage } });
+    const referenceIssues = getRecoveryReferenceIssues({
+      conversions: effective.storage[CONVERSION_STORAGE_KEY], leads: effective.storage[LEAD_STORAGE_KEY],
+      people: effective.storage[PERSON_STORAGE_KEY], projects: effective.storage[PROJECT_STORAGE_KEY],
+      income: effective.storage[INCOME_STORAGE_KEY], expenses: effective.storage[EXPENSE_STORAGE_KEY],
+      commitments: effective.storage[COMMITMENT_STORAGE_KEY], icarus: effective.storage[ICARUS_STORAGE_KEY],
+    });
+    if (referenceIssues.length) throw new Error(`Restore would leave inconsistent record references: ${referenceIssues.join("; ")}`);
+    const safetyBackup: EmpireOsBackup = { format: BACKUP_FORMAT, version: BACKUP_VERSION,
+      createdAt: new Date().toISOString(), storage: { ...previousStorage }, includedStorageKeys: [...EMPIRE_OS_BACKUP_STORAGE_KEYS] };
+    beforeWrites?.({ ...safetyBackup, storage: { ...previousStorage }, includedStorageKeys: [...EMPIRE_OS_BACKUP_STORAGE_KEYS] });
+    if (EMPIRE_OS_BACKUP_STORAGE_KEYS.some((key) => target.getItem(key) !== previousStorage[key])) {
+      throw new Error("Live data changed during restore preparation; reload and review the backup before retrying.");
+    }
+    retainRecoverySnapshot(target, safetyBackup, true);
 
     writesStarted = true;
     for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
-      // Pre-Icarus backups omit this store; preserve assessments when restoring one.
-      if (key === ICARUS_STORAGE_KEY && !Object.prototype.hasOwnProperty.call(backup.storage, key)) continue;
-      const value = Object.prototype.hasOwnProperty.call(backup.storage, key) ? backup.storage[key] : null;
+      const value = effective.storage[key];
+      if (value === previousStorage[key]) continue;
       if (value === null) target.removeItem(key);
       else target.setItem(key, value);
     }
 
     const failedKeys = EMPIRE_OS_BACKUP_STORAGE_KEYS.filter((key) => {
-      if (key === ICARUS_STORAGE_KEY && !Object.prototype.hasOwnProperty.call(backup.storage, key)) return false;
-      const expected = Object.prototype.hasOwnProperty.call(backup.storage, key) ? backup.storage[key] : null;
+      const expected = effective.storage[key];
       return target.getItem(key) !== expected;
     });
     if (failedKeys.length > 0) throw new Error(`Verification failed for: ${failedKeys.join(", ")}.`);
@@ -123,6 +139,7 @@ export function runBackupRestoreTransaction(target: BackupStorage, backup: Empir
       for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
         try {
           const previousValue = previousStorage[key];
+          if (target.getItem(key) === previousValue) continue;
           if (previousValue === null) target.removeItem(key);
           else target.setItem(key, previousValue);
           if (target.getItem(key) !== previousValue) rollbackFailures.push(key);
@@ -137,6 +154,39 @@ export function runBackupRestoreTransaction(target: BackupStorage, backup: Empir
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function retainRecoverySnapshot(target: BackupStorage, backup: EmpireOsBackup, pinned = false): void {
+  const raw = target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
+  const existing: unknown = raw === null ? [] : JSON.parse(raw);
+  if (!Array.isArray(existing) || !existing.every((entry: unknown) => isPlainObject(entry)
+    && typeof entry.createdAt === "string" && isPlainObject(entry.storage)
+    && Object.values(entry.storage).every((value) => value === null || typeof value === "string")
+    && (entry.pinned === undefined || typeof entry.pinned === "boolean"))) {
+    throw new Error("Existing recovery history is malformed; it was preserved instead of overwritten.");
+  }
+  if (!pinned && existing.some((entry) => JSON.stringify(entry.storage) === JSON.stringify(backup.storage))) return;
+  const snapshots = [
+    { ...backup, ...(pinned ? { pinned: true } : {}) },
+    ...existing.filter((entry) => entry.pinned === true),
+    ...existing.filter((entry) => entry.pinned !== true).slice(0, pinned ? 5 : 4),
+  ];
+  const serialized = JSON.stringify(snapshots);
+  try {
+    target.setItem(RECOVERY_SNAPSHOTS_STORAGE_KEY, serialized);
+    if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== serialized) throw new Error("Recovery snapshot write could not be verified.");
+  } catch (error) {
+    try {
+      if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== raw) {
+        if (raw === null) target.removeItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
+        else target.setItem(RECOVERY_SNAPSHOTS_STORAGE_KEY, raw);
+      }
+      if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== raw) throw new Error("Recovery history rollback verification failed.");
+    } catch (rollbackError) {
+      throw new Error(`Recovery snapshot failed and prior recovery history could not be restored: ${String(rollbackError)}. No business-store writes were started.`);
+    }
+    throw error;
+  }
 }
 
 export type ChangeField = { field: string; before: unknown; after: unknown };
@@ -181,6 +231,14 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
       throw new Error(`The stored value for ${key} must be a string or null.`);
     }
     storage[key] = storedValue;
+  }
+  const includedStorageKeys = value.includedStorageKeys;
+  if (includedStorageKeys !== undefined && (!Array.isArray(includedStorageKeys)
+    || includedStorageKeys.length !== EMPIRE_OS_BACKUP_STORAGE_KEYS.length
+    || new Set(includedStorageKeys).size !== EMPIRE_OS_BACKUP_STORAGE_KEYS.length
+    || !EMPIRE_OS_BACKUP_STORAGE_KEYS.every((key) => includedStorageKeys.includes(key)
+      && Object.prototype.hasOwnProperty.call(storage, key)))) {
+    throw new Error("The backup completeness manifest is invalid or a declared business store is missing.");
   }
 
   const arrayStorageKeys = [
@@ -314,6 +372,7 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
     version: value.version,
     createdAt: value.createdAt,
     storage,
+    ...(value.includedStorageKeys !== undefined ? { includedStorageKeys: [...EMPIRE_OS_BACKUP_STORAGE_KEYS] } : {}),
   };
 }
 

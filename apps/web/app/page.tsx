@@ -174,6 +174,8 @@ import {
 } from "./lib/crm";
 
 import {
+  BACKUP_FORMAT,
+  BACKUP_VERSION,
   buildFullBackup,
   CASH_POSITION_STORAGE_KEY,
   CHANGE_HISTORY_STORAGE_KEY,
@@ -193,6 +195,8 @@ import {
   OUTREACH_STORAGE_KEY,
   PERSON_STORAGE_KEY,
   PROJECT_STORAGE_KEY,
+  RECOVERY_SNAPSHOTS_STORAGE_KEY,
+  retainRecoverySnapshot,
   runBackupRestoreTransaction,
   SAVED_VIEWS_STORAGE_KEY,
   STORAGE_KEY,
@@ -375,7 +379,6 @@ const navigation = [
 
 const LAST_BACKUP_AT_STORAGE_KEY = "empire-os-last-backup-at";
   import { buildCommandAttention, resolveCommandStrategicRiskConvergence, type CommandAttentionItem } from "./lib/command-attention";
-const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
 
 const INTEGRITY_MATERIAL_ATTENTION_THRESHOLD = 3;
 
@@ -8876,6 +8879,7 @@ export default function Home() {
   const reviewApplyInProgressRef = useRef(false);
   const [lastBackupAt, setLastBackupAt] = useState("");
   const [restoreBackupPreview, setRestoreBackupPreview] = useState<RestoreBackupPreview | null>(null);
+  const [recoveryFailure, setRecoveryFailure] = useState("");
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   const restoreBackupInputRef = useRef<HTMLInputElement | null>(null);
   const restoreInProgressRef = useRef(false);
@@ -9002,86 +9006,14 @@ export default function Home() {
       const storedOutreachContacts = window.localStorage.getItem(OUTREACH_STORAGE_KEY);
 
       // Preserve the untouched browser data before any startup parsing or persistence runs.
-      // Recovery snapshot failures must never interrupt normal Empire OS loading.
+      // Recovery failures are reported without interrupting normal loading.
       try {
-        const recoveryStorageKeys = [
-          STORAGE_KEY,
-          CONVERSION_STORAGE_KEY,
-          PERSON_STORAGE_KEY,
-          WORKING_RELATIONSHIP_STORAGE_KEY,
-          FOUNDER_INTELLIGENCE_STORAGE_KEY,
-          PROJECT_STORAGE_KEY,
-          LEAD_STORAGE_KEY,
-          DELEGATION_HANDOFF_STORAGE_KEY,
-          CASH_POSITION_STORAGE_KEY,
-          INCOME_STORAGE_KEY,
-          EXPENSE_STORAGE_KEY,
-          COMMITMENT_STORAGE_KEY,
-          SAVED_VIEWS_STORAGE_KEY,
-          DEFAULT_SAVED_VIEW_STORAGE_KEY,
-          DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
-          ICARUS_STORAGE_KEY,
-        ];
-
-        const recoveryStorage: Record<string, string | null> = {};
-        let hasStoredData = false;
-
-        for (const key of recoveryStorageKeys) {
-          const value = window.localStorage.getItem(key);
-          recoveryStorage[key] = value;
-          if (value !== null) {
-            hasStoredData = true;
-          }
+        const recoveryBackup = buildFullBackup(window.localStorage);
+        if (Object.values(recoveryBackup.storage).some((value) => value !== null)) {
+          retainRecoverySnapshot(window.localStorage, recoveryBackup);
         }
-
-        if (hasStoredData) {
-          const rawExistingSnapshots = window.localStorage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
-          let existingSnapshots: Array<{
-            createdAt: string;
-            storage: Record<string, string | null>;
-          }> = [];
-
-          if (rawExistingSnapshots) {
-            try {
-              const parsedSnapshots = JSON.parse(rawExistingSnapshots);
-              if (Array.isArray(parsedSnapshots)) {
-                existingSnapshots = parsedSnapshots.filter(
-                  (snapshot) =>
-                    snapshot &&
-                    typeof snapshot === "object" &&
-                    typeof snapshot.createdAt === "string" &&
-                    snapshot.storage &&
-                    typeof snapshot.storage === "object" &&
-                    !Array.isArray(snapshot.storage),
-                );
-              }
-            } catch {
-              existingSnapshots = [];
-            }
-          }
-
-          const latestStorage = existingSnapshots[0]?.storage;
-          const storageChanged =
-            !latestStorage ||
-            JSON.stringify(latestStorage) !== JSON.stringify(recoveryStorage);
-
-          if (storageChanged) {
-            const nextSnapshots = [
-              {
-                createdAt: new Date().toISOString(),
-                storage: recoveryStorage,
-              },
-              ...existingSnapshots,
-            ].slice(0, 5);
-
-            window.localStorage.setItem(
-              RECOVERY_SNAPSHOTS_STORAGE_KEY,
-              JSON.stringify(nextSnapshots),
-            );
-          }
-        }
-      } catch {
-        // Emergency snapshot creation is best-effort only.
+      } catch (error) {
+        setFeedback({ type: "error", message: `Automatic local recovery snapshot could not be verified. ${error instanceof Error ? error.message : String(error)}` });
       }
 
       if (storedCaptures) {
@@ -9483,7 +9415,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!operatingDataLoaded) {
+    if (!operatingDataLoaded || restoreInProgressRef.current) {
       return;
     }
 
@@ -9574,7 +9506,7 @@ export default function Home() {
   }, [delegationHandoffs, operatingDataLoaded]);
 
   useEffect(() => {
-    if (!operatingDataLoaded) {
+    if (!operatingDataLoaded || restoreInProgressRef.current) {
       return;
     }
 
@@ -9591,7 +9523,7 @@ export default function Home() {
 
   useEffect(() => {
     // Gated on operatingDataLoaded (like every other Finance record) so this never fires before the stored cash position has been read back into state.
-    if (!operatingDataLoaded) {
+    if (!operatingDataLoaded || restoreInProgressRef.current) {
       return;
     }
 
@@ -9627,7 +9559,7 @@ export default function Home() {
   }, [expenseRecords, operatingDataLoaded]);
 
   useEffect(() => {
-    if (!operatingDataLoaded) {
+    if (!operatingDataLoaded || restoreInProgressRef.current) {
       return;
     }
 
@@ -9635,7 +9567,7 @@ export default function Home() {
   }, [commitmentRecords, operatingDataLoaded]);
 
   useEffect(() => {
-    if (!operatingDataLoaded) {
+    if (!operatingDataLoaded || restoreInProgressRef.current) {
       return;
     }
 
@@ -9643,7 +9575,7 @@ export default function Home() {
   }, [taxPaymentRecords, operatingDataLoaded]);
 
   useEffect(() => {
-    if (!operatingDataLoaded) {
+    if (!operatingDataLoaded || restoreInProgressRef.current) {
       return;
     }
 
@@ -12183,6 +12115,7 @@ export default function Home() {
   const snapshotsLoadedRef = useRef(false);
 
   useEffect(() => {
+    if (restoreInProgressRef.current) return;
     if (!snapshotsLoadedRef.current) {
       snapshotsLoadedRef.current = true;
       return;
@@ -16828,7 +16761,7 @@ export default function Home() {
   function handleDownloadFullBackup() {
     try {
       downloadBackup(createFullBackup(), "empire-os-backup");
-      setFeedback({ type: "success", message: "Full Empire OS backup downloaded." });
+      setFeedback({ type: "success", message: "Full Empire OS backup download requested. Confirm that the file was saved; no cloud backup is performed." });
     } catch (error) {
       setFeedback({
         type: "error",
@@ -16880,8 +16813,8 @@ export default function Home() {
     restoreInProgressRef.current = true;
     setIsRestoringBackup(true);
     const { backup } = restoreBackupPreview;
-    const result = runBackupRestoreTransaction(window.localStorage, backup, () => {
-      downloadBackup(createFullBackup(), "empire-os-pre-restore-safety-backup");
+    const result = runBackupRestoreTransaction(window.localStorage, backup, (safetyBackup) => {
+      downloadBackup(safetyBackup, "empire-os-pre-restore-safety-backup");
       auditRestoreInProgressRef.current = true;
     });
 
@@ -16894,14 +16827,37 @@ export default function Home() {
     const { error, writesStarted: restoreWritesStarted, rollbackFailures } = result;
     setFeedback({
       type: "error",
-      message: `${error instanceof Error ? `Backup restore failed: ${error.message}` : "Backup restore failed."}${!restoreWritesStarted ? " No live data was changed." : rollbackFailures.length > 0 ? ` Rollback could not be verified for: ${rollbackFailures.join(", ")}.` : " Existing data was restored."}`,
+      message: `${error instanceof Error ? `Backup restore failed: ${error.message}` : "Backup restore failed."}${!restoreWritesStarted ? " No business stores were changed by restore." : rollbackFailures.length > 0 ? ` Rollback could not be verified for: ${rollbackFailures.join(", ")}.` : " Existing business data was restored and verified."}`,
     });
     setIsRestoringBackup(false);
-    restoreInProgressRef.current = false;
-    auditRestoreInProgressRef.current = false;
+    if (rollbackFailures.length) {
+      quarantineRecoveryWrites();
+    } else {
+      restoreInProgressRef.current = false;
+      auditRestoreInProgressRef.current = false;
+    }
+  }
+
+  function quarantineRecoveryWrites() {
+    setRecoveryFailure("Restore rollback could not be verified. Editing is blocked to prevent stale in-memory data from overwriting uncertain storage. A pinned pre-restore copy remains in local recovery history. Download that copy before reloading or reconciling the affected records.");
+    conversionsWritableRef.current = false;
+    peopleWritableRef.current = false;
+    projectsWritableRef.current = false;
+    leadsWritableRef.current = false;
+    handoffsWritableRef.current = false;
+    incomeWritableRef.current = false;
+    expensesWritableRef.current = false;
+    icarusWritableRef.current = false;
+    founderIntelligenceWritableRef.current = false;
+    strategicObjectivesWritableRef.current = false;
+    strategicReviewsWritableRef.current = false;
+    changeHistoryWritableRef.current = false;
+    restoreInProgressRef.current = true;
+    auditRestoreInProgressRef.current = true;
   }
 
   function handleRestoreEmergencySnapshot() {
+    if (restoreInProgressRef.current) return;
     try {
       const rawSnapshots = window.localStorage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
 
@@ -16958,129 +16914,42 @@ export default function Home() {
       }
 
       const selectedSnapshot = validSnapshots[selectedIndex];
-      const storage = selectedSnapshot.storage as Record<string, unknown>;
-
-      const storageKeys = [
-        STORAGE_KEY,
-        CONVERSION_STORAGE_KEY,
-        PERSON_STORAGE_KEY,
-        PROJECT_STORAGE_KEY,
-        LEAD_STORAGE_KEY,
-        DELEGATION_HANDOFF_STORAGE_KEY,
-        CASH_POSITION_STORAGE_KEY,
-        INCOME_STORAGE_KEY,
-        EXPENSE_STORAGE_KEY,
-        COMMITMENT_STORAGE_KEY,
-        SAVED_VIEWS_STORAGE_KEY,
-        DEFAULT_SAVED_VIEW_STORAGE_KEY,
-        DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
-        ICARUS_STORAGE_KEY,
-      ];
-
-      for (const key of storageKeys) {
-  const isOptionalLegacyKey = key === DELEGATION_HANDOFF_STORAGE_KEY || key === ICARUS_STORAGE_KEY;
-
-  if (!Object.prototype.hasOwnProperty.call(storage, key)) {
-    if (isOptionalLegacyKey) {
-      continue;
-    }
-
-    throw new Error(`Emergency snapshot is missing required storage key: ${key}`);
-  }
-
-  const value = storage[key];
-
-  if (value !== null && typeof value !== "string") {
-    throw new Error(`Invalid emergency snapshot value for: ${key}`);
-  }
-}
-
-      const arrayStorageKeys = [
-        STORAGE_KEY,
-        CONVERSION_STORAGE_KEY,
-        PERSON_STORAGE_KEY,
-        PROJECT_STORAGE_KEY,
-        LEAD_STORAGE_KEY,
-        DELEGATION_HANDOFF_STORAGE_KEY,
-        INCOME_STORAGE_KEY,
-        EXPENSE_STORAGE_KEY,
-        COMMITMENT_STORAGE_KEY,
-        SAVED_VIEWS_STORAGE_KEY,
-        DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
-        ICARUS_STORAGE_KEY,
-      ];
-
-      for (const key of arrayStorageKeys) {
-        const value = storage[key];
-
-        if (typeof value === "string") {
-          const decoded = JSON.parse(value);
-
-          if (!Array.isArray(decoded)) {
-            throw new Error(`Expected an array for: ${key}`);
-          }
-          if (key === EXPENSE_STORAGE_KEY) decoded.forEach(assertExpenseJobEvidence);
-          if (key === CONVERSION_STORAGE_KEY) decoded.forEach((record: unknown) => {
-            assertCommercialLessonRecord(record);
-            assertCapacityResolutionRecord(record);
-            if (record && typeof record === "object" && "targetType" in record && record.targetType === "Convert to Action") assertCapacityRecord(record, "Action");
-          });
-          if (key === PERSON_STORAGE_KEY) decoded.forEach((record: unknown) => assertCapacityRecord(record, "Person"));
-          if (key === DELEGATION_HANDOFF_STORAGE_KEY) assertDelegationHandoffs(decoded);
-          if (key === INCOME_STORAGE_KEY) decoded.forEach(assertIncomeCommercialEvidence);
-          if (key === LEAD_STORAGE_KEY) decoded.forEach((record: unknown) => {
-            if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error("Emergency snapshot contains a malformed Lead.");
-            assertLeadDeliveryCommitment("deliveryCommitment" in record ? record.deliveryCommitment : undefined);
-            assertLeadJobFinancialEvidence(record);
-            assertCapacityRecord(record, "Lead");
-          });
-        }
-      }
-
-      const storedIcarus = storage[ICARUS_STORAGE_KEY];
-      if (typeof storedIcarus === "string") assertIcarusDataStructure(normaliseIcarusAssessmentData(JSON.parse(storedIcarus)));
-
-      const cashValue = storage[CASH_POSITION_STORAGE_KEY];
-
-      if (typeof cashValue === "string") {
-        const decodedCash = JSON.parse(cashValue);
-
-        if (
-          !decodedCash ||
-          typeof decodedCash !== "object" ||
-          Array.isArray(decodedCash)
-        ) {
-          throw new Error("Invalid cash position data.");
-        }
-      }
+      const backup = validateEmpireOsBackup({
+        ...selectedSnapshot,
+        format: selectedSnapshot.format ?? BACKUP_FORMAT,
+        version: selectedSnapshot.version ?? BACKUP_VERSION,
+      });
 
       const confirmed = window.confirm(
         `Restore emergency snapshot from ${new Date(
           selectedSnapshot.createdAt,
-        ).toLocaleString()}? A fresh full backup of the current data will download first.`,
+        ).toLocaleString()}? Only included stores will be replaced; omitted legacy stores will be preserved. Cross-record references will be checked and a full safety copy retained before any business data changes.`,
       );
 
       if (!confirmed) {
         return;
       }
 
-      downloadBackup(createFullBackup(), "empire-os-pre-emergency-restore-safety-backup");
-
-      auditRestoreInProgressRef.current = true;
-      for (const key of storageKeys) {
-        if (key === ICARUS_STORAGE_KEY && !Object.prototype.hasOwnProperty.call(storage, key)) continue;
-        const value = storage[key];
-
-        if (value === null || value === undefined) {
-          window.localStorage.removeItem(key);
-        } else {
-          window.localStorage.setItem(key, value as string);
+      restoreInProgressRef.current = true;
+      const result = runBackupRestoreTransaction(window.localStorage, backup, (safetyBackup) => {
+        downloadBackup(safetyBackup, "empire-os-pre-emergency-restore-safety-backup");
+        auditRestoreInProgressRef.current = true;
+      });
+      if (!result.ok) {
+        if (result.rollbackFailures.length) quarantineRecoveryWrites();
+        else {
+          restoreInProgressRef.current = false;
+          auditRestoreInProgressRef.current = false;
         }
+        throw new Error(`${result.error instanceof Error ? result.error.message : String(result.error)}${!result.writesStarted
+          ? " No business data was changed." : result.rollbackFailures.length
+            ? ` Rollback could not be verified for ${result.rollbackFailures.join(", ")}. Editing is blocked; retain the pinned pre-restore safety copy and reconcile storage.`
+            : " Existing business data was restored and verified."}`);
       }
 
       window.location.reload();
     } catch (error) {
-      auditRestoreInProgressRef.current = false;
+      if (!restoreInProgressRef.current) auditRestoreInProgressRef.current = false;
       setFeedback({
         type: "error",
         message:
@@ -17107,6 +16976,35 @@ export default function Home() {
     integrityAudit
     && (integrityAudit.severityCounts.Critical > 0 || integrityAudit.severityCounts.Material >= INTEGRITY_MATERIAL_ATTENTION_THRESHOLD),
   );
+
+  if (recoveryFailure) {
+    return (
+      <main className="min-h-screen bg-[#f9f7f4] p-8 text-[#171717]">
+        <h1 className="text-xl font-medium">Recovery needs reconciliation</h1>
+        <p className="mt-4 max-w-2xl">{recoveryFailure}</p>
+        {feedback ? <p className="mt-4 max-w-2xl">{feedback.message}</p> : null}
+        <button type="button" className="mt-6 rounded border border-[#cfc8c1] px-4 py-2" onClick={() => {
+          try {
+            const snapshots: unknown = JSON.parse(window.localStorage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) || "[]");
+            const safety = Array.isArray(snapshots) ? snapshots.find((entry: unknown) => isPlainObject(entry) && entry.pinned === true) : undefined;
+            if (!isPlainObject(safety) || typeof safety.createdAt !== "string" || !isPlainObject(safety.storage)
+              || !Object.values(safety.storage).every((value) => value === null || typeof value === "string")) {
+              throw new Error("Pinned safety copy could not be read. Preserve browser storage and use the pre-restore downloaded file.");
+            }
+            const storage: Record<string, string | null> = {};
+            for (const [key, value] of Object.entries(safety.storage)) {
+              if (value === null || typeof value === "string") storage[key] = value;
+            }
+            downloadBackup({ format: BACKUP_FORMAT, version: BACKUP_VERSION, createdAt: safety.createdAt, storage },
+              "empire-os-recovery-safety-backup");
+            setFeedback({ type: "success", message: "Safety-copy download requested. Confirm that the file was saved before reloading; editing remains blocked." });
+          } catch (error) {
+            setFeedback({ type: "error", message: error instanceof Error ? error.message : "Safety copy could not be downloaded." });
+          }
+        }}>Download pinned pre-restore safety copy</button>
+      </main>
+    );
+  }
 
   return (
     <ChangeHistoryContext.Provider value={changeHistory}>
@@ -17137,7 +17035,7 @@ export default function Home() {
             </div>
 
             <div className="mt-4 rounded-xl border border-[#d4b4a7] bg-[#f8efeb] px-3 py-3 text-[13px] leading-5 text-[#5d342b]">
-              Confirming restore will replace existing Empire OS local data. Stores absent from this backup will be removed. Other browser storage is not touched.
+              Confirming restore replaces included Empire OS stores after cross-record validation and a verified local safety copy. Explicit null values clear a store; stores omitted by legacy backups are preserved. Other browser storage is not touched. The safety download is not proof that a file was saved.
             </div>
 
             <dl className="mt-4 grid gap-3 text-[12px] sm:grid-cols-2">

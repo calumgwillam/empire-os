@@ -9,6 +9,7 @@ import {
   FOUNDER_INTELLIGENCE_STORAGE_KEY,
   PERSON_STORAGE_KEY,
   PROJECT_STORAGE_KEY,
+  RECOVERY_SNAPSHOTS_STORAGE_KEY,
   STORAGE_KEY,
   buildFullBackup,
   getBackupHealth,
@@ -302,6 +303,10 @@ class MemoryStorage implements BackupStorage {
   snapshot() {
     return Object.fromEntries(this.data);
   }
+
+  businessSnapshot() {
+    return Object.fromEntries([...this.data].filter(([key]) => key !== RECOVERY_SNAPSHOTS_STORAGE_KEY));
+  }
 }
 
 const initialLiveData = {
@@ -367,15 +372,19 @@ describe("runBackupRestoreTransaction", () => {
     expect(storage.snapshot()).toEqual(initialLiveData);
   });
 
-  it("writes backup values and removes keys that are null or missing in the backup", () => {
+  it("writes included values, clears explicit nulls and preserves omitted legacy stores", () => {
     const storage = new MemoryStorage({ ...initialLiveData, [PERSON_STORAGE_KEY]: "[\"old-person\"]" });
     const result = runBackupRestoreTransaction(storage, restoreBackup);
 
     expect(result).toEqual({ ok: true });
-    expect(storage.snapshot()).toEqual({
+    expect(storage.businessSnapshot()).toEqual({
       [STORAGE_KEY]: "[\"new-capture\"]",
       [PROJECT_STORAGE_KEY]: "[\"new-project\"]",
+      [CASH_POSITION_STORAGE_KEY]: initialLiveData[CASH_POSITION_STORAGE_KEY],
       "unrelated-key": "untouched",
+    });
+    expect(JSON.parse(storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)!)[0]).toMatchObject({
+      pinned: true, storage: { [STORAGE_KEY]: initialLiveData[STORAGE_KEY] },
     });
   });
 
@@ -411,7 +420,7 @@ describe("runBackupRestoreTransaction", () => {
     expect(result.writesStarted).toBe(true);
     expect((result.error as Error).message).toBe(`Verification failed for: ${PROJECT_STORAGE_KEY}.`);
     expect(result.rollbackFailures).toEqual([]);
-    expect(storage.snapshot()).toEqual(initialLiveData);
+    expect(storage.businessSnapshot()).toEqual(initialLiveData);
   });
 
   it("rolls back when a write throws", () => {
@@ -427,7 +436,7 @@ describe("runBackupRestoreTransaction", () => {
     expect(result.writesStarted).toBe(true);
     expect((result.error as Error).message).toBe("QuotaExceededError");
     expect(result.rollbackFailures).toEqual([]);
-    expect(storage.snapshot()).toEqual(initialLiveData);
+    expect(storage.businessSnapshot()).toEqual(initialLiveData);
   });
 
   it("reports keys whose rollback could not be verified or threw", () => {

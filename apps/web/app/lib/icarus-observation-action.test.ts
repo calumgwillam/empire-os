@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  getIcarusTreatmentOutcomeId, getIcarusTreatmentTargetId, parseIcarusAssessments,
+  getIcarusTreatmentOutcomeId, getIcarusTreatmentTargetId, parseIcarusAssessments, ICARUS_STORAGE_KEY,
   type IcarusAssessmentRecord, type IcarusObservationPlan, type IcarusTreatmentOutcomeRecord,
 } from "./icarus";
 import { normalizeActionRecord, type ActionRecord } from "./capture-conversions";
@@ -661,7 +661,8 @@ describe("Icarus observation responsibility execution through Actions", () => {
   it("round-trips linkage through the existing backup transaction and rejects malformed data before writes", () => {
     const action = monitoring();
     const records = JSON.stringify([action]);
-    const storage = new Map<string, string>([[CONVERSION_STORAGE_KEY, records]]);
+    const storage = new Map<string, string>([[CONVERSION_STORAGE_KEY, records],
+      [ICARUS_STORAGE_KEY, JSON.stringify(source().assessments)]]);
     const target = {
       getItem: (key: string) => storage.get(key) ?? null,
       setItem: (key: string, value: string) => { storage.set(key, value); },
