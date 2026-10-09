@@ -540,6 +540,7 @@ function productionLearning(records: ProductionLearningRecords): LearningAttenti
     icarusTreatmentIndex: { targets, verification },
     icarusInterventionIndex: interventionIndex,
     commercialLearningViews: [],
+    capacityResolutionViews: [],
   }), { timeout: 1000 });
   if (!context.result) throw new Error("Production learning projection returned no result");
   return context.result;

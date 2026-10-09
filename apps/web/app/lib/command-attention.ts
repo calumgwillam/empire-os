@@ -5,6 +5,7 @@ import { buildLeadDelivery, getDeliveryIncomeEvidence, hasSupportedFinanceAction
 import { buildJobPerformance, getJobExpenseErrors, type JobPerformanceInput } from "./job-performance";
 import { buildCommercialLearning, type CommercialLearningInput } from "./commercial-learning";
 import { buildDeliveryCapacity, type DeliveryCapacityInput } from "./delivery-capacity";
+import { buildCapacityResolutions, type CapacityResolutionInput } from "./capacity-resolution";
 import type {
   ActionRecord,
   DecisionRecord,
@@ -115,6 +116,7 @@ export type CommandAttentionInput = {
   jobPerformance?: Omit<JobPerformanceInput, "nowMs">;
   commercialLearning?: Omit<CommercialLearningInput, "nowMs">;
   deliveryCapacity?: Omit<DeliveryCapacityInput, "nowMs">;
+  capacityResolution?: Omit<CapacityResolutionInput, "nowMs">;
   outreach: readonly Pick<OutreachRecord, "id" | "businessName" | "status" | "nextFollowUpDate">[];
   projects: readonly Pick<ProjectRecord, "id" | "projectName" | "area" | "status" | "health" | "nextReviewDate" | "reviewNote" | "targetCompletionDate" | "startDate">[];
   decisions: readonly Pick<DecisionRecord, "id" | "decisionTitle" | "title" | "decisionStatus" | "reviewDate" | "createdAt" | "relatedArea" | "relatedPillar">[];
@@ -920,6 +922,17 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
   });
 
   addCapacityAttention();
+  if (input.capacityResolution) {
+    buildCapacityResolutions({ ...input.capacityResolution, nowMs: now }).filter((view) => view.reasons.length).forEach((view) => {
+      const existing = uniqueByKey.get(`Decision:${view.decisionId}`);
+      const rank = view.outcome === "Not improved" || view.reasons.some((reason) => reason.includes("overdue")) ? 2 : 4;
+      addAttentionItem("CAPACITY RESOLUTION", { id: view.decisionId, objectType: "Decision", title: view.title,
+        area: input.capacityResolution!.people.find((person) => person.id === view.personId)?.pillar || "",
+        reasons: view.reasons, reason: view.reasons.join(" • "), statusText: `Capacity outcome: ${view.outcome}`,
+        attentionRank: rank, tieWeight: 0, priorityScore: 100, sortDate: 0, sortDateAscending: false, navigationMode: "record-handler" });
+      if (existing) existing.attentionRank = Math.min(existing.attentionRank, rank);
+    });
+  }
   if (input.icarus) {
     // Signals arrive in deterministic materiality order; anchor resolution uses the current Command order.
     input.icarus.forEach((signal) => {

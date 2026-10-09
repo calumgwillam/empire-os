@@ -59,6 +59,7 @@ import type { ExpenseRecord } from "./finance";
 import { buildJobPerformance, getJobExpenseErrors } from "./job-performance";
 import { buildCommercialLearning } from "./commercial-learning";
 import { buildDeliveryCapacity, type AvailabilityReview } from "./delivery-capacity";
+import { buildCapacityResolutions } from "./capacity-resolution";
 import { buildLeadDelivery, getDeliveryIncomeEvidence, hasSupportedFinanceActionCompletion, type LeadDeliveryInput } from "./lead-delivery";
 
 export type IntegrityIssue = {
@@ -490,6 +491,29 @@ export function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditRes
       nextStep: "Review the evidence-backed window, remaining hours and complete competing obligations; do not assume spare capacity.",
       openObjectType: "Person", openId: person.id,
     });
+  }
+  const resolutionInput = { ...jobInput, actions: input.actions, projects: input.projects, problems: input.problems,
+    decisions: input.decisions, commitments: input.commitments };
+  for (const view of buildCapacityResolutions(resolutionInput)) {
+    const decision = input.decisions.find((entry) => entry.id === view.decisionId)!;
+    const resolution = decision.capacityResolution!;
+    checkPersonId("Decision", view.title, view.decisionId, "Capacity constraint Person", resolution.baseline.personId, "Decision");
+    checkPersonId("Decision", view.title, view.decisionId, "Capacity diagnosis reviewer", resolution.baseline.recordedByPersonId, "Decision");
+    resolution.baselineHistory.forEach((entry) => checkPersonId("Decision", view.title, view.decisionId, "Historical capacity diagnosis reviewer", entry.recordedByPersonId, "Decision"));
+    resolution.baseline.demand.forEach((entry) => checkReference({ value: entry.id,
+      validIds: entry.objectType === "Lead" ? leadIds : entry.objectType === "Action" ? actionIds : projectIds,
+      recordType: "Decision", recordTitle: view.title, recordId: view.decisionId, fieldLabel: "Original capacity obligation", openObjectType: "Decision" }));
+    resolution.approvals.forEach((entry) => checkPersonId("Decision", view.title, view.decisionId, "Capacity approval Person", entry.personId, "Decision"));
+    resolution.evaluations.forEach((entry) => checkPersonId("Decision", view.title, view.decisionId, "Capacity outcome reviewer", entry.personId, "Decision"));
+    [...resolution.milestoneActionIds, ...resolution.alternatives.flatMap((option) => option.dependencyActionIds)].forEach((id) =>
+      checkReference({ value: id, validIds: actionIds, recordType: "Decision", recordTitle: view.title, recordId: view.decisionId,
+        fieldLabel: "Capacity execution/prerequisite Action", openObjectType: "Decision" }));
+    resolution.alternatives.forEach((option) => checkReference({ value: option.commitmentId, validIds: idSet(input.commitments),
+      recordType: "Decision", recordTitle: view.title, recordId: view.decisionId, fieldLabel: "Capacity Finance commitment", openObjectType: "Decision" }));
+    if (view.reasons.length) addIssue({ severity: "Material", category: "Capacity resolution evidence", recordType: "Decision",
+      recordTitle: view.title, recordId: view.decisionId, reason: view.reasons.join("; "),
+      nextStep: "Review source capacity, alternatives, explicit authority, existing implementation Actions and fresh outcome evidence.",
+      openObjectType: "Decision", openId: view.decisionId });
   }
   for (const contact of input.outreach) {
     checkNamedOwner("Outreach", contact.businessName, contact.id, contact.owner, !["Converted to Lead", "Closed / Not Pursuing", "Closed Supplier Network"].includes(contact.status), "Outreach");

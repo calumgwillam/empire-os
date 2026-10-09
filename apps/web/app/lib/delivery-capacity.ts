@@ -158,7 +158,7 @@ function executionDependencyReasons(input: DeliveryCapacityInput, action: Action
   if (blocker) reasons.push(blocker.reason);
   return reasons;
 }
-function dependencyReasons(input: DeliveryCapacityInput, assessment: WorkloadAssessment, source: WorkloadSource): string[] {
+export function getCapacityDependencyReasons(input: DeliveryCapacityInput, assessment: WorkloadAssessment, source: WorkloadSource): string[] {
   const reasons: string[] = [];
   if (new Set(assessment.dependencyActionIds).size !== assessment.dependencyActionIds.length) reasons.push("Dependency Action references are duplicated");
   for (const id of assessment.dependencyActionIds) {
@@ -246,7 +246,7 @@ export function buildDeliveryCapacity(input: DeliveryCapacityInput): DeliveryCap
     if (committed && !view?.scheduled) reasons.push("CAPACITY: Customer delivery scheduling accountability is incomplete");
     if (lead.status === "Won" && !lead.deliveryCommitment) reasons.push("CAPACITY: Won customer work lacks explicit acceptance and delivery accountability");
     if (!current || assessment?.personId !== personId) reasons.push("CAPACITY: Remaining workload, estimate basis or proposed/actual owner is unknown or stale");
-    if (assessment) dependencyReasons(input, assessment, source).forEach((reason) => reasons.push(`CAPACITY: ${reason}`));
+    if (assessment) getCapacityDependencyReasons(input, assessment, source).forEach((reason) => reasons.push(`CAPACITY: ${reason}`));
     const host = matches.length === 1 ? matches[0] : undefined;
     if (host) executionDependencyReasons(input, host).forEach((reason) => reasons.push(`CAPACITY: ${reason}`));
     if (host?.status === "Blocked" || host?.status === "Waiting" || host?.status === "Cancelled" || (host?.status === "Completed" && !view?.completionSupported)) reasons.push("CAPACITY: Delivery execution is blocked, waiting, cancelled or completion is unsupported");
@@ -270,7 +270,7 @@ export function buildDeliveryCapacity(input: DeliveryCapacityInput): DeliveryCap
     if (!personId) reasons.push("CAPACITY: Active Action has no unique delegation-ready owner");
     if (!current) reasons.push("CAPACITY: Active Action remaining-work assessment is missing, stale or mismatched");
     if (action.deliveryLeadId) reasons.push("CAPACITY: Delivery Action has an orphaned customer job; reconcile its commitment before sizing capacity");
-    if (assessment) dependencyReasons(input, assessment, source).forEach((reason) => reasons.push(`CAPACITY: ${reason}`));
+    if (assessment) getCapacityDependencyReasons(input, assessment, source).forEach((reason) => reasons.push(`CAPACITY: ${reason}`));
     executionDependencyReasons(input, action).forEach((reason) => reasons.push(`CAPACITY: ${reason}`));
     if (action.status === "Blocked" || action.status === "Waiting") reasons.push("CAPACITY: Action execution is blocked or waiting");
     if (action.status === "Completed") reasons.push("CAPACITY: Assessed Action completion is unsupported; remaining work must not silently disappear");
@@ -370,7 +370,7 @@ export function recordWorkloadAssessment(input: DeliveryCapacityInput, source: W
   if (request.readinessConfirmed && !request.readinessEvidence.trim()) throw new Error("Confirmed readiness requires timing, access, resources, skills, quality and commercial evidence.");
   const assessment: WorkloadAssessment = { ...request, recordedAt: new Date(input.nowMs).toISOString(), sourceSnapshot: workloadSnapshot(input, source) };
   assertWorkloadAssessments([assessment]);
-  const dependencyErrors = dependencyReasons(input, assessment, source).filter((reason) => !reason.startsWith("Dependency unresolved:"));
+  const dependencyErrors = getCapacityDependencyReasons(input, assessment, source).filter((reason) => !reason.startsWith("Dependency unresolved:"));
   if (dependencyErrors.length) throw new Error(dependencyErrors.join("; "));
   return { ...matches[0], workloadAssessments: [...(matches[0].workloadAssessments || []), assessment] };
 }

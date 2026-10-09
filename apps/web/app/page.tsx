@@ -228,6 +228,9 @@ import { DeliveryCapacityReport, WorkloadCapacitySection, PersonAvailabilitySect
   type WorkloadReviewRequest, type AvailabilityReviewRequest } from "./components/delivery-capacity-section";
 import { assertCapacityRecord, buildDeliveryCapacity, recordAvailabilityReview, recordWorkloadAssessment,
   type AvailabilityReview, type CapacityWorkItem, type CapacityScenario } from "./lib/delivery-capacity";
+import { CapacityDiagnosisForm, CapacityResolutionSection, type CapacityResolutionRequest } from "./components/capacity-resolution-section";
+import { assertCapacityResolutionRecord, buildCapacityResolutions, createCapacityResolution, reviseCapacityResolution,
+  approveCapacityResolution, evaluateCapacityResolution, refreshCapacityBaseline, type CapacityResolutionView } from "./lib/capacity-resolution";
 import { LeadCommercialLearningSection, CommercialLessonSection,
   type CommercialDiagnosisRequest, type CommercialLessonCommand } from "./components/commercial-learning-section";
 import { assertCommercialLearning, assertCommercialLessonRecord, approveCommercialProposal, assignCommercialResponsibility, buildCommercialLearning, commercialLearningValidity, createCommercialImplementation,
@@ -8406,9 +8409,15 @@ type DecisionDetailPanelProps = {
   onOpenLinkedAction: (action: ActionRecord) => void;
   onOpenLinkedLesson: (lesson: LessonRecord) => void;
   onOpenRelatedOpportunity?: () => void;
+  capacityView?: CapacityResolutionView;
+  capacityPeople: PersonRecord[];
+  onRecordCapacity: (request: CapacityResolutionRequest) => void;
+  onOpenCapacityRecord: (type: string, id: string) => void;
+  onOpenCapacityRisk: () => void;
 };
 
-function DecisionDetailPanel({ decision, executionState, linkedActions, linkedLessons, upstream, downstream, onClose, onChange, onSave, onCreateLinkedAction, onCreateLinkedLesson, onOpenLinkedAction, onOpenLinkedLesson, onOpenRelatedOpportunity }: DecisionDetailPanelProps) {
+function DecisionDetailPanel({ decision, executionState, linkedActions, linkedLessons, upstream, downstream, onClose, onChange, onSave, onCreateLinkedAction, onCreateLinkedLesson, onOpenLinkedAction, onOpenLinkedLesson, onOpenRelatedOpportunity,
+  capacityView, capacityPeople, onRecordCapacity, onOpenCapacityRecord, onOpenCapacityRisk }: DecisionDetailPanelProps) {
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-[#171717]/20 px-4">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[#cfc8c1] bg-[#f9f7f4] p-5 shadow-[0_18px_40px_rgba(23,23,23,0.08)]">
@@ -8771,6 +8780,9 @@ function DecisionDetailPanel({ decision, executionState, linkedActions, linkedLe
         </div>
 
         <RelatedRecordsPanel upstream={upstream} downstream={downstream} />
+        {decision.capacityResolution ? <CapacityResolutionSection key={`${decision.id}:${decision.capacityResolution.approvals.length}:${decision.capacityResolution.evaluations.length}:${JSON.stringify(decision.capacityResolution.alternatives)}`}
+          decision={decision} view={capacityView} people={capacityPeople} actions={linkedActions} onRecord={onRecordCapacity}
+          onOpen={onOpenCapacityRecord} onIcarus={onOpenCapacityRisk} /> : null}
         <RecordChangeHistory recordType="Decision" recordId={decision.id} />
       </div>
     </div>
@@ -9133,6 +9145,7 @@ export default function Home() {
           parsedConversions.forEach((record: unknown) => {
             if (!isPlainObject(record) || typeof record.targetType !== "string") return;
             assertCommercialLessonRecord(record);
+            assertCapacityResolutionRecord(record);
             const recordType = conversionRecordTypes[record.targetType];
             if (!recordType) return;
             addOperationalRecord(recordType, record.id);
@@ -11360,8 +11373,11 @@ export default function Home() {
   });
   const unlinkedStrategicProjects = projects.filter((project) => isProjectActive(project) && !strategicObjectives.some((objective) => objective.linkedProjectIds.includes(project.id)));
 
+  const capacityResolutionInput = { ...deliveryCapacityInput, commitments: commitmentRecords, capital: capitalAllocation };
+  const capacityResolutionViews = buildCapacityResolutions(capacityResolutionInput);
   const commandLearningInput = buildOrganisationalLearning({
     commercialLearning: commercialLearningViews,
+    capacityResolutions: capacityResolutionViews,
     actions: actionRecords,
     projects,
     decisions: decisionRecords.map((decision) => ({
@@ -11389,6 +11405,7 @@ export default function Home() {
     jobPerformance: { leads, actions: actionRecords, people, income: incomeRecords, expenses: expenseRecords },
     commercialLearning: commercialLearningInput,
     deliveryCapacity: deliveryCapacityInput,
+    capacityResolution: capacityResolutionInput,
     outreach: outreachContacts,
     projects,
     decisions: decisionRecords,
@@ -14152,6 +14169,27 @@ export default function Home() {
       actualOutcome: decisionEditor.actualOutcome,
       lessons: decisionEditor.lessons,
     });
+    const storedCapacity = decisionRecords.find((decision) => decision.id === selectedDecisionId)?.capacityResolution;
+    if (storedCapacity) {
+      if (!operatingDataLoaded || !conversionsWritableRef.current) {
+        setFeedback({ type: "error", message: "Decision storage is not safely writable; capacity evidence was preserved." });
+        return;
+      }
+      updatedDecision.capacityResolution = storedCapacity;
+      try {
+        assertCapacityResolutionRecord(updatedDecision);
+        if (conversions.filter((record) => record.id === selectedDecisionId).length !== 1) throw new Error("Decision identity is ambiguous.");
+        const next = conversions.map((record) => record.id === selectedDecisionId ? updatedDecision : record);
+        persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+        setConversions(next);
+        setSelectedDecisionId(null);
+        setDecisionEditor(null);
+        setFeedback({ type: "success", message: "Decision saved; capacity evidence history preserved. Changed approved scope requires renewed explicit approval." });
+      } catch (error) {
+        setFeedback({ type: "error", message: error instanceof Error ? error.message : "Capacity Decision could not be saved." });
+      }
+      return;
+    }
 
     setConversions((currentConversions) =>
       currentConversions.map((conversion) =>
@@ -16400,21 +16438,66 @@ export default function Home() {
   };
   const handleOpenCapacityRecord = (type: string, id: string) => {
     const records = type === "Lead" ? leads : type === "Action" ? actionRecords : type === "Person" ? people
-      : type === "Project" ? projects : [];
+      : type === "Project" ? projects : type === "Decision" ? decisionRecords : [];
     if (records.filter((entry) => entry.id === id).length !== 1) {
       setFeedback({ type: "error", message: "Capacity source record is missing or ambiguous; reconcile its reference before opening." });
       return;
     }
     if ((leadEditor && JSON.stringify(leadEditor) !== JSON.stringify(leads.find((entry) => entry.id === leadEditor.id)))
       || (actionEditor && JSON.stringify(actionEditor) !== JSON.stringify(actionRecords.find((entry) => entry.id === actionEditor.id)))
-      || (personEditor && JSON.stringify(personEditor) !== JSON.stringify(people.find((entry) => entry.id === personEditor.id)))) {
-      setFeedback({ type: "error", message: "Save or close unsaved Lead/Action/Person edits before navigating capacity evidence." });
+      || (personEditor && JSON.stringify(personEditor) !== JSON.stringify(people.find((entry) => entry.id === personEditor.id)))
+      || (decisionEditor && JSON.stringify(decisionEditor) !== JSON.stringify(decisionRecords.find((entry) => entry.id === decisionEditor.id)))) {
+      setFeedback({ type: "error", message: "Save or close unsaved source/Decision edits before navigating capacity evidence." });
       return;
     }
     setSelectedLeadId(null); setLeadEditor(null);
     setSelectedActionId(null); setActionEditor(null);
     setSelectedPersonId(null); setPersonEditor(null);
+    setSelectedDecisionId(null); setDecisionEditor(null);
     handleOpenAttentionRecord(type, id);
+  };
+  const handleCreateCapacityDecision = (personId: string, reviewerId: string, evidence: string) => {
+    try {
+      requireCapacityStores();
+      if (decisionEditor) throw new Error("Close the existing Decision editor before capturing a new capacity diagnosis.");
+      const existing = capacityResolutionViews.find((view) => view.personId === personId && view.outcome !== "Improved"
+        && !["Reversed", "Completed"].includes(decisionRecords.find((decision) => decision.id === view.decisionId)?.decisionStatus || ""));
+      if (existing) throw new Error(`An unresolved capacity Decision already exists (${existing.title}); open it instead of duplicating accountability.`);
+      const result = createCapacityResolution({ ...capacityResolutionInput, nowMs: Date.now() }, generateConversionId(), personId, reviewerId, evidence);
+      if (conversions.some((record) => record.id === result.id)) throw new Error("Decision identity conflicts with an existing record.");
+      const next = [result, ...conversions];
+      persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+      setConversions(next);
+      setSelectedDecisionId(result.id); setDecisionEditor(result);
+      setFeedback({ type: "success", message: "Draft capacity-resolution Decision captured. No response, spending or operational commitment approved." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Capacity diagnosis could not be recorded." });
+    }
+  };
+  const handleRecordCapacityResolution = (request: CapacityResolutionRequest) => {
+    try {
+      requireCapacityStores();
+      const persisted = decisionRecords.filter((decision) => decision.id === decisionEditor?.id);
+      if (!decisionEditor || persisted.length !== 1 || JSON.stringify(persisted[0]) !== JSON.stringify(decisionEditor)) {
+        throw new Error("Save or reload the Decision before changing capacity-resolution evidence; unsaved edits must not be overwritten.");
+      }
+      const source = { ...capacityResolutionInput, nowMs: Date.now() };
+      const result = request.kind === "Refresh" ? refreshCapacityBaseline(source, decisionEditor.id, request.personId, request.evidence)
+        : request.kind === "Revise" ? reviseCapacityResolution(source, decisionEditor.id, request.alternatives, request.selectedKind, request.milestoneActionIds)
+        : request.kind === "Approve" ? approveCapacityResolution(source, decisionEditor.id, request.approval)
+          : evaluateCapacityResolution(source, decisionEditor.id, request.evaluation);
+      if (conversions.filter((record) => record.id === result.id).length !== 1) throw new Error("Decision storage identity is ambiguous.");
+      const next = conversions.map((record) => record.id === result.id ? result : record);
+      persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+      setConversions(next); setDecisionEditor(result);
+      setFeedback({ type: "success", message: request.kind === "Approve"
+        ? "Explicit scope-bound approval recorded. Execution remains on existing Actions and established financial/delivery/delegation workflows."
+        : request.kind === "Evaluate" ? "Capacity outcome review recorded. Missing/stale evidence remains unverified; no financial benefit or causal success inferred."
+          : request.kind === "Refresh" ? "Attributed baseline re-review recorded before approval; original diagnosis history preserved."
+            : "Capacity alternatives and milestone references saved; approvals/outcomes retained and rechecked against changed scope." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Capacity resolution could not be recorded." });
+    }
   };
 
   const handleCommitmentEditOpen = (commitment: CommitmentRecord) => {
@@ -16899,6 +16982,7 @@ export default function Home() {
           if (key === EXPENSE_STORAGE_KEY) decoded.forEach(assertExpenseJobEvidence);
           if (key === CONVERSION_STORAGE_KEY) decoded.forEach((record: unknown) => {
             assertCommercialLessonRecord(record);
+            assertCapacityResolutionRecord(record);
             if (record && typeof record === "object" && "targetType" in record && record.targetType === "Convert to Action") assertCapacityRecord(record, "Action");
           });
           if (key === PERSON_STORAGE_KEY) decoded.forEach((record: unknown) => assertCapacityRecord(record, "Person"));
@@ -18669,6 +18753,13 @@ export default function Home() {
               </p>
               <DeliveryCapacityReport result={deliveryCapacity} onOpen={handleOpenCapacityRecord}
                 onReviewRisk={() => setActiveView("Icarus")} />
+              <CapacityDiagnosisForm people={people} onCreate={handleCreateCapacityDecision} />
+              {capacityResolutionViews.length ? <div className="mt-3 text-[12px]">
+                <h3 className="font-semibold">Existing capacity-resolution Decisions</h3>
+                {capacityResolutionViews.map((view) => <p key={view.decisionId} className="mt-2">
+                  <button type="button" className="underline" onClick={() => handleOpenCapacityRecord("Decision", view.decisionId)}>{view.title}</button>
+                  {" "}— approval {view.approvalCurrent ? "current" : "missing/stale"}; outcome {view.outcome}</p>)}
+              </div> : null}
 
               <section className="mt-7">
                 <h2 className="border-b border-[#d7d1ca] pb-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Marketing acquisition performance</h2>
@@ -20849,6 +20940,18 @@ export default function Home() {
           }}
           onChange={handleDecisionEditorChange}
           onSave={handleDecisionSave}
+          capacityView={capacityResolutionViews.find((view) => view.decisionId === decisionEditor.id)}
+          capacityPeople={people}
+          onRecordCapacity={handleRecordCapacityResolution}
+          onOpenCapacityRecord={handleOpenCapacityRecord}
+          onOpenCapacityRisk={() => {
+            if (JSON.stringify(decisionEditor) !== JSON.stringify(decisionRecords.find((record) => record.id === decisionEditor.id))) {
+              setFeedback({ type: "error", message: "Save or close unsaved Decision changes before opening Icarus." });
+              return;
+            }
+            setFeedback({ type: "success", message: "Use this Decision and affected Person as Icarus source evidence; no strategic-risk score was inferred." });
+            setSelectedDecisionId(null); setDecisionEditor(null); setActiveView("Icarus");
+          }}
           onCreateLinkedAction={() => handleDecisionCreateLinkedAction(decisionEditor)}
           onCreateLinkedLesson={() => handleCreateLinkedLesson(decisionEditor)}
           onOpenLinkedAction={(action) => handleActionEditOpen(action)}

@@ -5,6 +5,7 @@ import { assertIncomeCommercialEvidence, assertLeadDeliveryCommitment } from "./
 import { assertExpenseJobEvidence, assertLeadJobFinancialEvidence } from "./job-performance";
 import { assertCommercialLessonRecord } from "./commercial-learning";
 import { assertCapacityRecord } from "./delivery-capacity";
+import { assertCapacityResolutionRecord } from "./capacity-resolution";
 
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
@@ -255,6 +256,7 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
     const conversions: unknown = JSON.parse(storedConversions);
     if (Array.isArray(conversions)) {
       conversions.forEach((record: unknown) => {
+        assertCapacityResolutionRecord(record);
         assertCommercialLessonRecord(record);
         if (!isPlainObject(record) || record.targetType !== "Convert to Action") return;
         assertCapacityRecord(record, "Action");

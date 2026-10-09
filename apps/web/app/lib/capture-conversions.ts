@@ -79,6 +79,7 @@ export type CaptureConversionRecord = {
   outcomeRating?: string;
   lessons?: string;
   decisionStatus?: string;
+  capacityResolution?: import("./capacity-resolution").CapacityResolution;
   opportunityTitle?: string;
   source?: string;
   dateIdentified?: string;

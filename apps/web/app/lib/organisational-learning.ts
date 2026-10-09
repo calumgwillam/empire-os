@@ -1,5 +1,6 @@
 import type { ActionRecord, DecisionRecord, LessonRecord } from "./capture-conversions";
 import { commercialLearningValidity, type CommercialLearningView } from "./commercial-learning";
+import type { CapacityResolutionView } from "./capacity-resolution";
 import { getIcarusTreatmentOutcomeEvidenceKey, type IcarusTreatmentOutcomeRecord } from "./icarus";
 import type { ProjectRecord } from "./projects";
 import type { IcarusStrategicLifecycleIndex } from "./icarus-strategic-lifecycle";
@@ -79,7 +80,7 @@ export type LearningProjectInput = Pick<ProjectRecord,
   "id" | "projectName" | "status" | "lastReviewedDate" | "lastReviewOutcome"
   | "reviewOwnerPersonId" | "reviewNote" | "nextReviewDate">;
 export type LearningDecisionInput = Pick<DecisionRecord,
-  "id" | "title" | "decisionTitle" | "decisionStatus" | "actualOutcome" | "outcomeRating" | "lessons">
+  "id" | "title" | "decisionTitle" | "decisionStatus" | "actualOutcome" | "outcomeRating" | "lessons" | "capacityResolution">
   & { executionState?: Exclude<LearningExecutionState, "Unknown" | "Cancelled execution"> };
 export type LearningLessonInput = Pick<LessonRecord,
   "id" | "title" | "lessonTitle" | "description" | "status" | "recommendedChange"
@@ -87,6 +88,7 @@ export type LearningLessonInput = Pick<LessonRecord,
 
 export type OrganisationalLearningInput = {
   commercialLearning?: readonly CommercialLearningView[];
+  capacityResolutions?: readonly CapacityResolutionView[];
   icarusLifecycle?: IcarusStrategicLifecycleIndex;
   icarusLearning?: IcarusLearningIndex;
   actions: readonly LearningActionInput[];
@@ -203,6 +205,11 @@ export function buildOrganisationalLearning(input: OrganisationalLearningInput):
         ["lessons", decision.lessons],
       ], input.lessons.filter((lesson) => lesson.relatedDecision === decision.id));
     item.outcomeState = decisionOutcome(decision);
+    if (decision.capacityResolution) {
+      const capacity = input.capacityResolutions?.find((view) => view.decisionId === decision.id);
+      item.outcomeState = capacity?.outcomeCurrent ? capacity.outcome === "Improved" ? "Worked"
+        : capacity.outcome === "Not improved" ? "Failed" : "Unknown" : "Unknown";
+    }
     if (item.linkedLessonIds.length === 0) {
       if (decision.lessons.trim()) {
         item.learningState = "Learning identified";
