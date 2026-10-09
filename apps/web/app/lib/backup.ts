@@ -6,6 +6,7 @@ import { assertExpenseJobEvidence, assertLeadJobFinancialEvidence } from "./job-
 import { assertCommercialLessonRecord } from "./commercial-learning";
 import { assertCapacityRecord } from "./delivery-capacity";
 import { assertCapacityResolutionRecord } from "./capacity-resolution";
+import { assertDelegationHandoffs } from "./delegation-handoffs";
 
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
@@ -252,6 +253,8 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
   }
 
   const storedConversions = storage[CONVERSION_STORAGE_KEY];
+  const storedHandoffs = storage[DELEGATION_HANDOFF_STORAGE_KEY];
+  if (typeof storedHandoffs === "string") assertDelegationHandoffs(JSON.parse(storedHandoffs));
   if (typeof storedConversions === "string") {
     const conversions: unknown = JSON.parse(storedConversions);
     if (Array.isArray(conversions)) {

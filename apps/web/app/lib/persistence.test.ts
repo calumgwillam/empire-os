@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { persistJsonArray, persistJsonValue, persistJsonArraysTransaction, type PersistenceStorage } from "./persistence";
+import { persistJsonArray, persistJsonValue, persistJsonArraysTransaction, PersistenceTransactionError, type PersistenceStorage } from "./persistence";
 
 const createStorage = (initial: Record<string, string> = {}) => {
   const data = new Map(Object.entries(initial));
@@ -108,10 +108,38 @@ describe("persistJsonValue", () => {
       expect(() => persistJsonArraysTransaction(storage, [
         { key: "actions", records: [1] }, { key: "plans", records: [2] },
       ])).toThrow("verification failed");
-      storage.setItem.mockImplementation(() => { throw new Error("Storage unavailable"); });
+      storage.setItem.mockImplementationOnce((key, value) => { storage.data.set(key, value); })
+        .mockImplementation(() => { throw new Error("Storage unavailable"); });
       expect(() => persistJsonArraysTransaction(storage, [
         { key: "actions", records: [1] }, { key: "plans", records: [2] },
       ])).toThrow("Rollback failed");
+    });
+
+    it("does not rewrite already committed records during follow-up persistence effects", () => {
+      const storage = createStorage({ actions: '[{"id":"a"}]' });
+      persistJsonArraysTransaction(storage, [{ key: "actions", records: [{ id: "a" }] }, { key: "absent", records: [] }]);
+      expect(storage.setItem).not.toHaveBeenCalled();
+      expect(storage.removeItem).not.toHaveBeenCalled();
+      expect(storage.getItem).toHaveBeenCalledWith("actions");
+    });
+
+    it("reports precisely the rollback keys still uncertain and preserves stores that never changed", () => {
+      const storage = createStorage({ actions: '[{"id":"old"}]', plans: '[{"id":"plan"}]', other: "retained" });
+      storage.setItem.mockImplementationOnce((key, value) => { storage.data.set(key, value); })
+        .mockImplementation(() => { throw new Error("Storage unavailable"); });
+      let failure: unknown;
+      try {
+        persistJsonArraysTransaction(storage, [
+          { key: "actions", records: [{ id: "new" }] }, { key: "plans", records: [{ id: "updated" }] },
+        ]);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(PersistenceTransactionError);
+      if (!(failure instanceof PersistenceTransactionError)) throw new Error("Expected structured transaction failure.");
+      expect(failure.rollbackFailedKeys).toEqual(["actions"]);
+      expect(storage.getItem("plans")).toBe('[{"id":"plan"}]');
+      expect(storage.getItem("other")).toBe("retained");
     });
 
     it("rejects duplicate keys before writing and preserves absent stores after rollback", () => {

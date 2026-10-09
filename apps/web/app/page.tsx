@@ -212,7 +212,9 @@ import {
   runIntegrityAudit as runIntegrityAuditFromDomain,
   type IntegrityAuditResult as DomainIntegrityAuditResult,
 } from "./lib/integrity-audit";
-import { persistJsonArray, persistJsonValue, persistJsonArraysTransaction } from "./lib/persistence";
+import { persistJsonArray, persistJsonValue, persistJsonArraysTransaction, PersistenceTransactionError } from "./lib/persistence";
+import { prepareActionExecutionChange } from "./lib/action-execution";
+import { assertDelegationHandoffs, type DelegationHandoffRecord } from "./lib/delegation-handoffs";
 import { buildLeadFollowThrough, createLeadFollowThroughAction, linkLeadFollowThroughAction, type LeadFollowThroughView } from "./lib/lead-follow-through";
 import LeadFollowThroughSection, { type LeadFollowThroughRequest } from "./components/lead-follow-through-section";
 import { assertActionLeadLink } from "./lib/capture-conversions";
@@ -767,29 +769,6 @@ function getFounderIntelligenceEvidenceDetails(
 }
 
 type PersonFormValues = Omit<PersonRecord, "id" | "dateCreated">;
-
-type DelegationHandoffRecord = {
-  id: string;
-  objectType: "Action" | "Project" | "Lead" | "Problem";
-  objectId: string;
-  title: string;
-  area: string;
-  previousOwner: string;
-  previousOwnerPersonId?: string;
-  newOwner: string;
-  newOwnerPersonId: string;
-  delegatedBy?: string;
-  delegatedByPersonId?: string;
-  transferredAt: string;
-  handoffContext: string;
-  handoffReason?: string;
-  reviewDate?: string;
-  status?: DelegationHandoffTrackedStatus;
-  outcomeLesson?: string;
-  reviewNote?: string;
-  lastReviewDecision?: DelegationHandoffReviewDecision;
-  lastReviewedAt?: string;
-};
 
 type DelegationHandoffTrackedStatus = "Healthy" | "At risk" | "Completed" | "Cancelled";
 type DelegationHandoffState = "Healthy" | "At risk" | "Completed" | "Cancelled" | "Returned to Founder" | "Ownership changed" | "Source missing";
@@ -8871,6 +8850,8 @@ export default function Home() {
   const [operatingDataLoaded, setOperatingDataLoaded] = useState(false);
   const peopleWritableRef = useRef(false);
   const conversionsWritableRef = useRef(false);
+  const handoffsWritableRef = useRef(false);
+  const projectsWritableRef = useRef(false);
   const leadsWritableRef = useRef(false);
   const incomeWritableRef = useRef(false);
   const expensesWritableRef = useRef(false);
@@ -9273,6 +9254,7 @@ export default function Home() {
 
       if (storedProjects) {
         const parsedProjects = JSON.parse(storedProjects);
+        if (!Array.isArray(parsedProjects)) throw new Error("Project storage is not an array; existing execution records were preserved.");
 
         if (Array.isArray(parsedProjects)) {
           parsedProjects.forEach((project: unknown) => {
@@ -9291,7 +9273,8 @@ export default function Home() {
             lastReviewOutcome: projectReviewOutcomeOptions.includes(project.lastReviewOutcome as ProjectReviewOutcome) ? project.lastReviewOutcome : undefined,
           })));
         }
-      }
+        projectsWritableRef.current = true;
+      } else projectsWritableRef.current = true;
 
       try {
         if (storedLeads) {
@@ -9342,59 +9325,14 @@ export default function Home() {
 
       if (storedDelegationHandoffs) {
         try {
-          const parsedDelegationHandoffs = JSON.parse(storedDelegationHandoffs);
-          if (Array.isArray(parsedDelegationHandoffs)) {
-            setDelegationHandoffs(parsedDelegationHandoffs
-              .map((entry: unknown): DelegationHandoffRecord | null => {
-                if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
-                const record = entry as Record<string, unknown>;
-                if (!(typeof record.id === "string"
-                  && ["Action", "Project", "Lead", "Problem"].includes(String(record.objectType))
-                  && typeof record.objectId === "string"
-                  && typeof record.title === "string"
-                  && typeof record.area === "string"
-                  && typeof record.previousOwner === "string"
-                  && typeof record.newOwner === "string"
-                  && typeof record.newOwnerPersonId === "string"
-                  && typeof record.transferredAt === "string"
-                  && typeof record.handoffContext === "string")) return null;
-
-                const trackedStatus = ["Healthy", "At risk", "Completed", "Cancelled"].includes(String(record.status))
-                  ? record.status as DelegationHandoffTrackedStatus
-                  : undefined;
-                const reviewDecision = ["Continue", "Support / adjust", "Escalate", "Complete", "Cancel"].includes(String(record.lastReviewDecision))
-                  ? record.lastReviewDecision as DelegationHandoffReviewDecision
-                  : undefined;
-
-                return {
-                  id: record.id,
-                  objectType: record.objectType as DelegationHandoffRecord["objectType"],
-                  objectId: record.objectId,
-                  title: record.title,
-                  area: record.area,
-                  previousOwner: record.previousOwner,
-                  previousOwnerPersonId: typeof record.previousOwnerPersonId === "string" ? record.previousOwnerPersonId : undefined,
-                  newOwner: record.newOwner,
-                  newOwnerPersonId: record.newOwnerPersonId,
-                  delegatedBy: typeof record.delegatedBy === "string" ? record.delegatedBy : record.previousOwner,
-                  delegatedByPersonId: typeof record.delegatedByPersonId === "string" ? record.delegatedByPersonId : typeof record.previousOwnerPersonId === "string" ? record.previousOwnerPersonId : undefined,
-                  transferredAt: record.transferredAt,
-                  handoffContext: record.handoffContext,
-                  handoffReason: typeof record.handoffReason === "string" ? record.handoffReason : record.handoffContext,
-                  reviewDate: typeof record.reviewDate === "string" ? record.reviewDate : undefined,
-                  status: trackedStatus,
-                  outcomeLesson: typeof record.outcomeLesson === "string" ? record.outcomeLesson : undefined,
-                  reviewNote: typeof record.reviewNote === "string" ? record.reviewNote : undefined,
-                  lastReviewDecision: reviewDecision,
-                  lastReviewedAt: typeof record.lastReviewedAt === "string" ? record.lastReviewedAt : undefined,
-                };
-              })
-              .filter((entry): entry is DelegationHandoffRecord => Boolean(entry)));
-          }
-        } catch {
-          setDelegationHandoffs([]);
+          const parsedDelegationHandoffs: unknown = JSON.parse(storedDelegationHandoffs);
+          assertDelegationHandoffs(parsedDelegationHandoffs);
+          setDelegationHandoffs(parsedDelegationHandoffs);
+          handoffsWritableRef.current = true;
+        } catch (error) {
+          setFeedback({ type: "error", message: `Delegation history could not be loaded; stored records were preserved and handoff changes are blocked. ${error instanceof Error ? error.message : String(error)}` });
         }
-      }
+      } else handoffsWritableRef.current = true;
 
       if (storedCashPosition) {
         const parsedCashPosition = JSON.parse(storedCashPosition);
@@ -9557,7 +9495,12 @@ export default function Home() {
       return;
     }
 
-    persistJsonArray(window.localStorage, CONVERSION_STORAGE_KEY, conversions);
+    try {
+      persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: conversions }]);
+    } catch (error) {
+      conversionsWritableRef.current = false;
+      setFeedback({ type: "error", message: `Action/Decision storage could not be saved; reload/reconcile before further execution. ${error instanceof Error ? error.message : String(error)}` });
+    }
   }, [conversions, operatingDataLoaded]);
 
   useEffect(() => {
@@ -9566,8 +9509,9 @@ export default function Home() {
     }
 
     try {
-      persistJsonArray(window.localStorage, ICARUS_STORAGE_KEY, icarusAssessments);
+      persistJsonArraysTransaction(window.localStorage, [{ key: ICARUS_STORAGE_KEY, records: icarusAssessments }]);
     } catch (error) {
+      icarusWritableRef.current = false;
       setFeedback({
         type: "error",
         message: `Icarus data could not be saved. Check browser storage before continuing.${error instanceof Error ? ` ${error.message}` : ""}`,
@@ -9580,15 +9524,25 @@ export default function Home() {
       return;
     }
 
-    persistJsonArray(window.localStorage, PERSON_STORAGE_KEY, people);
+    try {
+      persistJsonArraysTransaction(window.localStorage, [{ key: PERSON_STORAGE_KEY, records: people }]);
+    } catch (error) {
+      peopleWritableRef.current = false;
+      setFeedback({ type: "error", message: `People storage could not be saved; reload/reconcile ownership and availability before continuing. ${error instanceof Error ? error.message : String(error)}` });
+    }
   }, [people, operatingDataLoaded]);
 
   useEffect(() => {
-    if (!operatingDataLoaded) {
+    if (!operatingDataLoaded || !projectsWritableRef.current) {
       return;
     }
 
-    persistJsonArray(window.localStorage, PROJECT_STORAGE_KEY, projects);
+    try {
+      persistJsonArraysTransaction(window.localStorage, [{ key: PROJECT_STORAGE_KEY, records: projects }]);
+    } catch (error) {
+      projectsWritableRef.current = false;
+      setFeedback({ type: "error", message: `Project storage could not be saved; reload/reconcile before further execution. ${error instanceof Error ? error.message : String(error)}` });
+    }
   }, [projects, operatingDataLoaded]);
 
   useEffect(() => {
@@ -9597,15 +9551,26 @@ export default function Home() {
     }
 
     if (!leadsWritableRef.current) return;
-    persistJsonArray(window.localStorage, LEAD_STORAGE_KEY, leads);
+    try {
+      persistJsonArraysTransaction(window.localStorage, [{ key: LEAD_STORAGE_KEY, records: leads }]);
+    } catch (error) {
+      leadsWritableRef.current = false;
+      setFeedback({ type: "error", message: `Lead storage could not be saved; reload/reconcile customer evidence before continuing. ${error instanceof Error ? error.message : String(error)}` });
+    }
   }, [leads, operatingDataLoaded]);
 
   useEffect(() => {
-    if (!operatingDataLoaded) {
+    if (!operatingDataLoaded || !handoffsWritableRef.current) {
       return;
     }
 
-    persistJsonArray(window.localStorage, DELEGATION_HANDOFF_STORAGE_KEY, delegationHandoffs);
+    try {
+      assertDelegationHandoffs(delegationHandoffs);
+      persistJsonArraysTransaction(window.localStorage, [{ key: DELEGATION_HANDOFF_STORAGE_KEY, records: delegationHandoffs }]);
+    } catch (error) {
+      handoffsWritableRef.current = false;
+      setFeedback({ type: "error", message: `Delegation history could not be saved; reload/reconcile storage before changing ownership. ${error instanceof Error ? error.message : String(error)}` });
+    }
   }, [delegationHandoffs, operatingDataLoaded]);
 
   useEffect(() => {
@@ -9639,7 +9604,12 @@ export default function Home() {
     }
 
     if (!incomeWritableRef.current) return;
-    persistJsonArray(window.localStorage, INCOME_STORAGE_KEY, incomeRecords);
+    try {
+      persistJsonArraysTransaction(window.localStorage, [{ key: INCOME_STORAGE_KEY, records: incomeRecords }]);
+    } catch (error) {
+      incomeWritableRef.current = false;
+      setFeedback({ type: "error", message: `Income storage could not be saved; reload/reconcile financial accountability before continuing. ${error instanceof Error ? error.message : String(error)}` });
+    }
   }, [incomeRecords, operatingDataLoaded]);
 
   useEffect(() => {
@@ -9648,7 +9618,12 @@ export default function Home() {
     }
 
     if (!expensesWritableRef.current) return;
-    persistJsonArray(window.localStorage, EXPENSE_STORAGE_KEY, expenseRecords);
+    try {
+      persistJsonArraysTransaction(window.localStorage, [{ key: EXPENSE_STORAGE_KEY, records: expenseRecords }]);
+    } catch (error) {
+      expensesWritableRef.current = false;
+      setFeedback({ type: "error", message: `Expense storage could not be saved; reload/reconcile cost evidence before continuing. ${error instanceof Error ? error.message : String(error)}` });
+    }
   }, [expenseRecords, operatingDataLoaded]);
 
   useEffect(() => {
@@ -13573,6 +13548,70 @@ export default function Home() {
     });
   };
 
+  const persistOwnershipRecords = (
+    updates: Parameters<typeof persistJsonArraysTransaction>[1],
+    nextHandoffs: DelegationHandoffRecord[] = delegationHandoffs,
+  ) => {
+    if (!operatingDataLoaded) throw new Error("Operating records have not safely loaded; no ownership or execution evidence was changed.");
+    if (updates.some(({ key }) => key === CONVERSION_STORAGE_KEY && !conversionsWritableRef.current
+      || key === INCOME_STORAGE_KEY && !incomeWritableRef.current || key === LEAD_STORAGE_KEY && !leadsWritableRef.current
+      || key === PROJECT_STORAGE_KEY && !projectsWritableRef.current || key === ICARUS_STORAGE_KEY && !icarusWritableRef.current
+      || key === PERSON_STORAGE_KEY && !peopleWritableRef.current || key === EXPENSE_STORAGE_KEY && !expensesWritableRef.current)) {
+      throw new Error("An affected operating store is not writable; execution/accountability was preserved.");
+    }
+    const handoffsChanged = nextHandoffs !== delegationHandoffs;
+    if (handoffsChanged && !handoffsWritableRef.current) throw new Error("Delegation history is not safely writable; ownership was not changed.");
+    assertDelegationHandoffs(nextHandoffs);
+    try {
+      persistJsonArraysTransaction(window.localStorage, [...updates,
+        ...(handoffsChanged ? [{ key: DELEGATION_HANDOFF_STORAGE_KEY, records: nextHandoffs }] : [])]);
+    } catch (error) {
+      if (error instanceof PersistenceTransactionError && error.rollbackFailedKeys.length) {
+        conversionsWritableRef.current = false;
+        incomeWritableRef.current = false;
+        leadsWritableRef.current = false;
+        projectsWritableRef.current = false;
+        handoffsWritableRef.current = false;
+        icarusWritableRef.current = false;
+        peopleWritableRef.current = false;
+        expensesWritableRef.current = false;
+      }
+      throw error;
+    }
+  };
+  const persistActionExecution = (candidate: ActionRecord, nextHandoffs: DelegationHandoffRecord[] = delegationHandoffs) => {
+    if (!operatingDataLoaded || !conversionsWritableRef.current) throw new Error("Action storage is not safely writable; execution was not changed.");
+    if (candidate.financeIncomeId && !incomeWritableRef.current) throw new Error("Income storage is not safely writable; financial accountability was not changed.");
+    const result = prepareActionExecutionChange({ conversions, actions: actionRecords, leads, people, income: incomeRecords,
+      problems: problemRecords, decisions: decisionRecords, nowMs: Date.now() }, candidate);
+    persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: result.conversions },
+      ...(result.incomeChanged ? [{ key: INCOME_STORAGE_KEY, records: result.income }] : [])], nextHandoffs);
+    setConversions(result.conversions);
+    if (result.incomeChanged) {
+      setIncomeRecords(result.income);
+      setIncomeEditor((current) => {
+        if (!current) return current;
+        const before = incomeRecords.find((record) => record.id === current.id);
+        return before && JSON.stringify(current) === JSON.stringify(before) ? result.income.find((record) => record.id === current.id) || current : current;
+      });
+    }
+    return result.action;
+  };
+  const tryPersistExecution = (commit: () => void): boolean => {
+    try {
+      commit();
+      return true;
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Execution could not be persisted; stored evidence was preserved." });
+      return false;
+    }
+  };
+  const persistNewAction = (action: ActionRecord) => {
+    if (conversions.some((record) => record.id === action.id)) throw new Error("Action identity already exists; implementation was not duplicated.");
+    const next = [action, ...conversions];
+    persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }]);
+    setConversions(next);
+  };
   const applyOwnershipChangeWithDelegationIntegrity = ({
     objectType,
     objectId,
@@ -13596,49 +13635,46 @@ export default function Home() {
     newOwnerPersonId?: string;
     handoffContext: string;
     acceptedObservation?: boolean;
-    applyOwnershipChange: () => void;
+    applyOwnershipChange: (nextHandoffs?: DelegationHandoffRecord[]) => void;
   }) => {
-    const previousOwnerName = previousOwner.trim() || "Unassigned";
-    const newOwnerName = newOwner.trim() || "Unassigned";
-    const previousOwnerPerson = previousOwnerPersonId
-      ? orderedPeople.find((person) => person.id === previousOwnerPersonId)
-      : orderedPeople.find((person) => person.status === "Active" && person.name.trim().toLowerCase() === previousOwnerName.toLowerCase());
-    const ownerChanged = previousOwnerPersonId && newOwnerPersonId
-      ? previousOwnerPersonId !== newOwnerPersonId
-      : previousOwnerName.toLowerCase() !== newOwnerName.toLowerCase();
+    try {
+      const previousOwnerName = previousOwner.trim() || "Unassigned";
+      const newOwnerName = newOwner.trim() || "Unassigned";
+      const previousOwnerPerson = previousOwnerPersonId
+        ? orderedPeople.find((person) => person.id === previousOwnerPersonId)
+        : orderedPeople.find((person) => person.status === "Active" && person.name.trim().toLowerCase() === previousOwnerName.toLowerCase());
+      const ownerChanged = previousOwnerPersonId && newOwnerPersonId
+        ? previousOwnerPersonId !== newOwnerPersonId
+        : previousOwnerName.toLowerCase() !== newOwnerName.toLowerCase();
 
-    if (!ownerChanged || newOwnerName.toLowerCase() === "unassigned" || isFounderOwned(newOwnerName, newOwnerPersonId)) {
-      applyOwnershipChange();
-      return true;
-    }
+      if (!ownerChanged || newOwnerName.toLowerCase() === "unassigned" || isFounderOwned(newOwnerName, newOwnerPersonId)) {
+        applyOwnershipChange(delegationHandoffs);
+        return true;
+      }
 
-    const candidates = acceptedObservation ? orderedPeople.filter((person) =>
-      person.status === "Active" && !getDelegationReadinessMissingFields(person).length) : delegationReadyPeople;
-    const destinationPerson = candidates.find((person) =>
-      newOwnerPersonId
-        ? person.id === newOwnerPersonId
-        : person.name.trim().toLowerCase() === newOwnerName.toLowerCase(),
-    );
-    const isAreaEligible = acceptedObservation || (destinationPerson
-      ? getDelegationReadyPeopleForArea(area).some((person) => person.id === destinationPerson.id)
-      : false);
+      const candidates = acceptedObservation ? orderedPeople.filter((person) =>
+        person.status === "Active" && !getDelegationReadinessMissingFields(person).length) : delegationReadyPeople;
+      const destinations = candidates.filter((person) =>
+        newOwnerPersonId ? person.id === newOwnerPersonId : person.name.trim().toLowerCase() === newOwnerName.toLowerCase());
+      const destinationPerson = destinations.length === 1 ? destinations[0] : undefined;
+      const isAreaEligible = acceptedObservation || (destinationPerson
+        ? getDelegationReadyPeopleForArea(area).some((person) => person.id === destinationPerson.id)
+        : false);
 
-    if (!destinationPerson || !isAreaEligible) {
-      setFeedback({
-        type: "error",
-        message: destinationPerson
-          ? `Choose a delegation-ready owner assigned to ${area || "this work item's area"}.`
-          : "Choose an active delegation-ready non-founder owner.",
-      });
-      return false;
-    }
+      if (!destinationPerson || !isAreaEligible) {
+        setFeedback({
+          type: "error",
+          message: destinationPerson
+            ? `Choose a delegation-ready owner assigned to ${area || "this work item's area"}.`
+            : "Choose a unique active delegation-ready non-founder owner.",
+        });
+        return false;
+      }
 
-    applyOwnershipChange();
-    const transferredAt = new Date().toISOString();
-    const reviewDate = new Date(transferredAt);
-    reviewDate.setDate(reviewDate.getDate() + 14);
-    setDelegationHandoffs((currentHandoffs) => {
-      const activeExistingHandoff = currentHandoffs.find((handoff) =>
+      const transferredAt = new Date().toISOString();
+      const reviewDate = new Date(transferredAt);
+      reviewDate.setDate(reviewDate.getDate() + 14);
+      const activeExistingHandoff = delegationHandoffs.find((handoff) =>
         handoff.objectType === objectType
         && handoff.objectId === objectId
         && handoff.newOwnerPersonId === destinationPerson.id
@@ -13646,32 +13682,35 @@ export default function Home() {
         && handoff.status !== "Cancelled",
       );
 
-      if (activeExistingHandoff) return currentHandoffs;
-
-      return [
-        ...currentHandoffs,
+      const nextHandoffs: DelegationHandoffRecord[] = activeExistingHandoff ? delegationHandoffs : [
+        ...delegationHandoffs,
         {
-        id: `handoff-${transferredAt}-${objectType}-${objectId}`,
-        objectType,
-        objectId,
-        title: title || "Untitled work item",
-        area: area || "Unassigned",
-        previousOwner: previousOwnerName,
-        previousOwnerPersonId: previousOwnerPerson?.id || previousOwnerPersonId,
-        newOwner: destinationPerson.name,
-        newOwnerPersonId: destinationPerson.id,
-        delegatedBy: previousOwnerPerson?.name || previousOwnerName,
-        delegatedByPersonId: previousOwnerPerson?.id || previousOwnerPersonId,
-        transferredAt,
-        handoffContext,
-        handoffReason: handoffContext,
-        reviewDate: reviewDate.toISOString().slice(0, 10),
-        status: "Healthy",
-        outcomeLesson: "",
-      },
+          id: `handoff-${transferredAt}-${objectType}-${objectId}`,
+          objectType,
+          objectId,
+          title: title || "Untitled work item",
+          area: area || "Unassigned",
+          previousOwner: previousOwnerName,
+          previousOwnerPersonId: previousOwnerPerson?.id || previousOwnerPersonId,
+          newOwner: destinationPerson.name,
+          newOwnerPersonId: destinationPerson.id,
+          delegatedBy: previousOwnerPerson?.name || previousOwnerName,
+          delegatedByPersonId: previousOwnerPerson?.id || previousOwnerPersonId,
+          transferredAt,
+          handoffContext,
+          handoffReason: handoffContext,
+          reviewDate: reviewDate.toISOString().slice(0, 10),
+          status: "Healthy",
+          outcomeLesson: "",
+        },
       ];
-    });
-    return true;
+      applyOwnershipChange(nextHandoffs);
+      if (nextHandoffs !== delegationHandoffs) setDelegationHandoffs(nextHandoffs);
+      return true;
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Ownership/execution change could not be persisted; records were preserved." });
+      return false;
+    }
   };
 
   const handleProblemEditOpen = (problem: ProblemRecord) => {
@@ -13703,11 +13742,13 @@ export default function Home() {
       status: problemEditor.problemStatus,
     });
     const persistedProblem = problemRecords.find((problem) => problem.id === selectedProblemId);
-    const applySave = () => setConversions((currentConversions) =>
-      currentConversions.map((conversion) =>
+    const applySave = (nextHandoffs: DelegationHandoffRecord[] = delegationHandoffs) => {
+      const next = conversions.map((conversion) =>
         conversion.id === selectedProblemId ? updatedProblem : conversion,
-      ),
-    );
+      );
+      persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }], nextHandoffs);
+      setConversions(next);
+    };
     const saveSucceeded = persistedProblem
       ? applyOwnershipChangeWithDelegationIntegrity({
           objectType: "Problem",
@@ -13719,7 +13760,7 @@ export default function Home() {
           handoffContext: updatedProblem.impact.trim() || updatedProblem.problemStatement,
           applyOwnershipChange: applySave,
         })
-      : (applySave(), true);
+      : tryPersistExecution(() => applySave());
 
     if (!saveSucceeded) return;
 
@@ -13801,8 +13842,11 @@ export default function Home() {
     updates: DelegationHandoffUpdate,
   ) => {
     const statusWasUpdated = Object.prototype.hasOwnProperty.call(updates, "status");
-    setDelegationHandoffs((currentHandoffs) =>
-      currentHandoffs.map((handoff) =>
+    if (!tryPersistExecution(() => {
+      if (!operatingDataLoaded || !handoffsWritableRef.current || delegationHandoffs.filter((record) => record.id === handoffId).length !== 1) {
+        throw new Error("Delegation history is not writable or its identity is ambiguous; the review was not recorded.");
+      }
+      const next = delegationHandoffs.map((handoff) =>
         handoff.id === handoffId
           ? {
               ...handoff,
@@ -13814,8 +13858,11 @@ export default function Home() {
                   : handoff.status,
             }
           : handoff,
-      ),
-    );
+      );
+      assertDelegationHandoffs(next);
+      persistOwnershipRecords([], next);
+      setDelegationHandoffs(next);
+    })) return;
   };
 
   const handleActionEditorChange = (
@@ -13884,17 +13931,8 @@ export default function Home() {
       return;
     }
 
-    const validRelatedProblem = problemRecords.some((problem) => problem.id === actionEditor.relatedProblem)
-      ? actionEditor.relatedProblem
-      : "";
-    const validRelatedDecision = decisionRecords.some((decision) => decision.id === actionEditor.relatedDecision)
-      ? actionEditor.relatedDecision
-      : "";
-
     const updatedAction = normalizeActionRecord({
       ...actionEditor,
-      relatedProblem: validRelatedProblem,
-      relatedDecision: validRelatedDecision,
       status: actionEditor.status,
       priority: actionEditor.priority,
       owner: actionEditor.owner,
@@ -13904,26 +13942,23 @@ export default function Home() {
       completionEvidence: actionEditor.completionEvidence,
     });
     const persistedAction = actionRecords.find((action) => action.id === selectedActionId);
-    if (persistedAction?.workloadAssessments) updatedAction.workloadAssessments = persistedAction.workloadAssessments;
-    const applySave = () => setConversions((currentConversions) =>
-      currentConversions.map((conversion) =>
-        conversion.id === selectedActionId ? updatedAction : conversion,
-      ),
-    );
-    const saveSucceeded = persistedAction
-      ? applyOwnershipChangeWithDelegationIntegrity({
-          objectType: "Action",
-          objectId: updatedAction.id,
-          title: updatedAction.actionTitle || updatedAction.title,
-          area: getAreaText(updatedAction),
-          previousOwner: getActionOwnerDisplay(persistedAction, people),
-          previousOwnerPersonId: persistedAction.ownerPersonId,
-          newOwner: getActionOwnerDisplay(updatedAction, people),
-          newOwnerPersonId: updatedAction.ownerPersonId,
-          handoffContext: updatedAction.description.trim() || updatedAction.actionTitle,
-          applyOwnershipChange: applySave,
-        })
-      : (applySave(), true);
+    if (!persistedAction) {
+      setFeedback({ type: "error", message: "Action is missing; no execution record was saved." });
+      return;
+    }
+    const applySave = (nextHandoffs: DelegationHandoffRecord[] = delegationHandoffs) => { persistActionExecution(updatedAction, nextHandoffs); };
+    const saveSucceeded = applyOwnershipChangeWithDelegationIntegrity({
+      objectType: "Action",
+      objectId: updatedAction.id,
+      title: updatedAction.actionTitle || updatedAction.title,
+      area: getAreaText(updatedAction),
+      previousOwner: getActionOwnerDisplay(persistedAction, people),
+      previousOwnerPersonId: persistedAction.ownerPersonId,
+      newOwner: getActionOwnerDisplay(updatedAction, people),
+      newOwnerPersonId: updatedAction.ownerPersonId,
+      handoffContext: updatedAction.description.trim() || updatedAction.actionTitle,
+      applyOwnershipChange: applySave,
+    });
 
     if (!saveSucceeded) return;
 
@@ -13953,6 +13988,10 @@ export default function Home() {
 
     const followUpOwner = people.find((person) => person.id === review.followUpOwnerPersonId && person.status === "Active");
     const reassignedOwner = people.find((person) => person.id === review.reassignedOwnerPersonId && person.status === "Active");
+    if (review.outcome === "Reassign" && (!reassignedOwner || people.filter((person) => person.id === review.reassignedOwnerPersonId).length !== 1)) {
+      setFeedback({ type: "error", message: "Select a unique active receiving Person; reassignment was not recorded." });
+      return;
+    }
     const nextStatus: ActionRecord["status"] = review.outcome === "Waiting on external dependency"
       ? "Waiting"
       : review.outcome === "Blocked"
@@ -13979,7 +14018,7 @@ export default function Home() {
       completionDate: review.outcome === "Complete" ? review.reviewedDate : action.completionDate,
     };
     const nextAction = normalizeActionRecord({ ...action, ...reviewUpdates });
-    const applyReview = () => setConversions((current) => current.map((record) => record.id === action.id ? nextAction : record));
+    const applyReview = (nextHandoffs: DelegationHandoffRecord[] = delegationHandoffs) => { persistActionExecution(nextAction, nextHandoffs); };
     const reviewSucceeded = review.outcome === "Reassign" && reassignedOwner
       ? applyOwnershipChangeWithDelegationIntegrity({
           objectType: "Action",
@@ -13993,7 +14032,7 @@ export default function Home() {
           handoffContext: review.followUpNote || action.description,
           applyOwnershipChange: applyReview,
         })
-      : (applyReview(), true);
+      : tryPersistExecution(() => applyReview());
 
     if (!reviewSucceeded) return;
     setActionEditor((current) => current?.id === action.id ? nextAction : current);
@@ -14006,6 +14045,11 @@ export default function Home() {
       return;
     }
 
+    const persisted = problemRecords.filter((record) => record.id === problem.id);
+    if (persisted.length !== 1 || JSON.stringify(persisted[0]) !== JSON.stringify(problem)) {
+      setFeedback({ type: "error", message: "Save or reload the Problem before creating its implementation Action; unsaved problem scope must not be used as execution evidence." });
+      return;
+    }
     setCreatingLinkedActionForProblemId(problem.id);
 
     const createdAction = normalizeActionRecord({
@@ -14033,19 +14077,12 @@ export default function Home() {
       owner: problem.owner || "",
     });
 
-    setConversions((currentConversions) => [
-      {
-        ...createdAction,
-        relatedProblem: problem.id,
-        relatedCapture: problem.sourceCaptureId,
-        relatedPillar: problem.relatedArea,
-      },
-      ...currentConversions,
-    ]);
+    const saved = tryPersistExecution(() => persistNewAction(createdAction));
+    setCreatingLinkedActionForProblemId(null);
+    if (!saved) return;
 
     setSelectedActionId(createdAction.id);
     setActionEditor(createdAction);
-    setCreatingLinkedActionForProblemId(null);
     setFeedback({
       type: "success",
       message: "Linked Action created from the Problem.",
@@ -14074,6 +14111,11 @@ export default function Home() {
       return;
     }
 
+    const persisted = decisionRecords.filter((record) => record.id === decision.id);
+    if (persisted.length !== 1 || JSON.stringify(persisted[0]) !== JSON.stringify(decision)) {
+      setFeedback({ type: "error", message: "Save or reload the Decision before creating its implementation Action; unsaved approval scope must not be used as execution evidence." });
+      return;
+    }
     setCreatingLinkedActionForDecisionId(decision.id);
 
     const createdAction = normalizeActionRecord({
@@ -14101,19 +14143,12 @@ export default function Home() {
       owner: decision.decisionMaker || "",
     });
 
-    setConversions((currentConversions) => [
-      {
-        ...createdAction,
-        relatedDecision: decision.id,
-        relatedCapture: decision.sourceCaptureId,
-        relatedPillar: decision.relatedArea,
-      },
-      ...currentConversions,
-    ]);
+    const saved = tryPersistExecution(() => persistNewAction(createdAction));
+    setCreatingLinkedActionForDecisionId(null);
+    if (!saved) return;
 
     setSelectedActionId(createdAction.id);
     setActionEditor(createdAction);
-    setCreatingLinkedActionForDecisionId(null);
     setFeedback({
       type: "success",
       message: "Linked Action created from the Decision.",
@@ -14180,7 +14215,7 @@ export default function Home() {
         assertCapacityResolutionRecord(updatedDecision);
         if (conversions.filter((record) => record.id === selectedDecisionId).length !== 1) throw new Error("Decision identity is ambiguous.");
         const next = conversions.map((record) => record.id === selectedDecisionId ? updatedDecision : record);
-        persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+        persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }]);
         setConversions(next);
         setSelectedDecisionId(null);
         setDecisionEditor(null);
@@ -14191,11 +14226,13 @@ export default function Home() {
       return;
     }
 
-    setConversions((currentConversions) =>
-      currentConversions.map((conversion) =>
-        conversion.id === selectedDecisionId ? updatedDecision : conversion,
-      ),
-    );
+    if (!tryPersistExecution(() => {
+      const stored = conversions.filter((record) => record.id === selectedDecisionId);
+      if (stored.length !== 1 || stored[0].targetType !== "Convert to Decision") throw new Error("Decision identity is missing or ambiguous; reasoning and approval scope were preserved.");
+      const next = conversions.map((record) => record.id === selectedDecisionId ? updatedDecision : record);
+      persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }]);
+      setConversions(next);
+    })) return;
 
     setSelectedDecisionId(null);
     setDecisionEditor(null);
@@ -14577,34 +14614,26 @@ export default function Home() {
       newOwner: person.name,
       newOwnerPersonId: person.id,
       handoffContext,
-      applyOwnershipChange: () => {
+      applyOwnershipChange: (nextHandoffs = delegationHandoffs) => {
         if (objectType === "Action") {
-          setConversions((currentConversions) =>
-            currentConversions.map((conversion) =>
-              conversion.id === id
-                ? { ...conversion, owner: person.name, ownerPersonId: person.id }
-                : conversion,
-            ),
-          );
+          if (!action) throw new Error("Action is missing; responsibility was not changed.");
+          persistActionExecution({ ...action, owner: person.name, ownerPersonId: person.id }, nextHandoffs);
         } else if (objectType === "Problem") {
-          setConversions((currentConversions) =>
-            currentConversions.map((conversion) =>
-              conversion.id === id ? { ...conversion, owner: person.name } : conversion,
-            ),
-          );
+          if (conversions.filter((record) => record.id === id && record.targetType === "Convert to Problem").length !== 1) throw new Error("Problem identity is missing or ambiguous.");
+          const next = conversions.map((record) => record.id === id ? { ...record, owner: person.name } : record);
+          persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }], nextHandoffs);
+          setConversions(next);
         } else if (objectType === "Project") {
-          setProjects((currentProjects) =>
-            currentProjects.map((project) =>
-              project.id === id ? { ...project, owner: person.name } : project,
-            ),
-          );
+          if (projects.filter((record) => record.id === id).length !== 1) throw new Error("Project identity is missing or ambiguous.");
+          const next = projects.map((record) => record.id === id ? { ...record, owner: person.name } : record);
+          persistOwnershipRecords([{ key: PROJECT_STORAGE_KEY, records: next }], nextHandoffs);
+          setProjects(next);
           setProjectEditor((currentProject) => currentProject && currentProject.id === id ? { ...currentProject, owner: person.name } : currentProject);
         } else if (objectType === "Lead") {
-          setLeads((currentLeads) =>
-            currentLeads.map((lead) =>
-              lead.id === id ? { ...lead, owner: person.name } : lead,
-            ),
-          );
+          if (leads.filter((record) => record.id === id).length !== 1) throw new Error("Lead identity is missing or ambiguous.");
+          const next = leads.map((record) => record.id === id ? { ...record, owner: person.name } : record);
+          persistOwnershipRecords([{ key: LEAD_STORAGE_KEY, records: next }], nextHandoffs);
+          setLeads(next);
         }
       },
     });
@@ -14798,11 +14827,11 @@ export default function Home() {
           assessments: icarusAssessments }
         : respondIcarusObservationHandoff(context, action, command, people);
       const nextConversions = conversions.map((record) => record.id === action.id ? result.action : record);
-      const commit = () => {
-        persistJsonArraysTransaction(window.localStorage, [
+      const commit = (nextHandoffs: DelegationHandoffRecord[] = delegationHandoffs) => {
+        persistOwnershipRecords([
           { key: CONVERSION_STORAGE_KEY, records: nextConversions },
           { key: ICARUS_STORAGE_KEY, records: result.assessments },
-        ]);
+        ], nextHandoffs);
         setConversions(nextConversions);
         setIcarusAssessments(result.assessments);
         setActionEditor((current) => current?.id === action.id ? result.action : current);
@@ -14849,7 +14878,7 @@ export default function Home() {
         const nextLesson = applyLessonEditorChanges(current, updatedLesson);
         assertCommercialLearning(nextLesson.commercialLearning);
         const next = conversions.map((entry) => entry.id === selectedLessonId ? nextLesson : entry);
-        persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+        persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }]);
         setConversions(next);
         setSelectedLessonId(null);
         setLessonEditor(null);
@@ -14859,11 +14888,15 @@ export default function Home() {
       }
       return;
     }
-    setConversions((currentConversions) =>
-      currentConversions.map((conversion) =>
-        conversion.id === selectedLessonId ? applyLessonEditorChanges(conversion, updatedLesson) : conversion,
-      ),
-    );
+    if (!tryPersistExecution(() => {
+      const stored = conversions.filter((record) => record.id === selectedLessonId);
+      if (stored.length !== 1 || stored[0].targetType !== "Convert to Lesson") throw new Error("Lesson identity is missing or ambiguous; retained learning was preserved.");
+      const nextLesson = applyLessonEditorChanges(stored[0], updatedLesson);
+      assertCommercialLessonRecord(nextLesson);
+      const next = conversions.map((record) => record.id === selectedLessonId ? nextLesson : record);
+      persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }]);
+      setConversions(next);
+    })) return;
 
     setSelectedLessonId(null);
     setLessonEditor(null);
@@ -15499,7 +15532,7 @@ export default function Home() {
       const next = isNewPerson
         ? [nextPerson, ...people]
         : people.map((person) => person.id === nextPerson.id ? nextPerson : person);
-      persistJsonArraysTransaction(window.localStorage, [{ key: PERSON_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: PERSON_STORAGE_KEY, records: next }]);
       setPeople(next);
       setPersonEditor(nextPerson);
       setPersonSaveState("saved");
@@ -15664,11 +15697,12 @@ export default function Home() {
 
     const isNewProject = !projects.some((project) => project.id === nextProject.id);
     const persistedProject = projects.find((project) => project.id === nextProject.id);
-    const applySave = () => setProjects((currentProjects) =>
-      isNewProject
-        ? [nextProject, ...currentProjects]
-        : currentProjects.map((project) => project.id === nextProject.id ? nextProject : project),
-    );
+    const applySave = (nextHandoffs: DelegationHandoffRecord[] = delegationHandoffs) => {
+      if (projects.filter((project) => project.id === nextProject.id).length > 1) throw new Error("Project identity is duplicated.");
+      const next = isNewProject ? [nextProject, ...projects] : projects.map((project) => project.id === nextProject.id ? nextProject : project);
+      persistOwnershipRecords([{ key: PROJECT_STORAGE_KEY, records: next }], nextHandoffs);
+      setProjects(next);
+    };
     const saveSucceeded = persistedProject
       ? applyOwnershipChangeWithDelegationIntegrity({
           objectType: "Project",
@@ -15680,7 +15714,7 @@ export default function Home() {
           handoffContext: `${nextProject.projectName}${nextProject.targetCompletionDate ? `; target completion ${nextProject.targetCompletionDate}` : ""}`,
           applyOwnershipChange: applySave,
         })
-      : (applySave(), true);
+      : tryPersistExecution(() => applySave());
 
     if (!saveSucceeded) return false;
 
@@ -15731,7 +15765,12 @@ export default function Home() {
       reviewNote: review.reviewNote || project.reviewNote,
       lastReviewOutcome: review.outcome,
     };
-    const applyReview = () => setProjects((current) => current.map((record) => record.id === project.id ? nextProject : record));
+    const applyReview = (nextHandoffs: DelegationHandoffRecord[] = delegationHandoffs) => {
+      if (projects.filter((record) => record.id === project.id).length !== 1) throw new Error("Project identity is missing or ambiguous.");
+      const next = projects.map((record) => record.id === project.id ? nextProject : record);
+      persistOwnershipRecords([{ key: PROJECT_STORAGE_KEY, records: next }], nextHandoffs);
+      setProjects(next);
+    };
     const reviewSucceeded = review.outcome === "Reassign" && reassignedOwner
       ? applyOwnershipChangeWithDelegationIntegrity({
           objectType: "Project",
@@ -15743,7 +15782,7 @@ export default function Home() {
           handoffContext: review.reviewNote || `${project.projectName}; target completion ${project.targetCompletionDate || "not set"}`,
           applyOwnershipChange: applyReview,
         })
-      : (applyReview(), true);
+      : tryPersistExecution(() => applyReview());
 
     if (!reviewSucceeded) return;
     setProjectEditor((current) => current?.id === project.id ? nextProject : current);
@@ -15800,10 +15839,10 @@ export default function Home() {
     const isNewLead = !leads.some((lead) => lead.id === nextLead.id);
     const persistedLead = leads.find((lead) => lead.id === nextLead.id);
     if (persistedLead?.workloadAssessments) nextLead.workloadAssessments = persistedLead.workloadAssessments;
-    const applySave = () => {
+    const applySave = (nextHandoffs: DelegationHandoffRecord[] = delegationHandoffs) => {
       if (leads.filter((lead) => lead.id === nextLead.id).length > 1) throw new Error("Lead identity is duplicated; reconcile customer commitments before saving.");
       const next = isNewLead ? [nextLead, ...leads] : leads.map((lead) => lead.id === nextLead.id ? nextLead : lead);
-      persistJsonArraysTransaction(window.localStorage, [{ key: LEAD_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: LEAD_STORAGE_KEY, records: next }], nextHandoffs);
       setLeads(next);
     };
     try {
@@ -15847,7 +15886,7 @@ export default function Home() {
       }
       const next = request.kind === "Create" ? [action, ...conversions]
         : conversions.map((record) => record.id === action.id ? action : record);
-      persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }]);
       setConversions(next);
       setFeedback({ type: "success", message: request.kind === "Create" ? "Commercial next-step Action created. Lead status and outcome remain unchanged."
         : "Existing Action linked to the Lead. Execution ownership remains managed through Actions." });
@@ -15867,7 +15906,7 @@ export default function Home() {
       if (request.kind === "Schedule") {
         const nextLead = scheduleLeadDelivery(input, request.leadId, request);
         const nextLeads = leads.map((lead) => lead.id === nextLead.id ? nextLead : lead);
-        persistJsonArraysTransaction(window.localStorage, [{ key: LEAD_STORAGE_KEY, records: nextLeads }]);
+        persistOwnershipRecords([{ key: LEAD_STORAGE_KEY, records: nextLeads }]);
         setLeads(nextLeads);
         setLeadEditor(nextLead);
       } else {
@@ -15883,7 +15922,7 @@ export default function Home() {
         const nextLeads = leads.map((lead) => lead.id === result.lead.id ? result.lead : lead);
         const nextActions = request.kind === "Create" ? [result.action, ...conversions]
           : conversions.map((record) => record.id === actionId ? result.action : record);
-        persistJsonArraysTransaction(window.localStorage, [
+        persistOwnershipRecords([
           { key: LEAD_STORAGE_KEY, records: nextLeads }, { key: CONVERSION_STORAGE_KEY, records: nextActions },
         ]);
         setLeads(nextLeads);
@@ -15912,7 +15951,7 @@ export default function Home() {
     try {
       if (!leadsWritableRef.current || leads.filter((entry) => entry.id === lead.id).length !== 1) throw new Error("Lead storage or identity is not safe to update; customer commitments have been preserved.");
       const next = leads.map((entry) => entry.id === lead.id ? { ...entry, archived } : entry);
-      persistJsonArraysTransaction(window.localStorage, [{ key: LEAD_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: LEAD_STORAGE_KEY, records: next }]);
       setLeads(next);
     } catch (error) {
       setFeedback({ type: "error", message: error instanceof Error ? error.message : "Lead archive change could not be saved." });
@@ -16104,7 +16143,7 @@ export default function Home() {
       validateDeliveryIncomeSave(nextIncome, { leads, actions: actionRecords, people, income: incomeRecords, nowMs: Date.now() });
       if (incomeRecords.filter((record) => record.id === nextIncome.id).length > 1) throw new Error("Income identity is duplicated; reconcile before saving.");
       const next = isNew ? [nextIncome, ...incomeRecords] : incomeRecords.map((record) => record.id === nextIncome.id ? nextIncome : record);
-      persistJsonArraysTransaction(window.localStorage, [{ key: INCOME_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: INCOME_STORAGE_KEY, records: next }]);
       setIncomeRecords(next);
     } catch (error) {
       setFeedback({ type: "error", message: error instanceof Error ? error.message : "Income evidence could not be saved." });
@@ -16128,7 +16167,7 @@ export default function Home() {
         throw new Error("Income has linked billing or collection Actions; reconcile those relationships before deleting the financial record.");
       }
       const next = incomeRecords.filter((record) => record.id !== targetId);
-      persistJsonArraysTransaction(window.localStorage, [{ key: INCOME_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: INCOME_STORAGE_KEY, records: next }]);
       setIncomeRecords(next);
     } catch (error) {
       setFeedback({ type: "error", message: error instanceof Error ? error.message : "Income deletion could not be saved." });
@@ -16165,7 +16204,7 @@ export default function Home() {
       }
       const nextIncome = incomeRecords.map((record) => record.id === result.income.id ? result.income : record);
       const nextConversions = [result.action, ...conversions];
-      persistJsonArraysTransaction(window.localStorage, [
+      persistOwnershipRecords([
         { key: INCOME_STORAGE_KEY, records: nextIncome },
         { key: CONVERSION_STORAGE_KEY, records: nextConversions },
       ]);
@@ -16231,7 +16270,7 @@ export default function Home() {
       validateJobExpenseSave(nextExpense, { ...jobPerformanceInput, nowMs: Date.now() });
       const isNew = !expenseRecords.some((record) => record.id === nextExpense.id);
       const next = isNew ? [nextExpense, ...expenseRecords] : expenseRecords.map((record) => record.id === nextExpense.id ? nextExpense : record);
-      persistJsonArraysTransaction(window.localStorage, [{ key: EXPENSE_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: EXPENSE_STORAGE_KEY, records: next }]);
       setExpenseRecords(next);
       setSelectedExpenseId(nextExpense.id);
       setExpenseEditor(nextExpense);
@@ -16252,7 +16291,7 @@ export default function Home() {
       const targetId = expenseEditor.id;
       if (!expensesWritableRef.current || expenseRecords.filter((record) => record.id === targetId).length !== 1) throw new Error("Expense storage or identity is not safe to update; cost evidence has been preserved.");
       const next = expenseRecords.filter((record) => record.id !== targetId);
-      persistJsonArraysTransaction(window.localStorage, [{ key: EXPENSE_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: EXPENSE_STORAGE_KEY, records: next }]);
       setExpenseRecords(next);
       setSelectedExpenseId(null);
       setExpenseEditor(null);
@@ -16302,7 +16341,7 @@ export default function Home() {
       if (!leadEditor || persisted.length !== 1 || JSON.stringify(leadEditor) !== JSON.stringify(persisted[0])) throw new Error("Save or reload the Lead before financial review; unsaved changes must not be overwritten.");
       const nextLead = recordJobFinancialReview({ ...jobPerformanceInput, nowMs: Date.now() }, leadEditor.id, request);
       const next = leads.map((lead) => lead.id === nextLead.id ? nextLead : lead);
-      persistJsonArraysTransaction(window.localStorage, [{ key: LEAD_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: LEAD_STORAGE_KEY, records: next }]);
       setLeads(next);
       setLeadEditor(nextLead);
       setFeedback({ type: "success", message: "Attributed job financial coverage review recorded. Missing financial evidence still remains unknown." });
@@ -16324,7 +16363,7 @@ export default function Home() {
       if (conversions.some((entry) => entry.id === id)) throw new Error("Lesson identity already exists.");
       const lesson = createCommercialLesson({ ...commercialLearningInput, nowMs: Date.now() }, id, lead.id, request);
       const next = [lesson, ...conversions];
-      persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }]);
       setConversions(next);
       setSelectedLeadId(null);
       setLeadEditor(null);
@@ -16358,7 +16397,7 @@ export default function Home() {
           : evaluateCommercialChange(input, current.id, command.request);
       const next = conversions.map((entry) => entry.id === current.id ? nextLesson : entry);
       if (newRecord) next.unshift(newRecord);
-      persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }]);
       setConversions(next);
       setLessonEditor(nextLesson);
       setFeedback({ type: "success", message: command.kind === "AssignOwner" ? "Corrective Lesson responsibility explicitly assigned. Historical diagnosis and approval attribution remain unchanged."
@@ -16390,7 +16429,8 @@ export default function Home() {
   };
 
   const requireCapacityStores = () => {
-    if (!operatingDataLoaded || !peopleWritableRef.current || !leadsWritableRef.current || !conversionsWritableRef.current) {
+    if (!operatingDataLoaded || !peopleWritableRef.current || !leadsWritableRef.current || !conversionsWritableRef.current
+      || !projectsWritableRef.current) {
       throw new Error("Capacity source stores are not safely loaded/writable; no operational evidence was changed.");
     }
   };
@@ -16405,13 +16445,13 @@ export default function Home() {
         const lead = leads.find((entry) => entry.id === id)!;
         const nextLead = { ...lead, workloadAssessments: result.workloadAssessments };
         const next = leads.map((entry) => entry.id === id ? nextLead : entry);
-        persistJsonArraysTransaction(window.localStorage, [{ key: LEAD_STORAGE_KEY, records: next }]);
+        persistOwnershipRecords([{ key: LEAD_STORAGE_KEY, records: next }]);
         setLeads(next);
         setLeadEditor(nextLead);
       } else {
         if (conversions.filter((entry) => entry.id === id && entry.targetType === "Convert to Action").length !== 1) throw new Error("Action identity is unsafe to update.");
         const next = conversions.map((entry) => entry.id === id ? { ...entry, workloadAssessments: result.workloadAssessments } : entry);
-        persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+        persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }]);
         setConversions(next);
         setActionEditor({ ...actionRecords.find((entry) => entry.id === id)!, workloadAssessments: result.workloadAssessments });
       }
@@ -16428,7 +16468,7 @@ export default function Home() {
       const result = recordAvailabilityReview({ ...deliveryCapacityInput, nowMs: Date.now() }, person.id, request);
       const nextPerson = { ...person, availabilityReviews: result.availabilityReviews };
       const next = people.map((entry) => entry.id === person.id ? nextPerson : entry);
-      persistJsonArraysTransaction(window.localStorage, [{ key: PERSON_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: PERSON_STORAGE_KEY, records: next }]);
       setPeople(next);
       setPersonEditor(nextPerson);
       setFeedback({ type: "success", message: "Availability review and workload-coverage assertion recorded. Missing estimates/dependencies remain explicit gaps; no additional work or delegation is approved." });
@@ -16466,7 +16506,7 @@ export default function Home() {
       const result = createCapacityResolution({ ...capacityResolutionInput, nowMs: Date.now() }, generateConversionId(), personId, reviewerId, evidence);
       if (conversions.some((record) => record.id === result.id)) throw new Error("Decision identity conflicts with an existing record.");
       const next = [result, ...conversions];
-      persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }]);
       setConversions(next);
       setSelectedDecisionId(result.id); setDecisionEditor(result);
       setFeedback({ type: "success", message: "Draft capacity-resolution Decision captured. No response, spending or operational commitment approved." });
@@ -16488,7 +16528,7 @@ export default function Home() {
           : evaluateCapacityResolution(source, decisionEditor.id, request.evaluation);
       if (conversions.filter((record) => record.id === result.id).length !== 1) throw new Error("Decision storage identity is ambiguous.");
       const next = conversions.map((record) => record.id === result.id ? result : record);
-      persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+      persistOwnershipRecords([{ key: CONVERSION_STORAGE_KEY, records: next }]);
       setConversions(next); setDecisionEditor(result);
       setFeedback({ type: "success", message: request.kind === "Approve"
         ? "Explicit scope-bound approval recorded. Execution remains on existing Actions and established financial/delivery/delegation workflows."
@@ -16986,6 +17026,7 @@ export default function Home() {
             if (record && typeof record === "object" && "targetType" in record && record.targetType === "Convert to Action") assertCapacityRecord(record, "Action");
           });
           if (key === PERSON_STORAGE_KEY) decoded.forEach((record: unknown) => assertCapacityRecord(record, "Person"));
+          if (key === DELEGATION_HANDOFF_STORAGE_KEY) assertDelegationHandoffs(decoded);
           if (key === INCOME_STORAGE_KEY) decoded.forEach(assertIncomeCommercialEvidence);
           if (key === LEAD_STORAGE_KEY) decoded.forEach((record: unknown) => {
             if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error("Emergency snapshot contains a malformed Lead.");

@@ -16,6 +16,13 @@ export function persistJsonValue(storage: PersistenceStorage, key: string, value
   storage.setItem(key, JSON.stringify(value));
 }
 
+export class PersistenceTransactionError extends Error {
+  constructor(message: string, readonly rollbackFailedKeys: readonly string[]) {
+    super(message);
+    this.name = "PersistenceTransactionError";
+  }
+}
+
 export function persistJsonArraysTransaction(
   storage: Required<PersistenceStorage>,
   updates: readonly { key: string; records: readonly unknown[] }[],
@@ -25,7 +32,8 @@ export function persistJsonArraysTransaction(
     key, before: storage.getItem(key), after: records.length ? JSON.stringify(records) : null,
   }));
   try {
-    writes.forEach(({ key, after }) => {
+    writes.forEach(({ key, before, after }) => {
+      if (before === after) return;
       if (after === null) storage.removeItem(key);
       else storage.setItem(key, after);
     });
@@ -34,6 +42,7 @@ export function persistJsonArraysTransaction(
     const failures: string[] = [];
     writes.forEach(({ key, before }) => {
       try {
+        if (storage.getItem(key) === before) return;
         if (before === null) storage.removeItem(key);
         else storage.setItem(key, before);
         if (storage.getItem(key) !== before) failures.push(key);
@@ -41,7 +50,7 @@ export function persistJsonArraysTransaction(
         failures.push(key);
       }
     });
-    throw new Error(`Storage transaction failed: ${error instanceof Error ? error.message : String(error)}.${failures.length
-      ? ` Rollback failed for ${failures.join(", ")}; reload and reconcile persisted records before continuing.` : " Previous storage restored."}`);
+    throw new PersistenceTransactionError(`Storage transaction failed: ${error instanceof Error ? error.message : String(error)}.${failures.length
+      ? ` Rollback failed for ${failures.join(", ")}; reload and reconcile persisted records before continuing.` : " Previous storage restored."}`, failures);
   }
 }

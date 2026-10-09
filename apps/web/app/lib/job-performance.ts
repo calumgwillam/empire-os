@@ -190,6 +190,9 @@ export function buildJobPerformance(input: JobPerformanceInput): JobPerformanceV
     const profitAfterAllocatedCosts = contribution !== null && review?.overheadCostsComplete && costErrors.length === 0
       ? sumMoney([contribution, -overheadCostSubtotal]) : null;
     const knownCostsExceedEarned = completionSupported && earnedSubtotal !== null && directCostSubtotal > earnedSubtotal;
+    if (review && !reviewCurrent && !completionSupported) {
+      reasons.push("JOB FINANCE: Existing financial coverage review is stale; reconcile delivery and financial evidence before relying on profitability");
+    }
     if (completionSupported) {
       if (!revenueSupported) reasons.push("JOB FINANCE: Completed work lacks complete evidence-supported earned revenue");
       if (!reviewCurrent) reasons.push("JOB FINANCE: Completed job needs a current attributed financial coverage review");
