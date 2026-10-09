@@ -7,7 +7,7 @@ import { buildFullBackup, validateEmpireOsBackup, validateStandaloneBackup, runB
   STORAGE_KEY, CONVERSION_STORAGE_KEY, LEAD_STORAGE_KEY, INCOME_STORAGE_KEY, RECOVERY_SNAPSHOTS_STORAGE_KEY,
   type BackupStorage } from "./backup";
 import { BACKUP_VERIFICATIONS_STORAGE_KEY, backupStorageContent, currentBackupStorageDigest, independentBackupHealth,
-  readBackupVerifications, recordBackupVerification, sha256, verifyBackupFile } from "./independent-backup";
+  readBackupVerifications, recordBackupVerification, sha256, verifyBackupFile, verifyBackupRecoveryDrill } from "./independent-backup";
 
 const NOW = Date.parse("2026-10-09T19:00:00Z");
 const digest = async (value: string) => createHash("sha256").update(value).digest("hex");
@@ -171,12 +171,12 @@ describe("Independent saved-file assurance", () => {
 
 describe("Production saved-file verification and download semantics", () => {
   const component = readFileSync(new URL("../components/independent-backup-section.tsx", import.meta.url), "utf8");
-  const start = component.indexOf("  const verify = async () => {");
+  const start = component.indexOf("  const verify = async (drill = false) => {");
   const end = component.indexOf("  const field =", start);
   if (start < 0 || end < start) throw new Error("Saved-file verification handler could not be located.");
-  const production = transpileModule(`${component.slice(start, end)}pending = verify();`,
-    { compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.ESNext } }).outputText;
-  function handler(text: () => Promise<string>) {
+  function handler(text: () => Promise<string>, drill = false,
+    drillOperation = (value: string, input: Parameters<typeof verifyBackupFile>[1]) =>
+      verifyBackupRecoveryDrill(value, { ...input, nowMs: NOW }, digest, () => NOW)) {
     const target = memory({ [STORAGE_KEY]: full().storage[STORAGE_KEY]! });
     const results: string[] = [];
     const errors: string[] = [];
@@ -187,9 +187,12 @@ describe("Production saved-file verification and download semantics", () => {
       window: { localStorage: target.storage }, Error,
       verifyBackupFile: (value: string, input: Parameters<typeof verifyBackupFile>[1]) =>
         verifyBackupFile(value, { ...input, nowMs: NOW }, digest),
+      verifyBackupRecoveryDrill: drillOperation,
       recordBackupVerification, setBusy: () => {}, setError: (error: string) => { if (error) errors.push(error); },
       setResult: (result: string) => { if (result) results.push(result); }, refreshRef: { current: () => {} },
     };
+    const production = transpileModule(`${component.slice(start, end)}pending = verify(${drill});`,
+      { compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.ESNext } }).outputText;
     runInNewContext(production, context, { timeout: 1000 });
     return { context, target, results, errors };
   }
@@ -209,10 +212,57 @@ describe("Production saved-file verification and download semantics", () => {
     expect(live.errors[0]).toContain("Quota exceeded");
     expect(readBackupVerifications(live.target.storage)).toEqual([]);
   });
+  it("records simulated recovery separately without touching live business or recovery data", async () => {
+    const live = handler(async () => JSON.stringify(full()), true);
+    const before = Object.fromEntries(live.target.data);
+    await live.context.pending;
+    expect(live.errors).toEqual([]);
+    expect(live.results[0]).toContain("Simulated restore passed");
+    expect(readBackupVerifications(live.target.storage)[0].recoveryDrill)
+      .toEqual({ completedAt: new Date(NOW).toISOString(), checkedStoreCount: EMPIRE_OS_BACKUP_STORAGE_KEYS.length });
+    expect(live.target.writes).toEqual([BACKUP_VERIFICATIONS_STORAGE_KEY]);
+    for (const [key, value] of Object.entries(before)) expect(live.target.storage.getItem(key)).toBe(value);
+  });
+  it("never shows drill success when receipt persistence fails", async () => {
+    const live = handler(async () => JSON.stringify(full()), true);
+    live.target.storage.setItem = () => { throw new Error("Quota exceeded"); };
+    await live.context.pending;
+    expect(live.results).toEqual([]);
+    expect(live.errors[0]).toContain("Quota exceeded");
+  });
+  it("reports drill failure without overwriting previous file-verification evidence", async () => {
+    let resolve!: (value: string) => void;
+    const live = handler(() => new Promise<string>((done) => { resolve = done; }), true,
+      async () => { throw new Error("Isolated recovery drill failed: read-back mismatch"); });
+    const prior = await verifyBackupFile(JSON.stringify(full()), request, digest);
+    recordBackupVerification(live.target.storage, prior);
+    const before = live.target.storage.getItem(BACKUP_VERIFICATIONS_STORAGE_KEY);
+    resolve(JSON.stringify(full()));
+    await live.context.pending;
+    expect(live.results).toEqual([]);
+    expect(live.errors[0]).toContain("read-back mismatch");
+    expect(live.target.storage.getItem(BACKUP_VERIFICATIONS_STORAGE_KEY)).toBe(before);
+  });
+  it("can drill an already-verified file at the same clock value without replacing its file-only receipt", async () => {
+    let resolve!: (value: string) => void;
+    const live = handler(() => new Promise<string>((done) => { resolve = done; }), true);
+    const prior = await verifyBackupFile(JSON.stringify(full()), request, digest);
+    recordBackupVerification(live.target.storage, prior);
+    resolve(JSON.stringify(full()));
+    await live.context.pending;
+    expect(live.errors).toEqual([]);
+    expect(live.results[0]).toContain("Simulated restore passed");
+    const records = readBackupVerifications(live.target.storage);
+    expect(records).toHaveLength(2);
+    expect(records[0]).toEqual(prior);
+    expect(records[1].recoveryDrill).toBeDefined();
+    expect(records[1].id).not.toBe(prior.id);
+    expect(live.target.writes.every((key) => key === BACKUP_VERIFICATIONS_STORAGE_KEY)).toBe(true);
+  });
   it("does not record an obsolete file selection or an unmounted verification", async () => {
-    for (const mode of ["selection", "unmount"]) {
+    for (const [mode, drill] of [["selection", false], ["unmount", false], ["selection", true], ["unmount", true]] as const) {
       let resolve!: (value: string) => void;
-      const live = handler(() => new Promise<string>((done) => { resolve = done; }));
+      const live = handler(() => new Promise<string>((done) => { resolve = done; }), drill);
       if (mode === "selection") live.context.verificationRun.current++;
       else live.context.mounted.current = false;
       resolve(JSON.stringify(full()));

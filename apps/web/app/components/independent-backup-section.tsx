@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { backupStorageContent, currentBackupStorageDigest, independentBackupHealth, readBackupVerifications,
-  recordBackupVerification, verifyBackupFile } from "../lib/independent-backup";
+  recordBackupVerification, verifyBackupFile, verifyBackupRecoveryDrill } from "../lib/independent-backup";
 import { buildFullBackup } from "../lib/backup";
 
 export function IndependentBackupSection({ revision, disabled }: { revision: unknown; disabled: boolean }) {
@@ -74,7 +74,7 @@ export function IndependentBackupSection({ revision, disabled }: { revision: unk
     setBusy(false);
     setResult("");
   };
-  const verify = async () => {
+  const verify = async (drill = false) => {
     if (!file || disabled || busy) return;
     const run = ++verificationRun.current;
     setBusy(true);
@@ -82,12 +82,14 @@ export function IndependentBackupSection({ revision, disabled }: { revision: unk
     setResult("");
     try {
       if (!writable.current) throw new Error("Verification history is not safely readable; preserve it and reconcile storage first.");
-      const record = await verifyBackupFile(await file.text(), {
+      const record = await (drill ? verifyBackupRecoveryDrill : verifyBackupFile)(await file.text(), {
         fileName: file.name, verifier, externalLocation: location, independenceDeclared: declared, nowMs: Date.now(),
       });
       if (!mounted.current || run !== verificationRun.current) return;
       recordBackupVerification(window.localStorage, record);
-      setResult("Saved file read back, all business stores and recovery references checked, and SHA-256 evidence recorded. No data was restored. External independence remains your declaration, not automatically proven.");
+      setResult(drill
+        ? "Simulated restore passed in isolated memory: every business store was read back exactly and restored evidence/references revalidated. Receipt recorded. Live business data was not accessed by the drill. This is not proof of real disaster-recovery readiness."
+        : "Saved file read back, all business stores and recovery references checked, and SHA-256 evidence recorded. No data was restored. External independence remains your declaration, not automatically proven.");
       refreshRef.current();
     } catch (error) {
       if (!mounted.current || run !== verificationRun.current) return;
@@ -105,11 +107,16 @@ export function IndependentBackupSection({ revision, disabled }: { revision: unk
       <p>Backup created: {new Date(health.verification.backupCreatedAt).toLocaleString()}</p>
       <p>Read-back verified: {new Date(health.verification.verifiedAt).toLocaleString()} by {health.verification.verifier}</p>
       <p>User-reported external location: {health.verification.externalLocation}</p>
+      <p className="mt-1">{health.verification.recoveryDrill
+        ? `Simulated restore passed: ${new Date(health.verification.recoveryDrill.completedAt).toLocaleString()} (${health.verification.recoveryDrill.checkedStoreCount} stores checked).`
+        : "File verification only; no simulated restore in this verification receipt."}</p>
+      <p>Real disaster-recovery readiness is not established: independent access, available devices, browser storage capacity and application operation after recovery require separate real-world checks.</p>
       <details className="mt-1"><summary>Verification fingerprint</summary><p className="break-all">SHA-256: {health.verification.fileSha256}</p>
-        <p>Complete file/reference checks passed; this is not a successful restore drill or proof of future file availability.</p></details>
+        <p>These receipts cover this file fingerprint only; they do not prove future file availability or a real-device restore.</p></details>
     </div> : null}
     <details className="mt-3">
-      <summary>Verify saved external copy</summary>
+      <summary>Verify or drill saved external copy</summary>
+      <p className="mt-2">The non-destructive drill runs the restore transaction in private memory, checks every stored value and revalidates recovered references. It does not test disk quotas, UI hydration or actual loss of this device.</p>
       <label className="mt-2 block">Saved backup JSON file
         <input className={field} type="file" accept="application/json,.json" disabled={disabled}
           onChange={(event) => { invalidate(); setFile(event.target.files?.[0] || null); }} /></label>
@@ -123,6 +130,10 @@ export function IndependentBackupSection({ revision, disabled }: { revision: unk
       <button type="button" className="mt-2 rounded border border-[#cfc8c1] px-3 py-2 disabled:opacity-45"
         disabled={disabled || busy || !file || !verifier.trim() || !location.trim() || !declared} onClick={() => void verify()}>
         {busy ? "Checking file..." : "Read back and verify copy"}
+      </button>
+      <button type="button" className="mt-2 rounded border border-[#cfc8c1] px-3 py-2 disabled:opacity-45"
+        disabled={disabled || busy || !file || !verifier.trim() || !location.trim() || !declared} onClick={() => void verify(true)}>
+        {busy ? "Checking file..." : "Run isolated recovery drill"}
       </button>
     </details>
     {error ? <p role="alert" className="mt-2 text-[#7a352b]">{error}</p> : null}

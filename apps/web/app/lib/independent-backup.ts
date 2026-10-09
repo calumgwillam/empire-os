@@ -1,11 +1,13 @@
 import { buildFullBackup, EMPIRE_OS_BACKUP_STORAGE_KEYS, isPlainObject, validateStandaloneBackup,
   BACKUP_CURRENT_DAYS, BACKUP_STALE_DAYS, type BackupStorage, type EmpireOsBackup } from "./backup";
 import { persistJsonArraysTransaction } from "./persistence";
+import { runRecoveryDrill } from "./recovery-drill";
 
 export const BACKUP_VERIFICATIONS_STORAGE_KEY = "empire-os-backup-file-verifications-v1";
 export type BackupFileVerification = {
   id: string; fileName: string; fileSha256: string; storageSha256: string; backupCreatedAt: string; verifiedAt: string;
   verifier: string; externalLocation: string; independenceDeclared: true; storeCount: number;
+  recoveryDrill?: { completedAt: string; checkedStoreCount: number };
 };
 export type Digest = (value: string) => Promise<string>;
 
@@ -29,7 +31,12 @@ export function readBackupVerifications(storage: Pick<BackupStorage, "getItem">)
       && /^\d{4}-\d{2}-\d{2}T/.test(record[field]) && Number.isFinite(Date.parse(record[field])))
     && typeof record.backupCreatedAt === "string" && typeof record.verifiedAt === "string"
     && Date.parse(record.backupCreatedAt) <= Date.parse(record.verifiedAt)
-    && record.independenceDeclared === true && record.storeCount === EMPIRE_OS_BACKUP_STORAGE_KEYS.length)) {
+    && record.independenceDeclared === true && record.storeCount === EMPIRE_OS_BACKUP_STORAGE_KEYS.length
+    && (record.recoveryDrill === undefined || (isPlainObject(record.recoveryDrill)
+      && typeof record.recoveryDrill.completedAt === "string" && /^\d{4}-\d{2}-\d{2}T/.test(record.recoveryDrill.completedAt)
+      && Number.isFinite(Date.parse(record.recoveryDrill.completedAt))
+      && Date.parse(record.recoveryDrill.completedAt) >= Date.parse(record.verifiedAt)
+      && record.recoveryDrill.checkedStoreCount === EMPIRE_OS_BACKUP_STORAGE_KEYS.length)))) {
     throw new Error("Backup verification history is malformed; stored evidence was preserved. It cannot establish a verified external copy.");
   }
   const typed = records as BackupFileVerification[];
@@ -43,6 +50,7 @@ export async function verifyBackupFile(text: string, request: {
   if (!request.fileName.trim() || !request.verifier.trim() || !request.externalLocation.trim() || !request.independenceDeclared) {
     throw new Error("Name the verifier and external copy location, and explicitly confirm it is outside this browser and available independently of this device.");
   }
+
   if (!Number.isFinite(request.nowMs)) throw new Error("Backup verification requires a valid clock.");
   const backup = validateStandaloneBackup(JSON.parse(text));
   if (Date.parse(backup.createdAt) > request.nowMs) throw new Error("Backup creation is in the future; check the file and clock before verification.");
@@ -52,6 +60,17 @@ export async function verifyBackupFile(text: string, request: {
   return { id: `${verifiedAt}:${fileSha256}`, fileName: request.fileName.trim(), fileSha256, storageSha256,
     backupCreatedAt: backup.createdAt, verifiedAt, verifier: request.verifier.trim(),
     externalLocation: request.externalLocation.trim(), independenceDeclared: true, storeCount: EMPIRE_OS_BACKUP_STORAGE_KEYS.length };
+}
+
+export async function verifyBackupRecoveryDrill(text: string, request: Parameters<typeof verifyBackupFile>[1],
+  digest: Digest = sha256, completionClock: () => number = Date.now): Promise<BackupFileVerification> {
+  const record = await verifyBackupFile(text, request, digest);
+  const drill = runRecoveryDrill(text);
+  if (drill.missingStorageKeys.length) throw new Error("The isolated drill cannot establish complete recovery from an incomplete file.");
+  const completedAtMs = completionClock();
+  if (!Number.isFinite(completedAtMs) || completedAtMs < request.nowMs) throw new Error("Recovery drill completion clock is invalid or moved backwards; no success receipt was established.");
+  return { ...record, id: `${record.id}:recovery-drill`,
+    recoveryDrill: { completedAt: new Date(completedAtMs).toISOString(), checkedStoreCount: drill.checkedStoreCount } };
 }
 
 export function recordBackupVerification(storage: BackupStorage, record: BackupFileVerification): void {
