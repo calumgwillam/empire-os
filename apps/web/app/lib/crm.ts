@@ -30,6 +30,7 @@ export type LeadRecord = {
   archived?: boolean;
   deliveryCommitment?: import("./lead-delivery").LeadDeliveryCommitment;
   jobFinancialReview?: import("./job-performance").JobFinancialReview;
+  workloadAssessments?: import("./delivery-capacity").WorkloadAssessment[];
 };
 
 export type LeadFormValues = Omit<LeadRecord, "id" | "dateCreated">;

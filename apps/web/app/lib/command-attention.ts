@@ -4,6 +4,7 @@ import { buildLeadFollowThrough, type LeadFollowThroughInput } from "./lead-foll
 import { buildLeadDelivery, getDeliveryIncomeEvidence, hasSupportedFinanceActionCompletion, type LeadDeliveryInput } from "./lead-delivery";
 import { buildJobPerformance, getJobExpenseErrors, type JobPerformanceInput } from "./job-performance";
 import { buildCommercialLearning, type CommercialLearningInput } from "./commercial-learning";
+import { buildDeliveryCapacity, type DeliveryCapacityInput } from "./delivery-capacity";
 import type {
   ActionRecord,
   DecisionRecord,
@@ -113,6 +114,7 @@ export type CommandAttentionInput = {
   delivery?: Omit<LeadDeliveryInput, "nowMs">;
   jobPerformance?: Omit<JobPerformanceInput, "nowMs">;
   commercialLearning?: Omit<CommercialLearningInput, "nowMs">;
+  deliveryCapacity?: Omit<DeliveryCapacityInput, "nowMs">;
   outreach: readonly Pick<OutreachRecord, "id" | "businessName" | "status" | "nextFollowUpDate">[];
   projects: readonly Pick<ProjectRecord, "id" | "projectName" | "area" | "status" | "health" | "nextReviewDate" | "reviewNote" | "targetCompletionDate" | "startDate">[];
   decisions: readonly Pick<DecisionRecord, "id" | "decisionTitle" | "title" | "decisionStatus" | "reviewDate" | "createdAt" | "relatedArea" | "relatedPillar">[];
@@ -574,6 +576,44 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
       if (existing) existing.attentionRank = Math.min(existing.attentionRank, rank);
     });
   }
+  const addCapacityAttention = () => {
+    if (!input.deliveryCapacity) return;
+    const capacity = buildDeliveryCapacity({ ...input.deliveryCapacity, nowMs: now });
+    capacity.work.filter((work) => work.reasons.length && (work.commitment === "Committed"
+      && (work.objectType !== "Action" || work.assessment) || work.assessment)).forEach((work) => {
+      const existing = uniqueByKey.get(`${work.objectType}:${work.id}`);
+      addAttentionItem("DELIVERY CAPACITY", {
+        id: work.id, objectType: work.objectType, title: work.title, area: work.area, reasons: work.reasons,
+        reason: work.reasons.join(" • "), statusText: `${work.commitment} capacity review`,
+        attentionRank: 4, tieWeight: 0, priorityScore: 100, sortDate: 0, sortDateAscending: false, navigationMode: "record-handler",
+      });
+      if (existing) existing.attentionRank = Math.min(existing.attentionRank, 4);
+    });
+    capacity.people.filter((person) => person.reasons.length).forEach((person) => {
+      // Attention retains existing record navigation: People availability is opened from its affected work.
+      const hosts = capacity.work.filter((work) => work.ownerPersonId === person.personId && work.commitment === "Committed"
+        && (work.objectType !== "Action" || work.assessment));
+      hosts.forEach((work) => {
+        const existing = uniqueByKey.get(`${work.objectType}:${work.id}`);
+        const rank = person.plannedOvercommitment ? 2 : 4;
+        addAttentionItem("DELIVERY CAPACITY", {
+          id: work.id, objectType: work.objectType, title: work.title, area: work.area, reasons: person.reasons.map((reason) => `${reason} (${person.name})`),
+          reason: person.reasons.join(" • "), statusText: "Person capacity constraint",
+          attentionRank: rank, tieWeight: 0, priorityScore: 100, sortDate: 0, sortDateAscending: false, navigationMode: "record-handler",
+        });
+        if (existing) existing.attentionRank = Math.min(existing.attentionRank, rank);
+      });
+    });
+    capacity.scenarios.filter((scenario) => scenario.state === "Planned overcommitment").forEach((scenario) => {
+      const work = capacity.work.find((entry) => entry.objectType === "Lead" && entry.id === scenario.leadId);
+      if (!work) return;
+      const existing = uniqueByKey.get(`Lead:${work.id}`);
+      addAttentionItem("DELIVERY CAPACITY", { id: work.id, objectType: "Lead", title: work.title, area: work.area,
+        reasons: scenario.reasons, reason: scenario.reasons.join(" • "), statusText: "Additional-work capacity risk",
+        attentionRank: 2, tieWeight: 0, priorityScore: 100, sortDate: 0, sortDateAscending: false, navigationMode: "record-handler" });
+      if (existing) existing.attentionRank = Math.min(existing.attentionRank, 2);
+    });
+  };
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);
   const startOfEightDaysFromNow = new Date(startOfToday);
@@ -879,6 +919,7 @@ export function buildCommandAttention(input: CommandAttentionInput): CommandAtte
     if (merged) merged.attentionRank = Math.min(3, merged.attentionRank);
   });
 
+  addCapacityAttention();
   if (input.icarus) {
     // Signals arrive in deterministic materiality order; anchor resolution uses the current Command order.
     input.icarus.forEach((signal) => {

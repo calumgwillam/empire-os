@@ -58,6 +58,7 @@ import type { IncomeRecord } from "./finance";
 import type { ExpenseRecord } from "./finance";
 import { buildJobPerformance, getJobExpenseErrors } from "./job-performance";
 import { buildCommercialLearning } from "./commercial-learning";
+import { buildDeliveryCapacity, type AvailabilityReview } from "./delivery-capacity";
 import { buildLeadDelivery, getDeliveryIncomeEvidence, hasSupportedFinanceActionCompletion, type LeadDeliveryInput } from "./lead-delivery";
 
 export type IntegrityIssue = {
@@ -95,6 +96,9 @@ export type IntegrityAuditPerson = {
   role?: string;
   responsibilities?: string;
   authority?: string;
+  availabilityReviews?: AvailabilityReview[];
+  accessLevel?: string;
+  pillar?: string;
 };
 
 export type IntegrityAuditHandoff = {
@@ -452,6 +456,39 @@ export function runIntegrityAudit(input: IntegrityAuditInput): IntegrityAuditRes
       recordTitle: view.title, recordId: view.lessonId, reason: "Commercial diagnosis, approval or comparative outcome evidence is stale or unsupported.",
       nextStep: "Reconcile current job/Decision/Action evidence. Retain historical findings; do not treat a proposal or completed Action as a successful approved policy.",
       openObjectType: "Lesson", openId: view.lessonId,
+    });
+  }
+  const capacity = buildDeliveryCapacity({ ...jobInput, actions: input.actions, projects: input.projects,
+    problems: input.problems, decisions: input.decisions });
+  for (const work of capacity.work.filter((entry) => entry.assessment && !entry.assessmentCurrent)) addIssue({
+    severity: "Material", category: "Delivery capacity evidence", recordType: work.objectType, recordTitle: work.title, recordId: work.id,
+    reason: "Remaining-work assessment is stale, mismatched or unsupported.",
+    nextStep: "Review remaining scope and actual/proposed owner; preserve evidence history. Capacity review cannot reassign responsibility.",
+    openObjectType: work.objectType, openId: work.id,
+  });
+  for (const work of capacity.work) {
+    const assessment = work.assessment;
+    if (!assessment) continue;
+    checkPersonId(work.objectType, work.title, work.id, "Workload reviewer", assessment.recordedByPersonId);
+    checkPersonId(work.objectType, work.title, work.id, "Workload Person", assessment.personId);
+    assessment.dependencyActionIds.forEach((id) => checkReference({ value: id, validIds: actionIds, recordType: work.objectType,
+      recordTitle: work.title, recordId: work.id, fieldLabel: "Capacity dependency Action", openObjectType: work.objectType }));
+    const brokenDependencies = work.reasons.filter((reason) => reason.startsWith("CAPACITY: Dependency")
+      && !reason.startsWith("CAPACITY: Dependency unresolved:"));
+    if (brokenDependencies.length) addIssue({ severity: "Material", category: "Delivery capacity evidence", recordType: work.objectType,
+      recordTitle: work.title, recordId: work.id, reason: brokenDependencies.join("; "),
+      nextStep: "Reconcile explicit prerequisite references and cycles without fabricating completion.",
+      openObjectType: work.objectType, openId: work.id });
+  }
+  for (const person of input.people.filter((entry) => entry.availabilityReviews?.length)) {
+    const review = person.availabilityReviews!.at(-1)!;
+    const view = capacity.people.find((entry) => entry.personId === person.id);
+    person.availabilityReviews?.forEach((entry) => checkPersonId("Person", person.name, person.id, "Availability reviewer", entry.recordedByPersonId, "Person"));
+    if (!view?.availabilityCurrent || (review.workloadCoverageComplete && !view.coverageCurrent)) addIssue({
+      severity: "Material", category: "Delivery capacity evidence", recordType: "Person", recordTitle: person.name, recordId: person.id,
+      reason: "Availability or full competing-workload coverage is stale or unsupported.",
+      nextStep: "Review the evidence-backed window, remaining hours and complete competing obligations; do not assume spare capacity.",
+      openObjectType: "Person", openId: person.id,
     });
   }
   for (const contact of input.outreach) {

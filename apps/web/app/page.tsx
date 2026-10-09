@@ -224,6 +224,10 @@ import IncomeCommercialEvidenceSection from "./components/income-commercial-evid
 import JobPerformanceSection from "./components/job-performance-section";
 import ExpenseJobEvidenceSection from "./components/expense-job-evidence-section";
 import JobPerformanceReport from "./components/job-performance-report";
+import { DeliveryCapacityReport, WorkloadCapacitySection, PersonAvailabilitySection,
+  type WorkloadReviewRequest, type AvailabilityReviewRequest } from "./components/delivery-capacity-section";
+import { assertCapacityRecord, buildDeliveryCapacity, recordAvailabilityReview, recordWorkloadAssessment,
+  type AvailabilityReview, type CapacityWorkItem, type CapacityScenario } from "./lib/delivery-capacity";
 import { LeadCommercialLearningSection, CommercialLessonSection,
   type CommercialDiagnosisRequest, type CommercialLessonCommand } from "./components/commercial-learning-section";
 import { assertCommercialLearning, assertCommercialLessonRecord, approveCommercialProposal, assignCommercialResponsibility, buildCommercialLearning, commercialLearningValidity, createCommercialImplementation,
@@ -690,6 +694,7 @@ type PersonRecord = {
   status: PersonStatus;
   dateCreated: string;
   operatingProfile?: OperatingProfile;
+  availabilityReviews?: AvailabilityReview[];
 };
 
 function getFounderIntelligenceEvidenceDetails(
@@ -2372,7 +2377,7 @@ function ProjectExecutionReleaseSection({ releaseItem, latestHandoff, onCreateRe
           <div className="text-[10px] leading-4 text-[#6a625d]">
             <div>Release loop: {releaseItem.releaseClosureState}</div>
             {releaseItem.hasCapacity ? (
-              <div>Capacity: {releaseItem.eligibleDelegationPeople.map((person) => person.name).join(", ")}</div>
+              <div>Delegation-ready candidates (availability unconfirmed): {releaseItem.eligibleDelegationPeople.map((person) => person.name).join(", ")}</div>
             ) : null}
           </div>
           {linkedReleaseActionId ? (
@@ -2734,7 +2739,8 @@ function ProjectHealthReviewPanel({ project, people, onClose, onSubmit }: {
   );
 }
 
-function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveToggle, followThrough, actions, followThroughWritable, onRouteFollowThrough, onOpenAction, delivery, onRecordDelivery, onOpenIncome, onPrepareIncome, jobPerformance, onReviewJob, onOpenExpense, onPrepareExpense, commercialViews, onDiagnose, onOpenLesson }: {
+function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveToggle, followThrough, actions, followThroughWritable, onRouteFollowThrough, onOpenAction, delivery, onRecordDelivery, onOpenIncome, onPrepareIncome, jobPerformance, onReviewJob, onOpenExpense, onPrepareExpense, commercialViews, onDiagnose, onOpenLesson,
+  capacityWork, capacityScenario, onRecordWorkload, onOpenCapacityRecord }: {
   lead: LeadRecord;
   people: PersonRecord[];
   onClose: () => void;
@@ -2757,6 +2763,10 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
   commercialViews: readonly CommercialLearningView[];
   onDiagnose: (request: CommercialDiagnosisRequest) => void;
   onOpenLesson: (id: string) => void;
+  capacityWork?: CapacityWorkItem;
+  capacityScenario?: CapacityScenario;
+  onRecordWorkload: (request: WorkloadReviewRequest) => void;
+  onOpenCapacityRecord: (type: string, id: string) => void;
 }) {
   const hasInvalidLeadName = !lead.leadName.trim();
   const [hasSaved, setHasSaved] = useState(false);
@@ -2788,6 +2798,8 @@ function LeadDetailPanel({ lead, people, onClose, onChange, onSave, onArchiveTog
           writable={followThroughWritable} onRoute={onRouteFollowThrough} onOpenAction={onOpenAction} />
         <LeadDeliverySection key={lead.id} lead={lead} view={delivery} actions={actions} people={people}
           writable={followThroughWritable} onRecord={onRecordDelivery} onOpenAction={onOpenAction} onOpenIncome={onOpenIncome} onPrepareIncome={onPrepareIncome} />
+        <WorkloadCapacitySection key={`capacity:${lead.id}`} work={capacityWork} scenario={capacityScenario}
+          people={people} history={lead.workloadAssessments} onRecord={onRecordWorkload} onOpen={onOpenCapacityRecord} />
         <JobPerformanceSection key={`job:${lead.id}`} lead={lead} view={jobPerformance} people={people}
           writable={followThroughWritable} onReview={onReviewJob} onOpenIncome={onOpenIncome}
           onOpenExpense={onOpenExpense} onPrepareExpense={onPrepareExpense} />
@@ -4443,7 +4455,7 @@ function FounderOperatingBrief({
           <div className="mt-2 text-[11px] leading-4 text-[#4d4944]">
             {hasDelegationCapacity ? (
               <span className="text-[#2f5d3a]">
-                Delegation capacity available: {delegationCapacityNames.join(", ")}
+                Delegation-ready candidates (availability unconfirmed): {delegationCapacityNames.join(", ")}
               </span>
             ) : (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#c9b8a3] bg-[#f5efe6] p-2 text-[#524d49]">
@@ -6686,9 +6698,13 @@ type ActionDetailPanelProps = {
   onOpenRelatedDecision?: () => void;
   onOpenRelatedLead?: () => void;
   onOpenRelatedIncome?: () => void;
+  capacityWork?: CapacityWorkItem;
+  onRecordWorkload: (request: WorkloadReviewRequest) => void;
+  onOpenCapacityRecord: (type: string, id: string) => void;
 };
 
-function ActionDetailPanel({ action, people, responsibilities, problems, decisions, upstream, downstream, onClose, onChange, onOwnerChange, onAddResponsibilityOutcomeEvidence, onSave, onReviewFollowThrough, onOpenRelatedProblem, onOpenRelatedDecision, onOpenRelatedLead, onOpenRelatedIncome }: ActionDetailPanelProps) {
+function ActionDetailPanel({ action, people, responsibilities, problems, decisions, upstream, downstream, onClose, onChange, onOwnerChange, onAddResponsibilityOutcomeEvidence, onSave, onReviewFollowThrough, onOpenRelatedProblem, onOpenRelatedDecision, onOpenRelatedLead, onOpenRelatedIncome,
+  capacityWork, onRecordWorkload, onOpenCapacityRecord }: ActionDetailPanelProps) {
   const isCompleted = action.status === "Completed";
   const activePeople = people.filter((person) => person.status === "Active");
   const [responsibilityId, setResponsibilityId] = useState("");
@@ -7182,6 +7198,8 @@ function ActionDetailPanel({ action, people, responsibilities, problems, decisio
         </div>
 
         <RelatedRecordsPanel upstream={upstream} downstream={downstream} />
+        <WorkloadCapacitySection key={`capacity:${action.id}`} work={capacityWork} people={people}
+          history={action.workloadAssessments} onRecord={onRecordWorkload} onOpen={onOpenCapacityRecord} />
         <RecordChangeHistory recordType="Action" recordId={action.id} />
       </div>
     </div>
@@ -9119,6 +9137,7 @@ export default function Home() {
             if (!recordType) return;
             addOperationalRecord(recordType, record.id);
             if (recordType === "Action") {
+              assertCapacityRecord(record, "Action");
               assertIcarusObservationActionLinks(record.icarusObservationLinks);
               assertActionLeadLink(record.relatedLeadId);
               assertActionLeadLink(record.deliveryLeadId, "deliveryLeadId");
@@ -9139,9 +9158,11 @@ export default function Home() {
       let loadedPeople: PersonRecord[] = [];
       if (storedPeople) {
         const parsedPeople = JSON.parse(storedPeople);
+        if (!Array.isArray(parsedPeople)) throw new Error("People storage is not an array; existing records are preserved.");
 
         if (Array.isArray(parsedPeople)) {
           parsedPeople.forEach((person: unknown) => {
+            assertCapacityRecord(person, "Person");
             if (!isPlainObject(person) || !isPlainObject(person.operatingProfile)) return;
             if (Object.prototype.hasOwnProperty.call(person.operatingProfile, "individualUnderstandings")) {
               assertIndividualOperatingUnderstandingsDataStructure(
@@ -9220,7 +9241,7 @@ export default function Home() {
             });
           }
         }
-      }
+      } else peopleWritableRef.current = true;
 
       if (storedWorkingRelationships) {
         const parsedWorkingRelationships = JSON.parse(storedWorkingRelationships);
@@ -9267,6 +9288,7 @@ export default function Home() {
           parsedLeads.forEach((lead: unknown) => {
             if (!isPlainObject(lead)) throw new Error("Lead storage contains a malformed record.");
             assertLeadDeliveryCommitment(lead.deliveryCommitment);
+            assertCapacityRecord(lead, "Lead");
             assertLeadJobFinancialEvidence(lead);
             if (typeof lead.id === "string") addWorkItem("Lead", lead.id);
           });
@@ -10031,6 +10053,9 @@ export default function Home() {
   const jobPerformance = buildJobPerformance(jobPerformanceInput);
   const commercialLearningInput: CommercialLearningInput = { ...jobPerformanceInput, lessons: lessonRecords, decisions: decisionRecords };
   const commercialLearningViews = buildCommercialLearning(commercialLearningInput);
+  const deliveryCapacityInput = { leads, actions: actionRecords, projects, people, income: incomeRecords,
+    problems: problemRecords, decisions: decisionRecords, nowMs: commercialNowMs };
+  const deliveryCapacity = buildDeliveryCapacity(deliveryCapacityInput);
   const incomeEvidenceViews = incomeRecords.map((record) => getDeliveryIncomeEvidence(record, {
     leads, actions: actionRecords, people, income: incomeRecords, nowMs: commercialNowMs,
   }));
@@ -11363,6 +11388,7 @@ export default function Home() {
     delivery: { leads, actions: actionRecords, people, income: incomeRecords },
     jobPerformance: { leads, actions: actionRecords, people, income: incomeRecords, expenses: expenseRecords },
     commercialLearning: commercialLearningInput,
+    deliveryCapacity: deliveryCapacityInput,
     outreach: outreachContacts,
     projects,
     decisions: decisionRecords,
@@ -13861,6 +13887,7 @@ export default function Home() {
       completionEvidence: actionEditor.completionEvidence,
     });
     const persistedAction = actionRecords.find((action) => action.id === selectedActionId);
+    if (persistedAction?.workloadAssessments) updatedAction.workloadAssessments = persistedAction.workloadAssessments;
     const applySave = () => setConversions((currentConversions) =>
       currentConversions.map((conversion) =>
         conversion.id === selectedActionId ? updatedAction : conversion,
@@ -15396,6 +15423,10 @@ export default function Home() {
     if (!personEditor) {
       return;
     }
+    if (!operatingDataLoaded || !peopleWritableRef.current) {
+      setFeedback({ type: "error", message: "People storage is not safely loaded/writable; existing availability and People records have been preserved." });
+      return;
+    }
 
     const nextPerson: PersonRecord = {
       ...personEditor,
@@ -15422,20 +15453,23 @@ export default function Home() {
     };
 
     const isNewPerson = !people.some((person) => person.id === nextPerson.id);
-    peopleWritableRef.current = true;
-
-    setPeople((currentPeople) =>
-      isNewPerson
-        ? [nextPerson, ...currentPeople]
-        : currentPeople.map((person) => person.id === nextPerson.id ? nextPerson : person),
-    );
-
-    setPersonSaveState("saved");
-    window.setTimeout(() => setPersonSaveState("idle"), 1800);
-    setFeedback({
-      type: "success",
-      message: isNewPerson ? "Person created." : "Person details saved.",
-    });
+    try {
+      if (people.filter((person) => person.id === nextPerson.id).length > 1) throw new Error("Person identity is duplicated; reconcile before changing availability or ownership.");
+      const stored = people.find((person) => person.id === nextPerson.id);
+      if (stored?.availabilityReviews) nextPerson.availabilityReviews = stored.availabilityReviews;
+      assertCapacityRecord(nextPerson, "Person");
+      const next = isNewPerson
+        ? [nextPerson, ...people]
+        : people.map((person) => person.id === nextPerson.id ? nextPerson : person);
+      persistJsonArraysTransaction(window.localStorage, [{ key: PERSON_STORAGE_KEY, records: next }]);
+      setPeople(next);
+      setPersonEditor(nextPerson);
+      setPersonSaveState("saved");
+      window.setTimeout(() => setPersonSaveState("idle"), 1800);
+      setFeedback({ type: "success", message: isNewPerson ? "Person created." : "Person details saved." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Person could not be saved." });
+    }
   };
 
   const handleCreatePerson = () => {
@@ -15727,6 +15761,7 @@ export default function Home() {
     });
     const isNewLead = !leads.some((lead) => lead.id === nextLead.id);
     const persistedLead = leads.find((lead) => lead.id === nextLead.id);
+    if (persistedLead?.workloadAssessments) nextLead.workloadAssessments = persistedLead.workloadAssessments;
     const applySave = () => {
       if (leads.filter((lead) => lead.id === nextLead.id).length > 1) throw new Error("Lead identity is duplicated; reconcile customer commitments before saving.");
       const next = isNewLead ? [nextLead, ...leads] : leads.map((lead) => lead.id === nextLead.id ? nextLead : lead);
@@ -16316,6 +16351,72 @@ export default function Home() {
     handleOpenAttentionRecord(type, id);
   };
 
+  const requireCapacityStores = () => {
+    if (!operatingDataLoaded || !peopleWritableRef.current || !leadsWritableRef.current || !conversionsWritableRef.current) {
+      throw new Error("Capacity source stores are not safely loaded/writable; no operational evidence was changed.");
+    }
+  };
+  const handleRecordWorkload = (type: "Lead" | "Action", id: string, request: WorkloadReviewRequest) => {
+    try {
+      requireCapacityStores();
+      const current = type === "Lead" ? leads.find((entry) => entry.id === id) : actionRecords.find((entry) => entry.id === id);
+      const editor = type === "Lead" ? leadEditor : actionEditor;
+      if (!current || !editor || JSON.stringify(current) !== JSON.stringify(editor)) throw new Error("Save or reload the source before sizing remaining work; unsaved changes must not be overwritten.");
+      const result = recordWorkloadAssessment({ ...deliveryCapacityInput, nowMs: Date.now() }, { objectType: type, id }, request);
+      if (type === "Lead") {
+        const lead = leads.find((entry) => entry.id === id)!;
+        const nextLead = { ...lead, workloadAssessments: result.workloadAssessments };
+        const next = leads.map((entry) => entry.id === id ? nextLead : entry);
+        persistJsonArraysTransaction(window.localStorage, [{ key: LEAD_STORAGE_KEY, records: next }]);
+        setLeads(next);
+        setLeadEditor(nextLead);
+      } else {
+        if (conversions.filter((entry) => entry.id === id && entry.targetType === "Convert to Action").length !== 1) throw new Error("Action identity is unsafe to update.");
+        const next = conversions.map((entry) => entry.id === id ? { ...entry, workloadAssessments: result.workloadAssessments } : entry);
+        persistJsonArraysTransaction(window.localStorage, [{ key: CONVERSION_STORAGE_KEY, records: next }]);
+        setConversions(next);
+        setActionEditor({ ...actionRecords.find((entry) => entry.id === id)!, workloadAssessments: result.workloadAssessments });
+      }
+      setFeedback({ type: "success", message: "Attributed remaining-work review recorded. Re-review Person availability/competing-work coverage after changed demand. Acceptance and ownership remain unchanged." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Workload review could not be recorded." });
+    }
+  };
+  const handleRecordAvailability = (request: AvailabilityReviewRequest) => {
+    try {
+      requireCapacityStores();
+      const person = people.find((entry) => entry.id === personEditor?.id);
+      if (!personEditor || !person || JSON.stringify(personEditor) !== JSON.stringify(person)) throw new Error("Save or reload the Person before reviewing availability; unsaved changes must not be overwritten.");
+      const result = recordAvailabilityReview({ ...deliveryCapacityInput, nowMs: Date.now() }, person.id, request);
+      const nextPerson = { ...person, availabilityReviews: result.availabilityReviews };
+      const next = people.map((entry) => entry.id === person.id ? nextPerson : entry);
+      persistJsonArraysTransaction(window.localStorage, [{ key: PERSON_STORAGE_KEY, records: next }]);
+      setPeople(next);
+      setPersonEditor(nextPerson);
+      setFeedback({ type: "success", message: "Availability review and workload-coverage assertion recorded. Missing estimates/dependencies remain explicit gaps; no additional work or delegation is approved." });
+    } catch (error) {
+      setFeedback({ type: "error", message: error instanceof Error ? error.message : "Availability review could not be recorded." });
+    }
+  };
+  const handleOpenCapacityRecord = (type: string, id: string) => {
+    const records = type === "Lead" ? leads : type === "Action" ? actionRecords : type === "Person" ? people
+      : type === "Project" ? projects : [];
+    if (records.filter((entry) => entry.id === id).length !== 1) {
+      setFeedback({ type: "error", message: "Capacity source record is missing or ambiguous; reconcile its reference before opening." });
+      return;
+    }
+    if ((leadEditor && JSON.stringify(leadEditor) !== JSON.stringify(leads.find((entry) => entry.id === leadEditor.id)))
+      || (actionEditor && JSON.stringify(actionEditor) !== JSON.stringify(actionRecords.find((entry) => entry.id === actionEditor.id)))
+      || (personEditor && JSON.stringify(personEditor) !== JSON.stringify(people.find((entry) => entry.id === personEditor.id)))) {
+      setFeedback({ type: "error", message: "Save or close unsaved Lead/Action/Person edits before navigating capacity evidence." });
+      return;
+    }
+    setSelectedLeadId(null); setLeadEditor(null);
+    setSelectedActionId(null); setActionEditor(null);
+    setSelectedPersonId(null); setPersonEditor(null);
+    handleOpenAttentionRecord(type, id);
+  };
+
   const handleCommitmentEditOpen = (commitment: CommitmentRecord) => {
     setSelectedCommitmentId(commitment.id);
     setCommitmentEditor(commitment);
@@ -16796,12 +16897,17 @@ export default function Home() {
             throw new Error(`Expected an array for: ${key}`);
           }
           if (key === EXPENSE_STORAGE_KEY) decoded.forEach(assertExpenseJobEvidence);
-          if (key === CONVERSION_STORAGE_KEY) decoded.forEach(assertCommercialLessonRecord);
+          if (key === CONVERSION_STORAGE_KEY) decoded.forEach((record: unknown) => {
+            assertCommercialLessonRecord(record);
+            if (record && typeof record === "object" && "targetType" in record && record.targetType === "Convert to Action") assertCapacityRecord(record, "Action");
+          });
+          if (key === PERSON_STORAGE_KEY) decoded.forEach((record: unknown) => assertCapacityRecord(record, "Person"));
           if (key === INCOME_STORAGE_KEY) decoded.forEach(assertIncomeCommercialEvidence);
           if (key === LEAD_STORAGE_KEY) decoded.forEach((record: unknown) => {
             if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error("Emergency snapshot contains a malformed Lead.");
             assertLeadDeliveryCommitment("deliveryCommitment" in record ? record.deliveryCommitment : undefined);
             assertLeadJobFinancialEvidence(record);
+            assertCapacityRecord(record, "Lead");
           });
         }
       }
@@ -18561,6 +18667,8 @@ export default function Home() {
               <p className="mt-2 max-w-3xl text-[13px] leading-6 text-[#5d584f]">
                 Cold outbound prospecting (estate agents, letting agents, property managers) is tracked separately in Outreach and only becomes a Lead once there is a genuine enquiry.
               </p>
+              <DeliveryCapacityReport result={deliveryCapacity} onOpen={handleOpenCapacityRecord}
+                onReviewRisk={() => setActiveView("Icarus")} />
 
               <section className="mt-7">
                 <h2 className="border-b border-[#d7d1ca] pb-2.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-[#2f2b28]">Marketing acquisition performance</h2>
@@ -20678,6 +20786,9 @@ export default function Home() {
           onOpenRelatedIncome={() => {
             if (actionEditor.financeIncomeId) handleOpenAttentionRecord("Finance", `income:${actionEditor.financeIncomeId}`);
           }}
+          capacityWork={deliveryCapacity.work.find((work) => work.objectType === "Action" && work.id === actionEditor.id)}
+          onRecordWorkload={(request) => handleRecordWorkload("Action", actionEditor.id, request)}
+          onOpenCapacityRecord={handleOpenCapacityRecord}
         />
       ) : null}
 
@@ -20944,6 +21055,10 @@ export default function Home() {
           commercialViews={commercialLearningViews}
           onDiagnose={handleDiagnoseCommercialJob}
           onOpenLesson={(id) => handleOpenCommercialRecord("Lesson", id)}
+          capacityWork={deliveryCapacity.work.find((work) => work.objectType === "Lead" && work.id === leadEditor.id)}
+          capacityScenario={deliveryCapacity.scenarios.find((scenario) => scenario.leadId === leadEditor.id)}
+          onRecordWorkload={(request) => handleRecordWorkload("Lead", leadEditor.id, request)}
+          onOpenCapacityRecord={handleOpenCapacityRecord}
         />
       ) : null}
 
@@ -22380,6 +22495,8 @@ export default function Home() {
                 {personSaveState === "saved" ? "Saved" : "Save person"}
               </button>
             </div>
+            <PersonAvailabilitySection key={personEditor.id} person={personEditor} people={people}
+              view={deliveryCapacity.people.find((view) => view.personId === personEditor.id)} onRecord={handleRecordAvailability} />
             <RecordChangeHistory recordType="Person" recordId={personEditor.id} />
           </div>
         </div>

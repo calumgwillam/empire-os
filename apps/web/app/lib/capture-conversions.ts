@@ -52,6 +52,7 @@ export type CaptureConversionRecord = {
   // Optional: one Lesson may have many Actions; each Action implements at most one Lesson.
   implementsLessonId?: string;
   commercialImplementation?: { recordedAt: string; proposalSnapshot: string };
+  workloadAssessments?: import("./delivery-capacity").WorkloadAssessment[];
   relatedOpportunity?: string;
   relatedCapture?: string;
   relatedPillar?: string;

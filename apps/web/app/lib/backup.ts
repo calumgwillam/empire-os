@@ -4,6 +4,7 @@ import { assertActionFinanceLink, assertActionLeadLink } from "./capture-convers
 import { assertIncomeCommercialEvidence, assertLeadDeliveryCommitment } from "./lead-delivery";
 import { assertExpenseJobEvidence, assertLeadJobFinancialEvidence } from "./job-performance";
 import { assertCommercialLessonRecord } from "./commercial-learning";
+import { assertCapacityRecord } from "./delivery-capacity";
 
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
@@ -227,6 +228,7 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
     const people: unknown = JSON.parse(storedPeople);
     if (Array.isArray(people)) {
       people.forEach((person: unknown) => {
+        assertCapacityRecord(person, "Person");
         if (!isPlainObject(person) || !isPlainObject(person.operatingProfile)) return;
         if (Object.prototype.hasOwnProperty.call(person.operatingProfile, "individualUnderstandings")) {
           assertIndividualOperatingUnderstandingsDataStructure(person.operatingProfile.individualUnderstandings);
@@ -255,6 +257,7 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
       conversions.forEach((record: unknown) => {
         assertCommercialLessonRecord(record);
         if (!isPlainObject(record) || record.targetType !== "Convert to Action") return;
+        assertCapacityRecord(record, "Action");
         assertIcarusObservationActionLinks(record.icarusObservationLinks);
         assertActionLeadLink(record.relatedLeadId);
         assertActionLeadLink(record.deliveryLeadId, "deliveryLeadId");
@@ -276,6 +279,7 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
       if (key === LEAD_STORAGE_KEY) {
         if (!isPlainObject(record)) throw new Error("The backup contains a malformed Lead.");
         assertLeadDeliveryCommitment(record.deliveryCommitment);
+        assertCapacityRecord(record, "Lead");
         assertLeadJobFinancialEvidence(record);
       } else if (key === INCOME_STORAGE_KEY) assertIncomeCommercialEvidence(record);
       else assertExpenseJobEvidence(record);
