@@ -44,6 +44,81 @@ It is a one-time versioned migration, not an idempotent initialization script; a
 runner must record success only after COMMIT. A failed migration rolls back its DDL.
 No destructive down migration is supplied.
 
+## Identity, tenancy and delegated authorization foundation
+
+[authorization-contract.ts](../app/lib/authorization-contract.ts) defines server authority
+records independently of People, pillar labels, project ownership and operational handoffs.
+People `accessLevel`, `role`, `authority` and readiness remain organizational descriptions,
+not login identity, database permission or proof of ownership. Operating pillars are not
+tenants; no current business record is assigned or migrated into a tenant by this work.
+
+[authorization-policy.ts](../app/lib/authorization-policy.ts) is a synchronous, deterministic,
+default-deny evaluator. It accepts only principal objects minted by the existing server
+session boundary; copied objects, JSON identity claims and People records cannot substitute.
+This protects the runtime boundary, not against compromised server code: the injected
+session resolver still must independently verify authentication. No provider is installed.
+
+The policy snapshot, tenant selection, dataset mapping and evaluation time MUST be loaded
+from trusted server authority state, never from a client policy, tenant header, browser
+storage or an earlier decision. Runtime validation detects malformed/ambiguous records,
+including sparse arrays at every policy collection level, and returns an explicit denial;
+it does not authenticate the provenance of a snapshot. All records in a snapshot belong
+to one tenant, and every requested dataset must be explicitly mapped into that tenant.
+Owners also require active membership and cannot bypass tenant/dataset isolation.
+
+The approved initial policy:
+
+- Only separately server-provisioned tenant owners can assign existing active roles to
+  other active members. Role assignment cannot create roles, edit capability definitions,
+  assign ownership or self-escalate. Ownership assignment, transfer and recovery require
+  a distinct trusted process, intentionally not exposed here.
+- Roles have explicit dataset-specific read/write/import grants using existing persistence
+  capability semantics. No executive hierarchy, implicit capability inheritance, pillar
+  permission or wildcard tenant grant is defined.
+- One-hop delegation requires an active issuer's directly assigned role and exact current
+  delegable grant. Delegated authority cannot be redelegated or grant role management,
+  ownership, a different dataset or a stronger capability. Even owners need an explicit
+  delegable direct grant to issue a delegation.
+- Delegations bind issuer and recipient membership revisions and the source role revision.
+  They are revocable, are valid only from `issuedAt` until strictly before `expiresAt`, and
+  cease to authorize if the source role/grant is revoked, removed, reduced or non-delegable.
+  Membership restoration at a newer revision does not resurrect an old delegation.
+
+### Transactional enforcement and audit invariants
+
+The evaluator only assesses requests; it persists neither assignments nor delegations.
+A future trusted mutator must validate an assignment/delegation, record the authenticated
+actor, bind source/member revisions from locked server rows (not proposed request fields),
+and save the grant plus audit evidence atomically. Role definitions are separately managed
+server policy, not a role-assignment payload. Expiry uses server time.
+
+Every authority mutation (ownership, membership, role, dataset mapping, delegation or
+revocation) must monotonically advance the tenant policy revision without reuse/reset.
+Relevant membership/role changes must also advance their revisions, including reactivation.
+Retain revoked membership/role tombstones where referenced; ambiguous or dangling assigned
+roles fail closed. Exhausted counters require explicit refusal, not rollover.
+
+Sensitive operations MUST load and reevaluate current authorization in the same transaction
+and shared locking boundary as the protected action. Revocation and all authority mutators
+must participate in that boundary. Recheck expiry at the sensitive execution boundary.
+`expectedPolicyRevision` must match the current trusted snapshot; a decision is point-in-time
+evidence, not a token, durable permission, proof of a commit or a replacement for database
+RLS. This foundation does not close the existing preflight-to-transaction race without an
+adapter. Do not cache an allowed result across transactions.
+
+Decisions contain stable reason codes, policy version, observed revision and optional
+opaque grant/role/delegation evidence ID. They emit no logs, names, tokens, secrets or
+business data. A future protected audit store must capture the minimal actor/action context
+and decision atomically; detailed denial codes are internal audit data, not automatically
+safe public responses. Existing public persistence unauthorized results remain generic.
+
+Unresolved: identity issuer/subject mapping and account lifecycle, tenant/company structure,
+role provisioning and ownership recovery governance, authority storage/RLS and lock design,
+maximum delegation lifetime, audit retention and cross-process principal reconstruction.
+The principal object is intentionally process-local; workers must independently resolve
+verified sessions, never deserialize the brand. No endpoint, adapter, live activation,
+SQL migration, browser-data rewrite or dependency installation is introduced.
+
 Identity provider, role/policy mapping, database provider, region, retention and recovery
 targets require approval before adding an adapter. Do not authorize by trusting an HTTP
 body or a client-set PostgreSQL session setting. A verified server identity may set

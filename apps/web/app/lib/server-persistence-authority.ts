@@ -11,11 +11,16 @@ import { validateStageImportRequest } from "./server-import-preparation";
 if (!versions.node) throw new Error("Server persistence authority requires the Node.js runtime.");
 
 const authenticatedPrincipalBrand: unique symbol = Symbol("authenticated-principal");
+const authenticatedPrincipals = new WeakSet<object>();
 
 export type AuthenticatedPrincipal = Readonly<{
   subject: string;
   readonly [authenticatedPrincipalBrand]: true;
 }>;
+
+export function isAuthenticatedPrincipal(value: unknown): value is AuthenticatedPrincipal {
+  return value !== null && typeof value === "object" && authenticatedPrincipals.has(value);
+}
 
 export type ServerSessionResolution =
   | Readonly<{ status: "authenticated"; subject: string }>
@@ -68,7 +73,9 @@ export function createServerPersistenceAuthority(dependencies: ServerPersistence
     if (resolution.status === "unauthenticated") {
       return { status: "unauthorized", reason: "authentication-required" };
     }
-    return Object.freeze({ subject: resolution.subject, [authenticatedPrincipalBrand]: true as const });
+    const principal = Object.freeze({ subject: resolution.subject, [authenticatedPrincipalBrand]: true as const });
+    authenticatedPrincipals.add(principal);
+    return principal;
   }
 
   async function execute<T>(
