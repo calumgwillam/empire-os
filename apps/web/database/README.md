@@ -225,7 +225,19 @@ Run it only after explicitly provisioning and verifying a NEW disposable databas
 `npx vitest run database/tests/authorization.postgres.integration.test.ts`.
 
 The adapter unit tests mock database responses; they do NOT verify SQL, RLS, locking,
-durability or deferred triggers. Real PostgreSQL tests have NOT been executed for this
+durability or deferred triggers.
+[authorization-migration.test.ts](./tests/authorization-migration.test.ts) adds an offline
+syntax preflight using the development-only `libpg-query` PostgreSQL 18 WASM parser.
+Run `npx vitest run database/tests/authorization-migration.test.ts` before attempting
+the real integration suite. It parses the entire SQL migration, PL/pgSQL functions and
+anonymous blocks, and SQL-language function bodies separately. Negative regression
+cases prove that both original unparenthesized `CASE` expressions in PL/pgSQL `IF`
+conditions fail parsing; parentheses preserve their revision checks while preventing
+the inner `THEN` from terminating the condition prematurely.
+This executes no SQL and opens no database connection. The parser does not validate
+PostgreSQL 16 catalog resolution, privileges, RLS, concurrency or runtime behavior;
+real PostgreSQL 16 integration testing remains necessary.
+Real PostgreSQL tests have NOT been executed for this
 stage. Before relying on this foundation, execute focused unit/type checks, review
 the migration and restricted-role grants, then run the separate suite on a new instance.
 Review full database-side authority invariants, audit restoration/retention, restricted

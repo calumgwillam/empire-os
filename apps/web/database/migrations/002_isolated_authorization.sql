@@ -167,8 +167,8 @@ BEGIN
   SELECT revision INTO current_revision FROM empire_os_authorization.tenants WHERE tenant_id=NEW.tenant_id FOR UPDATE;
   observed := (NEW.evidence #>> '{decision,observedPolicyRevision}')::bigint;
   IF current_revision IS NULL OR observed IS NULL OR NEW.resulting_revision <> current_revision
-    OR observed <> current_revision - CASE WHEN NEW.allowed AND
-      NEW.evidence->>'operation' IN ('assign-role','delegate','revoke') THEN 1 ELSE 0 END THEN
+    OR observed <> current_revision - (CASE WHEN NEW.allowed AND
+      NEW.evidence->>'operation' IN ('assign-role','delegate','revoke') THEN 1 ELSE 0 END) THEN
     RAISE EXCEPTION 'Stale authorization audit revision' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
@@ -596,7 +596,7 @@ BEGIN
     RAISE EXCEPTION 'Unexpected authority transition' USING ERRCODE='23514';
   END IF;
   IF (p_evidence->>'resultingPolicyRevision')::bigint IS DISTINCT FROM
-    current_revision + CASE WHEN allowed AND operation <> 'write' THEN 1 ELSE 0 END THEN
+    current_revision + (CASE WHEN allowed AND operation <> 'write' THEN 1 ELSE 0 END) THEN
     RAISE EXCEPTION 'Incorrect resulting revision' USING ERRCODE='23514';
   END IF;
   INSERT INTO empire_os_authorization.audit

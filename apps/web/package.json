@@ -24,6 +24,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.4.0",
     "fake-indexeddb": "^6.2.4",
+    "libpg-query": "18.1.5",
     "pg": "8.16.3",
     "tailwindcss": "^4",
     "typescript": "^5",
