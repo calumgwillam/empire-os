@@ -1,10 +1,14 @@
 # Isolated server persistence foundation
 
-Status: contract, proposed schema and opt-in real PostgreSQL test harness.
+Status: contract, proposed schema, fail-closed server authority/configuration boundaries
+and opt-in real PostgreSQL test harness.
 The `pg` driver is declared as a development-only dependency; no authenticated adapter,
-endpoint, activation API, live import or production storage switch is installed.
-The migration has not been executed against PostgreSQL. Do not interpret unit tests as
-database integration or durability tests.
+route handler, activation API, live import or production storage switch is installed.
+The migration was executed against the designated disposable PostgreSQL integration
+database, which is now nonempty. Never rerun the migration or integration suite against
+that instance, and never reset or clear it. Use a separate fresh disposable database for
+future real PostgreSQL integration runs. Do not interpret unit tests as database
+integration or durability tests.
 
 ## Authority and security
 
@@ -14,6 +18,22 @@ contains no client identity, permissions or activation operation. A future serve
 must obtain identity from a verified session and authorize every operation, including
 snapshot reads and idempotency replay. Dataset UUIDs, generation numbers and hashes are
 not credentials. Authentication failures must not disclose dataset existence.
+
+[server-persistence-authority.ts](../app/lib/server-persistence-authority.ts) is the
+server-owned orchestration boundary: it resolves a principal through an injected verified
+session provider, validates the existing request contracts, authorizes each capability,
+then constructs a principal-scoped repository. Request bodies and authority-looking
+headers never supply the principal or capabilities. The boundary intentionally has no
+default session provider, route handler or repository adapter, so it cannot serve as an
+active persistence endpoint by itself. Authentication/provider failures fail closed, and
+unconfirmed write/import exceptions are reported as unknown rather than as rollback.
+
+[postgres-server-config.ts](../app/lib/postgres-server-config.ts) reads only the dedicated
+private `EMPIRE_OS_SERVER_PG_*` variables, requires a complete configuration and enforces
+certificate-verifying TLS for any future adapter. It does not connect, log configuration
+or fall back to `DATABASE_URL`, `PG*` or `NEXT_PUBLIC_*` variables. The runtime driver and
+connection pool remain uninstalled until the authentication/provider and runtime-role
+design is approved.
 
 [001_isolated_persistence.sql](./migrations/001_isolated_persistence.sql) creates a separate,
 default-denied schema. There are no grants, runtime roles or RLS policies. Forced RLS
