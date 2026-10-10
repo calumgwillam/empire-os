@@ -1,5 +1,10 @@
 import { EMPIRE_OS_BACKUP_STORAGE_KEYS, type BackupStorage } from "./backup";
 import { readStartupStorage } from "./startup-hydration";
+import {
+  checkWriterAuthority, decodeWriterAuthority, isFence, PREPARATION_DATABASE_PREFIX, WRITER_AUTHORITY_KEY,
+  type WriterAuthority, type WriterAuthorityResult, type WriterCredential, type WriterDenied,
+} from "./writer-fencing";
+import type { MigrationFence } from "./migration-coordinator";
 
 export type BusinessStorageKey = typeof EMPIRE_OS_BACKUP_STORAGE_KEYS[number];
 
@@ -42,6 +47,8 @@ export type StorageWriteResult =
   | { status: "committed"; revisions: Readonly<Partial<Record<BusinessStorageKey, number>>> }
   | { status: "conflict"; conflicts: readonly RevisionConflict[] }
   | PersistenceFailure;
+
+export type FencedWriteResult = StorageWriteResult | WriterDenied;
 
 export interface RawStringPersistenceRepository {
   read(keys: readonly BusinessStorageKey[]): Promise<StorageReadResult>;
@@ -231,6 +238,26 @@ export class IndexedDbPersistenceRepository implements RawStringPersistenceRepos
   }
 
   async write(updates: readonly StorageWrite[]): Promise<StorageWriteResult> {
+    if (this.databaseName.startsWith(PREPARATION_DATABASE_PREFIX)) {
+      throw new Error("This preparation database requires fenced writes; unguarded writes are forbidden.");
+    }
+    this.validateUpdates(updates);
+    return this.transactWrite(updates, "write");
+  }
+
+  async writeWithAuthority(updates: readonly StorageWrite[], credential: WriterCredential): Promise<FencedWriteResult> {
+    this.validateUpdates(updates);
+    if (!this.databaseName.startsWith(PREPARATION_DATABASE_PREFIX)) {
+      return { status: "authority-denied", reason: "unsupported-storage-mode",
+        message: "Fenced writes are restricted to isolated preparation databases." };
+    }
+    if (!isFence(credential) || credential.mode !== "preparation-only" || credential.scope !== this.databaseName) {
+      return { status: "authority-denied", reason: "unsupported-storage-mode", message: "Unsupported writer credentials." };
+    }
+    return this.transactWrite(updates.map((update) => ({ ...update })), "write", { ...credential });
+  }
+
+  private validateUpdates(updates: readonly StorageWrite[]): void {
     if (!updates.length) throw new Error("A persistence write must update at least one registered storage key.");
     validateUniqueKeys(updates.map(({ key }) => key));
     if (updates.some(({ expectedRevision }) => !validRevision(expectedRevision))) {
@@ -242,13 +269,92 @@ export class IndexedDbPersistenceRepository implements RawStringPersistenceRepos
     if (updates.some(({ rawValue }) => rawValue !== null && typeof rawValue !== "string")) {
       throw new Error("Persisted business values must be exact strings or null.");
     }
-    return this.transactWrite(updates, "write");
+  }
+
+  async updatePreparationAuthority(
+    expected: MigrationFence,
+    mode: WriterAuthority["mode"],
+  ): Promise<WriterAuthorityResult> {
+    if (!this.databaseName.startsWith(PREPARATION_DATABASE_PREFIX) || (mode !== "denied" && mode !== "preparation-only")) {
+      return { status: "authority-denied", reason: "unsupported-storage-mode",
+        message: "Only preparation-only authority or revocation is supported; production activation is disabled." };
+    }
+    if (!isFence(expected)) throw new Error("Writer authority requires a valid expected fence.");
+    const fence = { ...expected };
+    let database: IDBDatabase;
+    try {
+      database = await this.openDatabase();
+    } catch (error) {
+      return { status: "authority-storage-failed", error: errorDetails(error) };
+    }
+    return new Promise<WriterAuthorityResult>((resolve) => {
+      let transaction: IDBTransaction;
+      try {
+        transaction = database.transaction(BUSINESS_STORE_NAME, "readwrite");
+      } catch (error) {
+        resolve({ status: "authority-storage-failed", error: errorDetails(error) });
+        return;
+      }
+      let result: WriterAuthorityResult | null = null;
+      let failure: unknown;
+      const abort = (error: unknown) => {
+        failure = error;
+        try { transaction.abort(); } catch (abortError) { failure = abortError; }
+      };
+      transaction.onabort = () => resolve({
+        status: "authority-storage-failed", error: errorDetails(failure || transaction.error || new Error("Authority update aborted.")),
+      });
+      transaction.onerror = () => { failure ||= transaction.error; };
+      transaction.oncomplete = () => resolve(failure || !result
+        ? { status: "authority-storage-failed", error: errorDetails(failure || new Error("Authority verification incomplete.")) }
+        : result);
+      try {
+        const store = transaction.objectStore(BUSINESS_STORE_NAME);
+        const read = store.get(WRITER_AUTHORITY_KEY);
+        read.onerror = () => abort(read.error || new Error("Writer authority read failed."));
+        read.onsuccess = () => {
+          try {
+            const current = decodeWriterAuthority(read.result);
+            if (current && current.scope !== this.databaseName) throw new Error("Writer authority belongs to a different database scope.");
+            if ((current?.generation ?? 0) !== fence.generation || (current?.revision ?? 0) !== fence.revision) {
+              result = { status: "authority-denied", reason: "stale-credential", message: "Authority update fence is stale." };
+              return;
+            }
+            if (fence.generation === Number.MAX_SAFE_INTEGER || fence.revision === Number.MAX_SAFE_INTEGER) {
+              throw new Error("Writer authority fence capacity is exhausted.");
+            }
+            const authority: WriterAuthority = {
+              version: 1, generation: fence.generation + 1, revision: fence.revision + 1, scope: this.databaseName, mode,
+            };
+            const write = store.put({ ...authority, key: WRITER_AUTHORITY_KEY });
+            write.onerror = () => abort(write.error || new Error("Writer authority write failed."));
+            write.onsuccess = () => {
+              try {
+                const verify = store.get(WRITER_AUTHORITY_KEY);
+                verify.onerror = () => abort(verify.error || new Error("Writer authority verification failed."));
+                verify.onsuccess = () => {
+                  try {
+                    if (JSON.stringify(decodeWriterAuthority(verify.result)) !== JSON.stringify(authority)) {
+                      throw new Error("Writer authority read-back failed.");
+                    }
+                    result = { status: "authority-saved", authority };
+                  } catch (error) { abort(error); }
+                };
+              } catch (error) { abort(error); }
+            };
+          } catch (error) { abort(error); }
+        };
+      } catch (error) { abort(error); }
+    });
   }
 
   async importLegacyDataset(
     plan: LegacyImportPlan,
     source: Pick<BackupStorage, "getItem">,
   ): Promise<LegacyImportResult> {
+    if (this.databaseName.startsWith(PREPARATION_DATABASE_PREFIX)) {
+      throw new Error("Unguarded legacy imports are forbidden in participating-writer preparation databases.");
+    }
     validateImportPlan(plan);
     let currentLegacyValues: Record<string, string | null>;
     try {
@@ -273,14 +379,21 @@ export class IndexedDbPersistenceRepository implements RawStringPersistenceRepos
   ): Promise<StorageWriteResult>;
   private transactWrite(
     updates: readonly StorageWrite[],
+    operation: "write",
+    credential: WriterCredential,
+  ): Promise<FencedWriteResult>;
+  private transactWrite(
+    updates: readonly StorageWrite[],
     operation: "import",
     importSource: ImportSource,
   ): Promise<LegacyImportResult>;
   private async transactWrite(
     updates: readonly StorageWrite[],
     operation: "write" | "import",
-    importSource?: ImportSource,
-  ): Promise<StorageWriteResult | LegacyImportResult> {
+    context?: ImportSource | WriterCredential,
+  ): Promise<StorageWriteResult | LegacyImportResult | WriterDenied> {
+    const importSource = context && "plan" in context ? context : undefined;
+    const credential = context && "mode" in context ? context : undefined;
     let database: IDBDatabase;
     try {
       database = await this.openDatabase();
@@ -288,7 +401,7 @@ export class IndexedDbPersistenceRepository implements RawStringPersistenceRepos
       return classifyFailure(error);
     }
 
-    return new Promise<StorageWriteResult | LegacyImportResult>((resolve) => {
+    return new Promise<StorageWriteResult | LegacyImportResult | WriterDenied>((resolve) => {
       let transaction: IDBTransaction;
       try {
         transaction = database.transaction(BUSINESS_STORE_NAME, "readwrite");
@@ -313,6 +426,7 @@ export class IndexedDbPersistenceRepository implements RawStringPersistenceRepos
       let changedSourceKeys: readonly BusinessStorageKey[] | null = null;
       let invalidSourceError: PersistenceErrorDetails | null = null;
       let preparedResult: StorageWriteResult | LegacyImportResult | null = null;
+      let denied: WriterDenied | null = null;
       let settled = false;
 
       const abort = (error: unknown) => {
@@ -446,27 +560,58 @@ export class IndexedDbPersistenceRepository implements RawStringPersistenceRepos
         }
       };
 
-      try {
-        for (const { key } of updates) {
-          const request = store.get(key);
-          request.onsuccess = () => {
-            try {
-              current.set(key, toValue(key, request.result));
-              readCount++;
-              if (readCount === updates.length) onAllReads();
-            } catch (error) {
-              abort(error);
-            }
-          };
-          request.onerror = () => abort(request.error || new Error(`IndexedDB read failed for ${key}.`));
+      const queueReads = () => {
+        try {
+          for (const { key } of updates) {
+            const request = store.get(key);
+            request.onsuccess = () => {
+              try {
+                current.set(key, toValue(key, request.result));
+                readCount++;
+                if (readCount === updates.length) onAllReads();
+              } catch (error) {
+                abort(error);
+              }
+            };
+            request.onerror = () => abort(request.error || new Error(`IndexedDB read failed for ${key}.`));
+          }
+        } catch (error) {
+          abort(error);
         }
-      } catch (error) {
-        abort(error);
+      };
+      if (credential) {
+        try {
+          const authorityRead = store.get(WRITER_AUTHORITY_KEY);
+          authorityRead.onerror = () => {
+            denied = { status: "authority-denied", reason: "authority-verification-failed",
+              message: "Writer authority read failed; no business changes were authorized." };
+            abort(authorityRead.error);
+          };
+          authorityRead.onsuccess = () => {
+            denied = checkWriterAuthority(authorityRead.result, credential);
+            if (denied) abort(new Error(denied.message));
+            else queueReads();
+          };
+        } catch (error) {
+          denied = { status: "authority-denied", reason: "authority-verification-failed",
+            message: "Writer authority cannot be verified." };
+          abort(error);
+        }
+      } else {
+        queueReads();
       }
 
       transaction.oncomplete = () => {
         if (settled) return;
         settled = true;
+        if (denied) {
+          resolve(denied);
+          return;
+        }
+        if (requestError) {
+          resolve(classifyFailure(requestError));
+          return;
+        }
         if (preparedResult && (operation === "write"
           ? preparedResult.status === "imported" || preparedResult.status === "already-imported"
           : preparedResult.status === "committed")) {
@@ -482,6 +627,10 @@ export class IndexedDbPersistenceRepository implements RawStringPersistenceRepos
       transaction.onabort = () => {
         if (settled) return;
         settled = true;
+        if (denied) {
+          resolve(denied);
+          return;
+        }
         if (changedSourceKeys) {
           resolve({ status: "source-changed", keys: changedSourceKeys });
           return;
