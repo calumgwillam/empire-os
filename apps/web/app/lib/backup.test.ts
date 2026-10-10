@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { decodeRecoverySnapshots } from "./recovery-snapshot-storage";
 import {
   BACKUP_FORMAT,
   BACKUP_VERSION,
@@ -383,7 +384,7 @@ describe("runBackupRestoreTransaction", () => {
       [CASH_POSITION_STORAGE_KEY]: initialLiveData[CASH_POSITION_STORAGE_KEY],
       "unrelated-key": "untouched",
     });
-    expect(JSON.parse(storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)!)[0]).toMatchObject({
+    expect(decodeRecoverySnapshots(storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY))[0]).toMatchObject({
       pinned: true, storage: { [STORAGE_KEY]: initialLiveData[STORAGE_KEY] },
     });
   });

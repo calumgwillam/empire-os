@@ -209,6 +209,7 @@ import {
   type ChangeField,
   type EmpireOsBackup,
 } from "./lib/backup";
+import { decodeRecoverySnapshots } from "./lib/recovery-snapshot-storage";
 import { IndependentBackupSection } from "./components/independent-backup-section";
 import {
   type IntegritySeverity,
@@ -16877,7 +16878,7 @@ export default function Home() {
         return;
       }
 
-      const snapshots = JSON.parse(rawSnapshots);
+      const snapshots = decodeRecoverySnapshots(rawSnapshots);
 
       if (!Array.isArray(snapshots) || snapshots.length === 0) {
         window.alert("No emergency recovery snapshots are available.");
@@ -16995,7 +16996,7 @@ export default function Home() {
         {feedback ? <p className="mt-4 max-w-2xl">{feedback.message}</p> : null}
         <button type="button" className="mt-6 rounded border border-[#cfc8c1] px-4 py-2" onClick={() => {
           try {
-            const snapshots: unknown = JSON.parse(window.localStorage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) || "[]");
+            const snapshots = decodeRecoverySnapshots(window.localStorage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY));
             const safety = Array.isArray(snapshots) ? snapshots.find((entry: unknown) => isPlainObject(entry) && entry.pinned === true) : undefined;
             if (!isPlainObject(safety) || typeof safety.createdAt !== "string" || !isPlainObject(safety.storage)
               || !Object.values(safety.storage).every((value) => value === null || typeof value === "string")) {
@@ -17166,6 +17167,7 @@ export default function Home() {
 
             <div className="mt-2 px-1 text-[10px] leading-4 text-[#6b655f]">
               <div>{hasValidLastBackupAt ? `Last download request (not file verification): ${new Date(lastBackupAt).toLocaleString()}` : "No download request recorded"}</div>
+              <p className="mt-2">Local recovery keeps five rotating automatic copies and all pinned safety copies, with verified lossless compaction. New snapshots are limited to a 2 MiB estimated storage budget; quota or budget failures preserve existing evidence and do not establish a backup. Business history is never truncated.</p>
             </div>
             <IndependentBackupSection disabled={isRestoringBackup || restoreInProgressRef.current}
               revision={[captures, conversions, people, projects, leads, incomeRecords, expenseRecords, commitmentRecords,

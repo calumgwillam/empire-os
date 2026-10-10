@@ -8,6 +8,7 @@ import { assertCapacityRecord } from "./delivery-capacity";
 import { assertCapacityResolutionRecord } from "./capacity-resolution";
 import { assertDelegationHandoffs } from "./delegation-handoffs";
 import { getRecoveryReferenceIssues } from "./recovery-consistency";
+import { decodeRecoverySnapshots, encodeRecoverySnapshots, RECOVERY_SNAPSHOT_BUDGET_BYTES } from "./recovery-snapshot-storage";
 
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
@@ -170,20 +171,24 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 
 export function retainRecoverySnapshot(target: BackupStorage, backup: EmpireOsBackup, pinned = false): void {
   const raw = target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
-  const existing: unknown = raw === null ? [] : JSON.parse(raw);
-  if (!Array.isArray(existing) || !existing.every((entry: unknown) => isPlainObject(entry)
-    && typeof entry.createdAt === "string" && isPlainObject(entry.storage)
-    && Object.values(entry.storage).every((value) => value === null || typeof value === "string")
-    && (entry.pinned === undefined || typeof entry.pinned === "boolean"))) {
-    throw new Error("Existing recovery history is malformed; it was preserved instead of overwritten.");
-  }
-  if (!pinned && existing.some((entry) => JSON.stringify(entry.storage) === JSON.stringify(backup.storage))) return;
+  const existing = decodeRecoverySnapshots(raw);
+  const duplicate = !pinned && existing.some((entry) => JSON.stringify(entry.storage) === JSON.stringify(backup.storage));
   const snapshots = [
-    { ...backup, ...(pinned ? { pinned: true } : {}) },
+    ...(duplicate ? [] : [{ ...backup, ...(pinned ? { pinned: true } : {}) }]),
     ...existing.filter((entry) => entry.pinned === true),
-    ...existing.filter((entry) => entry.pinned !== true).slice(0, pinned ? 5 : 4),
+    ...existing.filter((entry) => entry.pinned !== true).slice(0, pinned || duplicate ? 5 : 4),
   ];
-  const serialized = JSON.stringify(snapshots);
+  // A duplicate startup may compact legacy storage, but must not rotate away any evidence.
+  const retained = duplicate ? existing : snapshots;
+  const candidate = encodeRecoverySnapshots(retained);
+  const budgetExceeded = 2 * (RECOVERY_SNAPSHOTS_STORAGE_KEY.length + candidate.length) > RECOVERY_SNAPSHOT_BUDGET_BYTES;
+  const budgetError = "Local recovery snapshots exceed the 2 MiB storage budget. No new snapshot was saved; all existing recovery evidence was preserved. Preserve and verify an external backup before reconciling protected recovery copies.";
+  // Even if a new copy cannot fit, losslessly shrinking the entire legacy history can free quota.
+  const serialized = budgetExceeded ? encodeRecoverySnapshots(existing) : candidate;
+  if (serialized === raw || (budgetExceeded && (raw === null || serialized.length >= raw.length))) {
+    if (budgetExceeded && !duplicate) throw new Error(budgetError);
+    return;
+  }
   try {
     target.setItem(RECOVERY_SNAPSHOTS_STORAGE_KEY, serialized);
     if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== serialized) throw new Error("Recovery snapshot write could not be verified.");
@@ -197,8 +202,9 @@ export function retainRecoverySnapshot(target: BackupStorage, backup: EmpireOsBa
     } catch (rollbackError) {
       throw new Error(`Recovery snapshot failed and prior recovery history could not be restored: ${String(rollbackError)}. No business-store writes were started.`);
     }
-    throw error;
+    throw new Error(`Recovery snapshot was not saved: ${error instanceof Error ? error.message : String(error)}. Previous recovery evidence was restored and verified; preserve an external backup and check available browser storage.`);
   }
+  if (budgetExceeded && !duplicate) throw new Error(`${budgetError} Existing recovery history was losslessly compacted and the write verified.`);
 }
 
 export type ChangeField = { field: string; before: unknown; after: unknown };

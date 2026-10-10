@@ -19,6 +19,7 @@ import { createCommercialLesson, createCommercialImplementation, buildCommercial
 import type { CommercialLearningInput } from "./commercial-learning";
 import type { IncomeRecord } from "./finance";
 import { getRecoveryReferenceIssues } from "./recovery-consistency";
+import { decodeRecoverySnapshots, encodeRecoverySnapshots } from "./recovery-snapshot-storage";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const person = { id: "owner", name: "Operating owner", status: "Active", role: "Delivery and commercial operations",
@@ -97,7 +98,7 @@ describe("Verified business recovery", () => {
     expect(buildJobPerformance(restored)[0]).toMatchObject({ contribution: 600, reviewCurrent: true, profitAfterAllocatedCosts: null });
     expect(buildCommercialLearning(restored)[0]).toMatchObject({ diagnosisCurrent: true, evaluationCurrent: false, outcome: "Unknown" });
     for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) expect(target.storage.getItem(key)).toBe(backup.storage[key]);
-    const pinned = JSON.parse(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)!)[0];
+    const pinned = decodeRecoverySnapshots(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY))[0];
     expect(pinned).toMatchObject({ pinned: true, storage: { [STORAGE_KEY]: '[{"id":"known-good-capture"}]' } });
   });
   it.each([TAX_PAYMENT_STORAGE_KEY, OUTREACH_STORAGE_KEY, CHANGE_HISTORY_STORAGE_KEY, STRATEGIC_OBJECTIVES_STORAGE_KEY,
@@ -204,12 +205,12 @@ describe("Verified business recovery", () => {
   it("retains pinned pre-restore evidence through normal five-snapshot rotation and can restore the safety copy", () => {
     const target = memory({ [STORAGE_KEY]: '[{"id":"original"}]' });
     expect(runBackupRestoreTransaction(target.storage, backupFor())).toEqual({ ok: true });
-    const pinned = JSON.parse(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)!)[0];
+    const pinned = decodeRecoverySnapshots(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY))[0];
     for (let index = 0; index < 7; index++) {
       target.storage.setItem(STORAGE_KEY, JSON.stringify([{ id: `capture-${index}` }]));
       retainRecoverySnapshot(target.storage, buildFullBackup(target.storage, new Date(NOW + index).toISOString()));
     }
-    const snapshots = JSON.parse(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)!);
+    const snapshots = decodeRecoverySnapshots(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY));
     expect(snapshots.filter((entry: { pinned?: boolean }) => entry.pinned)).toEqual([pinned]);
     expect(snapshots.filter((entry: { pinned?: boolean }) => !entry.pinned)).toHaveLength(5);
     expect(runBackupRestoreTransaction(target.storage, validateEmpireOsBackup(pinned))).toEqual({ ok: true });
@@ -225,7 +226,7 @@ describe("Verified business recovery", () => {
     };
     expect(runBackupRestoreTransaction(target.storage, backupFor())).toMatchObject({ ok: false, writesStarted: true, rollbackFailures: [] });
     expect(target.business()).toEqual({ [STORAGE_KEY]: '[{"id":"original"}]' });
-    expect(JSON.parse(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)!)[0].storage[STORAGE_KEY]).toBe('[{"id":"original"}]');
+    expect(decodeRecoverySnapshots(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY))[0].storage[STORAGE_KEY]).toBe('[{"id":"original"}]');
   });
   it("preserves the full safety copy even when rollback itself fails", () => {
     const target = memory({ [STORAGE_KEY]: '[{"id":"original"}]' });
@@ -243,7 +244,7 @@ describe("Verified business recovery", () => {
     };
     const result = runBackupRestoreTransaction(target.storage, backupFor());
     expect(result).toMatchObject({ ok: false, writesStarted: true, rollbackFailures: [STORAGE_KEY, CONVERSION_STORAGE_KEY] });
-    const pinned = JSON.parse(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)!)[0];
+    const pinned = decodeRecoverySnapshots(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY))[0];
     expect(pinned.storage[STORAGE_KEY]).toBe('[{"id":"original"}]');
     expect(pinned.storage[CONVERSION_STORAGE_KEY]).toBeNull();
   });
@@ -265,7 +266,7 @@ describe("Verified business recovery", () => {
       backup.storage[INCOME_STORAGE_KEY] = "[]";
     })).toEqual({ ok: true });
     for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) expect(target.storage.getItem(key)).toBe(expected[key]);
-    expect(JSON.parse(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)!)[0].storage[STORAGE_KEY]).toBe('[{"id":"original"}]');
+    expect(decodeRecoverySnapshots(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY))[0].storage[STORAGE_KEY]).toBe('[{"id":"original"}]');
   });
   it("checks capacity milestone and Icarus monitoring bindings without turning stale/unknown outcomes into recovery errors", () => {
     const action = { id: "milestone", targetType: "Convert to Action", relatedDecision: "wrong" };
@@ -298,11 +299,14 @@ describe("Emergency recovery uses the production verified restore path", () => {
   if (start < 0 || end < start) throw new Error("Emergency recovery handler could not be located.");
   const production = transpileModule(`${page.slice(start, end)}handleRestoreEmergencySnapshot();`,
     { compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.ESNext } }).outputText;
-  it.each(["success", "write failure", "rollback failure"] as const)("verifies %s before deciding whether to reload or quarantine", (mode) => {
+  it.each([
+    ["success", false], ["write failure", false], ["rollback failure", false],
+    ["success", true], ["write failure", true], ["rollback failure", true],
+  ] as const)("verifies %s before deciding whether to reload or quarantine (compact: %s)", (mode, compact) => {
     const backup = backupFor();
     const legacySnapshot = { createdAt: backup.createdAt, storage: backup.storage };
     const target = memory({ [STORAGE_KEY]: '[{"id":"original"}]',
-      [RECOVERY_SNAPSHOTS_STORAGE_KEY]: JSON.stringify([legacySnapshot]) });
+      [RECOVERY_SNAPSHOTS_STORAGE_KEY]: compact ? encodeRecoverySnapshots([legacySnapshot, legacySnapshot]) : JSON.stringify([legacySnapshot]) });
     const original = target.storage.setItem;
     let failed = false;
     target.storage.setItem = (key, value) => {
@@ -316,7 +320,7 @@ describe("Emergency recovery uses the production verified restore path", () => {
     const context = {
       window: { localStorage: target.storage, prompt: () => "1", confirm: () => true, alert: () => {},
         location: { reload: () => { reloads++; } } },
-      RECOVERY_SNAPSHOTS_STORAGE_KEY, BACKUP_FORMAT, BACKUP_VERSION, validateEmpireOsBackup, runBackupRestoreTransaction,
+      RECOVERY_SNAPSHOTS_STORAGE_KEY, BACKUP_FORMAT, BACKUP_VERSION, validateEmpireOsBackup, runBackupRestoreTransaction, decodeRecoverySnapshots,
       restoreInProgressRef: { current: false }, auditRestoreInProgressRef: { current: false }, Error,
       downloadBackup: (safety: EmpireOsBackup) => { expect(safety.storage[STORAGE_KEY]).toBe('[{"id":"original"}]'); },
       quarantineRecoveryWrites: () => { quarantines++; },
@@ -330,7 +334,7 @@ describe("Emergency recovery uses the production verified restore path", () => {
       expect(feedback[0]).toContain("restored and verified");
     }
     if (mode === "rollback failure") expect(feedback[0]).toContain("Editing is blocked");
-    expect(JSON.parse(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)!)[0]).toMatchObject({ pinned: true });
+    expect(decodeRecoverySnapshots(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY))[0]).toMatchObject({ pinned: true });
   });
   it("quarantines every writable evidence store and keeps restore/audit guards active after unverified rollback", () => {
     const start = page.indexOf("  function quarantineRecoveryWrites()");
@@ -362,7 +366,7 @@ describe("Emergency recovery uses the production verified restore path", () => {
     const context = { window: { localStorage: target.storage }, buildFullBackup, retainRecoverySnapshot,
       setFeedback: (value: { message: string }) => { errors.push(value.message); }, Error };
     runInNewContext(production, context, { timeout: 1000 });
-    const snapshot = JSON.parse(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)!)[0];
+    const snapshot = decodeRecoverySnapshots(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY))[0];
     expect(Object.keys(snapshot.storage)).toEqual([...EMPIRE_OS_BACKUP_STORAGE_KEYS]);
     for (const key of [TAX_PAYMENT_STORAGE_KEY, OUTREACH_STORAGE_KEY, STRATEGIC_OBJECTIVES_STORAGE_KEY, STRATEGIC_REVIEWS_STORAGE_KEY]) {
       expect(snapshot.storage[key]).toBe(target.storage.getItem(key));
