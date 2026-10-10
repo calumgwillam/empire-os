@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
 import type { AuthorizationDecision, AuthorizationRequest, AuthorizationSnapshot } from "./authorization-contract";
 import {
   evaluateAuthorization, isAuthorizationRequest, isAuthorityIdentifier,
@@ -14,9 +15,9 @@ import {
 import { isAuthenticatedPrincipal, type AuthenticatedPrincipal } from "./server-persistence-authority";
 import {
   hasOnlyFields, isCounter, isDatasetId, isIdempotencyKey, isObject,
-  validateWriteBatch, writeBatchContent,
+  validateWriteBatch,
 } from "./server-persistence-contract";
-import { stageImportContent, validateStageImportRequest } from "./server-import-preparation";
+import { encodeRawStoreValue, validateStageImportRequest } from "./server-import-preparation";
 
 async function validateInput(value: unknown): Promise<TransactionAuthorizationRequest | null> {
   if (!isObject(value) || !hasOnlyFields(value, ["operationId", "tenantId", "expectedPolicyRevision", "command"])
@@ -134,16 +135,18 @@ function authorityMutation(state: DurableAuthorityState, principal: Authenticate
   return validated.value;
 }
 
-function content(input: TransactionAuthorizationRequest): string {
+// Hex preserves every UTF-16 code unit, including values PostgreSQL JSONB cannot represent.
+export function authorizationRequestContent(input: TransactionAuthorizationRequest): string {
   const command = input.command;
-  const payload = command.kind === "write" ? writeBatchContent(command.request)
-    : command.kind === "stage-import" ? stageImportContent(command.request)
-    : command.kind === "assign-role" ? JSON.stringify([command.request.datasetId, command.request.recipientSubject, command.request.roleId])
-    : command.kind === "delegate" ? JSON.stringify([command.request.datasetId, command.request.recipientSubject,
-      command.request.capability, command.request.sourceRoleId, command.request.sourceGrantId, command.request.expiresAt])
-    : JSON.stringify([command.datasetId, command.target.kind, command.target.id]);
-  return JSON.stringify(["empire-os-authorized-operation", 1, input.operationId, input.tenantId,
-    input.expectedPolicyRevision, command.kind, payload]);
+  return JSON.stringify(command.kind === "write" ? {
+    ...input, command: { kind: "write", request: {
+      ...command.request,
+      writes: command.request.writes.map(({ rawValue, ...entry }) => {
+        const bytes = encodeRawStoreValue(rawValue);
+        return { ...entry, rawValueHex: bytes === null ? null : Buffer.from(bytes).toString("hex") };
+      }),
+    } },
+  } : input);
 }
 
 export function createTransactionalAuthorizationExecutor(store: TransactionalAuthorizationStore) {
@@ -164,7 +167,7 @@ export function createTransactionalAuthorizationExecutor(store: TransactionalAut
         return { status: "unavailable", outcome: "not-submitted", message: "Authorization request validation is unavailable." };
       }
       if (!request) return { status: "invalid-request", message: "Invalid transaction authorization request." };
-      const requestSha256 = createHash("sha256").update(content(request)).digest("hex");
+      const requestSha256 = createHash("sha256").update(authorizationRequestContent(request)).digest("hex");
       let expected: AuthorizationTransactionValue | undefined;
       let inconsistent = false;
       try {
@@ -216,7 +219,7 @@ export function createTransactionalAuthorizationExecutor(store: TransactionalAut
           });
           expected = { decision: finalDecision, audit };
           return expected;
-        });
+        }, request);
         if (result.status !== "committed") {
           if (inconsistent && result.status === "failed" && result.outcome === "rolled-back") return {
             status: "unavailable", outcome: "not-submitted", message: "Authoritative tenant state is unavailable or inconsistent.",

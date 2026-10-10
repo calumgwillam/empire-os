@@ -71,9 +71,11 @@ export interface TransactionalAuthorizationStore {
   // Reject reused successful operation IDs; replay/lookup needs fresh authorization and
   // is intentionally not supplied here. Never auto-retry callbacks or return "committed"
   // before confirmed atomic COMMIT. Decision IDs are unique per transaction attempt.
+  // Database adapters require the full request to bind independently authorized effects.
   runLocked(
     tenantId: string,
     operation: (transaction: LockedAuthorizationTransaction) => Promise<AuthorizationTransactionValue>,
+    request?: TransactionAuthorizationRequest,
   ): Promise<AuthorizationStoreResult>;
 }
 

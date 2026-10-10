@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { QueryResult, QueryResultRow } from "pg";
 import { createPostgresAuthorizationStore, type AuthorizationPostgresConnection } from "./postgres-authorization-store";
@@ -19,7 +20,7 @@ function mockConnection(fail?: string | readonly string[], unsafe = false, missi
       throw new Error("Private database failure.");
     }
     const rows: QueryResultRow[] = text.includes("AS unsafe") ? [{ unsafe }]
-      : text.includes("SELECT state,revision") ? missing ? [] : [{ state, revision: "1" }]
+      : text.includes("lock_authority") ? missing ? [] : [{ state, revision: "1" }]
       : text.includes("SELECT dataset_id::text") ? [{ dataset_id: datasetId }]
       : text.includes("AS now_ms") ? [{ now_ms: "1000" }]
       : text.includes("SELECT generation::text") ? [{ generation: "1", authority_revision: "0", authority_mode: "preparation-only" }]
@@ -39,11 +40,16 @@ describe("isolated PostgreSQL authorization adapter contract", () => {
       .execute(await testPrincipal("issuer", datasetId), preparationWrite(tenantId, datasetId, "write-one"));
     expect(result).toMatchObject({ status: "executed", durability: "transaction-commit-confirmed" });
     expect(mock.sql[0]).toBe("BEGIN ISOLATION LEVEL READ COMMITTED");
-    const locked = mock.sql.findIndex((sql) => sql.includes("SELECT state,revision"));
-    const staged = mock.sql.findIndex((sql) => sql.includes("INSERT INTO empire_os_authorization.preparation_writes"));
-    const audited = mock.sql.findIndex((sql) => sql.includes("INSERT INTO empire_os_authorization.audit"));
-    expect(locked).toBeLessThan(staged);
-    expect(staged).toBeLessThan(audited);
+    const locked = mock.sql.findIndex((sql) => sql.includes("lock_authority"));
+    const applied = mock.sql.findIndex((sql) => sql.includes("apply_operation"));
+    expect(locked).toBeGreaterThan(0);
+    expect(applied).toBeGreaterThan(locked);
+    expect(mock.sql.filter((sql) => sql.includes("apply_operation"))).toHaveLength(1);
+    expect(mock.sql.some((sql) => /\b(INSERT|UPDATE|FOR UPDATE)\b/.test(sql.replaceAll("'INSERT'", "").replaceAll("'UPDATE'", "")))).toBe(false);
+    const bound = JSON.parse(String(mock.params[applied][0]));
+    expect(bound.command.request.writes[0]).toEqual({
+      key: "empire-os-captures", expectedRevision: 0, rawValueHex: "5b005d00",
+    });
     expect(mock.sql.at(-1)).toBe("COMMIT");
     expect(mock.release).toHaveBeenCalledWith(false);
     expect(mock.sql.some((sql) => sql.includes("SET ROLE") || sql.includes("set_config"))).toBe(false);
@@ -55,9 +61,9 @@ describe("isolated PostgreSQL authorization adapter contract", () => {
       .execute(await testPrincipal("owner", datasetId), preparationWrite(tenantId, datasetId, "write-one")))
       .toMatchObject({ status: "failed", outcome: "rolled-back" });
     expect(mock.sql.at(-1)).toBe("ROLLBACK");
-    expect(mock.sql.some((sql) => sql.includes("INSERT"))).toBe(false);
+    expect(mock.sql.some((sql) => /^\s*(INSERT|UPDATE)\b/.test(sql) || sql.includes("apply_operation"))).toBe(false);
   });
-  it.each(["INSERT INTO empire_os_authorization.preparation_writes", "INSERT INTO empire_os_authorization.audit"] as const)(
+  it.each(["SELECT empire_os_authorization.apply_operation"] as const)(
     "rolls back %s failures without leaking database details", async (failure) => {
       const mock = mockConnection(failure);
       const result = await createTransactionalAuthorizationExecutor(mock.store)
@@ -73,7 +79,7 @@ describe("isolated PostgreSQL authorization adapter contract", () => {
       .execute(await testPrincipal("issuer", datasetId), preparationWrite(tenantId, datasetId, "write-one")))
       .toMatchObject({ status: "unavailable", outcome: "unknown" });
     expect(mock.sql.at(-1)).toBe("COMMIT");
-    expect(mock.sql.some((sql) => sql.includes("INSERT INTO empire_os_authorization.audit"))).toBe(true);
+    expect(mock.sql.some((sql) => sql.includes("apply_operation"))).toBe(true);
     expect(mock.sql).not.toContain("ROLLBACK");
     expect(mock.release).toHaveBeenCalledWith(true);
   });
@@ -92,28 +98,58 @@ describe("isolated PostgreSQL authorization adapter contract", () => {
     expect(mock.release).toHaveBeenCalledWith(true);
   });
   it("does not confirm rollback when rollback itself fails after staging", async () => {
-    const mock = mockConnection(["INSERT INTO empire_os_authorization.audit", "ROLLBACK"]);
+    const mock = mockConnection(["SELECT empire_os_authorization.apply_operation", "ROLLBACK"]);
     expect(await createTransactionalAuthorizationExecutor(mock.store)
       .execute(await testPrincipal("issuer", datasetId), preparationWrite(tenantId, datasetId, "write")))
       .toMatchObject({ status: "unavailable", outcome: "unknown" });
     expect(mock.release).toHaveBeenCalledWith(true);
   });
-  it("persists authority mutations by revision compare-and-swap with atomic audit", async () => {
+  it("submits the bound authority command and exact proposed state to the database API", async () => {
     const mock = mockConnection();
     expect(await createTransactionalAuthorizationExecutor(mock.store)
       .execute(await testPrincipal("owner", datasetId), membershipRevocation(tenantId, datasetId)))
       .toMatchObject({ status: "executed" });
-    const index = mock.sql.findIndex((sql) => sql.startsWith("UPDATE"));
-    expect(mock.params[index].slice(1)).toEqual([2, tenantId, 1]);
-    expect(JSON.parse(String(mock.params[index][0])).revocations).toHaveLength(1);
+    const index = mock.sql.findIndex((sql) => sql.includes("apply_operation"));
+    expect(JSON.parse(String(mock.params[index][0]))).toEqual(membershipRevocation(tenantId, datasetId));
+    expect(JSON.parse(String(mock.params[index][2])).revocations).toHaveLength(1);
+    expect(JSON.parse(String(mock.params[index][2])).snapshot.revision).toBe(2);
   });
   it("audits denials without staging effects", async () => {
     const mock = mockConnection();
     expect(await createTransactionalAuthorizationExecutor(mock.store)
       .execute(await testPrincipal("recipient", datasetId), preparationWrite(tenantId, datasetId, "denied")))
       .toMatchObject({ status: "denied" });
-    expect(mock.sql.some((sql) => sql.includes("preparation_writes"))).toBe(false);
-    expect(mock.sql.some((sql) => sql.includes("INSERT INTO empire_os_authorization.audit"))).toBe(true);
+    const index = mock.sql.findIndex((sql) => sql.includes("apply_operation"));
+    expect(index).toBeGreaterThan(0);
+    expect(JSON.parse(String(mock.params[index][1])).decision.status).toBe("denied");
+    expect(mock.params[index][2]).toBeNull();
+  });
+  it("submits cross-tenant dataset denials without a dataset read or lock", async () => {
+    const mock = mockConnection();
+    const requestedDataset = "00000000-0000-4000-8000-000000000002";
+    expect(await createTransactionalAuthorizationExecutor(mock.store)
+      .execute(await testPrincipal("issuer", datasetId), preparationWrite(tenantId, requestedDataset, "cross-tenant")))
+      .toMatchObject({ status: "denied", decision: { reason: "dataset-not-authorized" } });
+    const index = mock.sql.findIndex((sql) => sql.includes("apply_operation"));
+    expect(JSON.parse(String(mock.params[index][1])).datasetId).toBe(requestedDataset);
+    expect(mock.params[index][2]).toBeNull();
+    expect(mock.sql.some((sql) => sql.includes("SELECT generation"))).toBe(false);
+  });
+  it.each(["\u0000\ud800x\udfff\ud83d\ude00", "", null])("binds exact UTF-16 values and the submitted request fingerprint: %j", async (rawValue) => {
+    const mock = mockConnection();
+    const input = preparationWrite(tenantId, datasetId, "exact-bytes");
+    if (input.command.kind !== "write") throw new Error("Invalid fixture.");
+    expect(await createTransactionalAuthorizationExecutor(mock.store).execute(await testPrincipal("issuer", datasetId), {
+      ...input, command: { ...input.command, request: { ...input.command.request,
+        writes: input.command.request.writes.map((entry) => ({ ...entry, rawValue })),
+      } },
+    })).toMatchObject({ status: "executed" });
+    const index = mock.sql.findIndex((sql) => sql.includes("apply_operation"));
+    const content = String(mock.params[index][0]);
+    const wire = JSON.parse(content);
+    const audit = JSON.parse(String(mock.params[index][1]));
+    expect(wire.command.request.writes[0].rawValueHex).toBe(rawValue === null ? null : Buffer.from(rawValue, "utf16le").toString("hex"));
+    expect(audit.requestSha256).toBe(createHash("sha256").update(content).digest("hex"));
   });
   it("fails closed when the pool cannot connect", async () => {
     const store = createPostgresAuthorizationStore({ connect: async () => { throw new Error("Private credentials"); } });

@@ -4,17 +4,19 @@ import type { PoolClient } from "pg";
 import type {
   AuthorizationAuditEvidence, AuthorizationStoreResult, AuthorizationTransactionValue, LockedAuthorizationTransaction,
   SensitivePersistenceCommand, TransactionalAuthorizationStore,
+  TransactionAuthorizationRequest,
 } from "./authorization-transaction-contract";
 import { validateAuthorityTransition, validateDurableAuthorityState, type DurableAuthorityState } from "./durable-authorization-state";
 import { isAuthorityIdentifier } from "./authorization-policy";
 import { isCounter, validateWriteBatch } from "./server-persistence-contract";
-import { encodeRawStoreValue } from "./server-import-preparation";
+import { authorizationRequestContent } from "./authorization-transaction";
 
 if (!versions.node) throw new Error("PostgreSQL authorization requires the Node.js runtime.");
 
 export type AuthorizationPostgresConnection = Pick<PoolClient, "query" | "release">;
 export type AuthorizationPostgresSource = Readonly<{
   // Server-owned verified TLS pool or verified disposable test connection. No env fallback.
+  // The effective role must be provisioned for this actor; never share it across subjects.
   connect(): Promise<AuthorizationPostgresConnection>;
 }>;
 
@@ -30,6 +32,7 @@ export function createPostgresAuthorizationStore(source: AuthorizationPostgresSo
     async runLocked(
       tenantId: string,
       operation: (transaction: LockedAuthorizationTransaction) => Promise<AuthorizationTransactionValue>,
+      request?: TransactionAuthorizationRequest,
     ): Promise<AuthorizationStoreResult> {
       if (!isAuthorityIdentifier(tenantId)) return {
         status: "unavailable", outcome: "not-submitted", message: "Invalid authoritative tenant scope.",
@@ -50,6 +53,8 @@ export function createPostgresAuthorizationStore(source: AuthorizationPostgresSo
       let persistenceWrites = 0;
       let stagedIdempotencyKey: string | undefined;
       let authorityWrites = 0;
+      let proposedState: DurableAuthorityState | undefined;
+      let stagedCommand: SensitivePersistenceCommand | undefined;
       const guards: (() => void)[] = [];
       const transactionId = randomUUID();
       const assertActive = () => { if (!active) throw new Error("Authorization transaction context expired."); };
@@ -60,6 +65,7 @@ export function createPostgresAuthorizationStore(source: AuthorizationPostgresSo
         clock = next;
       }
       try {
+        if (!request || request.tenantId !== tenantId) throw new Error("Authorization request binding is required.");
         beginSent = true;
         const started = await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
         if (started.command !== "BEGIN") throw new Error("Database did not confirm BEGIN.");
@@ -69,12 +75,17 @@ export function createPostgresAuthorizationStore(source: AuthorizationPostgresSo
         const role = await client.query<{ unsafe: boolean }>(`SELECT
           r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolreplication OR
           EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-            WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation') AND c.relowner=r.oid) AS unsafe
+            WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation') AND
+              (c.relowner=r.oid OR (c.relkind='r' AND (
+                has_any_column_privilege(current_user,c.oid,'INSERT') OR
+                has_any_column_privilege(current_user,c.oid,'UPDATE') OR
+                has_table_privilege(current_user,c.oid,'DELETE') OR
+                has_table_privilege(current_user,c.oid,'TRUNCATE'))))) AS unsafe
           FROM pg_roles r WHERE r.rolname=current_user`);
         if (role.rows.length !== 1 || role.rows[0].unsafe !== false) throw new Error("Unsafe authorization database identity.");
         // READ COMMITTED creates a fresh snapshot AFTER any concurrent row-lock waiter.
         const locked = await client.query<{ state: unknown; revision: string }>(
-          "SELECT state,revision::text FROM empire_os_authorization.tenants WHERE tenant_id=$1 FOR UPDATE", [tenantId],
+          "SELECT state,revision::text FROM empire_os_authorization.lock_authority($1)", [tenantId],
         );
         if (locked.rows.length !== 1) throw new Error("Tenant authority unavailable.");
         const loaded = validateDurableAuthorityState(locked.rows[0].state);
@@ -98,11 +109,7 @@ export function createPostgresAuthorizationStore(source: AuthorizationPostgresSo
             if (authorityWrites || persistenceWrites) throw new Error("Only one sensitive operation is allowed.");
             const validated = validateAuthorityTransition(state, next, clock);
             if (validated.status !== "valid") throw new Error("Invalid authority transition.");
-            const result = await client.query(
-              "UPDATE empire_os_authorization.tenants SET state=$1::jsonb,revision=$2 WHERE tenant_id=$3 AND revision=$4",
-              [JSON.stringify(validated.value), next.snapshot.revision, tenantId, state.snapshot.revision],
-            );
-            if (result.rowCount !== 1) throw new Error("Conflicting authority revision.");
+            proposedState = structuredClone(validated.value);
             state = structuredClone(validated.value);
             authorityWrites += 1;
             await refreshClock();
@@ -117,7 +124,7 @@ export function createPostgresAuthorizationStore(source: AuthorizationPostgresSo
             if (!state.snapshot.datasets.some((entry) => entry.datasetId === request.fence.datasetId)) throw new Error("Invalid tenant dataset.");
             const fence = await client.query<{ generation: string; authority_revision: string; authority_mode: string }>(
               `SELECT generation::text,authority_revision::text,authority_mode FROM empire_os_authorization.datasets
-               WHERE tenant_id=$1 AND dataset_id=$2 FOR UPDATE`, [tenantId, request.fence.datasetId],
+               WHERE tenant_id=$1 AND dataset_id=$2`, [tenantId, request.fence.datasetId],
             );
             if (fence.rows.length !== 1 || fence.rows[0].authority_mode !== "preparation-only"
               || counter(fence.rows[0].generation) !== request.fence.generation
@@ -130,11 +137,7 @@ export function createPostgresAuthorizationStore(source: AuthorizationPostgresSo
             for (const entry of [...request.reads, ...request.writes]) {
               if ((current.get(entry.key) ?? 0) !== entry.expectedRevision) throw new Error("Preparation store revision conflict.");
             }
-            for (const entry of request.writes) {
-              await client.query(`INSERT INTO empire_os_authorization.preparation_writes
-                (tenant_id,dataset_id,transaction_id,store_key,revision,raw_value) VALUES ($1,$2,$3,$4,$5,$6)`,
-              [tenantId, request.fence.datasetId, transactionId, entry.key, entry.expectedRevision + 1, encodeRawStoreValue(entry.rawValue)]);
-            }
+            stagedCommand = structuredClone(command);
             persistenceWrites += 1;
             stagedIdempotencyKey = request.idempotencyKey;
             await refreshClock();
@@ -147,11 +150,9 @@ export function createPostgresAuthorizationStore(source: AuthorizationPostgresSo
               throw new Error("Invalid atomic audit scope or idempotency identity.");
             }
             const stagedAudit = structuredClone(evidence);
-            await client.query(`INSERT INTO empire_os_authorization.audit
-              (tenant_id,dataset_id,transaction_id,operation_id,decision_id,actor_subject,allowed,resulting_revision,evidence)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,
-            [tenantId, stagedAudit.datasetId, transactionId, stagedAudit.operationId, stagedAudit.decisionId, stagedAudit.actorSubject,
-              stagedAudit.decision.status === "allowed", stagedAudit.resultingPolicyRevision, JSON.stringify(stagedAudit)]);
+            if (stagedCommand && !same(stagedCommand, request.command)) throw new Error("Staged request differs from bound request.");
+            await client.query("SELECT empire_os_authorization.apply_operation($1::text,$2::jsonb,$3::jsonb)",
+              [authorizationRequestContent(request), JSON.stringify(stagedAudit), proposedState ? JSON.stringify(proposedState) : null]);
             auditState.evidence = stagedAudit;
             await refreshClock();
           },
