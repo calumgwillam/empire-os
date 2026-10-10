@@ -20,6 +20,7 @@ import type { CommercialLearningInput } from "./commercial-learning";
 import type { IncomeRecord } from "./finance";
 import { getRecoveryReferenceIssues } from "./recovery-consistency";
 import { decodeRecoverySnapshots, encodeRecoverySnapshots } from "./recovery-snapshot-storage";
+import { AutomaticRecoverySnapshots, automaticRecoveryMessage, type AutomaticRecoveryStatus } from "./automatic-recovery";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const person = { id: "owner", name: "Operating owner", status: "Active", role: "Delivery and commercial operations",
@@ -362,9 +363,9 @@ describe("Emergency recovery uses the production verified restore path", () => {
       { compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.ESNext } }).outputText;
     const target = memory({ [TAX_PAYMENT_STORAGE_KEY]: '[{"id":"tax"}]', [OUTREACH_STORAGE_KEY]: '[{"id":"outreach"}]',
       [STRATEGIC_OBJECTIVES_STORAGE_KEY]: '[{"id":"objective"}]', [STRATEGIC_REVIEWS_STORAGE_KEY]: '[{"id":"review"}]' });
-    const errors: string[] = [];
-    const context = { window: { localStorage: target.storage }, buildFullBackup, retainRecoverySnapshot,
-      setFeedback: (value: { message: string }) => { errors.push(value.message); }, Error };
+    const state: { status: AutomaticRecoveryStatus | null } = { status: null };
+    const context = { window: { localStorage: target.storage }, automaticRecoveryRef: { current: new AutomaticRecoverySnapshots() },
+      setAutomaticRecoveryStatus: (value: AutomaticRecoveryStatus) => { state.status = value; }, Error };
     runInNewContext(production, context, { timeout: 1000 });
     const snapshot = decodeRecoverySnapshots(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY))[0];
     expect(Object.keys(snapshot.storage)).toEqual([...EMPIRE_OS_BACKUP_STORAGE_KEYS]);
@@ -374,7 +375,14 @@ describe("Emergency recovery uses the production verified restore path", () => {
     target.storage.setItem(RECOVERY_SNAPSHOTS_STORAGE_KEY, "{malformed");
     runInNewContext(production, context, { timeout: 1000 });
     expect(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)).toBe("{malformed");
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("could not be verified");
+    expect(state.status).toMatchObject({ status: "blocked", reason: "decoding" });
+    if (state.status === null) throw new Error("Recovery check must report its outcome.");
+    expect(automaticRecoveryMessage(state.status)).toContain("decoding failure");
+    target.storage.setItem(RECOVERY_SNAPSHOTS_STORAGE_KEY, "[]");
+    runInNewContext(production, context, { timeout: 1000 });
+    expect(state.status).toMatchObject({ status: "created" });
+    runInNewContext(production, context, { timeout: 1000 });
+    expect(state.status).toMatchObject({ status: "existing" });
+    expect(automaticRecoveryMessage(state.status)).not.toContain("failure");
   });
 });

@@ -195,7 +195,6 @@ import {
   PERSON_STORAGE_KEY,
   PROJECT_STORAGE_KEY,
   RECOVERY_SNAPSHOTS_STORAGE_KEY,
-  retainRecoverySnapshot,
   runBackupRestoreTransaction,
   SAVED_VIEWS_STORAGE_KEY,
   STORAGE_KEY,
@@ -210,6 +209,8 @@ import {
   type EmpireOsBackup,
 } from "./lib/backup";
 import { decodeRecoverySnapshots } from "./lib/recovery-snapshot-storage";
+import { AutomaticRecoverySnapshots, automaticRecoveryMessage, type AutomaticRecoveryStatus } from "./lib/automatic-recovery";
+import { readStartupStorage, validateSavedViews } from "./lib/startup-hydration";
 import { IndependentBackupSection } from "./components/independent-backup-section";
 import {
   type IntegritySeverity,
@@ -1391,6 +1392,7 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
   const [defaultSavedViewId, setDefaultSavedViewId] = useState("");
   const [savedViewsLoaded, setSavedViewsLoaded] = useState(false);
   const [defaultSavedViewLoaded, setDefaultSavedViewLoaded] = useState(false);
+  const [savedViewLoadError, setSavedViewLoadError] = useState("");
   const [hideTestRecords, setHideTestRecords] = useState(true);
   const { searchQuery, selectedType, selectedStatus, selectedArea, selectedOwner, selectedCreatedDate, selectedOperationalDate, sortOrder, attentionOnly, inMotionOnly } = recordControls;
   const updateRecordControls = (updates: Partial<RecordControls>) =>
@@ -1398,10 +1400,14 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
   useEffect(() => {
+    setSavedViewsLoaded(false);
+    setDefaultSavedViewLoaded(false);
     try {
       const storedViews = window.localStorage.getItem(SAVED_VIEWS_STORAGE_KEY);
       const storedDefaultViewId = window.localStorage.getItem(DEFAULT_SAVED_VIEW_STORAGE_KEY);
-      if (storedViews) {
+      validateSavedViews(storedViews);
+      if (storedDefaultViewId !== null) setDefaultSavedViewId(storedDefaultViewId);
+      if (storedViews !== null) {
         const parsedViews = JSON.parse(storedViews);
         if (Array.isArray(parsedViews)) {
           setSavedViews(parsedViews);
@@ -1418,11 +1424,15 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
           }
         }
       }
-    } catch {
-      setSavedViews([]);
-    } finally {
+      if (window.localStorage.getItem(SAVED_VIEWS_STORAGE_KEY) !== storedViews
+        || window.localStorage.getItem(DEFAULT_SAVED_VIEW_STORAGE_KEY) !== storedDefaultViewId) {
+        throw new Error("Saved views changed while loading.");
+      }
       setSavedViewsLoaded(true);
       setDefaultSavedViewLoaded(true);
+      setSavedViewLoadError("");
+    } catch (error) {
+      setSavedViewLoadError(`Saved-view persistence is blocked; existing data was left untouched. ${error instanceof Error ? error.message : String(error)} Preserve a recovery export, then explicitly reload or restore verified data before retrying.`);
     }
   }, []);
 
@@ -1721,6 +1731,7 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
 
   return (
     <section className="mt-6 border-t border-[#d7d1ca] pt-6">
+      {savedViewLoadError ? <p role="alert" className="mb-4 text-[12px] text-[#7a352b]">{savedViewLoadError}</p> : null}
       <div className="flex items-end justify-between gap-3">
         <div>
           <p className="text-[10px] font-medium uppercase tracking-[0.2em] text-[#4d4944]">Operating picture</p>
@@ -8882,6 +8893,7 @@ export default function Home() {
   const [lastBackupAt, setLastBackupAt] = useState("");
   const [restoreBackupPreview, setRestoreBackupPreview] = useState<RestoreBackupPreview | null>(null);
   const [recoveryFailure, setRecoveryFailure] = useState("");
+  const [startupHydrationFailure, setStartupHydrationFailure] = useState("");
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   const restoreBackupInputRef = useRef<HTMLInputElement | null>(null);
   const restoreInProgressRef = useRef(false);
@@ -8912,6 +8924,8 @@ export default function Home() {
   const [selectedPillar, setSelectedPillar] = useState<string | null>(null);
   const [selectedAccountabilityKey, setSelectedAccountabilityKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const automaticRecoveryRef = useRef(new AutomaticRecoverySnapshots());
+  const [automaticRecoveryStatus, setAutomaticRecoveryStatus] = useState<AutomaticRecoveryStatus | null>(null);
 
   useEffect(() => {
     if (feedback?.message !== "Action details saved." && feedback?.message !== "Decision details saved." && feedback?.message !== "Problem details saved." && feedback?.message !== "Opportunity details saved." && feedback?.message !== "Lesson details saved." && feedback?.message !== "Review learning captured from System." && feedback?.message !== "Review learning captured from SOP.") {
@@ -8923,20 +8937,24 @@ export default function Home() {
   }, [feedback]);
 
   useEffect(() => {
+    changeHistoryWritableRef.current = false;
+    setChangeHistoryLoaded(false);
     try {
       const stored = window.localStorage.getItem(CHANGE_HISTORY_STORAGE_KEY);
       const parsed: unknown = stored === null ? [] : JSON.parse(stored);
       if (!Array.isArray(parsed) || !parsed.every(isValidChangeEvent)) throw new Error();
       setChangeHistory(parsed);
       changeHistoryWritableRef.current = true;
-    } catch {
-      setFeedback({ type: "error", message: "Change history could not be loaded. Existing history has been left untouched; inspect storage through a safety backup." });
-    } finally {
       setChangeHistoryLoaded(true);
+    } catch {
+      setChangeHistoryLoaded(false);
+      setFeedback({ type: "error", message: "Change history could not be loaded. Existing history has been left untouched; inspect storage through a safety backup." });
     }
   }, []);
 
   useEffect(() => {
+    strategicObjectivesWritableRef.current = false;
+    setStrategicObjectivesLoaded(false);
     try {
       const stored = window.localStorage.getItem(STRATEGIC_OBJECTIVES_STORAGE_KEY);
       const parsed: unknown = stored === null ? null : JSON.parse(stored);
@@ -8946,77 +8964,76 @@ export default function Home() {
         linkedProjectIds: [], linkedOpportunityIds: [], linkedDecisionIds: [], createdAt: new Date().toISOString(), overrides: [],
       })));
       strategicObjectivesWritableRef.current = true;
+      setStrategicObjectivesLoaded(true);
     } catch {
       setFeedback({ type: "error", message: "Strategic objectives could not be loaded. Existing storage was left untouched; inspect it through a safety backup." });
-    } finally {
-      setStrategicObjectivesLoaded(true);
     }
   }, []);
 
   useEffect(() => {
+    strategicReviewsWritableRef.current = false;
+    setStrategicReviewsLoaded(false);
     try {
       const stored = window.localStorage.getItem(STRATEGIC_REVIEWS_STORAGE_KEY);
       const parsed: unknown = stored === null ? [] : JSON.parse(stored);
       if (!Array.isArray(parsed) || !parsed.every(isStrategicReview)) throw new Error();
       setStrategicReviews(parsed);
       strategicReviewsWritableRef.current = true;
+      setStrategicReviewsLoaded(true);
     } catch {
       setFeedback({ type: "error", message: "Strategic reviews could not be loaded. Existing storage was left untouched; inspect a safety backup." });
-    } finally {
-      setStrategicReviewsLoaded(true);
     }
   }, []);
 
   useEffect(() => {
     icarusWritableRef.current = false;
+    setIcarusLoaded(false);
     try {
       const stored = window.localStorage.getItem(ICARUS_STORAGE_KEY);
       const parsed = parseIcarusAssessments(stored);
       setIcarusAssessments(parsed);
       icarusWritableRef.current = true;
+      setIcarusLoaded(true);
     } catch (error) {
       setFeedback({
         type: "error",
         message: `Icarus data could not be loaded. Existing storage was left untouched; inspect a safety backup.${error instanceof Error ? ` ${error.message}` : ""}`,
       });
-    } finally {
-      setIcarusLoaded(true);
     }
   }, []);
 
   useEffect(() => {
     peopleWritableRef.current = false;
     conversionsWritableRef.current = false;
+    projectsWritableRef.current = false;
+    leadsWritableRef.current = false;
+    handoffsWritableRef.current = false;
+    founderIntelligenceWritableRef.current = false;
+    incomeWritableRef.current = false;
+    expensesWritableRef.current = false;
+    setOperatingDataLoaded(false);
     try {
-      const initialIntegrityStorage: Record<string, string | null> = {};
-      for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) initialIntegrityStorage[key] = window.localStorage.getItem(key);
+      const initialIntegrityStorage = readStartupStorage(window.localStorage);
       initialIntegrityStorageRef.current = initialIntegrityStorage;
 
-      const storedCaptures = window.localStorage.getItem(STORAGE_KEY);
-      const storedConversions = window.localStorage.getItem(CONVERSION_STORAGE_KEY);
-      const storedPeople = window.localStorage.getItem(PERSON_STORAGE_KEY);
-      const storedProjects = window.localStorage.getItem(PROJECT_STORAGE_KEY);
-      const storedLeads = window.localStorage.getItem(LEAD_STORAGE_KEY);
-      const storedDelegationHandoffs = window.localStorage.getItem(DELEGATION_HANDOFF_STORAGE_KEY);
-      const storedWorkingRelationships = window.localStorage.getItem(WORKING_RELATIONSHIP_STORAGE_KEY);
-      const storedFounderIntelligence = window.localStorage.getItem(FOUNDER_INTELLIGENCE_STORAGE_KEY);
-      const storedCashPosition = window.localStorage.getItem(CASH_POSITION_STORAGE_KEY);
-      const storedIncome = window.localStorage.getItem(INCOME_STORAGE_KEY);
-      const storedExpenses = window.localStorage.getItem(EXPENSE_STORAGE_KEY);
-      const storedCommitments = window.localStorage.getItem(COMMITMENT_STORAGE_KEY);
-      const storedTaxPayments = window.localStorage.getItem(TAX_PAYMENT_STORAGE_KEY);
-      const storedOutreachContacts = window.localStorage.getItem(OUTREACH_STORAGE_KEY);
+      const storedCaptures = initialIntegrityStorage[STORAGE_KEY];
+      const storedConversions = initialIntegrityStorage[CONVERSION_STORAGE_KEY];
+      const storedPeople = initialIntegrityStorage[PERSON_STORAGE_KEY];
+      const storedProjects = initialIntegrityStorage[PROJECT_STORAGE_KEY];
+      const storedLeads = initialIntegrityStorage[LEAD_STORAGE_KEY];
+      const storedDelegationHandoffs = initialIntegrityStorage[DELEGATION_HANDOFF_STORAGE_KEY];
+      const storedWorkingRelationships = initialIntegrityStorage[WORKING_RELATIONSHIP_STORAGE_KEY];
+      const storedFounderIntelligence = initialIntegrityStorage[FOUNDER_INTELLIGENCE_STORAGE_KEY];
+      const storedCashPosition = initialIntegrityStorage[CASH_POSITION_STORAGE_KEY];
+      const storedIncome = initialIntegrityStorage[INCOME_STORAGE_KEY];
+      const storedExpenses = initialIntegrityStorage[EXPENSE_STORAGE_KEY];
+      const storedCommitments = initialIntegrityStorage[COMMITMENT_STORAGE_KEY];
+      const storedTaxPayments = initialIntegrityStorage[TAX_PAYMENT_STORAGE_KEY];
+      const storedOutreachContacts = initialIntegrityStorage[OUTREACH_STORAGE_KEY];
 
       // Preserve the untouched browser data before any startup parsing or persistence runs.
       // Recovery failures are reported without interrupting normal loading.
-      try {
-        const recoveryBackup = buildFullBackup(window.localStorage);
-        if (Object.values(recoveryBackup.storage).some((value) => value !== null)) {
-          retainRecoverySnapshot(window.localStorage, recoveryBackup);
-        }
-      } catch (error) {
-        setFeedback({ type: "error", message: `Automatic local recovery snapshot could not be verified. ${error instanceof Error ? error.message : String(error)}` });
-      }
+      setAutomaticRecoveryStatus(automaticRecoveryRef.current.check(window.localStorage));
 
       if (storedCaptures) {
         const parsedCaptures = JSON.parse(storedCaptures);
@@ -9178,9 +9195,10 @@ export default function Home() {
           const byPair = new Map<string, WorkingRelationship>();
           parsedWorkingRelationships.forEach((entry) => {
             const relationship = normaliseWorkingRelationship(entry);
-            if (!relationship) return;
+            if (!relationship) throw new Error("Working relationship storage contains an invalid record; existing evidence was preserved.");
             const pairKey = getWorkingRelationshipPairKey(relationship.personAId, relationship.personBId);
-            if (!byPair.has(pairKey)) byPair.set(pairKey, relationship);
+            if (byPair.has(pairKey)) throw new Error("Working relationship storage contains a duplicated pair; reconcile existing evidence before saving.");
+            byPair.set(pairKey, relationship);
           });
           setWorkingRelationships([...byPair.values()]);
         }
@@ -9367,7 +9385,7 @@ export default function Home() {
         }
       }
 
-      const storedSnapshots = window.localStorage.getItem(DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY);
+      const storedSnapshots = initialIntegrityStorage[DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY];
       if (storedSnapshots) {
         const parsedSnapshots = JSON.parse(storedSnapshots);
 
@@ -9405,14 +9423,20 @@ export default function Home() {
           setDailyPostureSnapshots(normalised);
         }
       }
+      if (![changeHistoryWritableRef, strategicObjectivesWritableRef, strategicReviewsWritableRef,
+        icarusWritableRef, peopleWritableRef, projectsWritableRef, leadsWritableRef, handoffsWritableRef,
+        founderIntelligenceWritableRef, incomeWritableRef, expensesWritableRef].every((ref) => ref.current)) {
+        throw new Error("One or more business stores failed hydration; reload or use verified recovery before enabling persistence.");
+      }
       conversionsWritableRef.current = true;
+      setStartupHydrationFailure("");
+      setOperatingDataLoaded(true);
     } catch (error) {
       setFeedback({
         type: "error",
         message: `Local capture storage could not be loaded. ${error instanceof Error ? error.message : String(error)}`,
       });
-    } finally {
-      setOperatingDataLoaded(true);
+      setStartupHydrationFailure(`Startup hydration failed; business persistence remains disabled. ${error instanceof Error ? error.message : String(error)} Existing storage was left untouched. Preserve a raw recovery export, then explicitly reload after recovery or retrying storage access.`);
     }
   }, []);
 
@@ -9438,7 +9462,7 @@ export default function Home() {
   }, [conversions, operatingDataLoaded]);
 
   useEffect(() => {
-    if (!icarusLoaded || !icarusWritableRef.current) {
+    if (!operatingDataLoaded || !icarusLoaded || !icarusWritableRef.current) {
       return;
     }
 
@@ -9451,7 +9475,7 @@ export default function Home() {
         message: `Icarus data could not be saved. Check browser storage before continuing.${error instanceof Error ? ` ${error.message}` : ""}`,
       });
     }
-  }, [icarusAssessments, icarusLoaded]);
+  }, [icarusAssessments, icarusLoaded, operatingDataLoaded]);
 
   useEffect(() => {
     if (!operatingDataLoaded || !peopleWritableRef.current) {
@@ -12114,14 +12138,9 @@ export default function Home() {
   };
 
   const todaySnapshotJson = JSON.stringify(todaySnapshot);
-  const snapshotsLoadedRef = useRef(false);
 
   useEffect(() => {
-    if (restoreInProgressRef.current) return;
-    if (!snapshotsLoadedRef.current) {
-      snapshotsLoadedRef.current = true;
-      return;
-    }
+    if (!operatingDataLoaded || !changeHistoryLoaded || !strategicObjectivesLoaded || !strategicReviewsLoaded || !icarusLoaded || restoreInProgressRef.current) return;
 
     setDailyPostureSnapshots((current) => {
       const existingTodayIndex = current.findIndex((entry) => entry.date === todaySnapshotDate);
@@ -12145,7 +12164,7 @@ export default function Home() {
       window.localStorage.setItem(DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, JSON.stringify(next));
       return next;
     });
-  }, [todaySnapshotJson, todaySnapshotDate]);
+  }, [todaySnapshotJson, todaySnapshotDate, operatingDataLoaded, changeHistoryLoaded, strategicObjectivesLoaded, strategicReviewsLoaded, icarusLoaded]);
 
   const previousDaySnapshot = (() => {
     const earlier = dailyPostureSnapshots
@@ -16988,6 +17007,35 @@ export default function Home() {
     && (integrityAudit.severityCounts.Critical > 0 || integrityAudit.severityCounts.Material >= INTEGRITY_MATERIAL_ATTENTION_THRESHOLD),
   );
 
+  if (startupHydrationFailure && !recoveryFailure) {
+    return (
+      <main className="min-h-screen bg-[#f9f7f4] p-8 text-[#171717]">
+        <h1 className="text-xl font-medium">Startup data requires recovery</h1>
+        <p role="alert" className="mt-4 max-w-2xl">{startupHydrationFailure}</p>
+        {feedback ? <p className="mt-4 max-w-2xl">{feedback.message}</p> : null}
+        <button type="button" className="mt-6 rounded border border-[#cfc8c1] px-4 py-2"
+          onClick={handleDownloadRawRecoveryCopy}>Download unverified raw recovery copy</button>
+        <button type="button" className="ml-3 mt-6 rounded border border-[#cfc8c1] px-4 py-2"
+          onClick={() => window.location.reload()}>Explicitly retry startup loading</button>
+        <input ref={restoreBackupInputRef} type="file" accept="application/json,.json"
+          onChange={(event) => void handleRestoreBackupFile(event.target.files?.[0])} className="hidden" />
+        <button type="button" disabled={isRestoringBackup} className="ml-3 mt-6 rounded border border-[#cfc8c1] px-4 py-2"
+          onClick={handleRestoreFullBackup}>Choose recovery backup</button>
+        {restoreBackupPreview ? (
+          <div className="mt-4 max-w-2xl rounded border border-[#cfc8c1] p-4">
+            <p>Recovery file: {restoreBackupPreview.fileName}. Created: {restoreBackupPreview.backup.createdAt}.</p>
+            <p className="mt-2">Restore replaces included business stores, preserves omitted legacy stores, checks record references and requires a verified pinned pre-restore safety copy. A blocked safety copy prevents restore.</p>
+            <button type="button" disabled={isRestoringBackup} className="mt-3 rounded border border-[#cfc8c1] px-4 py-2"
+              onClick={handleConfirmRestoreBackup}>Confirm verified restore</button>
+            <button type="button" disabled={isRestoringBackup} className="ml-3 mt-3 rounded border border-[#cfc8c1] px-4 py-2"
+              onClick={handleCancelRestoreBackup}>Cancel restore</button>
+          </div>
+        ) : null}
+        <p className="mt-4 max-w-2xl text-[12px]">Retry re-reads and validates stored data; it does not clear failed stores or enable saving unless hydration succeeds. Preserve recovery evidence before repairing data or restoring through the verified recovery workflow.</p>
+      </main>
+    );
+  }
+
   if (recoveryFailure) {
     return (
       <main className="min-h-screen bg-[#f9f7f4] p-8 text-[#171717]">
@@ -17167,7 +17215,18 @@ export default function Home() {
 
             <div className="mt-2 px-1 text-[10px] leading-4 text-[#6b655f]">
               <div>{hasValidLastBackupAt ? `Last download request (not file verification): ${new Date(lastBackupAt).toLocaleString()}` : "No download request recorded"}</div>
-              <p className="mt-2">Local recovery keeps five rotating automatic copies and all pinned safety copies, with verified lossless compaction. New snapshots are limited to a 2 MiB estimated storage budget; quota or budget failures preserve existing evidence and do not establish a backup. Business history is never truncated.</p>
+              <p className="mt-2">Local recovery rotates eligible unpinned automatic copies while retaining all protected evidence and a previously verified recovery copy. The budget is 2 MiB estimated storage; existing over-budget stores permit only non-growing automatic replacement when protected evidence fits the budget. Business history is never truncated.</p>
+              {automaticRecoveryStatus ? (
+                <div className="mt-2" role="status">
+                  <p>Local recovery check at {new Date(automaticRecoveryStatus.checkedAt).toLocaleString()}: {automaticRecoveryMessage(automaticRecoveryStatus)}</p>
+                  <p>This is the last check result, not a claim that later edits or an external backup are covered.</p>
+                  <button type="button" disabled={isRestoringBackup || restoreInProgressRef.current}
+                    className="mt-2 rounded border border-[#cfc8c1] px-3 py-2 disabled:opacity-45"
+                    onClick={() => setAutomaticRecoveryStatus(automaticRecoveryRef.current.check(window.localStorage, true))}>
+                    Recheck local recovery
+                  </button>
+                </div>
+              ) : null}
             </div>
             <IndependentBackupSection disabled={isRestoringBackup || restoreInProgressRef.current}
               revision={[captures, conversions, people, projects, leads, incomeRecords, expenseRecords, commitmentRecords,

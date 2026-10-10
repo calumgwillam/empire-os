@@ -104,7 +104,7 @@ describe("Lossless recovery storage", () => {
 
   it.each([0, 1])("enforces the exact budget boundary with %s extra UTF-16 code units", (extra) => {
     const empty = backup("");
-    const overhead = RECOVERY_SNAPSHOTS_STORAGE_KEY.length + encodeRecoverySnapshots([empty]).length;
+    const overhead = RECOVERY_SNAPSHOTS_STORAGE_KEY.length + encodeRecoverySnapshots([{ ...empty, automatic: true }]).length;
     const sized = backup("x".repeat(RECOVERY_SNAPSHOT_BUDGET_BYTES / 2 - overhead + extra));
     const target = memory();
     const operation = () => retainRecoverySnapshot(target.storage, sized);
@@ -128,17 +128,18 @@ describe("Lossless recovery storage", () => {
     expect(target.writes).toEqual([]);
   });
 
-  it("can shrink already-over-budget legacy evidence without claiming an oversized new snapshot was saved", () => {
+  it("blocks creation when protected evidence alone is over budget without modifying any existing evidence", () => {
     const copies = Array.from({ length: 3 }, (_, index) => ({
       ...snapshot({ [STORAGE_KEY]: "p".repeat(1100000) }, true), receipt: `protected-${index}`,
     }));
     const raw = JSON.stringify(copies);
     const target = memory({ [RECOVERY_SNAPSHOTS_STORAGE_KEY]: raw }, 2300000);
-    expect(() => retainRecoverySnapshot(target.storage, backup('[{"id":"new"}]'))).toThrow("No new snapshot was saved");
+    expect(() => retainRecoverySnapshot(target.storage, backup('[{"id":"new"}]'))).toThrow("Protected recovery evidence alone");
     const stored = target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)!;
-    expect(stored.length).toBeLessThan(raw.length / 2);
+    expect(stored).toBe(raw);
     expect(decodeRecoverySnapshots(stored)).toEqual(copies);
     expect(2 * stored.length).toBeGreaterThan(RECOVERY_SNAPSHOT_BUDGET_BYTES);
+    expect(target.writes).toEqual([]);
   });
 
   it("reports quota exhaustion and preserves the exact original bytes without a delete-and-retry fallback", () => {

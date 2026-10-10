@@ -8,7 +8,7 @@ import { assertCapacityRecord } from "./delivery-capacity";
 import { assertCapacityResolutionRecord } from "./capacity-resolution";
 import { assertDelegationHandoffs } from "./delegation-handoffs";
 import { getRecoveryReferenceIssues } from "./recovery-consistency";
-import { decodeRecoverySnapshots, encodeRecoverySnapshots, RECOVERY_SNAPSHOT_BUDGET_BYTES } from "./recovery-snapshot-storage";
+import { decodeRecoverySnapshots, encodeRecoverySnapshots, RECOVERY_SNAPSHOT_BUDGET_BYTES, type RecoverySnapshot } from "./recovery-snapshot-storage";
 
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
@@ -169,29 +169,108 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export function retainRecoverySnapshot(target: BackupStorage, backup: EmpireOsBackup, pinned = false): void {
+export type RecoverySnapshotFailure = "budget" | "quota" | "decoding" | "verification" | "storage" | "rollback";
+
+export class RecoverySnapshotError extends Error {
+  constructor(message: string, readonly reason: RecoverySnapshotFailure, readonly existingEvidencePreserved: boolean) {
+    super(message);
+    this.name = "RecoverySnapshotError";
+  }
+}
+
+export type RecoverySnapshotResult = {
+  status: "created" | "replaced" | "existing";
+  compacted: boolean;
+  overBudget: boolean;
+  estimatedBytes: number;
+};
+
+export function retainRecoverySnapshot(target: BackupStorage, backup: EmpireOsBackup, pinned = false): RecoverySnapshotResult {
   const raw = target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
-  const existing = decodeRecoverySnapshots(raw);
+  let existing: RecoverySnapshot[];
+  try {
+    existing = decodeRecoverySnapshots(raw);
+  } catch (error) {
+    throw new RecoverySnapshotError(`Recovery history could not be decoded: ${error instanceof Error ? error.message : String(error)}. Existing recovery evidence was preserved; no new snapshot was saved.`, "decoding", true);
+  }
   const duplicate = !pinned && existing.some((entry) => JSON.stringify(entry.storage) === JSON.stringify(backup.storage));
-  const snapshots = [
-    ...(duplicate ? [] : [{ ...backup, ...(pinned ? { pinned: true } : {}) }]),
-    ...existing.filter((entry) => entry.pinned === true),
-    ...existing.filter((entry) => entry.pinned !== true).slice(0, pinned || duplicate ? 5 : 4),
+  const verified = existing.map((entry) => {
+    try {
+      validateStandaloneBackup(entry);
+      return true;
+    } catch {
+      // Unverified raw evidence is retained, never treated as an eligible recovery copy.
+      return false;
+    }
+  });
+  const lastVerifiedIndex = verified.findIndex(Boolean);
+  const automatic = existing.map((entry, index) => entry.pinned !== true && verified[index]
+    && Object.keys(entry).every((key) => ["format", "version", "createdAt", "storage", "includedStorageKeys", "pinned", "automatic"].includes(key))
+    && (entry.automatic === true || (entry.automatic === undefined
+      && entry.format === BACKUP_FORMAT && entry.version === BACKUP_VERSION
+      && Array.isArray(entry.includedStorageKeys))));
+  const eligible = automatic.map((value, index) => value && index !== lastVerifiedIndex);
+  const protectedSnapshots = existing.filter((_, index) => !eligible[index]);
+  const bytes = (serialized: string) => 2 * (RECOVERY_SNAPSHOTS_STORAGE_KEY.length + serialized.length);
+  const encodeVerified = (snapshots: readonly RecoverySnapshot[]): string => {
+    try {
+      return encodeRecoverySnapshots(snapshots);
+    } catch (error) {
+      throw new RecoverySnapshotError(`Recovery compaction could not be verified: ${error instanceof Error ? error.message : String(error)}. Existing recovery evidence was preserved; no new snapshot was saved.`, "verification", true);
+    }
+  };
+  const protectedBytes = bytes(encodeVerified(protectedSnapshots));
+  if (protectedBytes > RECOVERY_SNAPSHOT_BUDGET_BYTES) {
+    throw new RecoverySnapshotError(`Protected recovery evidence alone requires ${protectedBytes} estimated bytes, exceeding the 2 MiB storage budget. Local snapshot creation remains blocked. Existing recovery evidence was preserved; no new snapshot was saved and nothing was deleted.`, "budget", true);
+  }
+  const keptAutomaticCount = (pinned ? 5 : 4) - (automatic[lastVerifiedIndex] ? 1 : 0);
+  let automaticCount = 0;
+  const retainedExisting = existing.filter((_, index) => !eligible[index] || automaticCount++ < keptAutomaticCount);
+  // Duplicate checks never rotate away evidence or claim creation.
+  let retained = duplicate ? existing : [
+    { ...backup, ...(pinned ? { pinned: true } : { automatic: true }) },
+    ...retainedExisting,
   ];
-  // A duplicate startup may compact legacy storage, but must not rotate away any evidence.
-  const retained = duplicate ? existing : snapshots;
-  const candidate = encodeRecoverySnapshots(retained);
-  const budgetExceeded = 2 * (RECOVERY_SNAPSHOTS_STORAGE_KEY.length + candidate.length) > RECOVERY_SNAPSHOT_BUDGET_BYTES;
-  const budgetError = "Local recovery snapshots exceed the 2 MiB storage budget. No new snapshot was saved; all existing recovery evidence was preserved. Preserve and verify an external backup before reconciling protected recovery copies.";
-  // Even if a new copy cannot fit, losslessly shrinking the entire legacy history can free quota.
-  const serialized = budgetExceeded ? encodeRecoverySnapshots(existing) : candidate;
-  if (serialized === raw || (budgetExceeded && (raw === null || serialized.length >= raw.length))) {
-    if (budgetExceeded && !duplicate) throw new Error(budgetError);
-    return;
+  let candidate = encodeVerified(retained);
+  // Try fewer eligible automatic copies only when the existing over-budget store cannot grow.
+  if (!pinned && !duplicate && raw !== null && bytes(candidate) > RECOVERY_SNAPSHOT_BUDGET_BYTES && candidate.length > raw.length) {
+    for (let index = retained.length - 1; index > 0; index--) {
+      const existingIndex = existing.indexOf(retained[index]);
+      if (existingIndex < 0 || !eligible[existingIndex]) continue;
+      retained = retained.filter((_, retainedIndex) => retainedIndex !== index);
+      candidate = encodeVerified(retained);
+      if (bytes(candidate) <= RECOVERY_SNAPSHOT_BUDGET_BYTES || candidate.length <= raw.length) break;
+    }
+  }
+  const removedCount = duplicate ? 0 : existing.length + 1 - retained.length;
+  const budgetExceeded = bytes(candidate) > RECOVERY_SNAPSHOT_BUDGET_BYTES;
+  const safeReplacement = !pinned && !duplicate && removedCount > 0 && raw !== null && candidate.length <= raw.length;
+  if (budgetExceeded && !duplicate && !safeReplacement) {
+    throw new RecoverySnapshotError(`Local recovery snapshots exceed the 2 MiB storage budget (${bytes(candidate)} estimated candidate bytes; ${protectedBytes} protected bytes). No new snapshot was saved; all existing recovery evidence was preserved. No eligible non-growing replacement fits.`, "budget", true);
+  }
+  const serialized = candidate;
+  const result: RecoverySnapshotResult = {
+    status: duplicate ? "existing" : removedCount > 0 ? "replaced" : "created",
+    compacted: duplicate && serialized !== raw,
+    overBudget: 2 * (RECOVERY_SNAPSHOTS_STORAGE_KEY.length + serialized.length) > RECOVERY_SNAPSHOT_BUDGET_BYTES,
+    estimatedBytes: 2 * (RECOVERY_SNAPSHOTS_STORAGE_KEY.length + serialized.length),
+  };
+  if (serialized === raw) return result;
+  if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== raw) {
+    throw new RecoverySnapshotError("Recovery history changed during preparation. No new snapshot was saved; the changed recovery evidence was left untouched.", "storage", false);
   }
   try {
     target.setItem(RECOVERY_SNAPSHOTS_STORAGE_KEY, serialized);
-    if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== serialized) throw new Error("Recovery snapshot write could not be verified.");
+    if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== serialized) {
+      throw new RecoverySnapshotError("Recovery snapshot write could not be verified.", "verification", false);
+    }
+    try {
+      if (JSON.stringify(decodeRecoverySnapshots(target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY))) !== JSON.stringify(retained)) {
+        throw new Error("Reconstructed recovery data differs from the intended snapshots.");
+      }
+    } catch (error) {
+      throw new RecoverySnapshotError(`Recovery-data reconstruction after writing could not be verified: ${error instanceof Error ? error.message : String(error)}`, "verification", false);
+    }
   } catch (error) {
     try {
       if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== raw) {
@@ -200,11 +279,13 @@ export function retainRecoverySnapshot(target: BackupStorage, backup: EmpireOsBa
       }
       if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== raw) throw new Error("Recovery history rollback verification failed.");
     } catch (rollbackError) {
-      throw new Error(`Recovery snapshot failed and prior recovery history could not be restored: ${String(rollbackError)}. No business-store writes were started.`);
+      throw new RecoverySnapshotError(`Recovery snapshot failed and prior recovery history could not be restored: ${String(rollbackError)}. No business-store writes were started.`, "rollback", false);
     }
-    throw new Error(`Recovery snapshot was not saved: ${error instanceof Error ? error.message : String(error)}. Previous recovery evidence was restored and verified; preserve an external backup and check available browser storage.`);
+    const reason: RecoverySnapshotFailure = error instanceof RecoverySnapshotError ? error.reason
+      : isPlainObject(error) && error.name === "QuotaExceededError" ? "quota" : "storage";
+    throw new RecoverySnapshotError(`Recovery snapshot was not saved: ${error instanceof Error ? error.message : String(error)}. Previous recovery evidence was restored and verified; preserve an external backup and check available browser storage.`, reason, true);
   }
-  if (budgetExceeded && !duplicate) throw new Error(`${budgetError} Existing recovery history was losslessly compacted and the write verified.`);
+  return result;
 }
 
 export type ChangeField = { field: string; before: unknown; after: unknown };
