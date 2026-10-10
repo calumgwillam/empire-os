@@ -9,10 +9,11 @@ import type { PersistenceCapability } from "./server-persistence-authority";
 
 if (!versions.node) throw new Error("Authorization requires the Node.js runtime.");
 
-function identifier(value: unknown): value is string {
+export function isAuthorityIdentifier(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 512
     && value === value.trim() && !/[\u0000-\u001f\u007f]/.test(value);
 }
+const identifier = isAuthorityIdentifier;
 function capability(value: unknown): value is PersistenceCapability {
   return value === "read" || value === "write" || value === "import";
 }
@@ -54,7 +55,7 @@ function delegation(value: unknown): value is AuthorityDelegation {
     && isCounter(value.sourceRoleRevision) && isCounter(value.issuerMembershipRevision) && isCounter(value.recipientMembershipRevision)
     && isCounter(value.issuedAt) && isCounter(value.expiresAt) && value.expiresAt > value.issuedAt && status(value.status);
 }
-function policy(value: unknown): value is AuthorizationSnapshot {
+export function isAuthorizationSnapshot(value: unknown): value is AuthorizationSnapshot {
   if (!isObject(value) || !hasOnlyFields(value, ["version", "revision", "tenant", "datasets", "memberships", "roles", "delegations"])
     || value.version !== 1 || !isCounter(value.revision) || !isObject(value.tenant)
     || !hasOnlyFields(value.tenant, ["id", "status", "ownerSubjects"]) || !identifier(value.tenant.id) || !status(value.tenant.status)
@@ -74,7 +75,7 @@ function policy(value: unknown): value is AuthorizationSnapshot {
     && value.roles.every((entry) => entry.tenantId === tenantId && entry.grants.every((item) => datasets.has(item.datasetId)))
     && value.delegations.every((entry) => entry.tenantId === tenantId && datasets.has(entry.datasetId));
 }
-function request(value: unknown): value is AuthorizationRequest {
+export function isAuthorizationRequest(value: unknown): value is AuthorizationRequest {
   if (!isObject(value) || !identifier(value.tenantId) || !isDatasetId(value.datasetId) || !isCounter(value.expectedPolicyRevision)) return false;
   const fields = ["tenantId", "datasetId", "expectedPolicyRevision", "operation"];
   switch (value.operation) {
@@ -104,9 +105,9 @@ export function evaluateAuthorization(principal: unknown, observed: unknown, inp
     Object.freeze({ status: allowed ? "allowed" : "denied", reason, policyVersion: 1,
       observedPolicyRevision: revision, ...(evidenceId === undefined ? {} : { evidenceId }) });
   if (!isAuthenticatedPrincipal(principal)) return decide(false, "authentication-required");
-  if (!policy(observed) || !isCounter(nowMs)) return decide(false, "invalid-policy");
+  if (!isAuthorizationSnapshot(observed) || !isCounter(nowMs)) return decide(false, "invalid-policy");
   revision = observed.revision;
-  if (!request(input)) return decide(false, "invalid-request");
+  if (!isAuthorizationRequest(input)) return decide(false, "invalid-request");
   if (input.tenantId !== observed.tenant.id) return decide(false, "tenant-mismatch");
   if (observed.tenant.status !== "active") return decide(false, "tenant-revoked");
   if (!observed.datasets.some((entry) => entry.datasetId === input.datasetId)) return decide(false, "dataset-not-authorized");

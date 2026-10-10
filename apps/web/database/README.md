@@ -128,6 +128,118 @@ must never connect using a migration/service-owner credential.
 
 ## Compatibility and schema
 
+### Durable authority and transactional execution contracts
+
+[durable-authorization-state.ts](../app/lib/durable-authorization-state.ts) adds an
+inactive, version-1 durable representation wrapping the existing version-1 authorization
+snapshot and retained revocation evidence. It is a storage contract, not a database
+implementation: nothing writes this state to PostgreSQL or browser storage.
+Validation rejects cross-tenant references, unknown versions, malformed collections,
+missing ownership memberships, dangling delegation sources, future source revisions,
+and revoked records without corresponding evidence.
+
+Ordinary transitions advance the tenant policy revision exactly once without counter
+rollover. Membership/role changes increment their own revisions. Tenant identity,
+ownership, dataset mappings and role grant definitions cannot change through this path;
+provisioning/recovery requires a separately reviewed trusted mechanism. Memberships,
+roles, delegation provenance and revocation evidence cannot be deleted or rewritten.
+Reactivation is deliberately not implemented; any future lifecycle design must retain
+revocation history and issue new revisions/authority rather than resurrect old grants.
+Delegations bind current, directly assigned, delegable source authority, never another
+delegation. Revoking a role/member invalidates its delegations through current-state
+evaluation rather than rewriting their historical source evidence.
+
+[authorization-transaction-contract.ts](../app/lib/authorization-transaction-contract.ts)
+defines a separate opt-in transactional store. Existing `ServerPersistenceRepository`
+methods and their confirmed-commit receipts are unchanged. Its `stagePersistence` method
+must NOT invoke those independently committing methods: it must stage on the same
+connection/transaction as authorization, authority changes and audit evidence. It must
+also enforce the existing generation/store revision fences and idempotency rules.
+Dataset `authorityRevision` and tenant policy revision are distinct counters; neither is
+silently substituted for the other. Read/lookup/replay adapters remain unimplemented and
+must independently authorize every access.
+
+[authorization-transaction.ts](../app/lib/authorization-transaction.ts) is an executable
+server boundary for validated writes, staged imports, owner role assignments, direct
+delegations and owner-only member/role/delegation revocation. It accepts only existing
+server-minted principals. Owner membership revocation, ownership transfer, role definition
+editing and dataset remapping are not exposed. Requests are detached from caller-owned
+objects; authority and time are read inside the transaction, not supplied by the caller.
+Denied operations stage no protected effects and require a denial audit before returning
+an audited denial. Missing/inconsistent state fails closed without business changes.
+Unavailable audit/state infrastructure and failed transactions are never permission.
+
+#### Lock order, concurrency and atomicity
+
+All authority readers/writers participating in sensitive execution must acquire a
+tenant-wide exclusive serialization lock BEFORE reading policy and hold it through
+COMMIT/ROLLBACK. This includes provisioning, revocation, ownership recovery and future
+role-definition writers. Dataset ownership must also be globally unique across tenants,
+including provisioning; a single-tenant snapshot cannot establish that global invariant.
+Tenant lock precedes dataset/generation/idempotency/store locks;
+multi-tenant work is not supported here. Future adapters must use a fixed dataset/store
+lock order and bounded lock timeouts, and fail closed on deadlock or unavailable locks.
+A PostgreSQL adapter must read fresh committed policy AFTER acquiring the lock; an old
+repeatable-read snapshot is not sufficient. Serializable isolation alone without shared
+revocation participation does not establish this contract.
+
+If a write acquires the lock first, it may complete before revocation; revocation waits
+and only reports success after committing. If revocation commits first, a queued write
+must see its newer policy revision and reduced authority. Revocation does not cancel an
+already serialized transaction or erase prior outcomes. There is no allowed-result cache
+across transactions. Server time is checked after staging and by a required synchronous
+pre-commit guard, including after audit insertion; expiry or backwards time rolls back
+all staged effects. A real database adapter must define and test the actual expiry
+linearization point: the JavaScript guard does NOT prove authority remains unexpired
+during network latency or PostgreSQL COMMIT.
+
+Exactly one matching versioned audit row must commit atomically with the operation or
+authority transition. Evidence contains actor subject, tenant/dataset, operation kind,
+request SHA-256, policy decision/source evidence, checked/completed times and resulting
+policy revision. Authority changes additionally retain their validated target/request
+context for later reconstruction; business writes retain no raw payload in this audit.
+Operation IDs identify requests; decision IDs bind transaction attempt
+and operation ID. Retries have new transaction/decision IDs. No raw business payload,
+credentials or tokens are stored in authorization evidence. These hashes identify
+evidence, not credentials or a cryptographic proof that an adapter honored its contract.
+Successful operation IDs must not produce a second effect. A replay/reconciliation
+protocol with fresh authorization is a remaining integration requirement.
+
+The store must reject missing/duplicate/mismatched audit evidence, preserve append-only
+audit rows, roll back callback/staging/audit failures and report lost COMMIT acknowledgement
+as `unknown`, never as confirmed rollback. The executor checks acknowledgement identity
+and rejects mismatches as unknown; it cannot inspect or repair a dishonest adapter.
+Database acknowledgement proves only the configured store's transaction commitment, not
+backup durability, replication guarantees or disaster recovery.
+
+#### Executable model and recovery limits
+
+[authorization-transaction.test.ts](../app/lib/authorization-transaction.test.ts) contains
+an isolated copy-on-write transactional model with per-tenant serialization, atomic
+publication of staged authority/effects/audits, failure injection and expiry guards.
+It exercises both revocation/write orderings, stale decisions, tenant isolation, invalid
+delegations, role assignment, audit failures, rollback, acknowledgement loss, source
+revocation, counter exhaustion and provenance/tombstone preservation. Its result explicitly
+says `test-model-only`. The model is not a full persistence-protocol implementation:
+it checks representative dataset fences but does not implement all store conflict,
+import generation, source durability or database idempotency semantics.
+
+No actual transactional database enforcement is implemented or verified by these tests.
+No new SQL migration, RLS policy, runtime connection, provider, endpoint or live writer
+is installed. The existing populated disposable integration database is untouched.
+The existing `dataset_access` table is NOT automatically authoritative for this tenant
+model and is not a fallback if authority state is missing.
+
+Recovery must reconcile unknown outcomes by durable operation/transaction identifiers
+under fresh authorization; never blindly submit a different request. Restore authority,
+revocation tombstones, audit and business effects as one consistent recovery point.
+Do not reset revision counters or restore old allowed decisions. Counter/recovery epoch
+handling, audit retention/access policies, owner recovery, identity lifecycle and
+database-side constraints remain unresolved. Recommended next step: review these
+interfaces and design a separate versioned authority migration plus a transaction/RLS
+adapter, then verify against a NEW explicitly designated empty disposable database.
+Never reuse or reset the existing populated integration instance.
+
 - `datasets`: protocol, current generation, authority revision/mode and commit sequence.
 - `dataset_access`: server-managed read/write/import capabilities; no automatic grant.
 - `generations`: isolated preparing/verified/recovery-required import generations.
