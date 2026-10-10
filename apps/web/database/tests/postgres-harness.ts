@@ -66,6 +66,18 @@ export async function transaction<T>(client: Client, work: () => Promise<T>): Pr
   }
 }
 
+export async function migrateEmptyAuthorizationDisposable(client: Client): Promise<void> {
+  // Reuse every original connection, advisory-lock and empty-database guard unchanged.
+  await migrateEmptyDisposable(client);
+  const sql = await readFile(new URL("../migrations/002_isolated_authorization.sql", import.meta.url), "utf8");
+  try {
+    await client.query(sql);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+}
+
 export async function seedDataset(client: Client, id: string): Promise<void> {
   requireVerifiedConnection(client);
   await client.query(`INSERT INTO empire_os_preparation.datasets(dataset_id,generation) VALUES ($1,1)`, [id]);

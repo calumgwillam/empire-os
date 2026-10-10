@@ -126,6 +126,111 @@ transaction-local context only through the trusted adapter; pooled connections m
 retain identity across requests. Credentials must remain server-only. Public clients
 must never connect using a migration/service-owner credential.
 
+## Isolated PostgreSQL authorization adapter (unverified)
+
+[002_isolated_authorization.sql](./migrations/002_isolated_authorization.sql) is a
+separate one-time versioned migration after 001, intended only for a NEW verified
+empty disposable database. It adds a separate schema without changing existing
+preparation tables, policies, guards or data. No runtime roles or grants are installed.
+Tenant ownership, memberships, roles/grants, delegation source revisions and revocations
+are retained together in a versioned JSONB authority document. This deliberately reuses
+the validated durable contract rather than creating divergent relational projections.
+Dataset-to-tenant mappings are relational, globally unique and checked against each
+loaded document. Revisions use bounded bigint counters.
+
+[postgres-authorization-store.ts](../app/lib/postgres-authorization-store.ts) implements
+the opt-in transactional store with an injected server-owned connection source. It does
+not import the runtime driver, construct a pool, read credentials, choose an identity
+provider or install a route. The existing development-only pg dependency is unchanged.
+Any future runtime pool must use complete private configuration and verified TLS; it
+must not fall back to ambient `PG*` variables. No browser can supply the connection.
+Node built-ins keep this module incompatible with browser execution.
+
+The adapter rejects current superuser, BYPASSRLS, CREATEROLE, REPLICATION and table-owner identities.
+Connections must additionally have no privilege to assume a privileged role; this
+membership/governance invariant is NOT fully checked by the adapter. A dedicated
+restricted runtime login remains required before any non-test use.
+
+### PostgreSQL isolation and transaction boundary
+
+Transactions explicitly use READ COMMITTED. The adapter locks the tenant row with
+`FOR UPDATE` before loading fresh policy, then locks mapped preparation datasets.
+Authority updates use an expected-revision compare-and-swap; SQL triggers require
+exact revision advancement and prohibit ownership/dataset changes. Audit and effect
+inserts also acquire the same tenant row lock. Revocation and writes therefore have
+a proposed single serial order provided all authority writers obey the interface.
+No callback retry is performed. Bounded lock/statement/idle timeouts fail closed.
+
+RLS is forced on every new table. Access depends on `current_user` matching a
+separately provisioned `role_tenants` binding, not a request-supplied tenant setting.
+Bindings are SELECT-only for restricted test application roles. Forging a custom GUC
+cannot change the binding. A role bound to multiple tenants can see those tenants;
+the final runtime role topology remains intentionally unresolved.
+
+This RLS restricts database tenants, not individual authenticated People/subjects.
+Within a permitted tenant, the trusted server policy engine still supplies actor
+authorization. A compromised runtime role with direct table privileges could fabricate
+actor/decision evidence or invalid nested authority changes: SQL checks are not a
+complete reimplementation of the TypeScript policy/transition validators. Restrict
+runtime SQL surfaces and review database-side mutation procedures before production.
+
+Allowed writes are stored ONLY in new append-only `preparation_writes`, with exact
+UTF-16 bytea values and store revision expectations starting at zero. Existing
+`store_values`, transaction receipts and business datasets are not updated. This is
+an isolated enforcement probe, NOT the full `ServerPersistenceRepository` adapter.
+Generation/authority fences belong to the new immutable dataset mapping, separately
+from tenant policy revision. Stage-import operations explicitly roll back as unsupported;
+full import generation/source/idempotency/commit-sequence semantics remain unimplemented.
+
+Audit and preparation effects use deferred foreign-key/constraint checks. An effect
+requires an allowed matching dataset/write audit; an authority update requires a
+matching mutation audit at its new revision. Successful actor/tenant/operation IDs
+are unique, and evidence is immutable. A database deferred trigger checks delegated
+expiry at constraint execution during COMMIT; audit insertion also checks the observed
+and resulting policy revisions against the locked tenant. The adapter requires write
+idempotency keys to equal operation IDs rather than exposing two independent replay keys.
+A freshly sampled database clock also
+drives the executor's final guard. That defines a proposed database completion
+linearization point, not an assertion that physical commit acknowledgement precedes
+wall-clock expiry. General clock skew/discontinuity remains an operational risk.
+
+Only a `COMMIT` command acknowledgement returns confirmed transaction durability.
+All COMMIT errors conservatively return `unknown` and evict the connection, including
+errors that PostgreSQL may have definitively rolled back. Pre-COMMIT errors report
+rollback only after an explicit ROLLBACK command acknowledgement, including after an
+uncertain BEGIN acknowledgement. A failed rollback discards the connection and reports
+unknown; a COMMIT error never triggers a rollback-based success claim.
+Reconciliation/authorized lookup of unknown
+operations is not yet implemented; do not blindly retry with a different ID.
+
+### Separate opt-in integration harness
+
+[authorization.postgres.integration.test.ts](./tests/authorization.postgres.integration.test.ts)
+uses ONLY `EMPIRE_OS_AUTH_TEST_PG_HOST`, `PORT`, `DATABASE`, `USER`, `PASSWORD` and
+`CONFIRM` (each with the same prefix). It never falls back to the old `EMPIRE_OS_TEST_PG_*`
+configuration and rejects matching configured database names. Confirmation follows
+the existing `<database>:empire-os-disposable-integration-test-only` format.
+Loopback host, database name, connected identity, database comment marker, recovery
+status, exclusive harness lock and empty-database checks are reused unchanged.
+Both migrations run only after the original empty-database check succeeds.
+An independent database name cannot prove freshness; the catalog guard remains essential.
+
+The suite provisions restricted NOLOGIN roles on the verified disposable instance,
+then uses separate verified connections with test-only SET ROLE. This is not a
+production login model. It retains fixtures and roles, performs no cleanup/reset,
+and cannot be rerun on the populated instance. Tests cover atomic preparation writes,
+cross-tenant RLS/GUC spoofing, missing audit, duplicate operation IDs, revision ordering,
+concurrent revocation, expiry, privileged connections and unchanged original policies.
+Run it only after explicitly provisioning and verifying a NEW disposable database:
+`npx vitest run database/tests/authorization.postgres.integration.test.ts`.
+
+The adapter unit tests mock database responses; they do NOT verify SQL, RLS, locking,
+durability or deferred triggers. Real PostgreSQL tests have NOT been executed for this
+stage. Before relying on this foundation, execute focused unit/type checks, review
+the migration and restricted-role grants, then run the separate suite on a new instance.
+Review full database-side authority invariants, audit restoration/retention, restricted
+role membership, actual concurrent blocking and reconciliation before broader adoption.
+
 ## Compatibility and schema
 
 ### Durable authority and transactional execution contracts
