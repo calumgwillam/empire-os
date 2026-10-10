@@ -7,8 +7,11 @@ import {
   ICARUS_INTERVENTION_INTENTS,
   ICARUS_INTERVENTION_RELATIONSHIPS,
   ICARUS_INTERVENTION_SCOPES,
+  ICARUS_CAUSE_ASSESSMENT_STATES,
+  getIcarusCauseAssessmentState,
   getIcarusReferenceKey,
   type IcarusAssessmentRecord,
+  type IcarusCauseRecord,
   type IcarusInterventionDecisionRecord,
   type IcarusInterventionEffect,
   type IcarusInterventionOption,
@@ -210,7 +213,9 @@ function DecisionEditor({
         <input type="date" className={field} disabled={disabled} value={record.nextReviewBy ?? ""}
           onChange={(event) => update({ ...record, nextReviewBy: event.target.value || undefined })} />
       </label>
-      <Choices label="Explicit causes" items={props.index.causes.map((cause) => ({ id: cause.id, title: `${cause.title} (${cause.id})` }))}
+      <Choices label="Explicit causes" items={props.index.causes.map((cause) => ({
+        id: cause.id, title: `${cause.title} (${cause.id}; ${getIcarusCauseAssessmentState(cause)})`,
+      }))}
         selected={record.causeIds} disabled={structured} onChange={(causeIds) => update({ ...record, causeIds })} />
       <Scope value={record} assessments={props.assessments} sources={props.sources} disabled={structured}
         onChange={(scope) => update({ ...record, ...scope })} />
@@ -254,7 +259,9 @@ function DecisionEditor({
                 if (character) optionUpdate({ ...option, character });
               }}><option value="">Not classified</option>{ICARUS_INTERVENTION_CHARACTERS.map((value) => <option key={value}>{value}</option>)}</select></label>
             <Choices label="Target causes" items={props.index.causes.filter((cause) => record.causeIds.includes(cause.id))
-              .map((cause) => ({ id: cause.id, title: cause.title }))} selected={option.causeIds} disabled={disabled || historical}
+              .map((cause) => ({
+                id: cause.id, title: `${cause.title} (${getIcarusCauseAssessmentState(cause)})`,
+              }))} selected={option.causeIds} disabled={disabled || historical}
               onChange={(causeIds) => optionUpdate({ ...option, causeIds })} />
             <Scope value={option} assessments={props.assessments} sources={props.sources} disabled={disabled || historical}
               onChange={(scope) => optionUpdate({ ...option, ...scope })} />
@@ -375,7 +382,9 @@ function DecisionEditor({
             <option key={entry.record.id} value={entry.record.id}>{entry.record.outcome}: {entry.record.id}</option>)}
         </select></label>
         <Choices label="Explicit reusable cause scope (empty means local only)"
-          items={props.index.causes.filter((cause) => record.causeIds.includes(cause.id)).map((cause) => ({ id: cause.id, title: cause.title }))}
+          items={props.index.causes.filter((cause) => record.causeIds.includes(cause.id)).map((cause) => ({
+            id: cause.id, title: `${cause.title} (${getIcarusCauseAssessmentState(cause)})`,
+          }))}
           selected={lessonCauses} disabled={appendOnlyDisabled} onChange={setLessonCauses} />
         {record.status === "Superseded" ? <label>Historical learning-link rationale
           <textarea className={field} disabled={appendOnlyDisabled} value={rationale}
@@ -421,7 +430,7 @@ export default function IcarusInterventionSection(props: Props) {
   return (
     <section className="mt-4 rounded-xl border border-[#c9b8a3] bg-[#f5efe6] p-4" aria-label="Causal intervention decisions">
       <h2 className="text-[11px] font-semibold uppercase tracking-[0.16em]">Causal intervention decisions</h2>
-      <p className="mt-1 text-[12px]">Explicit human-confirmed cause identity; no text matching, automatic selection or causal success inference.</p>
+      <p className="mt-1 text-[12px]">Explicit human-recorded cause identity and uncertainty; no text matching, automatic selection or causal success inference.</p>
       {error ? <p role="alert" className="mt-2 text-[12px] text-[#8b3d28]">{error}</p> : null}
       <label className="mt-2 block text-[11px]">Context author (Person identity, not authority)
         <select className={field} disabled={!props.writable} value={actor} onChange={(event) => setActor(event.target.value)}>
@@ -443,6 +452,7 @@ export default function IcarusInterventionSection(props: Props) {
           commit(props.assessments.map((assessment) => assessment.id !== assessmentId ? assessment : ({
             ...assessment, causes: [...(assessment.causes ?? []), {
               ...emptyIcarusInterventionScope(assessmentId), id: props.createId(), title: title.trim(), description: "",
+              assessmentState: "Unassessed",
               createdAt: at, updatedAt: at, createdByPersonId: actor, updatedByPersonId: actor,
             }],
           }))); setTitle("");
@@ -460,16 +470,25 @@ export default function IcarusInterventionSection(props: Props) {
       </div>
       <details className="mt-3 text-[11px]"><summary>Explicit causes (share by ID, never by title)</summary>
         {props.index.causes.map((cause) => {
-          const update = (scope: IcarusInterventionScope, description: string) => commit(props.assessments.map((assessment) =>
+          const update = (patch: Partial<IcarusCauseRecord>) => commit(props.assessments.map((assessment) =>
             (assessment.causes ?? []).some((entry) => entry.id === cause.id)
               ? { ...assessment, causes: assessment.causes?.map((entry) => entry.id === cause.id
-                ? { ...entry, ...scope, description, updatedAt: now(), updatedByPersonId: actor } : entry) } : assessment));
+                ? { ...entry, ...patch, updatedAt: now(), updatedByPersonId: actor } : entry) } : assessment));
           return <div key={cause.id} className="mt-2 rounded border border-[#d3cbc3] bg-white p-2">
-            <p>{cause.title} ({cause.id})</p>
+            <p>{cause.title} ({cause.id}) — {getIcarusCauseAssessmentState(cause)}</p>
+            <label className="mt-2 block">Cause assessment
+              <select className={field} disabled={disabled} value={getIcarusCauseAssessmentState(cause)}
+                onChange={(event) => {
+                  const assessmentState = ICARUS_CAUSE_ASSESSMENT_STATES.find((state) => state === event.target.value);
+                  if (assessmentState) update({ assessmentState });
+                }}>
+                {ICARUS_CAUSE_ASSESSMENT_STATES.map((state) => <option key={state}>{state}</option>)}
+              </select>
+            </label>
             <textarea className={field} aria-label={`Mechanism for ${cause.title}`} disabled={disabled} value={cause.description}
-              onChange={(event) => update(cause, event.target.value)} />
+              onChange={(event) => update({ description: event.target.value })} />
             <Scope value={cause} assessments={props.assessments} sources={props.sources} disabled={disabled}
-              onChange={(scope) => update(scope, cause.description)} />
+              onChange={(scope) => update(scope)} />
           </div>;
         })}
       </details>

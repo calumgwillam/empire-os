@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  getIcarusCauseAssessmentState,
   getIcarusTreatmentOutcomeId,
   getIcarusTreatmentTargetId,
   parseIcarusAssessments,
@@ -152,11 +153,27 @@ describe("explicit Icarus cause identity and legacy persistence", () => {
   });
 
   it("round-trips legacy records without constructing causes, decisions or classifications", () => {
-    const legacy = assessment();
+    const legacy = assessment({ causes: [cause()] });
     expect(parseIcarusAssessments(JSON.stringify([legacy]))).toEqual([legacy]);
+    expect(getIcarusCauseAssessmentState(legacy.causes![0])).toBe("Unassessed");
     const result = buildIcarusInterventionIndex(input([], { assessments: [legacy] }));
-    expect(result.causes).toEqual([]);
+    expect(result.causes).toEqual(legacy.causes);
     expect(result.decisions).toEqual([]);
+  });
+
+  it("persists explicit uncertainty states and preserves causes with malformed optional legacy state", () => {
+    const assessed = assessment({ causes: [cause("cause", { assessmentState: "Hypothesis" })] });
+    expect(parseIcarusAssessments(JSON.stringify([assessed]))).toEqual([assessed]);
+    expect(getIcarusCauseAssessmentState(assessed.causes![0])).toBe("Hypothesis");
+
+    const malformed = {
+      ...assessment(),
+      causes: [{ ...cause(), assessmentState: "Certain" }],
+    };
+    const parsed = parseIcarusAssessments(JSON.stringify([malformed]));
+    expect(parsed[0].causes?.[0]).not.toHaveProperty("assessmentState");
+    expect(parsed[0].causes?.[0].description).toBe("Declared mechanism");
+    expect(getIcarusCauseAssessmentState(parsed[0].causes![0])).toBe("Unassessed");
   });
 
   it("normalizes malformed optional records without losing valid core data or valid new records", () => {

@@ -278,7 +278,14 @@ export type IcarusCauseRecord = IcarusInterventionScope & IcarusInterventionProv
   id: string;
   title: string;
   description: string;
+  assessmentState?: IcarusCauseAssessmentState;
 };
+
+export function getIcarusCauseAssessmentState(
+  cause: Pick<IcarusCauseRecord, "assessmentState">,
+): IcarusCauseAssessmentState {
+  return cause.assessmentState ?? "Unassessed";
+}
 
 export const ICARUS_INTERVENTION_INTENTS = ["Symptom treatment", "Root-cause treatment", "Systemic intervention"] as const;
 export const ICARUS_INTERVENTION_SCOPES = ["Local", "Multi-risk", "Cross-pillar", "Systemic"] as const;
@@ -289,6 +296,10 @@ export const ICARUS_INTERVENTION_RELATIONSHIPS = [
 export const ICARUS_INTERVENTION_EFFECTS = [
   "Potentially improves", "Potentially worsens", "Creates dependency", "Removes dependency", "Unknown",
 ] as const;
+export const ICARUS_CAUSE_ASSESSMENT_STATES = [
+  "Unassessed", "Hypothesis", "Evidence-supported", "Contested", "Refuted",
+] as const;
+export type IcarusCauseAssessmentState = (typeof ICARUS_CAUSE_ASSESSMENT_STATES)[number];
 
 export type IcarusInterventionOption = IcarusInterventionScope & {
   id: string;
@@ -921,7 +932,9 @@ function isRecordedInterventionEntry(value: Record<string, unknown>): boolean {
 
 export function isIcarusCauseRecord(value: unknown): value is IcarusCauseRecord {
   return isPlainObject(value) && isNonEmptyString(value.id) && isNonEmptyString(value.title)
-    && typeof value.description === "string" && isInterventionScope(value) && isInterventionProvenance(value);
+    && typeof value.description === "string"
+    && (value.assessmentState === undefined || ICARUS_CAUSE_ASSESSMENT_STATES.some((state) => state === value.assessmentState))
+    && isInterventionScope(value) && isInterventionProvenance(value);
 }
 
 function isInterventionOption(value: unknown): value is IcarusInterventionOption {
@@ -991,7 +1004,13 @@ export function normaliseIcarusAssessmentData(value: unknown): unknown {
     }
     if ("causes" in next) {
       if (!Array.isArray(next.causes)) delete next.causes;
-      else next.causes = filterUniqueById(next.causes.filter(isIcarusCauseRecord), (cause) => cause.id);
+      else next.causes = filterUniqueById(next.causes.map((entry: unknown) => {
+        if (!isPlainObject(entry) || entry.assessmentState === undefined
+          || ICARUS_CAUSE_ASSESSMENT_STATES.some((state) => state === entry.assessmentState)) return entry;
+        const legacyCause = { ...entry };
+        delete legacyCause.assessmentState;
+        return legacyCause;
+      }).filter(isIcarusCauseRecord), (cause) => cause.id);
     }
     if ("interventionDecisions" in next) {
       if (!Array.isArray(next.interventionDecisions)) delete next.interventionDecisions;

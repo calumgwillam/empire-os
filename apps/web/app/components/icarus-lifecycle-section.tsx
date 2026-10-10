@@ -98,7 +98,10 @@ function LifecycleAssessment({ assessment, view, ...props }: Props & {
       <p>Review {review.record.id}; Person {review.record.reviewedByPersonId}. Current validity: {review.validity}.</p>
       <p>{review.record.rationale}</p>
       <p>{review.reasons.join("; ")}</p>
-      <p>Next review: {review.record.nextReviewBy || "Not specified"}. Explicit causes (context, not elimination proof): {review.record.causeIds.join(", ") || "None"}.</p>
+      <p>Next review: {review.record.nextReviewBy || "Not specified"}. Explicit cause context (not elimination proof): {review.record.causeIds.map((id) => {
+        const cause = assessment.causes?.find((entry) => entry.id === id);
+        return cause ? `${cause.title} (${id}; ${cause.assessmentState ?? "Unassessed"})` : id;
+      }).join(", ") || "None"}.</p>
       {review.record.controlConditions.map((condition) => <p key={`${condition.failureModeId}:${condition.controlId}`}>
         Mode {condition.failureModeId}: control {condition.controlId}, test {condition.testId}, evidence {condition.evidenceIds.join(", ")}.
         {" "}Required dependencies: {condition.requiredDependencies.map((ref) => `${ref.recordType}:${ref.recordId}`).join(", ") || "None declared"}.
