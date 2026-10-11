@@ -121,7 +121,13 @@ export type OperationReconciliationResult =
     observedPolicyRevision: number;
     source: "test-model-only" | "committed-database-read";
   }>
-  | Readonly<{ status: "conflict"; operationId: string; message: string }>
+  | Readonly<{
+    status: "conflict"; operationId: string; message: string;
+    // Present only when a well-formed allowed WRITE for this dataset committed under this operation
+    // ID: the policy revision that request was authorized against. A hint for exact-replay checks,
+    // never proof that the effect matches; re-reconcile the exact request at that revision.
+    executedPolicyRevision?: number;
+  }>
   | Readonly<{ status: "unauthorized"; reason: "authentication-required" | "forbidden" }>
   | Readonly<{ status: "invalid-request"; message: string }>
   | Readonly<{ status: "unavailable"; outcome: "not-submitted"; message: string }>;

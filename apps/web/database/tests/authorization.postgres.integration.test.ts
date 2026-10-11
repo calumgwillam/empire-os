@@ -2,6 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPostgresAuthorizationStore, createPostgresOperationReconciliationStore } from "../../app/lib/postgres-authorization-store";
+import { createPostgresDurableDatasetRepository } from "../../app/lib/durable-dataset-repository";
+import { READ_DATASET_SNAPSHOT_SQL } from "../../app/lib/authorized-dataset-read";
+import type { WriteBatch } from "../../app/lib/server-persistence-contract";
 import { createOperationReconciler } from "../../app/lib/authorization-reconciliation";
 import { authorizationRequestContent, createTransactionalAuthorizationExecutor } from "../../app/lib/authorization-transaction";
 import type { AuthorizationAuditEvidence } from "../../app/lib/authorization-transaction-contract";
@@ -39,7 +42,8 @@ describe.skipIf(configuration.status === "skip")("REAL NEW disposable PostgreSQL
         ON empire_os_authorization.preparation_writes TO "${name}"`);
       await admin.query(`GRANT EXECUTE ON FUNCTION empire_os_authorization.lock_authority(text),
         empire_os_authorization.apply_operation(text,jsonb,jsonb),
-        empire_os_authorization.lookup_operation(text,text) TO "${name}"`);
+        empire_os_authorization.lookup_operation(text,text),
+        empire_os_authorization.read_dataset_snapshot(text,uuid) TO "${name}"`);
     }
   }, 30000);
   afterAll(async () => {
@@ -488,4 +492,86 @@ describe.skipIf(configuration.status === "skip")("REAL NEW disposable PostgreSQL
     expect(await createTransactionalAuthorizationExecutor(store).execute(await testPrincipal("owner", datasetId),
       preparationWrite(tenantId, datasetId, "unsafe"))).toMatchObject({ status: "failed", outcome: "rolled-back" });
   });
+  async function durable(name: string, subject: string, tenantId: string, datasetId: string) {
+    const { client } = await runtime(name);
+    const source = { connect: async () => ({ query: client.query.bind(client), release: () => {} }) };
+    return { client, repository: createPostgresDurableDatasetRepository(await testPrincipal(subject, datasetId), tenantId, source) };
+  }
+  const captures = (datasetId: string, key: string, rawValue: string | null, expectedRevision = 0): WriteBatch => ({
+    fence: { datasetId, protocolVersion: 1, generation: 1, authorityRevision: 0 }, idempotencyKey: key, reads: [],
+    writes: [{ key: "empire-os-captures", expectedRevision, rawValue }],
+  });
+  it("durably writes a validated business dataset with atomic audit and reads it back losslessly", async () => {
+    const { tenantId, datasetId } = await fixture();
+    const { repository } = await durable(ownerRole, "owner", tenantId, datasetId);
+    expect(await repository.readSnapshot({ datasetId, protocolVersion: 1 }))
+      .toMatchObject({ status: "snapshot", snapshot: { commitSequence: 0, generation: 1, authorityRevision: 0 } });
+    const raw = '[{"id":"capture-ü-😀","unknown":true}]';
+    const result = await repository.writeBatch(captures(datasetId, "durable-1", raw));
+    expect(result).toMatchObject({ status: "committed", replayed: false,
+      receipt: { commitSequence: 1, durability: "database-commit-confirmed", revisions: [{ key: "empire-os-captures", revision: 1 }] } });
+    const audit = await admin.query("SELECT transaction_id::text AS id,allowed FROM empire_os_authorization.audit WHERE tenant_id=$1", [tenantId]);
+    expect(audit.rows).toEqual([{ id: result.status === "committed" ? result.receipt.transactionId : "", allowed: true }]);
+    const read = await repository.readSnapshot({ datasetId, protocolVersion: 1 });
+    if (read.status !== "snapshot") throw new Error(JSON.stringify(read));
+    expect(read.snapshot.values.find((entry) => entry.key === "empire-os-captures")).toEqual({ key: "empire-os-captures", rawValue: raw, revision: 1 });
+    expect(read.snapshot.commitSequence).toBe(1);
+  });
+  it("durable replay returns the original receipt; key reuse, stale revisions and invalid data change nothing", async () => {
+    const { tenantId, datasetId } = await fixture();
+    const { repository } = await durable(ownerRole, "owner", tenantId, datasetId);
+    const first = await repository.writeBatch(captures(datasetId, "durable-1", "[]"));
+    if (first.status !== "committed") throw new Error(JSON.stringify(first));
+    const count = async () => (await admin.query("SELECT count(*)::int AS n FROM empire_os_authorization.preparation_writes WHERE tenant_id=$1",
+      [tenantId])).rows[0].n;
+    expect(await repository.writeBatch(captures(datasetId, "durable-1", "[]")))
+      .toMatchObject({ status: "committed", replayed: true, receipt: { transactionId: first.receipt.transactionId } });
+    expect(await repository.writeBatch(captures(datasetId, "durable-1", '[{"id":"x","unknown":true}]')))
+      .toMatchObject({ status: "conflict", reason: "idempotency-key-reused" });
+    expect(await repository.writeBatch(captures(datasetId, "durable-2", "[]"))).toMatchObject({ status: "conflict", reason: "store-revision" });
+    expect(await repository.writeBatch(captures(datasetId, "durable-3", "not-json", 1))).toMatchObject({ status: "invalid-request" });
+    expect(await count()).toBe(1);
+  });
+  it("durable reads and writes are denied without read authority and across tenants, disclosing nothing", async () => {
+    const { tenantId, datasetId } = await fixture();
+    const other = await fixture();
+    for (const [name, subject] of [[role, "issuer"], [recipientRole, "recipient"]] as const) {
+      const { repository, client } = await durable(name, subject, tenantId, datasetId);
+      expect(await repository.readSnapshot({ datasetId, protocolVersion: 1 })).toEqual({ status: "unauthorized", reason: "forbidden" });
+      expect(await repository.writeBatch(captures(datasetId, `denied-${subject}`, "[]")))
+        .toEqual({ status: "unauthorized", reason: "forbidden" });
+      await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      const raw = await client.query(READ_DATASET_SNAPSHOT_SQL, [tenantId, datasetId]);
+      expect(raw.rows[0]).toMatchObject({ generation: null, commit_sequence: null, store_values: [] });
+      await client.query("ROLLBACK");
+    }
+    const { repository } = await durable(ownerRole, "owner", tenantId, other.datasetId);
+    expect(await repository.readSnapshot({ datasetId: other.datasetId, protocolVersion: 1 }))
+      .toEqual({ status: "unauthorized", reason: "forbidden" });
+    // A role mapped only to its own tenant cannot read another tenant at all.
+    const { client } = await runtime(otherRole);
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+    await expect(client.query(READ_DATASET_SNAPSHOT_SQL, [tenantId, datasetId])).rejects.toMatchObject({ code: "42501" });
+    await client.query("ROLLBACK");
+    expect((await admin.query("SELECT count(*)::int AS n FROM empire_os_authorization.preparation_writes WHERE tenant_id=$1",
+      [tenantId])).rows[0].n).toBe(0);
+  });
+  it("read_dataset_snapshot waits for the tenant lock and refuses stale snapshots", async () => {
+    const { tenantId, datasetId } = await fixture();
+    const writer = await runtime(ownerRole);
+    const { client } = await runtime(ownerRole);
+    await writer.client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+    await writer.client.query("SELECT * FROM empire_os_authorization.lock_authority($1)", [tenantId]);
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+    let settled = false;
+    const pending = client.query(READ_DATASET_SNAPSHOT_SQL, [tenantId, datasetId]).finally(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(settled).toBe(false);
+    await writer.client.query("ROLLBACK");
+    expect((await pending).rows).toHaveLength(1);
+    await client.query("ROLLBACK");
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+    await expect(client.query(READ_DATASET_SNAPSHOT_SQL, [tenantId, datasetId])).rejects.toMatchObject({ code: "42501" });
+    await client.query("ROLLBACK");
+  }, 15000);
 });

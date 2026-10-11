@@ -136,7 +136,14 @@ export function createOperationReconciler(store: OperationReconciliationStore) {
       if (executed) {
         if (executed.requestSha256 !== requestSha256 || executed.operation !== request.command.kind
           || executed.datasetId !== datasetId) {
-          return { status: "conflict", operationId: request.operationId, message: "Operation ID was used for a different request." };
+          // For a write, the executed request's policy revision lets trusted code re-check an exact
+          // replay; the request content itself must still match that record's fingerprint.
+          const committed = executed.operation === "write" && executed.datasetId === datasetId
+            ? allowedDecision(executed.decision, revision) : null;
+          return {
+            status: "conflict", operationId: request.operationId, message: "Operation ID was used for a different request.",
+            ...(typeof committed?.observedPolicyRevision === "number" ? { executedPolicyRevision: committed.observedPolicyRevision } : {}),
+          };
         }
         const decision = allowedDecision(executed.decision, revision);
         if (!decision) return unavailable("Committed audit decision is malformed.");

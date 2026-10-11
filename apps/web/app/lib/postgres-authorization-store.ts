@@ -9,8 +9,11 @@ import type {
 } from "./authorization-transaction-contract";
 import { validateAuthorityTransition, validateDurableAuthorityState, type DurableAuthorityState } from "./durable-authorization-state";
 import { isAuthorityIdentifier } from "./authorization-policy";
-import { isCounter, isIdempotencyKey, validateWriteBatch } from "./server-persistence-contract";
+import { isCounter, isDatasetId, isIdempotencyKey, validateWriteBatch, type DatasetSnapshot, type WriteBatch } from "./server-persistence-contract";
 import { authorizationRequestContent } from "./authorization-transaction";
+import {
+  decodeDatasetSnapshotRow, READ_DATASET_SNAPSHOT_SQL, type AuthorizedDatasetReader, type DatasetReadResult,
+} from "./authorized-dataset-read";
 
 if (!versions.node) throw new Error("PostgreSQL authorization requires the Node.js runtime.");
 
@@ -39,7 +42,7 @@ const UNSAFE_IDENTITY_SQL = `SELECT
                 has_table_privilege(current_user,c.oid,'TRUNCATE'))))) AS unsafe
           FROM pg_roles r WHERE r.rolname=current_user`;
 
-async function beginRestrictedTransaction(client: AuthorizationPostgresConnection): Promise<void> {
+export async function beginRestrictedTransaction(client: AuthorizationPostgresConnection): Promise<void> {
   const started = await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
   if (started.command !== "BEGIN") throw new Error("Database did not confirm BEGIN.");
   await client.query("SET LOCAL lock_timeout = '5s'");
@@ -96,7 +99,56 @@ export function createPostgresOperationReconciliationStore(source: Authorization
   });
 }
 
-export function createPostgresAuthorizationStore(source: AuthorizationPostgresSource): TransactionalAuthorizationStore {
+// Read-only (migration 004): waits on the tenant lock, then ALWAYS rolls back.
+export function createPostgresDatasetSnapshotReader(source: AuthorizationPostgresSource): AuthorizedDatasetReader {
+  return Object.freeze({
+    async readDataset(tenantId: string, datasetId: string): Promise<DatasetReadResult> {
+      const failed: DatasetReadResult = { status: "unavailable", message: "Dataset snapshot storage is unavailable." };
+      if (!isAuthorityIdentifier(tenantId) || !isDatasetId(datasetId)) return failed;
+      let client: AuthorizationPostgresConnection;
+      try {
+        client = await source.connect();
+      } catch {
+        return failed;
+      }
+      let destroy = false;
+      let observed: DatasetReadResult = failed;
+      try {
+        try {
+          await beginRestrictedTransaction(client);
+          const result = await client.query(READ_DATASET_SNAPSHOT_SQL, [tenantId, datasetId]);
+          if (result.rows.length !== 1) throw new Error("Dataset snapshot returned no locked tenant.");
+          observed = { status: "observed", observation: decodeDatasetSnapshotRow(result.rows[0], tenantId, datasetId) };
+        } catch {
+          observed = failed;
+        }
+        try {
+          const rollback = await client.query("ROLLBACK");
+          if (rollback.command !== "ROLLBACK") throw new Error("Database did not confirm ROLLBACK.");
+        } catch {
+          destroy = true;
+          observed = failed;
+        }
+        return observed;
+      } finally {
+        client.release(destroy);
+      }
+    },
+  });
+}
+
+export type PostgresAuthorizationStoreOptions = Readonly<{
+  // Requires migration 004. Called synchronously inside the locked write transaction with the
+  // committed dataset re-read under the tenant lock, before apply_operation. Throwing rolls back.
+  // Requires the bound actor to hold read capability as well as write capability.
+  lockedWriteCandidate?: (batch: WriteBatch, locked: DatasetSnapshot) => void;
+}>;
+
+export function createPostgresAuthorizationStore(
+  source: AuthorizationPostgresSource,
+  options: PostgresAuthorizationStoreOptions = {},
+): TransactionalAuthorizationStore {
+  const lockedWriteCandidate = options.lockedWriteCandidate;
   return Object.freeze({
     async runLocked(
       tenantId: string,
@@ -190,6 +242,19 @@ export function createPostgresAuthorizationStore(source: AuthorizationPostgresSo
             const current = new Map(revisions.rows.map((row) => [row.store_key, counter(row.revision)]));
             for (const entry of [...request.reads, ...request.writes]) {
               if ((current.get(entry.key) ?? 0) !== entry.expectedRevision) throw new Error("Preparation store revision conflict.");
+            }
+            if (lockedWriteCandidate) {
+              const read = await client.query(READ_DATASET_SNAPSHOT_SQL, [tenantId, request.fence.datasetId]);
+              if (read.rows.length !== 1) throw new Error("Locked dataset snapshot unavailable.");
+              const locked = decodeDatasetSnapshotRow(read.rows[0], tenantId, request.fence.datasetId);
+              // Same transaction and lock: the re-read must match the authority and revisions already checked.
+              if (!locked.snapshot || locked.readDecision.status !== "allowed" || !same(locked.authority, state)
+                || locked.snapshot.generation !== request.fence.generation
+                || locked.snapshot.authorityRevision !== request.fence.authorityRevision
+                || locked.snapshot.values.some((entry) => (current.get(entry.key) ?? 0) !== entry.revision)) {
+                throw new Error("Locked dataset snapshot is inconsistent.");
+              }
+              lockedWriteCandidate(request, locked.snapshot);
             }
             stagedCommand = structuredClone(command);
             persistenceWrites += 1;

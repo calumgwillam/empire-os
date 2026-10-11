@@ -258,6 +258,60 @@ transactions that had begun before the lookup acquired the lock. A duplicate sub
 that is still connecting may commit later; the unique allowed-operation index still
 prevents a second effect. No route, provider or live caller uses reconciliation yet.
 
+### Authorized dataset snapshot and durable repository (migration 004, unverified on PostgreSQL)
+
+[004_authorized_dataset_snapshot.sql](./migrations/004_authorized_dataset_snapshot.sql) is
+additive and versioned: it adds only `empire_os_authorization.read_dataset_snapshot(text,uuid)`
+(SECURITY DEFINER, `search_path = pg_catalog`, `REVOKE ALL ... FROM PUBLIC`). It creates no
+table, grant, role, policy or trigger, changes no data and leaves 001–003 untouched. It
+refuses to run without 002 and 003, twice, or as anyone other than the authorization schema
+owner. Runtime roles need an explicit `GRANT EXECUTE` on it at provisioning.
+
+The function binds the actor through `runtime_subject` (READ COMMITTED, unsafe-identity and
+role-binding checks) before and after taking the SAME tenant `FOR UPDATE` lock as
+`lock_authority`/`apply_operation`, then evaluates the `read` capability with the same
+ordered rules as `apply_operation` (tenant, dataset mapping, membership, owner, direct grant,
+delegation with expiry and revision binding). It returns the locked authority state, bound
+actor and decision. Dataset generation, authority revision, commit sequence (the number of
+distinct committed preparation writes) and the latest raw value and revision of every
+registry key are returned ONLY when the read is allowed; a denial returns NULL counters and
+no values. It never reads audit rows or `applied_request`. Reads are not audited (the audit
+table only accepts authority and write operations).
+
+[authorized-dataset-read.ts](../app/lib/authorized-dataset-read.ts) decodes a row fail-closed:
+valid authority for the expected tenant and revision, valid actor and decision shape, no data
+disclosed with a denial, exactly the 21 registry keys, strict UTF-16LE hex, a valid snapshot
+and a consistent commit sequence. `createPostgresDatasetSnapshotReader` runs one call in
+BEGIN READ COMMITTED with the adapter's timeouts and identity check, and ALWAYS rolls back.
+
+`createPostgresAuthorizationStore(source, { lockedWriteCandidate })` optionally re-reads the
+snapshot INSIDE the write transaction after the tenant lock and before `apply_operation`. It
+requires an allowed read with identical authority, fence and current revisions, then passes
+the batch and locked snapshot to the hook; any rejection rolls back with no effect or audit.
+
+[durable-dataset-repository.ts](../app/lib/durable-dataset-repository.ts) implements
+`ServerPersistenceRepository` for real business datasets (all 21 Empire OS stores) on top of
+these primitives, the transactional executor and the reconciler:
+
+- `readSnapshot` requires the committed-database source, the expected tenant, an actor equal
+  to the server-minted principal, and an independent TypeScript read decision identical to
+  the database decision. It then validates content and relationships (`assertDatasetContent`).
+- `writeBatch` requires read authority, derives the policy revision from the server read,
+  pre-validates the full candidate with `prepareWriteCandidate`, and re-validates it under the
+  tenant lock through the hook before writing. Exact replays return the original receipt
+  (`replayed: true`); different content under a used key is `idempotency-key-reused`;
+  a stale policy is `unavailable/not-submitted` (retry the same request); a lost COMMIT
+  acknowledgement or rollback is resolved through reconciliation, never assumed.
+- `lookupCommit` returns `unresolved` (the reconciler needs the exact original batch) and
+  `stageImport` returns `unavailable`; neither is implemented by this slice.
+
+`commitSequence` in a receipt is the dataset's committed write count observed at
+confirmation: exact for a direct commit, at least the original for recovered receipts.
+`createDurableServerPersistenceAuthority` composes a session resolver and a per-principal
+restricted connection source, but nothing imports it: there is no route, identity provider,
+runtime role provisioning or approval. Browser localStorage, backup and recovery behaviour
+is unchanged.
+
 ### Separate opt-in integration harness
 
 [authorization.postgres.integration.test.ts](./tests/authorization.postgres.integration.test.ts)
@@ -267,10 +321,12 @@ configuration and rejects matching configured database names. Confirmation follo
 the existing `<database>:empire-os-disposable-integration-test-only` format.
 Loopback host, database name, connected identity, database comment marker, recovery
 status, exclusive harness lock and empty-database checks are reused unchanged.
-All three migrations (001, 002, 003) run only after the original empty-database check succeeds.
+All four migrations (001–004) run only after the original empty-database check succeeds.
 An independent database name cannot prove freshness; the catalog guard remains essential.
 Databases populated before migration 003 existed (including `empire_os_test_authorization_v3`
 and `_v4`) must NEVER be reused, migrated or reset; verify 003 only on a NEW instance.
+Likewise, databases populated before 004 existed (including `_v5`) must never be reused;
+verify 004 only on a NEW instance.
 
 The suite provisions restricted NOLOGIN roles on the verified disposable instance,
 then uses separate verified connections with test-only SET ROLE. This is not a
@@ -279,7 +335,9 @@ and cannot be rerun on the populated instance. Tests cover atomic preparation wr
 cross-tenant RLS/GUC spoofing, missing audit, duplicate operation IDs, revision ordering,
 concurrent revocation, expiry, privileged connections, unchanged original policies, and
 reconciliation (committed/retried, not-executed, conflict, actor binding, revoked members,
-lock waiting, no request-content disclosure).
+lock waiting, no request-content disclosure), and the durable dataset repository (authorized
+write/read-back, replay, key reuse, stale revisions, invalid data, denied reads without
+disclosure, cross-tenant denial, snapshot lock waiting and stale-snapshot refusal).
 Run it only after explicitly provisioning and verifying a NEW disposable database:
 `npx vitest run database/tests/authorization.postgres.integration.test.ts`.
 
@@ -297,7 +355,9 @@ This executes no SQL and opens no database connection. The parser does not valid
 PostgreSQL 16 catalog resolution, privileges, RLS, concurrency or runtime behavior;
 real PostgreSQL 16 integration testing remains necessary.
 [authorization-reconciliation-migration.test.ts](./tests/authorization-reconciliation-migration.test.ts)
-applies the same offline parse plus static security checks to migration 003.
+applies the same offline parse plus static security checks to migration 003, and
+[authorized-dataset-snapshot-migration.test.ts](./tests/authorized-dataset-snapshot-migration.test.ts)
+to migration 004.
 Real PostgreSQL tests have NOT been executed for this
 stage. Before relying on this foundation, execute focused unit/type checks, review
 the migration and restricted-role grants, then run the separate suite on a new instance.
@@ -552,6 +612,12 @@ unverified. The unit suites exercise only pure contracts, raw codecs, candidate/
 validation and registry parity; the registry test reads SQL as text, not as executable SQL.
 
 ## Next approval boundary
+
+The durable dataset repository (migration 004 above) is implemented but not activated.
+Activation still requires: verifying 004 on a NEW disposable PostgreSQL 16 instance;
+an approved authentication provider and session resolver; per-actor restricted runtime
+login roles with `GRANT EXECUTE` on `lock_authority`, `apply_operation`, `lookup_operation`
+and `read_dataset_snapshot`; a decision on read auditing; and explicit approval of a route.
 
 Approve the server authentication provider and minimal identity/policy mapping before
 adding a production driver/adapter or creating runtime grants.

@@ -192,7 +192,22 @@ describe("authorized operation reconciliation", () => {
     const issuer = await principal("issuer");
     expect(await executor.execute(issuer, write())).toMatchObject({ status: "executed" });
     expect(await reconciler.reconcile(issuer, write("write-one", 1, 1)))
-      .toMatchObject({ status: "conflict", operationId: "write-one" });
+      .toMatchObject({ status: "conflict", operationId: "write-one", executedPolicyRevision: 1 });
+  });
+
+  it("only hints the executed policy revision for a committed allowed write, never for denied history", async () => {
+    const model = new ReconciliationModel();
+    const executor = createTransactionalAuthorizationExecutor(model);
+    const reconciler = createOperationReconciler(model.reconciliationStore("issuer"));
+    const issuer = await principal("issuer");
+    expect(await executor.execute(issuer, write("stale", 2))).toMatchObject({ status: "denied" });
+    const denied = await reconciler.reconcile(issuer, write("stale", 1));
+    expect(denied).toMatchObject({ status: "conflict" });
+    expect(denied).not.toHaveProperty("executedPolicyRevision");
+    expect(await executor.execute(issuer, write())).toMatchObject({ status: "executed" });
+    // The hint is not proof: only the exact request at that revision reconciles as executed.
+    expect(await reconciler.reconcile(issuer, write("write-one", 2))).toMatchObject({ executedPolicyRevision: 1 });
+    expect(await reconciler.reconcile(issuer, write("write-one", 1))).toMatchObject({ status: "executed" });
   });
 
   it("treats denied-only history as not executed, but a differing denied request as a conflict", async () => {

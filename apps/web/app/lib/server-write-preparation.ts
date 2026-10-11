@@ -23,6 +23,13 @@ export async function prepareServerWrite(value: unknown): Promise<Validation<Pre
   }
 }
 
+// Throws if the full business dataset would not hydrate or would break recovery references.
+export function assertDatasetContent(snapshot: DatasetSnapshot): void {
+  const storage = Object.fromEntries(snapshot.values.map(({ key, rawValue }) => [key, rawValue]));
+  readStartupStorage({ getItem: (key) => storage[key] });
+  assertBackupRecoveryReferences(storage);
+}
+
 // The adapter must call this against locked database rows, not a caller's claimed snapshot.
 export function prepareWriteCandidate(value: unknown, observed: unknown): Validation<DatasetSnapshot> | BatchConflict {
   const validatedBatch = validateWriteBatch(value);
@@ -39,10 +46,8 @@ export function prepareWriteCandidate(value: unknown, observed: unknown): Valida
     const write = batch.writes.find(({ key }) => key === entry.key);
     return write ? { key: entry.key, rawValue: write.rawValue, revision: write.expectedRevision + 1 } : entry;
   });
-  const storage = Object.fromEntries(values.map(({ key, rawValue }) => [key, rawValue]));
   try {
-    readStartupStorage({ getItem: (key) => storage[key] });
-    assertBackupRecoveryReferences(storage);
+    assertDatasetContent({ ...snapshot.value, values });
   } catch (error) {
     return { status: "invalid-request",
       message: `Candidate business data failed validation: ${error instanceof Error ? error.message : String(error)}` };
