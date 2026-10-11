@@ -14,6 +14,7 @@ BEGIN
   SELECT state->'snapshot' INTO STRICT snapshot
   FROM empire_os_authorization.tenants
   WHERE tenant_id = p_tenant FOR UPDATE;
+  actor := empire_os_authorization.runtime_subject(p_tenant);
 
   IF snapshot #>> '{tenant,status}' <> 'active'
     OR NOT (snapshot #> '{tenant,ownerSubjects}') ? actor
@@ -22,6 +23,11 @@ BEGIN
       WHERE m->>'subject'=actor AND m->>'status'='active'
     ) THEN
     RAISE EXCEPTION 'Founder authority required' USING ERRCODE='42501';
+  END IF;
+  IF snapshot #>> '{tenant,id}' IS DISTINCT FROM p_tenant
+    OR jsonb_typeof(snapshot->'memberships') IS DISTINCT FROM 'array'
+    OR jsonb_typeof(snapshot->'roles') IS DISTINCT FROM 'array' THEN
+    RAISE EXCEPTION 'Invalid tenant authority state' USING ERRCODE='23514';
   END IF;
   IF p_subject IS NULL
     OR p_subject !~ '^user_[A-Za-z0-9_]+$'
@@ -60,3 +66,8 @@ BEGIN
   RETURN true;
 END;
 $$;
+
+-- Draft-only privilege boundary; not applied to any database.
+REVOKE ALL ON FUNCTION
+  empire_os_authorization.provision_member_check(text,text,jsonb)
+FROM PUBLIC;
