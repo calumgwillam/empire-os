@@ -294,7 +294,7 @@ describe("Verified business recovery", () => {
 });
 
 describe("Emergency recovery uses the production verified restore path", () => {
-  const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
   const start = page.indexOf("  function handleRestoreEmergencySnapshot()");
   const end = page.indexOf("  const learningClosure =", start);
   if (start < 0 || end < start) throw new Error("Emergency recovery handler could not be located.");

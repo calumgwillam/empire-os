@@ -11,6 +11,7 @@
     "test:postgres": "vitest run database/tests/postgres.integration.test.ts"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.9.14",
     "next": "16.4.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -18,9 +19,9 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pg": "8.15.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@types/pg": "8.15.5",
     "eslint": "^9",
     "eslint-config-next": "16.4.0",
     "fake-indexeddb": "^6.2.4",

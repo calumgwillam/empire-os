@@ -461,7 +461,7 @@ function pageProject(id: string, overrides: Partial<PageProject> = {}): PageProj
 }
 
 function pageMap(overrides: PageOverrides = {}, samples: number[] = []) {
-  const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
   const section = (start: string, end: string) => {
     const first = page.indexOf(start);
     const last = page.indexOf(end, first);

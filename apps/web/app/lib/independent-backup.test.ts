@@ -296,7 +296,7 @@ describe("Production saved-file verification and download semantics", () => {
     expect(statuses.at(-1)?.label).toContain("Data changed");
   });
   it("keeps raw safety downloads available but requires complete standalone validation for a normal full export", () => {
-    const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+    const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
     const start = page.indexOf("  function handleDownloadFullBackup()");
     const end = page.indexOf("  function handleRestoreFullBackup()", start);
     if (start < 0 || end < start) throw new Error("Full export handler could not be located.");
@@ -316,7 +316,7 @@ describe("Production saved-file verification and download semantics", () => {
     expect(page).toContain("Last download request (not file verification)");
   });
   it("never converts a download click into file verification, including safety-copy downloads", () => {
-    const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+    const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
     const start = page.indexOf("  function downloadBackup(");
     const end = page.indexOf("  function handleDownloadFullBackup()", start);
     if (start < 0 || end < start) throw new Error("Download handler could not be located.");
@@ -336,7 +336,7 @@ describe("Production saved-file verification and download semantics", () => {
     expect(independentBackupHealth([], "0".repeat(64), NOW).warning).toBe(true);
   });
   it("allows explicitly unverified raw export of damaged data without altering any verification evidence", () => {
-    const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+    const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
     const start = page.indexOf("  function handleDownloadRawRecoveryCopy()");
     const end = page.indexOf("  function handleRestoreFullBackup()", start);
     if (start < 0 || end < start) throw new Error("Raw recovery export handler could not be located.");

@@ -490,7 +490,7 @@ type ProductionLearningRecords = OrganisationalLearningInput & {
 };
 
 function productionLearning(records: ProductionLearningRecords): LearningAttentionInput[] {
-  const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
   function section(start: string, end: string): string {
     const first = page.indexOf(start);
     const last = page.indexOf(end, first);
@@ -554,7 +554,7 @@ describe("Production record projection into Command learning", () => {
   const metadata = ({ reason, reasons, ...rest }: CommandAttentionItem) => rest;
 
   it("supplies the production learning projection to the existing Command call", () => {
-    const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+    const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
     const start = page.indexOf("  const commandAttentionPolicy = buildCommandAttention({");
     const end = page.indexOf("  const commandAttentionItemList:", start);
     expect(start).toBeGreaterThan(-1);

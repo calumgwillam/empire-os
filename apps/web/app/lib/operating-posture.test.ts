@@ -565,7 +565,7 @@ function pageContext() {
 }
 
 function evaluateAdapter(context: ReturnType<typeof pageContext>) {
-  const source = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
   const start = source.indexOf("  const todayBrief = buildOperatingPosture({");
   const end = source.indexOf("  const deskIsClear =", start);
   if (start < 0 || end < 0) throw new Error("Operating Posture adapter boundary not found");

@@ -58,7 +58,7 @@ function readyJob(): Workflow {
   return { ...source, lessons: [lesson], nowMs: NOW };
 }
 const records = (source: Workflow): CaptureConversionRecord[] => [...source.actions, ...source.lessons, ...source.decisions, ...source.problems];
-const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
 const start = page.indexOf("  const persistOwnershipRecords =");
 const end = page.indexOf("  const handleProblemEditOpen =", start);
 const creationStart = page.indexOf("  const handleDecisionCreateLinkedAction =");

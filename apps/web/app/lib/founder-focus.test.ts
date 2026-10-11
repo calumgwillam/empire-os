@@ -104,7 +104,7 @@ type PageInputs = {
 
 // Exercise the actual page adapter and authoritative helpers without importing the client component.
 function projectPageInput(overrides: Partial<PageInputs> = {}): FounderFocusInput {
-  const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
   const section = (start: string, end: string) => {
     const startIndex = page.indexOf(start);
     const endIndex = page.indexOf(end, startIndex);
@@ -595,7 +595,7 @@ describe("Founder Focus final ordering and result boundaries", () => {
       signalledRecords: ["1", "2", "3", "4", "5"].map((id) => signal({ id, recordKey: `Action:${id}` })),
     }));
     expect(result).toHaveLength(5);
-    const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+    const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
     expect(page).toContain("const founderFocusList = founderFocusCandidates.slice(0, 3);");
   });
 

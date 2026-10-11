@@ -108,7 +108,7 @@ function pageSnapshot(overrides: Partial<PageInput> = {}): {
   snapshot: PageSnapshot;
   projected: AccountabilitySnapshotInput;
 } {
-  const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
   const section = (start: string, end: string) => {
     const startIndex = page.indexOf(start);
     const endIndex = page.indexOf(end, startIndex);

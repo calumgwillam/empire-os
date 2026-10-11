@@ -8,7 +8,7 @@ import { EMPIRE_OS_BACKUP_STORAGE_KEYS, DEFAULT_SAVED_VIEW_STORAGE_KEY, SAVED_VI
 import { persistJsonArray, persistJsonValue, persistJsonArraysTransaction } from "./persistence";
 import * as backup from "./backup";
 
-const page = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
 function execute(code: string, context: Record<string, unknown>) {
   runInNewContext(transpileModule(code, { compilerOptions: {
     target: ScriptTarget.ES2022, module: ModuleKind.ESNext,
