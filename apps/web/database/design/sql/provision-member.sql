@@ -71,3 +71,79 @@ $$;
 REVOKE ALL ON FUNCTION
   empire_os_authorization.provision_member_check(text,text,jsonb)
 FROM PUBLIC;
+
+-- DRAFT ONLY: state derivation; not a migration or a runtime grant.
+CREATE FUNCTION empire_os_authorization.provision_member_next_state(
+  p_state jsonb, p_subject text, p_role_ids jsonb
+) RETURNS jsonb
+LANGUAGE plpgsql IMMUTABLE
+SET search_path = pg_catalog AS $$
+DECLARE
+  old_revision bigint;
+  membership jsonb;
+BEGIN
+  old_revision := (p_state #>> '{snapshot,revision}')::bigint;
+
+  IF old_revision IS NULL
+    OR old_revision < 0
+    OR old_revision >= 9007199254740991
+    OR jsonb_typeof(p_state #> '{snapshot,memberships}') IS DISTINCT FROM 'array'
+    OR jsonb_typeof(p_role_ids) IS DISTINCT FROM 'array' THEN
+    RAISE EXCEPTION 'Invalid provisioning state' USING ERRCODE='23514';
+  END IF;
+
+  membership := jsonb_build_object(
+    'subject', p_subject,
+    'status', 'active',
+    'revision', 1,
+    'roleIds', p_role_ids
+  );
+
+  RETURN jsonb_set(
+    jsonb_set(
+      p_state,
+      '{snapshot,memberships}',
+      (p_state #> '{snapshot,memberships}') || jsonb_build_array(membership)
+    ),
+    '{snapshot,revision}',
+    to_jsonb(old_revision + 1)
+  );
+END;
+$$;
+
+-- Draft-only privilege boundary; not applied to a database.
+REVOKE ALL ON FUNCTION
+  empire_os_authorization.provision_member_next_state(jsonb,text,jsonb)
+FROM PUBLIC;
+
+-- DRAFT ONLY: founder-gated derivation, not a committed mutation.
+CREATE FUNCTION empire_os_authorization.provision_member_prepare(
+  p_tenant text, p_subject text, p_role_ids jsonb
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog AS $$
+DECLARE
+  existing_state jsonb;
+BEGIN
+  PERFORM empire_os_authorization.provision_member_check(
+    p_tenant, p_subject, p_role_ids
+  );
+
+  SELECT state INTO STRICT existing_state
+  FROM empire_os_authorization.tenants
+  WHERE tenant_id = p_tenant
+  FOR UPDATE;
+
+  PERFORM empire_os_authorization.provision_member_check(
+    p_tenant, p_subject, p_role_ids
+  );
+
+  RETURN empire_os_authorization.provision_member_next_state(
+    existing_state, p_subject, p_role_ids
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION
+  empire_os_authorization.provision_member_prepare(text,text,jsonb)
+FROM PUBLIC;
