@@ -79,6 +79,53 @@ export interface TransactionalAuthorizationStore {
   ): Promise<AuthorizationStoreResult>;
 }
 
+// Read-only reconciliation of an operation whose outcome was unknown or whose retry failed.
+export type OperationLookupStoreResult =
+  | Readonly<{
+    status: "observed";
+    source: "test-model-only" | "committed-database-read";
+    // Untrusted until validated by the reconciler.
+    authority: unknown;
+    actorSubject: unknown;
+    authorized: unknown;
+    records: unknown;
+  }>
+  | Readonly<{ status: "unavailable"; message: string }>;
+
+export interface OperationReconciliationStore {
+  // Acquire the SAME tenant-wide lock as runLocked BEFORE reading, so any in-flight transaction
+  // for this tenant (including one whose COMMIT acknowledgement was lost) has finished.
+  // Read only committed state; never stage, commit or write any effect.
+  // actorSubject is bound independently by the store (e.g. database role), never by the caller.
+  // records contain ONLY this actor's audits for this tenant and operation ID, and MUST be empty
+  // unless the store independently authorized reconciliation against the locked current state.
+  lookupOperation(tenantId: string, operationId: string): Promise<OperationLookupStoreResult>;
+}
+
+export type OperationReconciliationResult =
+  | Readonly<{
+    // An allowed audit for this exact request committed: its effect exists exactly once.
+    status: "executed";
+    operationId: string;
+    transactionId: string;
+    decisionId: string;
+    decision: AuthorizationDecision;
+    resultingPolicyRevision: number;
+    source: "test-model-only" | "committed-database-read";
+  }>
+  | Readonly<{
+    // No allowed audit had committed when the tenant lock was held. Only the exact same
+    // request with the same operation ID may be retried; never generate a new operation ID.
+    status: "not-executed";
+    operationId: string;
+    observedPolicyRevision: number;
+    source: "test-model-only" | "committed-database-read";
+  }>
+  | Readonly<{ status: "conflict"; operationId: string; message: string }>
+  | Readonly<{ status: "unauthorized"; reason: "authentication-required" | "forbidden" }>
+  | Readonly<{ status: "invalid-request"; message: string }>
+  | Readonly<{ status: "unavailable"; outcome: "not-submitted"; message: string }>;
+
 export type TransactionAuthorizationResult =
   | Readonly<{
     status: "executed" | "denied";

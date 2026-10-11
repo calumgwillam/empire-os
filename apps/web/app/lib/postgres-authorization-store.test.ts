@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { QueryResult, QueryResultRow } from "pg";
-import { createPostgresAuthorizationStore, type AuthorizationPostgresConnection } from "./postgres-authorization-store";
+import {
+  createPostgresAuthorizationStore, createPostgresOperationReconciliationStore, type AuthorizationPostgresConnection,
+} from "./postgres-authorization-store";
+import { createOperationReconciler } from "./authorization-reconciliation";
 import { createTransactionalAuthorizationExecutor } from "./authorization-transaction";
 import { authorityFixture, membershipRevocation, preparationWrite, testPrincipal } from "../../database/tests/authorization-fixtures";
 
@@ -166,5 +169,79 @@ describe("isolated PostgreSQL authorization adapter contract", () => {
     });
     expect(result).toMatchObject({ status: "failed", outcome: "rolled-back" });
     expect(mock.sql.at(-1)).toBe("ROLLBACK");
+  });
+});
+
+function lookupConnection(options: { fail?: string; unsafe?: boolean; rows?: readonly QueryResultRow[]; revision?: string; rollbackCommand?: string } = {}) {
+  const sql: string[] = [];
+  const params: unknown[][] = [];
+  const release = vi.fn();
+  const state = authorityFixture(tenantId, datasetId);
+  async function query<R extends QueryResultRow>(text: string, values: unknown[] = []): Promise<QueryResult<R>> {
+    sql.push(text); params.push(values);
+    if (options.fail && (options.fail === "ROLLBACK" || options.fail.startsWith("BEGIN") ? text === options.fail : text.includes(options.fail))) {
+      throw new Error("Private database failure.");
+    }
+    const rows: readonly QueryResultRow[] = text.includes("AS unsafe") ? [{ unsafe: options.unsafe ?? false }]
+      : text.includes("lookup_operation") ? options.rows ?? [{ state, revision: options.revision ?? "1", actor_subject: "issuer",
+        authorized: true, records: [] }]
+      : [];
+    return { rows: rows as R[], rowCount: rows.length, oid: 0, fields: [],
+      command: text.startsWith("BEGIN") ? "BEGIN" : text === "ROLLBACK" ? options.rollbackCommand ?? "ROLLBACK" : "SELECT" };
+  }
+  const client: AuthorizationPostgresConnection = { query: query as AuthorizationPostgresConnection["query"], release };
+  return { store: createPostgresOperationReconciliationStore({ connect: async () => client }), sql, params, release };
+}
+describe("isolated PostgreSQL operation reconciliation adapter", () => {
+  it("checks the runtime identity, calls the locking lookup API once, and always rolls back", async () => {
+    const mock = lookupConnection();
+    const result = await mock.store.lookupOperation(tenantId, "write-one");
+    expect(result).toMatchObject({ status: "observed", source: "committed-database-read", actorSubject: "issuer", authorized: true, records: [] });
+    expect(mock.sql[0]).toBe("BEGIN ISOLATION LEVEL READ COMMITTED");
+    const role = mock.sql.findIndex((sql) => sql.includes("AS unsafe"));
+    const lookup = mock.sql.findIndex((sql) => sql.includes("lookup_operation"));
+    expect(role).toBeGreaterThan(0);
+    expect(lookup).toBeGreaterThan(role);
+    expect(mock.params[lookup]).toEqual([tenantId, "write-one"]);
+    expect(mock.sql.at(-1)).toBe("ROLLBACK");
+    expect(mock.sql).not.toContain("COMMIT");
+    expect(mock.sql.some((sql) => /\b(INSERT|UPDATE|DELETE|apply_operation|SET ROLE|set_config)\b/
+      .test(sql.replaceAll("'INSERT'", "").replaceAll("'UPDATE'", "").replaceAll("'DELETE'", "")))).toBe(false);
+    expect(mock.release).toHaveBeenCalledWith(false);
+  });
+  it("feeds the reconciler a not-executed outcome from committed database evidence", async () => {
+    const mock = lookupConnection();
+    expect(await createOperationReconciler(mock.store).reconcile(await testPrincipal("issuer", datasetId),
+      preparationWrite(tenantId, datasetId, "write-one"))).toEqual({
+      status: "not-executed", operationId: "write-one", observedPolicyRevision: 1, source: "committed-database-read",
+    });
+  });
+  it.each([
+    ["invalid identifiers", { }, " bad", "write-one"],
+    ["invalid operation IDs", { }, tenantId, "bad id"],
+    ["an unsafe identity", { unsafe: true }, tenantId, "write-one"],
+    ["a missing tenant", { rows: [] }, tenantId, "write-one"],
+    ["duplicate rows", { rows: [{}, {}] }, tenantId, "write-one"],
+    ["a revision mismatch", { revision: "2" }, tenantId, "write-one"],
+    ["malformed state", { rows: [{ state: { schemaVersion: 9 }, revision: "1", actor_subject: "issuer", authorized: true, records: [] }] }, tenantId, "write-one"],
+    ["a lookup error", { fail: "lookup_operation" }, tenantId, "write-one"],
+    ["a BEGIN error", { fail: "BEGIN ISOLATION LEVEL READ COMMITTED" }, tenantId, "write-one"],
+  ] as const)("fails closed on %s", async (_name, options, tenant, operationId) => {
+    const mock = lookupConnection(options);
+    const result = await mock.store.lookupOperation(tenant, operationId);
+    expect(result).toEqual({ status: "unavailable", message: "Operation reconciliation storage is unavailable." });
+    expect(JSON.stringify(result)).not.toContain("Private");
+    if (mock.sql.length > 0) expect(mock.sql.at(-1)).toBe("ROLLBACK");
+    expect(mock.sql).not.toContain("COMMIT");
+  });
+  it.each([["a failed rollback", { fail: "ROLLBACK" }], ["an unconfirmed rollback", { rollbackCommand: "SELECT" }]] as const)(
+    "discards the observation and destroys the connection after %s", async (_name, options) => {
+      const mock = lookupConnection(options);
+      expect(await mock.store.lookupOperation(tenantId, "write-one")).toMatchObject({ status: "unavailable" });
+      expect(mock.release).toHaveBeenCalledWith(true);
+    });
+  it("reports connection failures as unavailable without a connection to release", async () => {
+    const store = createPostgresOperationReconciliationStore({ connect: async () => { throw new Error("Private connect failure."); } });
+    expect(await store.lookupOperation(tenantId, "write-one")).toEqual({ status: "unavailable", message: "Operation reconciliation storage is unavailable." });
   });
 });

@@ -3,12 +3,13 @@ import { versions } from "node:process";
 import type { PoolClient } from "pg";
 import type {
   AuthorizationAuditEvidence, AuthorizationStoreResult, AuthorizationTransactionValue, LockedAuthorizationTransaction,
+  OperationLookupStoreResult, OperationReconciliationStore,
   SensitivePersistenceCommand, TransactionalAuthorizationStore,
   TransactionAuthorizationRequest,
 } from "./authorization-transaction-contract";
 import { validateAuthorityTransition, validateDurableAuthorityState, type DurableAuthorityState } from "./durable-authorization-state";
 import { isAuthorityIdentifier } from "./authorization-policy";
-import { isCounter, validateWriteBatch } from "./server-persistence-contract";
+import { isCounter, isIdempotencyKey, validateWriteBatch } from "./server-persistence-contract";
 import { authorizationRequestContent } from "./authorization-transaction";
 
 if (!versions.node) throw new Error("PostgreSQL authorization requires the Node.js runtime.");
@@ -26,6 +27,74 @@ function counter(value: unknown): number {
   return number;
 }
 function same(left: unknown, right: unknown): boolean { return JSON.stringify(left) === JSON.stringify(right); }
+
+const UNSAFE_IDENTITY_SQL = `SELECT
+          r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolreplication OR
+          EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation') AND
+              (c.relowner=r.oid OR (c.relkind='r' AND (
+                has_any_column_privilege(current_user,c.oid,'INSERT') OR
+                has_any_column_privilege(current_user,c.oid,'UPDATE') OR
+                has_table_privilege(current_user,c.oid,'DELETE') OR
+                has_table_privilege(current_user,c.oid,'TRUNCATE'))))) AS unsafe
+          FROM pg_roles r WHERE r.rolname=current_user`;
+
+async function beginRestrictedTransaction(client: AuthorizationPostgresConnection): Promise<void> {
+  const started = await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+  if (started.command !== "BEGIN") throw new Error("Database did not confirm BEGIN.");
+  await client.query("SET LOCAL lock_timeout = '5s'");
+  await client.query("SET LOCAL statement_timeout = '10s'");
+  await client.query("SET LOCAL idle_in_transaction_session_timeout = '15s'");
+  const role = await client.query<{ unsafe: boolean }>(UNSAFE_IDENTITY_SQL);
+  if (role.rows.length !== 1 || role.rows[0].unsafe !== false) throw new Error("Unsafe authorization database identity.");
+}
+
+// Read-only: waits on the tenant lock via lookup_operation, then ALWAYS rolls back.
+export function createPostgresOperationReconciliationStore(source: AuthorizationPostgresSource): OperationReconciliationStore {
+  return Object.freeze({
+    async lookupOperation(tenantId: string, operationId: string): Promise<OperationLookupStoreResult> {
+      const failed: OperationLookupStoreResult = { status: "unavailable", message: "Operation reconciliation storage is unavailable." };
+      if (!isAuthorityIdentifier(tenantId) || !isIdempotencyKey(operationId)) return failed;
+      let client: AuthorizationPostgresConnection;
+      try {
+        client = await source.connect();
+      } catch {
+        return failed;
+      }
+      let destroy = false;
+      let observed: OperationLookupStoreResult = failed;
+      try {
+        try {
+          await beginRestrictedTransaction(client);
+          const result = await client.query<{
+            state: unknown; revision: string; actor_subject: unknown; authorized: unknown; records: unknown;
+          }>(`SELECT state,revision::text AS revision,actor_subject,authorized,records
+            FROM empire_os_authorization.lookup_operation($1,$2)`, [tenantId, operationId]);
+          if (result.rows.length !== 1) throw new Error("Operation lookup returned no locked tenant.");
+          const row = result.rows[0];
+          const loaded = validateDurableAuthorityState(row.state);
+          if (loaded.status !== "valid" || loaded.value.snapshot.tenant.id !== tenantId
+            || loaded.value.snapshot.revision !== counter(row.revision)) throw new Error("Inconsistent authority state.");
+          observed = { status: "observed", source: "committed-database-read", authority: row.state,
+            actorSubject: row.actor_subject, authorized: row.authorized, records: row.records };
+        } catch {
+          observed = failed;
+        }
+        // Nothing is ever committed. An unconfirmed rollback discards both connection and observation.
+        try {
+          const rollback = await client.query("ROLLBACK");
+          if (rollback.command !== "ROLLBACK") throw new Error("Database did not confirm ROLLBACK.");
+        } catch {
+          destroy = true;
+          observed = failed;
+        }
+        return observed;
+      } finally {
+        client.release(destroy);
+      }
+    },
+  });
+}
 
 export function createPostgresAuthorizationStore(source: AuthorizationPostgresSource): TransactionalAuthorizationStore {
   return Object.freeze({
@@ -67,22 +136,7 @@ export function createPostgresAuthorizationStore(source: AuthorizationPostgresSo
       try {
         if (!request || request.tenantId !== tenantId) throw new Error("Authorization request binding is required.");
         beginSent = true;
-        const started = await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
-        if (started.command !== "BEGIN") throw new Error("Database did not confirm BEGIN.");
-        await client.query("SET LOCAL lock_timeout = '5s'");
-        await client.query("SET LOCAL statement_timeout = '10s'");
-        await client.query("SET LOCAL idle_in_transaction_session_timeout = '15s'");
-        const role = await client.query<{ unsafe: boolean }>(`SELECT
-          r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolreplication OR
-          EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-            WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation') AND
-              (c.relowner=r.oid OR (c.relkind='r' AND (
-                has_any_column_privilege(current_user,c.oid,'INSERT') OR
-                has_any_column_privilege(current_user,c.oid,'UPDATE') OR
-                has_table_privilege(current_user,c.oid,'DELETE') OR
-                has_table_privilege(current_user,c.oid,'TRUNCATE'))))) AS unsafe
-          FROM pg_roles r WHERE r.rolname=current_user`);
-        if (role.rows.length !== 1 || role.rows[0].unsafe !== false) throw new Error("Unsafe authorization database identity.");
+        await beginRestrictedTransaction(client);
         // READ COMMITTED creates a fresh snapshot AFTER any concurrent row-lock waiter.
         const locked = await client.query<{ state: unknown; revision: string }>(
           "SELECT state,revision::text FROM empire_os_authorization.lock_authority($1)", [tenantId],

@@ -208,8 +208,55 @@ errors that PostgreSQL may have definitively rolled back. Pre-COMMIT errors repo
 rollback only after an explicit ROLLBACK command acknowledgement, including after an
 uncertain BEGIN acknowledgement. A failed rollback discards the connection and reports
 unknown; a COMMIT error never triggers a rollback-based success claim.
-Reconciliation/authorized lookup of unknown
-operations is not yet implemented; do not blindly retry with a different ID.
+Resolve `unknown` (or a failed retry of a possibly-committed request) with authorized
+reconciliation, below; never blindly retry with a different ID.
+
+### Authorized operation reconciliation (migration 003, unverified on PostgreSQL)
+
+[003_authorization_reconciliation.sql](./migrations/003_authorization_reconciliation.sql)
+is additive and versioned: it adds only `empire_os_authorization.lookup_operation(text,text)`
+(SECURITY DEFINER, `search_path = pg_catalog`, `REVOKE ALL ... FROM PUBLIC`). It creates no
+table, grant, role, policy or trigger, changes no data and leaves 001/002 untouched. It
+refuses to run without 002, twice, or as anyone other than the authorization schema owner
+(the `trusted_api` policies are bound to that owner). Runtime roles need an explicit
+`GRANT EXECUTE` on it, as for `lock_authority`/`apply_operation`.
+
+`lookup_operation` binds the actor through `runtime_subject` (database role binding,
+READ COMMITTED and unsafe-identity checks), then takes the SAME tenant row lock
+(`FOR UPDATE`) as `lock_authority`/`apply_operation`, so any in-flight tenant transaction,
+including one whose COMMIT acknowledgement was lost, has finished before audits are read.
+It returns the locked authority state and, only while the tenant and the actor's membership
+are active, that actor's audit metadata for that operation ID: transaction ID, decision ID,
+request SHA-256, allowed flag, resulting revision and evidence. It never returns
+`applied_request`, raw business values, other actors' audits or other operations.
+Runtime roles still cannot SELECT the audit table directly.
+
+[postgres-authorization-store.ts](../app/lib/postgres-authorization-store.ts)
+`createPostgresOperationReconciliationStore` runs BEGIN READ COMMITTED, the same
+timeouts and unsafe-identity check as `runLocked`, one `lookup_operation` call, then
+ALWAYS `ROLLBACK`: it never commits. Any error or unconfirmed rollback returns
+`unavailable`; an unconfirmed rollback also destroys the connection.
+[authorization-reconciliation.ts](../app/lib/authorization-reconciliation.ts)
+`createOperationReconciler(store).reconcile(principal, originalRequest)` requires a
+server-minted principal and the exact original request. It recomputes the request hash
+itself, revalidates authority state, the store-bound actor, independent authorization and
+every record (exact fields, evidence consistency, decision-ID derivation, at most one
+allowed record, no future revisions), and returns:
+
+- `executed`: this exact request committed once; reports its transaction/decision IDs.
+- `not-executed`: no allowed audit had committed while the tenant lock was held; only the
+  SAME request with the SAME operation ID may be retried (still guarded by
+  `successful_operation_once`).
+- `conflict`: the operation ID was used for a different request.
+- `unauthorized` (`forbidden` for revoked members, suspended tenants or actor mismatch),
+  `invalid-request` or `unavailable` (fail closed, sanitized).
+
+Reconciliation requires current active membership, not the original capability, so an
+actor can learn the outcome of its own operation after a delegation expires. Lookups are
+read-only and are not themselves audited. A `not-executed` answer is definitive for
+transactions that had begun before the lookup acquired the lock. A duplicate submission
+that is still connecting may commit later; the unique allowed-operation index still
+prevents a second effect. No route, provider or live caller uses reconciliation yet.
 
 ### Separate opt-in integration harness
 
@@ -220,15 +267,19 @@ configuration and rejects matching configured database names. Confirmation follo
 the existing `<database>:empire-os-disposable-integration-test-only` format.
 Loopback host, database name, connected identity, database comment marker, recovery
 status, exclusive harness lock and empty-database checks are reused unchanged.
-Both migrations run only after the original empty-database check succeeds.
+All three migrations (001, 002, 003) run only after the original empty-database check succeeds.
 An independent database name cannot prove freshness; the catalog guard remains essential.
+Databases populated before migration 003 existed (including `empire_os_test_authorization_v3`
+and `_v4`) must NEVER be reused, migrated or reset; verify 003 only on a NEW instance.
 
 The suite provisions restricted NOLOGIN roles on the verified disposable instance,
 then uses separate verified connections with test-only SET ROLE. This is not a
 production login model. It retains fixtures and roles, performs no cleanup/reset,
 and cannot be rerun on the populated instance. Tests cover atomic preparation writes,
 cross-tenant RLS/GUC spoofing, missing audit, duplicate operation IDs, revision ordering,
-concurrent revocation, expiry, privileged connections and unchanged original policies.
+concurrent revocation, expiry, privileged connections, unchanged original policies, and
+reconciliation (committed/retried, not-executed, conflict, actor binding, revoked members,
+lock waiting, no request-content disclosure).
 Run it only after explicitly provisioning and verifying a NEW disposable database:
 `npx vitest run database/tests/authorization.postgres.integration.test.ts`.
 
@@ -245,6 +296,8 @@ the inner `THEN` from terminating the condition prematurely.
 This executes no SQL and opens no database connection. The parser does not validate
 PostgreSQL 16 catalog resolution, privileges, RLS, concurrency or runtime behavior;
 real PostgreSQL 16 integration testing remains necessary.
+[authorization-reconciliation-migration.test.ts](./tests/authorization-reconciliation-migration.test.ts)
+applies the same offline parse plus static security checks to migration 003.
 Real PostgreSQL tests have NOT been executed for this
 stage. Before relying on this foundation, execute focused unit/type checks, review
 the migration and restricted-role grants, then run the separate suite on a new instance.
@@ -327,8 +380,9 @@ Operation IDs identify requests; decision IDs bind transaction attempt
 and operation ID. Retries have new transaction/decision IDs. No raw business payload,
 credentials or tokens are stored in authorization evidence. These hashes identify
 evidence, not credentials or a cryptographic proof that an adapter honored its contract.
-Successful operation IDs must not produce a second effect. A replay/reconciliation
-protocol with fresh authorization is a remaining integration requirement.
+Successful operation IDs must not produce a second effect. Authorized reconciliation
+under fresh authorization is implemented (see migration 003 above); a live caller/route
+that uses it remains a future integration step.
 
 The store must reject missing/duplicate/mismatched audit evidence, preserve append-only
 audit rows, roll back callback/staging/audit failures and report lost COMMIT acknowledgement

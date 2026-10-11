@@ -69,12 +69,14 @@ export async function transaction<T>(client: Client, work: () => Promise<T>): Pr
 export async function migrateEmptyAuthorizationDisposable(client: Client): Promise<void> {
   // Reuse every original connection, advisory-lock and empty-database guard unchanged.
   await migrateEmptyDisposable(client);
-  const sql = await readFile(new URL("../migrations/002_isolated_authorization.sql", import.meta.url), "utf8");
-  try {
-    await client.query(sql);
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
+  for (const name of ["002_isolated_authorization.sql", "003_authorization_reconciliation.sql"]) {
+    const sql = await readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8");
+    try {
+      await client.query(sql);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    }
   }
 }
 

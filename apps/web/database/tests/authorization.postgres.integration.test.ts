@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createPostgresAuthorizationStore } from "../../app/lib/postgres-authorization-store";
+import { createPostgresAuthorizationStore, createPostgresOperationReconciliationStore } from "../../app/lib/postgres-authorization-store";
+import { createOperationReconciler } from "../../app/lib/authorization-reconciliation";
 import { authorizationRequestContent, createTransactionalAuthorizationExecutor } from "../../app/lib/authorization-transaction";
 import type { AuthorizationAuditEvidence } from "../../app/lib/authorization-transaction-contract";
 import type { TransactionalAuthorizationStore } from "../../app/lib/authorization-transaction-contract";
@@ -37,7 +38,8 @@ describe.skipIf(configuration.status === "skip")("REAL NEW disposable PostgreSQL
       await admin.query(`GRANT SELECT(tenant_id,dataset_id,store_key,revision)
         ON empire_os_authorization.preparation_writes TO "${name}"`);
       await admin.query(`GRANT EXECUTE ON FUNCTION empire_os_authorization.lock_authority(text),
-        empire_os_authorization.apply_operation(text,jsonb,jsonb) TO "${name}"`);
+        empire_os_authorization.apply_operation(text,jsonb,jsonb),
+        empire_os_authorization.lookup_operation(text,text) TO "${name}"`);
     }
   }, 30000);
   afterAll(async () => {
@@ -72,10 +74,10 @@ describe.skipIf(configuration.status === "skip")("REAL NEW disposable PostgreSQL
     await client.query(`SET ROLE "${name}"`);
     // Test-only SET ROLE on verified admin sessions. Production must use a dedicated
     // restricted login without privilege to RESET ROLE into a superuser.
-    const store = createPostgresAuthorizationStore({ connect: async () => ({
-      query: client.query.bind(client), release: () => {},
-    }) });
-    return { client, store, executor: createTransactionalAuthorizationExecutor(store) };
+    const source = { connect: async () => ({ query: client.query.bind(client), release: () => {} }) };
+    const store = createPostgresAuthorizationStore(source);
+    return { client, store, executor: createTransactionalAuthorizationExecutor(store),
+      reconciler: createOperationReconciler(createPostgresOperationReconciliationStore(source)) };
   }
   it("retains original default-denied RLS and refuses setup reruns", async () => {
     expect((await admin.query("SELECT * FROM pg_policies WHERE schemaname='empire_os_preparation'")).rows).toHaveLength(0);
@@ -294,6 +296,104 @@ describe.skipIf(configuration.status === "skip")("REAL NEW disposable PostgreSQL
     expect(await executor.execute(identity, preparationWrite(tenantId, datasetId, "same-id", 1, 1)))
       .toMatchObject({ status: "failed", outcome: "rolled-back" });
     expect((await admin.query("SELECT * FROM empire_os_authorization.preparation_writes WHERE tenant_id=$1", [tenantId])).rows).toHaveLength(1);
+  });
+  it("reconciles a committed operation, and a rejected retry, to the single original effect", async () => {
+    const { tenantId, datasetId } = await fixture();
+    const { executor, reconciler } = await runtime();
+    const identity = await testPrincipal("issuer", datasetId);
+    const request = preparationWrite(tenantId, datasetId, "reconcile-me");
+    const executed = await executor.execute(identity, request);
+    expect(executed).toMatchObject({ status: "executed" });
+    if (executed.status !== "executed") throw new Error("Expected execution.");
+    // The same request after commit is what a client with a lost COMMIT acknowledgement retries.
+    expect((await executor.execute(identity, request)).status).not.toBe("executed");
+    expect(await reconciler.reconcile(identity, request)).toEqual({
+      status: "executed", operationId: "reconcile-me", transactionId: executed.transactionId,
+      decisionId: executed.decisionId, decision: executed.decision, resultingPolicyRevision: 1,
+      source: "committed-database-read",
+    });
+    expect((await admin.query("SELECT * FROM empire_os_authorization.preparation_writes WHERE tenant_id=$1", [tenantId])).rows).toHaveLength(1);
+    expect(await reconciler.reconcile(identity, preparationWrite(tenantId, datasetId, "reconcile-me", 1, 1)))
+      .toMatchObject({ status: "conflict", operationId: "reconcile-me" });
+  });
+  it("reports not-executed definitively, then allows the original request to execute once", async () => {
+    const { tenantId, datasetId } = await fixture();
+    const { executor, reconciler } = await runtime();
+    const identity = await testPrincipal("issuer", datasetId);
+    const request = preparationWrite(tenantId, datasetId, "never-sent");
+    expect(await reconciler.reconcile(identity, request)).toEqual({
+      status: "not-executed", operationId: "never-sent", observedPolicyRevision: 1, source: "committed-database-read",
+    });
+    expect(await executor.execute(identity, request)).toMatchObject({ status: "executed" });
+    expect(await reconciler.reconcile(identity, request)).toMatchObject({ status: "executed" });
+  });
+  it("reconciliation is actor-bound, membership-gated, read-only and never returns request contents", async () => {
+    const { tenantId, datasetId } = await fixture();
+    const issuer = await runtime();
+    const owner = await runtime(ownerRole);
+    const request = preparationWrite(tenantId, datasetId, "private-op");
+    expect(await issuer.executor.execute(await testPrincipal("issuer", datasetId), request)).toMatchObject({ status: "executed" });
+    // Another member using the same operation ID sees only its own (absent) history.
+    expect(await owner.reconciler.reconcile(await testPrincipal("owner", datasetId), request))
+      .toMatchObject({ status: "not-executed" });
+    // A principal that differs from the database-bound actor learns nothing.
+    expect(await owner.reconciler.reconcile(await testPrincipal("issuer", datasetId), request))
+      .toEqual({ status: "unauthorized", reason: "forbidden" });
+    const raw = await issuer.client.query("SELECT * FROM empire_os_authorization.lookup_operation($1,$2)", [tenantId, "private-op"]);
+    expect(raw.rows).toHaveLength(1);
+    expect(JSON.stringify(raw.rows[0].records)).not.toContain("applied_request\"");
+    expect(Object.keys(raw.rows[0].records[0]).sort()).toEqual(
+      ["allowed", "decisionId", "evidence", "requestSha256", "resultingPolicyRevision", "transactionId"]);
+    expect(JSON.stringify(raw.rows[0].records)).not.toContain("rawValue");
+    expect(await owner.executor.execute(await testPrincipal("owner", datasetId), membershipRevocation(tenantId, datasetId)))
+      .toMatchObject({ status: "executed" });
+    const revoked = await runtime();
+    expect(await revoked.reconciler.reconcile(await testPrincipal("issuer", datasetId), request))
+      .toEqual({ status: "unauthorized", reason: "forbidden" });
+    const hidden = await revoked.client.query("SELECT authorized,records FROM empire_os_authorization.lookup_operation($1,$2)",
+      [tenantId, "private-op"]);
+    expect(hidden.rows).toEqual([{ authorized: false, records: [] }]);
+    const before = (await admin.query("SELECT count(*)::int AS n FROM empire_os_authorization.audit WHERE tenant_id=$1", [tenantId])).rows[0].n;
+    await revoked.client.query("BEGIN");
+    await revoked.client.query("SELECT * FROM empire_os_authorization.lookup_operation($1,$2)", [tenantId, "private-op"]);
+    await revoked.client.query("ROLLBACK");
+    expect((await admin.query("SELECT count(*)::int AS n FROM empire_os_authorization.audit WHERE tenant_id=$1", [tenantId])).rows[0].n)
+      .toBe(before);
+  });
+  it("reconciliation waits for an in-flight tenant transaction before answering", async () => {
+    const { tenantId, datasetId } = await fixture();
+    const writer = await runtime();
+    const observer = await runtime();
+    let resume: () => void = () => {};
+    let announce: () => void = () => {};
+    const held = new Promise<void>((resolve) => { announce = resolve; });
+    const pause = new Promise<void>((resolve) => { resume = resolve; });
+    const paused: TransactionalAuthorizationStore = {
+      runLocked: (tenant, operation, request) => writer.store.runLocked(tenant, async (tx) => operation({
+        ...tx, appendAudit: async (audit) => { await tx.appendAudit(audit); announce(); await pause; },
+      }), request),
+    };
+    const identity = await testPrincipal("issuer", datasetId);
+    const request = preparationWrite(tenantId, datasetId, "in-flight");
+    const pending = createTransactionalAuthorizationExecutor(paused).execute(identity, request);
+    await held;
+    let settled = false;
+    const lookup = observer.reconciler.reconcile(identity, request).then((result) => { settled = true; return result; });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(settled).toBe(false);
+    resume();
+    expect(await pending).toMatchObject({ status: "executed" });
+    expect(await lookup).toMatchObject({ status: "executed", operationId: "in-flight" });
+  }, 20000);
+  it("lookup_operation refuses stale snapshots and invalid identifiers", async () => {
+    const { tenantId } = await fixture();
+    const { client } = await runtime();
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+    await expect(client.query("SELECT * FROM empire_os_authorization.lookup_operation($1,'x')", [tenantId]))
+      .rejects.toBeDefined();
+    await client.query("ROLLBACK");
+    await expect(client.query("SELECT * FROM empire_os_authorization.lookup_operation($1,'bad id')", [tenantId]))
+      .rejects.toMatchObject({ code: "22023" });
   });
   it.each(["write-first", "revoke-first"] as const)("serializes independent connections: %s", async (ordering) => {
     const { tenantId, datasetId } = await fixture();

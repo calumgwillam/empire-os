@@ -19,7 +19,7 @@ import {
 } from "./server-persistence-contract";
 import { encodeRawStoreValue, validateStageImportRequest } from "./server-import-preparation";
 
-async function validateInput(value: unknown): Promise<TransactionAuthorizationRequest | null> {
+export async function validateTransactionAuthorizationInput(value: unknown): Promise<TransactionAuthorizationRequest | null> {
   if (!isObject(value) || !hasOnlyFields(value, ["operationId", "tenantId", "expectedPolicyRevision", "command"])
     || !isIdempotencyKey(value.operationId) || !isAuthorityIdentifier(value.tenantId) || !isCounter(value.expectedPolicyRevision)
     || !isObject(value.command)) return null;
@@ -59,7 +59,7 @@ async function validateInput(value: unknown): Promise<TransactionAuthorizationRe
   return { operationId: value.operationId, tenantId: value.tenantId, expectedPolicyRevision: value.expectedPolicyRevision, command: validated };
 }
 
-function policyRequest(input: TransactionAuthorizationRequest): AuthorizationRequest {
+export function policyRequest(input: TransactionAuthorizationRequest): AuthorizationRequest {
   const base = { tenantId: input.tenantId, expectedPolicyRevision: input.expectedPolicyRevision };
   const command = input.command;
   switch (command.kind) {
@@ -135,6 +135,11 @@ function authorityMutation(state: DurableAuthorityState, principal: Authenticate
   return validated.value;
 }
 
+// Decision IDs bind one transaction attempt to one operation ID.
+export function auditDecisionId(transactionId: string, operationId: string): string {
+  return createHash("sha256").update(JSON.stringify([transactionId, operationId, "decision", 1])).digest("hex");
+}
+
 // Hex preserves every UTF-16 code unit, including values PostgreSQL JSONB cannot represent.
 export function authorizationRequestContent(input: TransactionAuthorizationRequest): string {
   const command = input.command;
@@ -162,7 +167,7 @@ export function createTransactionalAuthorizationExecutor(store: TransactionalAut
       }
       let request: TransactionAuthorizationRequest | null;
       try {
-        request = await validateInput(copy);
+        request = await validateTransactionAuthorizationInput(copy);
       } catch {
         return { status: "unavailable", outcome: "not-submitted", message: "Authorization request validation is unavailable." };
       }
@@ -202,7 +207,7 @@ export function createTransactionalAuthorizationExecutor(store: TransactionalAut
           }
           const audit: AuthorizationAuditEvidence = Object.freeze({
             version: 1, operationId: request.operationId,
-            decisionId: createHash("sha256").update(JSON.stringify([transaction.transactionId, request.operationId, "decision", 1])).digest("hex"),
+            decisionId: auditDecisionId(transaction.transactionId, request.operationId),
             transactionId: transaction.transactionId, requestSha256, actorSubject: principal.subject,
             tenantId: request.tenantId, datasetId: policyRequest(request).datasetId, operation: request.command.kind,
             ...(request.command.kind === "write" || request.command.kind === "stage-import"
