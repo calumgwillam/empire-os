@@ -1,0 +1,5 @@
+-- DRAFT ONLY: Do not execute against any database.
+-- Provisioning must increment the authority revision exactly once.
+-- The existing audit_revision function must also recognise
+-- provision-member as an allowed authority-changing operation.
+-- Implementation pending full migration security validation.
