@@ -167,6 +167,14 @@ Bindings are SELECT-only for restricted test application roles. Forging a custom
 cannot change the binding. A role bound to multiple tenants can see those tenants;
 the final runtime role topology remains intentionally unresolved.
 
+Direct INSERT/UPDATE/DELETE/TRUNCATE on every authorization table is rejected with
+SQLSTATE 42501 for any role other than the schema owner, even after accidental grants.
+Row-level guards fire only for rows RLS exposes; `role_tenants` has no runtime UPDATE or
+DELETE policy, so such statements were previously filtered silently to zero rows (no
+mutation, but no error). A statement-level guard now rejects them loudly regardless of
+RLS visibility. The first real run of the suite (database `empire_os_test_authorization_v3`)
+used the earlier migration text and is populated; it must not be reused for verification.
+
 This RLS restricts database tenants, not individual authenticated People/subjects.
 Within a permitted tenant, the trusted server policy engine still supplies actor
 authorization. A compromised runtime role with direct table privileges could fabricate

@@ -300,6 +300,8 @@ LANGUAGE sql IMMUTABLE SET search_path = pg_catalog AS $$
 $$;
 
 -- Direct DML remains forbidden even if a runtime role accidentally receives grants.
+-- Row triggers fire only for RLS-visible rows; statement triggers also reject DML that
+-- RLS would silently filter to zero rows (e.g. UPDATE/DELETE on role_tenants).
 CREATE FUNCTION empire_os_authorization.trusted_mutation() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
@@ -316,6 +318,8 @@ BEGIN
   FOREACH tab IN ARRAY ARRAY['role_tenants','tenants','datasets','audit','preparation_writes'] LOOP
     EXECUTE format('CREATE TRIGGER a_only_trusted_mutation BEFORE INSERT OR UPDATE OR DELETE
       ON empire_os_authorization.%I FOR EACH ROW EXECUTE FUNCTION empire_os_authorization.trusted_mutation()',tab);
+    EXECUTE format('CREATE TRIGGER a_only_trusted_statement BEFORE INSERT OR UPDATE OR DELETE
+      ON empire_os_authorization.%I FOR EACH STATEMENT EXECUTE FUNCTION empire_os_authorization.trusted_mutation()',tab);
     EXECUTE format('CREATE TRIGGER no_runtime_truncate BEFORE TRUNCATE
       ON empire_os_authorization.%I FOR EACH STATEMENT EXECUTE FUNCTION empire_os_authorization.trusted_mutation()',tab);
   END LOOP;

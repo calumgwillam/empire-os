@@ -56,6 +56,12 @@ describe("authorization migration security contract (static, not PostgreSQL exec
     expect(sql).toContain("CREATE TRIGGER a_only_trusted_mutation BEFORE INSERT OR UPDATE OR DELETE");
     expect(sql).toContain("CREATE TRIGGER no_runtime_truncate BEFORE TRUNCATE");
   });
+  it("rejects runtime DML at statement level, not only for RLS-visible rows", () => {
+    // Row triggers never fire when RLS filters every target row, so UPDATE/DELETE would
+    // otherwise silently affect zero rows instead of raising 42501.
+    expect(sql).toMatch(/CREATE TRIGGER a_only_trusted_statement BEFORE INSERT OR UPDATE OR DELETE\s+ON empire_os_authorization\.%I FOR EACH STATEMENT EXECUTE FUNCTION empire_os_authorization\.trusted_mutation\(\)/);
+    expect(sql).toMatch(/FOREACH tab IN ARRAY ARRAY\['role_tenants','tenants','datasets','audit','preparation_writes'\] LOOP\s+EXECUTE format\('CREATE TRIGGER a_only_trusted_mutation/);
+  });
   it("binds actors to provisioned roles and computes current decisions and exact transitions", () => {
     expect(sql).toContain("SELECT actor_subject INTO subject");
     expect(sql).toContain("WHERE database_role=runtime_role AND tenant_id=p_tenant");

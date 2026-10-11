@@ -203,28 +203,63 @@ describe.skipIf(configuration.status === "skip")("REAL NEW disposable PostgreSQL
   });
   it("rejects direct authority, audit and effect DML even after accidental table grants", async () => {
     const { tenantId, datasetId } = await fixture();
+    const foreign = await fixture();
+    const tenantIds = [tenantId, foreign.tenantId];
     const unsafeRole = `empire_os_auth_test_${randomUUID().replaceAll("-", "")}`;
     await admin.query(`CREATE ROLE "${unsafeRole}" NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT`);
     await admin.query(`GRANT USAGE ON SCHEMA empire_os_authorization TO "${unsafeRole}"`);
     await admin.query(`GRANT SELECT ON ALL TABLES IN SCHEMA empire_os_authorization TO "${unsafeRole}"`);
-    await admin.query(`GRANT UPDATE ON empire_os_authorization.tenants,
-      empire_os_authorization.role_tenants TO "${unsafeRole}"`);
-    await admin.query(`GRANT INSERT ON empire_os_authorization.audit,
+    await admin.query(`GRANT UPDATE, DELETE ON empire_os_authorization.tenants,
+      empire_os_authorization.role_tenants, empire_os_authorization.datasets TO "${unsafeRole}"`);
+    await admin.query(`GRANT INSERT ON empire_os_authorization.role_tenants, empire_os_authorization.audit,
       empire_os_authorization.preparation_writes TO "${unsafeRole}"`);
     await admin.query("INSERT INTO empire_os_authorization.role_tenants(database_role,tenant_id,actor_subject) VALUES ($1,$2,'issuer')",
       [unsafeRole, tenantId]);
+    // Trusted reads of every protected row, so silently filtered DML cannot pass as a rejection.
+    const protectedState = async () => ({
+      tenants: (await admin.query(`SELECT tenant_id,revision::text AS revision,state FROM empire_os_authorization.tenants
+        WHERE tenant_id = ANY($1) ORDER BY tenant_id`, [tenantIds])).rows,
+      bindings: (await admin.query(`SELECT database_role::text AS database_role,tenant_id,actor_subject
+        FROM empire_os_authorization.role_tenants WHERE tenant_id = ANY($1) ORDER BY tenant_id,database_role`, [tenantIds])).rows,
+      datasets: (await admin.query(`SELECT tenant_id,dataset_id,generation::text AS generation,
+        authority_revision::text AS authority_revision FROM empire_os_authorization.datasets
+        WHERE tenant_id = ANY($1) ORDER BY tenant_id`, [tenantIds])).rows,
+      audit: (await admin.query("SELECT count(*)::text AS count FROM empire_os_authorization.audit WHERE tenant_id = ANY($1)",
+        [tenantIds])).rows[0].count,
+      writes: (await admin.query("SELECT count(*)::text AS count FROM empire_os_authorization.preparation_writes WHERE tenant_id = ANY($1)",
+        [tenantIds])).rows[0].count,
+    });
+    const before = await protectedState();
+    expect(before.bindings).toHaveLength(7);
+    expect(before.audit).toBe("0");
     const { client, executor } = await runtime(unsafeRole);
-    await expect(client.query("UPDATE empire_os_authorization.tenants SET revision=revision+1 WHERE tenant_id=$1", [tenantId]))
-      .rejects.toMatchObject({ code: "42501" });
-    await expect(client.query("UPDATE empire_os_authorization.role_tenants SET actor_subject='owner' WHERE tenant_id=$1", [tenantId]))
-      .rejects.toMatchObject({ code: "42501" });
-    await expect(client.query("INSERT INTO empire_os_authorization.audit(transaction_id) VALUES ($1)", [randomUUID()]))
-      .rejects.toMatchObject({ code: "42501" });
-    await expect(client.query(`INSERT INTO empire_os_authorization.preparation_writes
-      (tenant_id,dataset_id,transaction_id,store_key,revision) VALUES ($1,$2,$3,'empire-os-captures',1)`,
-    [tenantId, datasetId, randomUUID()])).rejects.toMatchObject({ code: "42501" });
+    // Each attempt must fail loudly via the trusted-mutation guard, whether or not RLS exposes the target rows.
+    const attempts: Array<[string, unknown[]]> = [
+      ["UPDATE empire_os_authorization.tenants SET revision=revision+1 WHERE tenant_id=$1", [tenantId]],
+      ["UPDATE empire_os_authorization.tenants SET revision=revision+1 WHERE tenant_id=$1", [foreign.tenantId]],
+      ["DELETE FROM empire_os_authorization.tenants WHERE tenant_id=$1", [tenantId]],
+      ["UPDATE empire_os_authorization.role_tenants SET actor_subject='owner' WHERE tenant_id=$1", [tenantId]],
+      ["UPDATE empire_os_authorization.role_tenants SET actor_subject='owner' WHERE database_role=current_user", []],
+      ["UPDATE empire_os_authorization.role_tenants SET database_role=current_user WHERE database_role=$1", [ownerRole]],
+      ["UPDATE empire_os_authorization.role_tenants SET tenant_id=$1 WHERE database_role=current_user", [foreign.tenantId]],
+      ["DELETE FROM empire_os_authorization.role_tenants WHERE tenant_id=$1", [tenantId]],
+      [`INSERT INTO empire_os_authorization.role_tenants(database_role,tenant_id,actor_subject)
+        VALUES (current_user,$1,'owner')`, [foreign.tenantId]],
+      ["UPDATE empire_os_authorization.datasets SET generation=generation+1 WHERE tenant_id=$1", [tenantId]],
+      ["DELETE FROM empire_os_authorization.datasets WHERE tenant_id=$1", [foreign.tenantId]],
+      ["INSERT INTO empire_os_authorization.audit(transaction_id) VALUES ($1)", [randomUUID()]],
+      [`INSERT INTO empire_os_authorization.preparation_writes
+        (tenant_id,dataset_id,transaction_id,store_key,revision) VALUES ($1,$2,$3,'empire-os-captures',1)`,
+      [tenantId, datasetId, randomUUID()]],
+    ];
+    for (const [statement, values] of attempts) {
+      await expect(client.query(statement, values), statement)
+        .rejects.toMatchObject({ code: "42501", message: "Use the authenticated authorization API" });
+    }
+    expect(await protectedState()).toEqual(before);
     expect(await executor.execute(await testPrincipal("issuer", datasetId), preparationWrite(tenantId, datasetId, "unsafe")))
       .toMatchObject({ status: "failed", outcome: "rolled-back" });
+    expect(await protectedState()).toEqual(before);
   });
   it("RLS prevents unfiltered cross-tenant reads and forged tenant settings", async () => {
     const { tenantId } = await fixture();
