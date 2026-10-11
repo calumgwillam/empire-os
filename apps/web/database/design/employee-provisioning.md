@@ -17,3 +17,17 @@ Status: design only; not activated.
     least-privilege trusted administration procedure.
 13. Do not enable invites or runtime access before integration tests.
 14. Test only against a newly created disposable database.
+
+## Migration 005 atomic upgrade requirements
+
+- Wrap the entire migration in BEGIN and COMMIT.
+- Verify the expected existing schema and audit constraint.
+- Replace the audit operation constraint without weakening it.
+- Extend the authority revision uniqueness index.
+- Update both audit-revision and deferred authority-audit checks.
+- Install the independently enforced founder-only mutation.
+- Revoke function execution from PUBLIC.
+- Grant execution only to explicitly authorised runtime identities.
+- Abort the entire migration if any required step fails.
+- Run only on a newly verified disposable test database.
+- Do not activate employee invitations until integration tests pass.
