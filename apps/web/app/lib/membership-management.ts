@@ -47,6 +47,9 @@ export function evaluateMembershipChange(
   const previous = snapshot.memberships.find(m => m.subject === change.subject);
 
   if (change.operation === "grant") {
+    if (previous?.status === "revoked") {
+      return deny("revoked-membership");
+    }
     if (!Array.isArray(change.roleIds) ||
         new Set(change.roleIds).size !== change.roleIds.length ||
         !change.roleIds.every(id => typeof id === "string" &&

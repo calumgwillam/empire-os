@@ -68,10 +68,11 @@ describe("Revoked delegation enforcement", () => {
     const restored = evaluateMembershipChange(revoked.snapshot, founder, 6, {
       operation: "grant", subject: worker, roleIds: [],
     });
-    expect(restored.status).toBe("applied");
-    if (restored.status !== "applied") return;
+    expect(restored).toMatchObject({
+      status: "denied", reason: "revoked-membership",
+    });
 
-    expect(evaluateAuthorization(principal, restored.snapshot, request(7), 1000).reason)
-      .toBe("capability-not-granted");
+    expect(evaluateAuthorization(principal, revoked.snapshot, request(6), 1000).reason)
+      .toBe("membership-revoked");
   });
 });

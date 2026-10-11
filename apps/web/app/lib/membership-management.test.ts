@@ -83,8 +83,8 @@ describe("Founder-controlled memberships", () => {
   });
 });
 
-describe("Membership revocation lifecycle", () => {
-  it("increments revision across revoke and reactivation", () => {
+describe("Permanent membership revocation", () => {
+  it("rejects reactivation and preserves the tombstone", () => {
     const revoked = change(policy(), founder, 5, {
       operation: "revoke", subject: worker,
     });
@@ -94,35 +94,12 @@ describe("Membership revocation lifecycle", () => {
     const restored = change(revoked.snapshot, founder, 6, {
       operation: "grant", subject: worker, roleIds: ["worker-role"],
     });
-    expect(restored.status).toBe("applied");
-    if (restored.status !== "applied") return;
-
-    expect(restored.snapshot.memberships.find(m => m.subject === worker))
-      .toMatchObject({ status: "active", revision: 4 });
+    expect(restored).toMatchObject({
+      status: "denied", reason: "revoked-membership",
+    });
+    expect(revoked.snapshot.memberships.find(m => m.subject === worker))
+      .toMatchObject({ status: "revoked", revision: 3, roleIds: [] });
   });
-});
-
-it("invalidates old delegation revisions after reactivation", () => {
-  const initial = policy();
-  const oldRevision = initial.memberships.find(m => m.subject === worker)!.revision;
-
-  const revoked = change(initial, founder, 5, {
-    operation: "revoke", subject: worker,
-  });
-  expect(revoked.status).toBe("applied");
-  if (revoked.status !== "applied") return;
-
-  const restored = change(revoked.snapshot, founder, 6, {
-    operation: "grant", subject: worker, roleIds: ["worker-role"],
-  });
-  expect(restored.status).toBe("applied");
-  if (restored.status !== "applied") return;
-
-  const currentRevision = restored.snapshot.memberships
-    .find(m => m.subject === worker)!.revision;
-
-  expect(currentRevision).toBeGreaterThan(oldRevision);
-  expect(currentRevision).not.toBe(oldRevision);
 });
 
 describe("Strict membership request validation", () => {
