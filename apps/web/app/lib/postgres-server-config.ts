@@ -1,3 +1,4 @@
+import "server-only";
 import { env, versions } from "node:process";
 
 if (!versions.node) throw new Error("PostgreSQL configuration is available only in the Node.js runtime.");
@@ -8,6 +9,7 @@ export const SERVER_POSTGRES_ENV = Object.freeze({
   database: "EMPIRE_OS_SERVER_PG_DATABASE",
   user: "EMPIRE_OS_SERVER_PG_USER",
   password: "EMPIRE_OS_SERVER_PG_PASSWORD",
+  tlsCa: "EMPIRE_OS_SERVER_PG_TLS_CA",
 } as const);
 
 export type ServerPostgresConfig = Readonly<{
@@ -16,7 +18,7 @@ export type ServerPostgresConfig = Readonly<{
   database: string;
   user: string;
   password: string;
-  ssl: Readonly<{ rejectUnauthorized: true }>;
+  ssl: Readonly<{ rejectUnauthorized: true; ca?: string }>;
 }>;
 
 export type ServerPostgresConfigResult =
@@ -27,8 +29,10 @@ export type ServerPostgresConfigResult =
 export function parseServerPostgresConfig(
   source: Readonly<Record<string, string | undefined>>,
 ): ServerPostgresConfigResult {
-  const missing = Object.values(SERVER_POSTGRES_ENV).filter((name) => source[name] === undefined);
-  if (missing.length === Object.keys(SERVER_POSTGRES_ENV).length) return { status: "unconfigured" };
+  const required = [SERVER_POSTGRES_ENV.host, SERVER_POSTGRES_ENV.port, SERVER_POSTGRES_ENV.database,
+    SERVER_POSTGRES_ENV.user, SERVER_POSTGRES_ENV.password];
+  const missing = required.filter((name) => source[name] === undefined);
+  if (missing.length === required.length && source[SERVER_POSTGRES_ENV.tlsCa] === undefined) return { status: "unconfigured" };
   if (missing.length > 0) return { status: "invalid", missing: Object.freeze(missing) };
 
   const host = source[SERVER_POSTGRES_ENV.host]!;
@@ -36,7 +40,9 @@ export function parseServerPostgresConfig(
   const database = source[SERVER_POSTGRES_ENV.database]!;
   const user = source[SERVER_POSTGRES_ENV.user]!;
   const password = source[SERVER_POSTGRES_ENV.password]!;
-  if (![host, database, user, password].every((value) => value.length > 0 && !/[\u0000-\u001f\u007f]/.test(value))) {
+  const ca = source[SERVER_POSTGRES_ENV.tlsCa];
+  if (![host, database, user, password].every((value) => value.length > 0 && !/[\u0000-\u001f\u007f]/.test(value))
+    || (ca !== undefined && (ca.length === 0 || !ca.includes("-----BEGIN CERTIFICATE-----")))) {
     return { status: "invalid", missing: Object.freeze([]), reason: "invalid-value" };
   }
   if (!/^[0-9]{1,5}$/.test(rawPort)) {
@@ -51,7 +57,7 @@ export function parseServerPostgresConfig(
     status: "configured",
     config: Object.freeze({
       host, port, database, user, password,
-      ssl: Object.freeze({ rejectUnauthorized: true as const }),
+      ssl: Object.freeze({ rejectUnauthorized: true as const, ...(ca !== undefined ? { ca } : {}) }),
     }),
   };
 }

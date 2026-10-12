@@ -477,6 +477,59 @@ unknown-outcome reconciliation and any future transport/CSRF review remain block
 Clerk account creation/invitations, People records, role definitions, ownership and browser
 localStorage are deliberately outside this membership boundary.
 
+#### Inactive restricted server connection lifecycle
+
+[restricted-postgres-provider.ts](../app/lib/restricted-postgres-provider.ts) implements the
+existing `AuthorizationPostgresSource` contract without application wiring. Trusted
+server code constructs one provider for one branded principal, one tenant and one
+dedicated restricted LOGIN configuration; `sourceForPrincipal` rejects any different
+subject, unbranded identity or tenant. The provider never chooses credentials from the
+principal/request, creates database roles, issues grants, enables provisioning or falls
+back to a shared/privileged pool.
+
+The existing [configuration parser](../app/lib/postgres-server-config.ts) is now guarded
+by `server-only` and supports optional private `EMPIRE_OS_SERVER_PG_TLS_CA`. The provider
+requires verified TLS (minimum TLS 1.2), validates CA certificates, explicitly verifies the
+configured hostname, and confirms TLS on the backend. No plaintext/local bypass is added.
+Existing host/port/database/user/password environment keys remain unchanged; the optional
+CA does not make absent required settings valid. Generic/public PostgreSQL environment
+variables are not used for credentials. Fixed startup options, replication=false and UTF8
+prevent pg's ambient `PGOPTIONS`/`PGREPLICATION`/encoding fallbacks.
+
+Acquisition verifies exact database/session/effective LOGIN, primary-server status,
+restricted role attributes, no reachable role memberships or protected-schema/table
+mutation privileges, and exactly one actor/tenant binding visible for the LOGIN. This is
+deliberately stricter than the existing multi-tenant fixture roles. Database authorization
+and post-lock revalidation still run inside the existing adapters; lease checks are not
+a replacement for them or protection against a malicious database administrator.
+
+Each lazily created pool allows at most two checked-out connections with bounded
+connection and server-query/transaction-idle timeouts. A lease owns one transaction and
+supports the stores' promise text/values query overload, exact READ COMMITTED BEGIN,
+existing timeout SET LOCAL statements, SELECT calls and COMMIT/ROLLBACK. Concurrent lease
+queries, re-entry, role switching, multiple statements and use after release are rejected.
+Every physical lease is destroyed on release, even after confirmed success: session state
+cannot leak into a later transaction or tenant. This trades TLS/login overhead for a
+small, reliable lifecycle; safe physical-session recycling is intentionally not added.
+SQLSTATE is retained for adapter mappings; driver messages/detail/causes are not exposed.
+
+Client failures invalidate the lease. Pool failures mark the provider unavailable and
+invalidate active leases. `dispose()` is idempotent, blocks new acquisitions, destroys
+active leases and ends the pool. Disposal during COMMIT may make its result unknown;
+existing adapters must continue to reconcile rather than retry. The server composition
+owner must retain/reuse the provider for that identity scope and explicitly dispose it
+on shutdown or credential rotation; no global unbounded principal cache or process hooks
+are introduced. Overall provider-count limits, production role/secret lifecycle and
+verified TLS infrastructure remain deployment responsibilities.
+
+Provider tests use a mocked driver; they do NOT verify real TLS negotiation, PostgreSQL
+catalog results, pool timing or deployment. Focused validation:
+
+```sh
+npm run test -- app/lib/restricted-postgres-provider.test.ts app/lib/postgres-server-config.test.ts app/lib/postgres-authorization-store.test.ts app/lib/postgres-employee-provisioning-store.test.ts app/lib/postgres-provisioning-reconciliation.test.ts
+npx tsc --noEmit
+```
+
 #### Inactive provisioning outcome reconciliation
 
 [server-employee-provisioning-reconciliation.ts](../app/lib/server-employee-provisioning-reconciliation.ts)

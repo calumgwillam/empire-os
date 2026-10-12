@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+vi.mock("server-only", () => ({}));
 import { parseServerPostgresConfig, SERVER_POSTGRES_ENV } from "./postgres-server-config";
 
 const validEnvironment = {
@@ -64,5 +65,22 @@ describe("server-only PostgreSQL configuration", () => {
       ssl: { rejectUnauthorized: true },
     });
     expect(Object.isFrozen(result.config)).toBe(true);
+  });
+
+  it("keeps a private CA bundle optional without permitting an SSL downgrade", () => {
+    const ca = "-----BEGIN CERTIFICATE-----\ntest-parser-only\n-----END CERTIFICATE-----";
+    const result = parseServerPostgresConfig({
+      ...validEnvironment, [SERVER_POSTGRES_ENV.tlsCa]: ca, PGSSLMODE: "no-verify",
+    });
+    expect(result.status).toBe("configured");
+    if (result.status !== "configured") throw new Error("Expected CA configuration.");
+    expect(result.config.ssl.ca).toBe(ca);
+    expect(result.config.ssl.rejectUnauthorized).toBe(true);
+  });
+
+  it("fails closed on CA-only or malformed optional configuration", () => {
+    expect(parseServerPostgresConfig({ [SERVER_POSTGRES_ENV.tlsCa]: "private CA" }).status).toBe("invalid");
+    expect(parseServerPostgresConfig({ ...validEnvironment, [SERVER_POSTGRES_ENV.tlsCa]: "" }).status).toBe("invalid");
+    expect(parseServerPostgresConfig({ ...validEnvironment, [SERVER_POSTGRES_ENV.tlsCa]: "not PEM" }).status).toBe("invalid");
   });
 });
