@@ -64,7 +64,7 @@ DECLARE
   subject text;
   dataset uuid;
   transaction_uuid uuid;
-  operation_id text;
+  v_operation_id text;
   decision_id text;
   request_sha256 text;
   now_ms bigint;
@@ -136,7 +136,7 @@ BEGIN
   END IF;
 
   command := request->'command';
-  operation_id := request->>'operationId';
+  v_operation_id := request->>'operationId';
   subject := command->>'subject';
   expected_revision := (request->>'expectedPolicyRevision')::bigint;
 
@@ -146,7 +146,7 @@ BEGIN
     SELECT 1 FROM empire_os_authorization.audit a
     WHERE a.tenant_id = tenant
       AND a.actor_subject = actor
-      AND a.operation_id = operation_id
+      AND a.operation_id = v_operation_id
   ) THEN
     RAISE EXCEPTION 'Provisioning operation replay' USING ERRCODE = '23505';
   END IF;
@@ -250,7 +250,7 @@ BEGIN
   completed_ms := (p_evidence->>'completedAt')::numeric;
 
   IF p_evidence->>'transactionId' IS DISTINCT FROM transaction_uuid::text
-    OR p_evidence->>'operationId' IS DISTINCT FROM operation_id
+    OR p_evidence->>'operationId' IS DISTINCT FROM v_operation_id
     OR p_evidence->>'actorSubject' IS DISTINCT FROM actor
     OR p_evidence->>'tenantId' IS DISTINCT FROM tenant
     OR p_evidence->>'datasetId' IS DISTINCT FROM dataset::text
@@ -259,7 +259,7 @@ BEGIN
     OR p_evidence->'decision' IS DISTINCT FROM decision
     OR p_evidence->>'requestSha256' IS DISTINCT FROM request_sha256
     OR decision_id IS DISTINCT FROM encode(sha256(convert_to(
-      '["' || transaction_uuid::text || '","' || operation_id || '","decision",1]',
+      '["' || transaction_uuid::text || '","' || v_operation_id || '","decision",1]',
       'UTF8'
     )), 'hex')
     OR checked_ms < floor(extract(epoch FROM transaction_timestamp()) * 1000)
@@ -305,7 +305,7 @@ BEGIN
     decision_id, actor_subject, allowed, resulting_revision, evidence,
     applied_request, applied_request_sha256
   ) VALUES (
-    tenant, dataset, dataset, transaction_uuid, operation_id,
+    tenant, dataset, dataset, transaction_uuid, v_operation_id,
     decision_id, actor, true, current_revision + 1, p_evidence,
     p_request_text, request_sha256
   );
