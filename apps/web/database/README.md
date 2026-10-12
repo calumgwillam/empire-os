@@ -431,7 +431,47 @@ validation, builds the existing SHA-256/request/decision conventions, calls only
 SQL provisioning function, verifies returned authority/audit, and returns a minimal receipt
 only after confirmed COMMIT. Lost COMMIT or rollback acknowledgement returns unknown and
 discards the connection; there is no automatic retry or replacement operation ID.
-Its tests mock release approval and driver responses only, not PostgreSQL execution.
+The unit tests mock release approval and driver responses only, not PostgreSQL execution.
+The separate [real adapter suite](tests/provisioning-adapter.postgres.integration.test.ts)
+executes the unmodified adapter and server boundary against PostgreSQL 16 through genuine
+restricted LOGIN connections. It requires its own `EMPIRE_OS_PROVISION_ADAPTER_TEST_PG_`
+configuration (`HOST`, `PORT`, `DATABASE`, `USER`, `PASSWORD`, `CONFIRM`), a database named
+`empire_os_test_provision_adapter_...`, and the existing database comment/confirmation
+marker `empire-os-disposable-integration-test-only`. Configuration cannot share any of the
+other suites' databases; v1-v5 names are rejected. The verified-identity, advisory-lock and
+empty-database checks run before migrations 001-004 and candidate installation; migration
+005 is never submitted. Missing configuration skips the suite; unsafe or nonempty
+configuration fails rather than resetting anything. Every run consumes a NEW database.
+
+Only this Vitest module substitutes release approval, after successful guarded setup;
+the original application release is independently asserted to remain disabled. No
+application flag, environment activation path, source injection bypass or live route is
+added. Fixture LOGIN roles receive only read/lookup privileges and, for the founder login,
+candidate execution; private derivation helpers and table writes stay inaccessible.
+Tests read committed state/audit using the fixture administrator, verify hash/decision
+conventions and immutable audit rows, and exercise denial, revision/replay fences, real SQL
+errors, rollback after both writes, concurrent adapters and post-lock binding revalidation.
+The verified-session provider is a fixture; this suite tests the branded server identity
+contract and actual database binding, not live Clerk session issuance or verification.
+Lost COMMIT/ROLLBACK acknowledgements and response corruption are explicitly simulated
+around real SQL operations; independent database reads distinguish committed/rolled-back
+outcomes. These definitions are NOT evidence of a successful PostgreSQL run.
+
+From `apps/web`, after explicitly creating and marking a NEW empty database and setting
+the six dedicated variables, run only:
+
+```sh
+npm run test -- database/tests/provisioning-adapter.postgres.integration.test.ts
+```
+
+Focused offline checks and TypeScript (no database required when the dedicated variables
+are absent):
+
+```sh
+npm run test -- database/tests/provisioning-adapter-disposable-config.test.ts database/tests/provisioning-harness.test.ts app/lib/postgres-employee-provisioning-store.test.ts app/lib/server-employee-provisioning.test.ts app/lib/clerk-employee-provisioning.test.ts
+npx tsc --noEmit
+```
+
 Production activation, restricted login lifecycle/TLS pool wiring, provisioning-specific
 unknown-outcome reconciliation and any future transport/CSRF review remain blockers.
 Clerk account creation/invitations, People records, role definitions, ownership and browser
