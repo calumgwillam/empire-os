@@ -42,6 +42,58 @@ BEGIN
 END;
 $guard$;
 
+-- Check the login as well as the effective role. NOINHERIT is not sufficient: role
+-- memberships can still permit SET ROLE into an owner or another person's binding.
+CREATE FUNCTION empire_os_authorization.provisioning_subject(p_tenant text)
+RETURNS text
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog AS $$
+DECLARE
+  actor text;
+  runtime_role name;
+BEGIN
+  actor := empire_os_authorization.runtime_subject(p_tenant);
+  runtime_role := CASE WHEN current_setting('role') = 'none' THEN session_user
+    ELSE current_setting('role')::name END;
+
+  IF EXISTS (
+    SELECT 1 FROM pg_roles r
+    WHERE (r.rolname IN (session_user, runtime_role)
+      OR pg_has_role(session_user, r.oid, 'MEMBER')
+      OR pg_has_role(runtime_role, r.oid, 'MEMBER'))
+      AND (
+        r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication
+        OR EXISTS (
+          SELECT 1 FROM pg_namespace n
+          WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation')
+            AND (n.nspowner = r.oid OR has_schema_privilege(r.oid, n.oid, 'CREATE'))
+        )
+        OR EXISTS (
+          SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation')
+            AND (c.relowner = r.oid OR (c.relkind IN ('r','p') AND (
+              has_any_column_privilege(r.oid, c.oid, 'INSERT')
+              OR has_any_column_privilege(r.oid, c.oid, 'UPDATE')
+              OR has_table_privilege(r.oid, c.oid, 'DELETE')
+              OR has_table_privilege(r.oid, c.oid, 'TRUNCATE'))))
+        )
+      )
+  ) OR EXISTS (
+    SELECT 1 FROM empire_os_authorization.role_tenants binding
+    WHERE binding.actor_subject IS DISTINCT FROM actor
+      AND (binding.database_role IN (session_user, runtime_role)
+        OR pg_has_role(session_user, binding.database_role, 'MEMBER')
+        OR pg_has_role(runtime_role, binding.database_role, 'MEMBER'))
+  ) THEN
+    RAISE EXCEPTION 'Unsafe provisioning login or reachable database role'
+      USING ERRCODE = '42501';
+  END IF;
+  RETURN actor;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION empire_os_authorization.provisioning_subject(text) FROM PUBLIC;
+
 -- This is the sole provisioning write path. It derives both authorization and the exact
 -- next state after taking the same tenant lock used by existing authorization operations.
 CREATE FUNCTION empire_os_authorization.provision_member(
@@ -79,7 +131,8 @@ BEGIN
   END IF;
   request := p_request_text::jsonb;
   tenant := request->>'tenantId';
-  IF tenant IS NULL
+  IF NOT empire_os_authorization.valid_identifier(request->'tenantId')
+    OR tenant IS NULL
     OR length(tenant) NOT BETWEEN 1 AND 512
     OR btrim(tenant) <> tenant
     OR tenant ~ '[[:cntrl:]]' THEN
@@ -88,13 +141,13 @@ BEGIN
 
   -- Identity comes only from the database-bound principal. Re-resolve after waiting for
   -- the tenant lock, matching lock_authority/apply_operation's READ COMMITTED discipline.
-  actor := empire_os_authorization.runtime_subject(tenant);
+  actor := empire_os_authorization.provisioning_subject(tenant);
   SELECT t.state, t.revision
     INTO STRICT old_state, current_revision
     FROM empire_os_authorization.tenants t
     WHERE t.tenant_id = tenant
     FOR UPDATE;
-  actor := empire_os_authorization.runtime_subject(tenant);
+  actor := empire_os_authorization.provisioning_subject(tenant);
   snapshot := old_state->'snapshot';
 
   IF jsonb_typeof(snapshot) IS DISTINCT FROM 'object'
@@ -108,15 +161,46 @@ BEGIN
     OR (snapshot->>'revision')::bigint IS DISTINCT FROM current_revision THEN
     RAISE EXCEPTION 'Invalid tenant authority state' USING ERRCODE = '23514';
   END IF;
+  IF EXISTS (
+    SELECT 1 FROM jsonb_array_elements(snapshot->'memberships') m
+    WHERE jsonb_typeof(m) IS DISTINCT FROM 'object'
+      OR NOT empire_os_authorization.valid_identifier(m->'subject')
+      OR m->>'tenantId' IS DISTINCT FROM tenant
+      OR coalesce(m->>'status','') NOT IN ('active','revoked')
+      OR NOT empire_os_authorization.valid_counter(m->'revision')
+      OR m->'revision' = '0'::jsonb
+      OR jsonb_typeof(m->'roleIds') IS DISTINCT FROM 'array'
+  ) OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements(snapshot->'memberships') m
+    GROUP BY m->>'subject' HAVING count(*) > 1
+  ) OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements(snapshot->'roles') r
+    WHERE jsonb_typeof(r) IS DISTINCT FROM 'object'
+      OR NOT empire_os_authorization.valid_identifier(r->'id')
+      OR r->>'tenantId' IS DISTINCT FROM tenant
+      OR coalesce(r->>'status','') NOT IN ('active','revoked')
+      OR NOT empire_os_authorization.valid_counter(r->'revision')
+      OR r->'revision' = '0'::jsonb
+      OR jsonb_typeof(r->'grants') IS DISTINCT FROM 'array'
+  ) OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements(snapshot->'roles') r
+    GROUP BY r->>'id' HAVING count(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'Ambiguous or malformed tenant membership or role'
+      USING ERRCODE = '23514';
+  END IF;
 
   IF snapshot #>> '{tenant,status}' IS DISTINCT FROM 'active'
     OR NOT coalesce((snapshot #> '{tenant,ownerSubjects}') ? actor, false)
-    OR NOT EXISTS (
-      SELECT 1
+    OR (SELECT count(*)
       FROM jsonb_array_elements(snapshot->'memberships') m
       WHERE m->>'subject' = actor
         AND m->>'tenantId' = tenant
         AND m->>'status' = 'active'
+    ) <> 1
+    OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements(old_state->'revocations') r
+      WHERE r->>'kind' = 'membership' AND r->>'id' = actor
     ) THEN
     RAISE EXCEPTION 'Founder authority required' USING ERRCODE = '42501';
   END IF;
@@ -177,12 +261,15 @@ BEGIN
     FROM jsonb_array_elements(command->'roleIds') r
     WHERE jsonb_typeof(r) IS DISTINCT FROM 'string'
        OR NOT empire_os_authorization.valid_identifier(r)
-       OR NOT EXISTS (
-         SELECT 1
+       OR (SELECT count(*)
          FROM jsonb_array_elements(snapshot->'roles') existing_role
          WHERE existing_role->>'id' = r #>> '{}'
            AND existing_role->>'tenantId' = tenant
            AND existing_role->>'status' = 'active'
+       ) <> 1
+       OR EXISTS (
+         SELECT 1 FROM jsonb_array_elements(old_state->'revocations') revoked_role
+         WHERE revoked_role->>'kind' = 'role' AND revoked_role->>'id' = r #>> '{}'
        )
   ) OR EXISTS (
     SELECT 1

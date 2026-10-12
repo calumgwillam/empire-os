@@ -22,7 +22,7 @@ export function validateMembershipProvisioningTransition(
   const next = after.value.snapshot;
   const actor = old.memberships.find(m => m.subject === actorSubject);
 
-  if (!actor || actor.status !== "active" ||
+  if (old.tenant.status !== "active" || !actor || actor.status !== "active" ||
       !old.tenant.ownerSubjects.includes(actorSubject)) {
     return deny("Founder authority required.");
   }

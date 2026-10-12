@@ -54,6 +54,19 @@ describe("Founder-controlled employee provisioning", () => {
       });
   });
 
+  it("rejects a revoked tenant even when the founder membership is active", () => {
+    const before = initial();
+    const revoked: DurableAuthorityState = {
+      ...before,
+      snapshot: {
+        ...before.snapshot,
+        tenant: { ...before.snapshot.tenant, status: "revoked" },
+      },
+    };
+    expect(validate(revoked, provision(revoked), founder, 1000))
+      .toMatchObject({ status: "inconsistent", reason: "Founder authority required." });
+  });
+
   it("rejects an unchanged policy revision", () => {
     const next = provision();
     const stale = {

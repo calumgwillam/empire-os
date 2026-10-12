@@ -391,6 +391,24 @@ The employee-provisioning SQL in `design/sql/provisioning-upgrade.sql` and
 `design/sql/provision-member.sql` is a non-deployable candidate only. Migration 005 remains
 fail-closed, the candidate grants no execution privileges, and its PostgreSQL integration
 suite is skipped unless a separately verified fresh disposable database is configured.
+The candidate also rejects unsafe login sessions and reachable privileged/differently
+bound roles (including NOINHERIT memberships), checks retained revocations and ambiguous
+authority records, and binds provisioning audit evidence to the exact old-to-new state
+transition at the deferred commit boundary. Existing authorization operations retain
+their previous audit rules. The provisioning harness installs both candidate files in one
+transaction after rejecting non-empty databases, including public functions/types and
+extensions. Provisioning tests use real restricted LOGIN connections, not superuser
+sessions impersonating them with SET ROLE; adversarial tests explicitly exercise unsafe
+sessions, role grants, evidence forgery, missing bindings and queued binding removal.
+The candidate corrects the trusted row-trigger guard to return `OLD` for DELETE, so
+deletes reach the existing immutability and binding-serialization triggers rather than
+silently cancelling the row. Audit tests verify the same committed record before and
+after both rejected mutations. Binding-removal tests first prove the provisioning backend
+is blocked by the held tenant lock, then delete exactly one binding; committed removal
+must deny after locking, while rolled-back removal must allow the queued operation.
+These test definitions are not evidence of PostgreSQL verification until run on a newly
+created, explicitly marked empty disposable database; existing populated test databases
+must never be reused or reset.
 
 [authorization-transaction-contract.ts](../app/lib/authorization-transaction-contract.ts)
 defines a separate opt-in transactional store. Existing `ServerPersistenceRepository`

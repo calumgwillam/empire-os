@@ -40,15 +40,47 @@ describe("Employee provisioning SQL candidate (offline)", () => {
     expect(auditUpgrade).toContain("pg_current_xact_id()");
   });
 
+  it("preserves trusted DML checks without cancelling DELETE before downstream row triggers", () => {
+    const start = auditUpgrade.indexOf("CREATE OR REPLACE FUNCTION empire_os_authorization.trusted_mutation()");
+    expect(start).toBeGreaterThan(-1);
+    const guard = auditUpgrade.slice(start, auditUpgrade.indexOf("$$;", start) + 3);
+    expect(guard).toContain("current_user IS DISTINCT FROM");
+    expect(guard).toContain("USING ERRCODE = '42501'");
+    expect(guard).toMatch(/IF TG_LEVEL = 'STATEMENT' THEN\s+RETURN NULL;/);
+    expect(guard).toMatch(/IF TG_OP = 'DELETE' THEN\s+RETURN OLD;\s+END IF;\s+RETURN NEW;/);
+    expect(auditUpgrade).toContain(
+      "REVOKE ALL ON FUNCTION empire_os_authorization.trusted_mutation() FROM PUBLIC",
+    );
+  });
+
   it("binds the actor from the database principal before and after acquiring the tenant lock", () => {
-    const firstIdentity = operation.indexOf("actor := empire_os_authorization.runtime_subject(tenant)");
+    const firstIdentity = operation.indexOf("actor := empire_os_authorization.provisioning_subject(tenant)");
     const lock = operation.indexOf("FOR UPDATE;");
-    const secondIdentity = operation.lastIndexOf("actor := empire_os_authorization.runtime_subject(tenant)");
+    const secondIdentity = operation.lastIndexOf("actor := empire_os_authorization.provisioning_subject(tenant)");
     expect(firstIdentity).toBeGreaterThan(-1);
     expect(firstIdentity).toBeLessThan(lock);
     expect(secondIdentity).toBeGreaterThan(lock);
     expect(operation).not.toMatch(/\bp_actor\b|request->>'actorSubject'/);
     expect(operation).toContain("(snapshot #> '{tenant,ownerSubjects}') ? actor");
+  });
+
+  it("checks the actual login, non-inherited reachable privileges and other identity bindings", () => {
+    expect(operation).toContain("empire_os_authorization.runtime_subject(p_tenant)");
+    expect(operation).toContain("pg_has_role(session_user, r.oid, 'MEMBER')");
+    expect(operation).toContain("pg_has_role(runtime_role, r.oid, 'MEMBER')");
+    expect(operation).toContain("has_schema_privilege(r.oid, n.oid, 'CREATE')");
+    expect(operation).toContain("binding.actor_subject IS DISTINCT FROM actor");
+    expect(operation).toContain(
+      "REVOKE ALL ON FUNCTION empire_os_authorization.provisioning_subject(text) FROM PUBLIC",
+    );
+  });
+
+  it("requires audit proof of the exact derived transition, not merely a matching revision", () => {
+    expect(auditUpgrade).toContain("audit_provisioning_evidence_check");
+    expect(auditUpgrade).toContain("NEW.state IS DISTINCT FROM expected_state");
+    expect(auditUpgrade).toContain("OLD.state #> '{snapshot,memberships}'");
+    expect(auditUpgrade).toContain("evidence->'authorityChange' = (applied_request::jsonb)->'command'");
+    expect(auditUpgrade).toContain("decision_id = encode(sha256(convert_to(");
   });
 
   it("checks revisions, tombstones, identity shape, duplicate memberships and each active role", () => {

@@ -41,9 +41,15 @@ export async function migrateEmptyDisposable(client: Client): Promise<void> {
   const objects = await client.query<{ count: string }>(`SELECT count(*)::text AS count
     FROM pg_namespace WHERE nspname NOT IN ('public', 'information_schema')
     AND nspname NOT LIKE 'pg_%'`);
-  const relations = await client.query<{ count: string }>(`SELECT count(*)::text AS count
-    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f')`);
+  const relations = await client.query<{ count: string }>(`SELECT (
+    (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public')
+    + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public')
+    + (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+      WHERE n.nspname = 'public')
+    + (SELECT count(*) FROM pg_extension WHERE extname <> 'plpgsql')
+  )::text AS count`);
   if (objects.rows[0].count !== "0" || relations.rows[0].count !== "0") {
     throw new Error("Test database is not empty. Refusing reset, overwrite or migration. Use a fresh disposable database.");
   }
@@ -82,14 +88,21 @@ export async function migrateEmptyAuthorizationDisposable(client: Client): Promi
 
 export async function migrateEmptyProvisioningDisposable(client: Client): Promise<void> {
   await migrateEmptyAuthorizationDisposable(client);
-  for (const name of ["provisioning-upgrade.sql", "provision-member.sql"]) {
-    const sql = await readFile(new URL(`../design/sql/${name}`, import.meta.url), "utf8");
-    try {
-      await client.query(sql);
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
+  // Install both halves atomically; a failed operation definition must not leave a
+  // partially upgraded audit contract committed on the disposable database.
+  await client.query("BEGIN");
+  try {
+    for (const name of ["provisioning-upgrade.sql", "provision-member.sql"]) {
+      const sql = await readFile(new URL(`../design/sql/${name}`, import.meta.url), "utf8");
+      if (sql.match(/^BEGIN;$/gm)?.length !== 1 || sql.match(/^COMMIT;$/gm)?.length !== 1) {
+        throw new Error("Candidate SQL must have exactly one outer transaction boundary.");
+      }
+      await client.query(sql.replace(/^BEGIN;$/m, "").replace(/^COMMIT;$/m, ""));
     }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
   }
 }
 
