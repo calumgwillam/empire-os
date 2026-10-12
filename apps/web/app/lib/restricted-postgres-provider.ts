@@ -44,7 +44,7 @@ export const RESTRICTED_LEASE_IDENTITY_SQL = `SELECT
       AND (n.nspowner=r.oid OR has_schema_privilege(r.oid,n.oid,'CREATE'))) AS safe_schema,
   NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
     WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation')
-      AND (c.relowner=r.oid OR (c.relkind IN ('r','p') AND (
+      AND (c.relowner=r.oid OR (c.relkind IN ('r','p','v','m','f') AND (
         has_any_column_privilege(r.oid,c.oid,'INSERT')
         OR has_any_column_privilege(r.oid,c.oid,'UPDATE')
         OR has_table_privilege(r.oid,c.oid,'DELETE')

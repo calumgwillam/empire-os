@@ -119,6 +119,27 @@ describe("deployment readiness assurance (OFFLINE fixtures/signatures, NOT produ
     await expect(parse(PROVISIONING_CATALOG_SQL)).resolves.toBeDefined();
   });
 
+  it("fingerprints procedures and view security definitions instead of only ordinary functions/tables", () => {
+    expect(PROVISIONING_CATALOG_SQL).toContain("p.prokind IN ('f','p','w')");
+    expect(PROVISIONING_CATALOG_SQL).toContain("pg_get_functiondef(p.oid)");
+    expect(PROVISIONING_CATALOG_SQL).toContain("c.relkind IN ('r','p','v','m','f')");
+    expect(PROVISIONING_CATALOG_SQL).toContain("c.relacl::text,c.reloptions");
+    expect(PROVISIONING_CATALOG_SQL).toContain("pg_get_viewdef(c.oid,false)");
+    expect(PROVISIONING_CATALOG_SQL).toContain("pg_get_ruledef(r.oid,false)");
+    expect(PROVISIONING_CATALOG_SQL).toContain("r.ev_enabled");
+  });
+
+  it.each(["procedure", "view-definition", "view-security-options", "rewrite-rule"])(
+    "rejects signed catalog evidence when live %s changes", async changed => {
+      const result = await harness({ catalog: JSON.stringify([[changed, "unreviewed"]]) }).gate.assess(request());
+      expect(result.assurance).toBe("failed");
+      expect(result.findings).toContainEqual({
+        control: "schema-audit", status: "failed", reason: "live-catalog-differs-from-reviewed-evidence",
+      });
+      expect(result.activation).toBe("blocked");
+    },
+  );
+
   it("cannot activate despite all signed evidence and simulated live checks", async () => {
     const h = harness();
     const result = await h.gate.assess(request());

@@ -93,6 +93,12 @@ describe("restricted PostgreSQL provider (mocked driver, NO database/TLS handsha
     await expect(parse(RESTRICTED_LEASE_IDENTITY_SQL)).resolves.toBeDefined();
   });
 
+  it("checks mutation privileges on views and foreign relations as well as base tables", () => {
+    expect(RESTRICTED_LEASE_IDENTITY_SQL).toContain("c.relkind IN ('r','p','v','m','f')");
+    expect(RESTRICTED_LEASE_IDENTITY_SQL).toContain("has_any_column_privilege(r.oid,c.oid,'INSERT')");
+    expect(RESTRICTED_LEASE_IDENTITY_SQL).toContain("has_any_column_privilege(r.oid,c.oid,'UPDATE')");
+    expect(RESTRICTED_LEASE_IDENTITY_SQL).toContain("has_table_privilege(r.oid,c.oid,'DELETE')");
+  });
   it("creates no pool until acquisition and exposes no configuration/credentials", async () => {
     const actor = await principal();
     const provider = createRestrictedPostgresProvider({ config, principal: actor, tenantId: tenant });

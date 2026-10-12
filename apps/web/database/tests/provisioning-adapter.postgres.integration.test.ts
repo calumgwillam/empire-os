@@ -21,6 +21,8 @@ import type { AuthorizationPostgresConnection, AuthorizationPostgresSource } fro
 import { createPostgresEmployeeProvisioningStore, PROVISIONING_CONTRACT_SQL } from "../../app/lib/postgres-employee-provisioning-store";
 import { createServerEmployeeProvisioningAuthority } from "../../app/lib/server-employee-provisioning";
 import { createServerEmployeeProvisioningReconciliation } from "../../app/lib/server-employee-provisioning-reconciliation";
+import { PROVISIONING_CATALOG_SQL } from "../../app/lib/employee-provisioning-readiness";
+import { RESTRICTED_LEASE_IDENTITY_SQL } from "../../app/lib/restricted-postgres-provider";
 import { createServerPrincipalResolver, isAuthenticatedPrincipal } from "../../app/lib/server-persistence-authority";
 import { connectDisposable, migrateEmptyProvisioningDisposable, seedDataset } from "./postgres-harness";
 import { provisioningAdapterDisposableConfig } from "./provisioning-adapter-disposable-config";
@@ -294,6 +296,53 @@ describe.skipIf(configuration.status === "skip")(
           has_table_privilege(current_user,'empire_os_authorization.audit','INSERT') AS audit_write`);
         expect(privileges.rows).toEqual([{ helper: false, audit_write: false }]);
       } finally {
+        connection.release();
+      }
+    });
+
+    it("changes the reviewed catalog fingerprint when a procedure definition changes", async () => {
+      const name = `audit_probe_${randomUUID().replaceAll("-", "")}`;
+      const before = await admin.query<{ catalog: string }>(PROVISIONING_CATALOG_SQL);
+      await admin.query("BEGIN");
+      try {
+        await admin.query(`CREATE PROCEDURE empire_os_authorization."${name}"()
+          LANGUAGE SQL AS 'SELECT 1'`);
+        const created = await admin.query<{ catalog: string }>(PROVISIONING_CATALOG_SQL);
+        expect(created.rows[0].catalog).not.toBe(before.rows[0].catalog);
+        await admin.query(`CREATE OR REPLACE PROCEDURE empire_os_authorization."${name}"()
+          LANGUAGE SQL AS 'SELECT 2'`);
+        const changed = await admin.query<{ catalog: string }>(PROVISIONING_CATALOG_SQL);
+        expect(changed.rows[0].catalog).not.toBe(created.rows[0].catalog);
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+      expect((await admin.query<{ catalog: string }>(PROVISIONING_CATALOG_SQL)).rows).toEqual(before.rows);
+    });
+
+    it("fingerprints view security options and rejects protected-view UPDATE grants on a genuine LOGIN", async () => {
+      const name = `audit_view_${randomUUID().replaceAll("-", "")}`;
+      const qualified = `empire_os_authorization."${name}"`;
+      const before = await admin.query<{ catalog: string }>(PROVISIONING_CATALOG_SQL);
+      // This object exists only in this NEW disposable database; nothing is dropped/reset.
+      await admin.query(`CREATE VIEW ${qualified} AS SELECT tenant_id FROM empire_os_authorization.tenants`);
+      const created = await admin.query<{ catalog: string }>(PROVISIONING_CATALOG_SQL);
+      expect(created.rows[0].catalog).not.toBe(before.rows[0].catalog);
+      await admin.query("BEGIN");
+      try {
+        await admin.query(`ALTER VIEW ${qualified} SET (security_invoker=true)`);
+        const changed = await admin.query<{ catalog: string }>(PROVISIONING_CATALOG_SQL);
+        expect(changed.rows[0].catalog).not.toBe(created.rows[0].catalog);
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+      const runtime = source();
+      const connection = await runtime.pgSource.connect();
+      try {
+        expect((await connection.query(RESTRICTED_LEASE_IDENTITY_SQL)).rows[0].safe_tables).toBe(true);
+        await admin.query(`GRANT UPDATE ON ${qualified} TO "${founderLogin.role}"`);
+        expect((await connection.query(RESTRICTED_LEASE_IDENTITY_SQL)).rows[0].safe_tables).toBe(false);
+      } finally {
+        await admin.query(`REVOKE UPDATE ON ${qualified} FROM "${founderLogin.role}"`);
         connection.release();
       }
     });

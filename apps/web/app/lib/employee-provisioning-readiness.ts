@@ -57,22 +57,27 @@ FROM (
   SELECT jsonb_build_array('schema',n.nspname,n.nspowner::regrole::text,n.nspacl::text) AS item
     FROM pg_namespace n WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation')
   UNION ALL
-  SELECT jsonb_build_array('function',p.oid::regprocedure::text,p.proowner::regrole::text,
+  SELECT jsonb_build_array('routine',p.oid::regprocedure::text,p.prokind,p.proowner::regrole::text,
     p.proacl::text,pg_get_functiondef(p.oid))
     FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-    WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation') AND p.prokind='f'
+    WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation') AND p.prokind IN ('f','p','w')
   UNION ALL
-  SELECT jsonb_build_array('table',n.nspname,c.relname,c.relowner::regrole::text,
-    c.relrowsecurity,c.relforcerowsecurity,c.relacl::text)
+  SELECT jsonb_build_array('relation',n.nspname,c.relname,c.relkind,c.relowner::regrole::text,
+    c.relrowsecurity,c.relforcerowsecurity,c.relacl::text,c.reloptions,
+    CASE WHEN c.relkind IN ('v','m') THEN pg_get_viewdef(c.oid,false) ELSE NULL END)
     FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-    WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation') AND c.relkind IN ('r','p')
+    WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation') AND c.relkind IN ('r','p','v','m','f')
   UNION ALL
   SELECT jsonb_build_array('column',a.attrelid::regclass::text,a.attname,
     format_type(a.atttypid,a.atttypmod),a.attnotnull,a.attacl::text,a.attidentity,a.attgenerated,
     (SELECT pg_get_expr(d.adbin,d.adrelid) FROM pg_attrdef d WHERE d.adrelid=a.attrelid AND d.adnum=a.attnum))
     FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
     WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation')
-      AND c.relkind IN ('r','p') AND a.attnum>0 AND NOT a.attisdropped
+      AND c.relkind IN ('r','p','v','m','f') AND a.attnum>0 AND NOT a.attisdropped
+  UNION ALL
+  SELECT jsonb_build_array('rule',r.ev_class::regclass::text,r.rulename,r.ev_enabled,pg_get_ruledef(r.oid,false))
+    FROM pg_rewrite r JOIN pg_class c ON c.oid=r.ev_class JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation')
   UNION ALL
   SELECT jsonb_build_array('constraint',c.conrelid::regclass::text,c.conname,c.convalidated,pg_get_constraintdef(c.oid))
     FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace

@@ -534,6 +534,18 @@ verifier using the same exported SQL on the reviewed target deployment; this is 
 portable cross-database migration checksum. Every assessment rolls back and releases;
 no audit/membership writes, COMMIT, migration or provisioning execution occur.
 
+The catalog fingerprint also covers procedures/window functions, views/materialized views
+and foreign relations, view definitions/security options, column privileges and rewrite
+rules (including enabled state). Restricted lease mutation checks include these relation
+kinds, so writable views cannot evade the base-table privilege check. This expanded
+fingerprint intentionally invalidates older signed catalog reports: independent verifiers
+must regenerate evidence using the current query. Offline regression checks verify query
+coverage and digest mismatch behavior, not actual PostgreSQL execution of these objects.
+The opt-in fresh-disposable adapter suite additionally tests actual procedure-definition
+and view-security catalog changes, and a view UPDATE grant observed by a genuine restricted
+LOGIN. These cases remain unverified until that suite runs on another NEW marked empty
+database; no existing populated database may be reused.
+
 Endpoint identity is a hash of host/port/database/LOGIN, NOT PostgreSQL's internal cluster
 system identifier. Deployment identity, DNS/certificate control, catalog provenance,
 trust-key custody, global pool budget, fresh real TLS/identity tests and real production
