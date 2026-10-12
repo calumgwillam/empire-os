@@ -1,5 +1,5 @@
 import "server-only";
-import { X509Certificate } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 import { checkServerIdentity, createSecureContext } from "node:tls";
 import { Pool, type PoolClient, type PoolConfig, type QueryResult, type QueryResultRow } from "pg";
 import { isAuthorityIdentifier } from "./authorization-policy";
@@ -7,6 +7,19 @@ import type { AuthorizationPostgresConnection, AuthorizationPostgresSource } fro
 import { parseServerPostgresConfig, SERVER_POSTGRES_ENV, type ServerPostgresConfig } from "./postgres-server-config";
 import { isAuthenticatedPrincipal, type AuthenticatedPrincipal } from "./server-persistence-authority";
 import { hasOnlyFields, isObject } from "./server-persistence-contract";
+
+export type RestrictedSourceBinding = Readonly<{
+  subject: string; tenantId: string; databaseIdentitySha256: string; database: string; login: string;
+}>;
+const restrictedSources = new WeakMap<AuthorizationPostgresSource, RestrictedSourceBinding>();
+
+export function restrictedSourceBinding(source: AuthorizationPostgresSource): RestrictedSourceBinding | undefined {
+  return restrictedSources.get(source);
+}
+
+export function restrictedDatabaseIdentity(config: Pick<ServerPostgresConfig, "host" | "port" | "database" | "user">): string {
+  return createHash("sha256").update(JSON.stringify([config.host, config.port, config.database, config.user])).digest("hex");
+}
 
 export class RestrictedPostgresError extends Error {
   constructor(readonly reason: "configuration" | "identity" | "unavailable" | "lifecycle" | "query" | "disposal",
@@ -210,6 +223,10 @@ export function createRestrictedPostgresProvider(options: Readonly<{
       });
     },
   });
+  restrictedSources.set(source, Object.freeze({
+    subject, tenantId, database: config.database, login: config.user,
+    databaseIdentitySha256: restrictedDatabaseIdentity(config),
+  }));
 
   return Object.freeze({
     sourceForPrincipal(principal: AuthenticatedPrincipal, requestedTenant = tenantId): AuthorizationPostgresSource {

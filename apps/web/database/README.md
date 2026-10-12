@@ -477,6 +477,76 @@ unknown-outcome reconciliation and any future transport/CSRF review remain block
 Clerk account creation/invitations, People records, role definitions, ownership and browser
 localStorage are deliberately outside this membership boundary.
 
+#### Deployment-readiness assurance (assessment only)
+
+[employee-provisioning-readiness.ts](../app/lib/employee-provisioning-readiness.ts) provides
+a server-only read-only gate. It NEVER returns an activation token: every result has
+`activation: blocked`. Assurance separately reports verified, unverified or failed, with
+per-control verified/unverified/failed/blocked findings. Migration approval is read only
+from the existing `employeeProvisioningRelease()` interlock and rechecked at the end;
+migration 005 remains disabled. The browser IndexedDB preparation activation authority
+is unrelated to SQL deployment and is neither changed nor repurposed.
+
+Trusted server composition must supply the exact production environment/deployment IDs,
+reviewed artifact SHA-256, tenant, endpoint/database/LOGIN identity fingerprint, pinned
+Ed25519 PUBLIC verification keys scoped to permitted controls, an explicit maximum
+evidence age, trusted clock and server evidence repository. No keys, signing capability,
+repository, production configuration or runtime wiring are shipped. Request-supplied
+claims are rejected. The authenticated actor comes from the existing branded server
+session resolver. The source must be minted by the restricted provider, whose private
+WeakMap binds its actor, tenant and non-secret endpoint/database/LOGIN fingerprint.
+
+Evidence is a repository-returned array of exact `{keyId,payload,signature}` envelopes.
+`payload` is the exact UTF-8 JSON string signed with Ed25519; `signature` is standard
+base64. Version 1 payloads contain exactly `control`, `target`, `actorSubject`,
+`observedAt`, `expiresAt`, `catalogSha256`, `result`, `method`, `evidenceSha256` plus `version`.
+The target equals the server's complete production target. Signed report bodies are read
+by `evidenceSha256`, hash-verified, bounded and checked for exact environment/actor/time/
+catalog and required coverage. Report fields are version, control, target, actorSubject,
+observedAt, execution, catalogSha256, checks and failedChecks. Methods and required check
+sets are explicit constants in the implementation; failedChecks must be zero.
+
+Four distinct controls are required: actual PostgreSQL 16 integration for the exact
+reviewed artifact, PRODUCTION TLS/restricted identity verification, PRODUCTION rollback
+drill (stop dispatch, retain data/audits, drain or reconcile uncertain work, no automatic
+retry or destructive schema reversal), and PRODUCTION recovery drill (tested restore,
+authority/audit consistency and immutable evidence). Mocked execution or disposable-only
+production claims fail. Real disposable integration may support the integration control,
+but NEVER substitutes for the other three production controls. These are attested checks,
+not drills run by the read-only gate. A compromised/misconfigured trusted signer can lie:
+signature validity proves provenance/integrity, not physical truth. Signers must verify
+real report artifacts before signing, and key rotation/revocation is controlled by server
+configuration. No unsigned/manual approval path exists.
+
+All timestamps are nonnegative integer milliseconds. Future, expired, duplicate,
+overlong-validity, missing, wrong-key/scope, contradictory or mismatched evidence fails
+closed; freshness is rechecked after asynchronous live verification. Unavailable reports,
+databases, clocks or rollback acknowledgement remain unverified rather than success.
+Raw evidence, endpoint settings, keys, credentials and driver messages are not returned.
+
+The gate independently acquires a verified restricted lease, rechecks the live LOGIN/TLS/
+privileges, locks via existing `lookup_operation`, and reuses owner authorization. It
+checks the existing candidate catalog contract and hashes exact PostgreSQL catalog text
+covering both protected schemas, functions/ACLs, tables/column privileges, constraints,
+indexes, triggers and RLS policies against the signed reviewed catalog digest. No object
+name/ready flag alone is proof. The catalog text/digest must be produced by the trusted
+verifier using the same exported SQL on the reviewed target deployment; this is not a
+portable cross-database migration checksum. Every assessment rolls back and releases;
+no audit/membership writes, COMMIT, migration or provisioning execution occur.
+
+Endpoint identity is a hash of host/port/database/LOGIN, NOT PostgreSQL's internal cluster
+system identifier. Deployment identity, DNS/certificate control, catalog provenance,
+trust-key custody, global pool budget, fresh real TLS/identity tests and real production
+drills remain explicit external blockers. Assessment is point-in-time, never permission
+to skip transaction-time authority/revision checks or enable a release.
+
+Focused OFFLINE verification (no configured database needed):
+
+```sh
+npm run test -- app/lib/employee-provisioning-readiness.test.ts app/lib/restricted-postgres-provider.test.ts app/lib/postgres-server-config.test.ts app/lib/postgres-employee-provisioning-store.test.ts
+npx tsc --noEmit
+```
+
 #### Inactive restricted server connection lifecycle
 
 [restricted-postgres-provider.ts](../app/lib/restricted-postgres-provider.ts) implements the

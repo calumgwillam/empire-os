@@ -32,7 +32,8 @@ vi.mock("pg", async () => {
   };
 });
 import { beginRestrictedTransaction, createPostgresOperationReconciliationStore } from "./postgres-authorization-store";
-import { createRestrictedPostgresProvider, RESTRICTED_LEASE_IDENTITY_SQL, RestrictedPostgresError } from "./restricted-postgres-provider";
+import { createRestrictedPostgresProvider, RESTRICTED_LEASE_IDENTITY_SQL, RestrictedPostgresError,
+  restrictedSourceBinding, restrictedDatabaseIdentity } from "./restricted-postgres-provider";
 import { parseServerPostgresConfig, type ServerPostgresConfig } from "./postgres-server-config";
 import { createServerPrincipalResolver, isAuthenticatedPrincipal } from "./server-persistence-authority";
 import { createPostgresEmployeeProvisioningStore, PROVISIONING_CONTRACT_SQL } from "./postgres-employee-provisioning-store";
@@ -100,6 +101,23 @@ describe("restricted PostgreSQL provider (mocked driver, NO database/TLS handsha
     await provider.dispose();
     expect(provider.status).toBe("disposed");
     expect(drivers.construct).not.toHaveBeenCalled();
+  });
+
+  it("brands only provider-owned sources with non-secret environment binding", async () => {
+    const actor = await principal();
+    const provider = createRestrictedPostgresProvider({ config, principal: actor, tenantId: tenant });
+    const source = provider.sourceForPrincipal(actor);
+    expect(restrictedSourceBinding(source)).toEqual({
+      subject, tenantId: tenant, database: config.database, login: config.user,
+      databaseIdentitySha256: restrictedDatabaseIdentity(config),
+    });
+    expect(restrictedSourceBinding({ ...source })).toBeUndefined();
+    expect(Object.isFrozen(restrictedSourceBinding(source))).toBe(true);
+    expect(provider.sourceForPrincipal(actor)).toBe(source);
+    expect(drivers.construct).not.toHaveBeenCalled();
+    const rotated = { ...config, password: "changed" };
+    expect(restrictedDatabaseIdentity(rotated)).toBe(restrictedDatabaseIdentity(config));
+    await provider.dispose();
   });
 
   it("never falls back to a shared privileged principal or other tenant", async () => {
