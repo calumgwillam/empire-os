@@ -53,7 +53,11 @@ export async function beginRestrictedTransaction(client: AuthorizationPostgresCo
 }
 
 // Read-only: waits on the tenant lock via lookup_operation, then ALWAYS rolls back.
-export function createPostgresOperationReconciliationStore(source: AuthorizationPostgresSource): OperationReconciliationStore {
+export function createPostgresOperationReconciliationStore(
+  source: AuthorizationPostgresSource,
+  options: Readonly<{ requiredContractSql?: string }> = {},
+): OperationReconciliationStore {
+  const requiredContractSql = options.requiredContractSql;
   return Object.freeze({
     async lookupOperation(tenantId: string, operationId: string): Promise<OperationLookupStoreResult> {
       const failed: OperationLookupStoreResult = { status: "unavailable", message: "Operation reconciliation storage is unavailable." };
@@ -69,6 +73,12 @@ export function createPostgresOperationReconciliationStore(source: Authorization
       try {
         try {
           await beginRestrictedTransaction(client);
+          if (requiredContractSql) {
+            const contract = await client.query<{ ready: unknown }>(requiredContractSql);
+            if (contract.rows.length !== 1 || contract.rows[0].ready !== true) {
+              throw new Error("Required reconciliation database contract is unavailable.");
+            }
+          }
           const result = await client.query<{
             state: unknown; revision: string; actor_subject: unknown; authorized: unknown; records: unknown;
           }>(`SELECT state,revision::text AS revision,actor_subject,authorized,records

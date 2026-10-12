@@ -477,6 +477,64 @@ unknown-outcome reconciliation and any future transport/CSRF review remain block
 Clerk account creation/invitations, People records, role definitions, ownership and browser
 localStorage are deliberately outside this membership boundary.
 
+#### Inactive provisioning outcome reconciliation
+
+[server-employee-provisioning-reconciliation.ts](../app/lib/server-employee-provisioning-reconciliation.ts)
+and its [Clerk composition](../app/lib/clerk-employee-provisioning-reconciliation.ts) reuse
+verified principals, server-owned tenant configuration and per-principal restricted
+connections. Both the server boundary and the
+[reconciler](../app/lib/employee-provisioning-reconciliation.ts) retain the hard-disabled
+migration 005 release interlock. No route, production wiring, replay or resubmission is
+introduced.
+
+The caller must retain the EXACT original validated input and request SHA-256; an optional
+known transaction UUID further fences identity. The hash is independently recomputed from
+the existing server-bound request serialization. No submitted actor/tenant/readiness claims
+are accepted. The shared PostgreSQL reconciliation store now supports a server-owned
+catalog-check query, executed inside its restricted READ COMMITTED transaction before
+`lookup_operation`. It holds the existing tenant serialization lock, reads actor-scoped
+immutable evidence, and ALWAYS rolls back. Lost rollback acknowledgement invalidates the
+observation and destroys the connection. SQL `READ ONLY` mode is not used because PostgreSQL
+does not allow the required `FOR UPDATE` serialization lock in that mode; no data mutations
+or COMMIT are issued.
+
+Outcome guarantees:
+
+- `verified-committed`: exactly one allowed provisioning audit matches the original actor,
+  tenant, operation ID, hash, transaction/decision identifiers, founder decision, requested
+  subject/roles, audit dataset, times and expected revision + 1. Locked authority must have
+  reached that revision and retain the employee; at that exact revision the membership
+  must be active at revision 1 with the exact roles. Later legitimate revocation or role
+  reassignment does not erase historical commit proof or imply current employee access.
+- `verified-not-committed`: the authorized, committed, complete actor/operation lookup has
+  no audit AND locked authority revision has irreversibly passed the original expected
+  revision. A prior successful commit would have retained its audit; a delayed original
+  request can no longer pass its revision fence. This result authorizes NO automatic retry.
+- `unknown`: absent evidence at the original/future expected revision, database/contract
+  unavailability, incomplete/unconfirmed observation, or authentication-service failure.
+  An existing matching membership NEVER establishes original operation success.
+- `integrity-conflict`: inconsistent fingerprint, database actor/tenant, evidence linkage,
+  effects, duplicate records or impossible revision/state. Do not treat this as permission.
+  Rejected authentication/current founder authority returns `unauthorized`.
+
+The negative proof relies on the immutable complete actor-scoped lookup, monotonic tenant
+revision and exact revision fencing; it is NOT a claim based on audit absence alone.
+Unavailable current actor membership/tenant authority may deliberately prevent resolving
+historical outcomes. No durable dispatch journal or provisioning activation is added.
+
+Offline reconciliation tests and the shared store's existing tests:
+
+```sh
+npm run test -- app/lib/employee-provisioning-reconciliation.test.ts app/lib/postgres-provisioning-reconciliation.test.ts app/lib/authorization-reconciliation.test.ts app/lib/postgres-authorization-store.test.ts
+npx tsc --noEmit
+```
+
+Two additional cases in the opt-in real adapter suite exercise actual committed-audit
+reconciliation after simulated acknowledgement loss and absent-evidence reconciliation
+before/after a real authority advance. They require ANOTHER newly created marked empty
+adapter database for each run and are unverified until executed. Offline tests model
+database observations; they do not verify PostgreSQL or live Clerk authentication.
+
 [authorization-transaction-contract.ts](../app/lib/authorization-transaction-contract.ts)
 defines a separate opt-in transactional store. Existing `ServerPersistenceRepository`
 methods and their confirmed-commit receipts are unchanged. Its `stagePersistence` method

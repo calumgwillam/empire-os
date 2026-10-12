@@ -20,6 +20,7 @@ import { validateMembershipProvisioningTransition } from "../../app/lib/membersh
 import type { AuthorizationPostgresConnection, AuthorizationPostgresSource } from "../../app/lib/postgres-authorization-store";
 import { createPostgresEmployeeProvisioningStore, PROVISIONING_CONTRACT_SQL } from "../../app/lib/postgres-employee-provisioning-store";
 import { createServerEmployeeProvisioningAuthority } from "../../app/lib/server-employee-provisioning";
+import { createServerEmployeeProvisioningReconciliation } from "../../app/lib/server-employee-provisioning-reconciliation";
 import { createServerPrincipalResolver, isAuthenticatedPrincipal } from "../../app/lib/server-persistence-authority";
 import { connectDisposable, migrateEmptyProvisioningDisposable, seedDataset } from "./postgres-harness";
 import { provisioningAdapterDisposableConfig } from "./provisioning-adapter-disposable-config";
@@ -253,6 +254,17 @@ describe.skipIf(configuration.status === "skip")(
     async function execute(test: Fixture, request = input(), runtime = source(), subject = founder) {
       const store = createPostgresEmployeeProvisioningStore(runtime.pgSource);
       return store.execute(await principal(subject), employeeProvisioningRequest(test.tenantId, request));
+    }
+
+    async function reconcile(test: Fixture, original: EmployeeProvisioningInput, runtime = source()) {
+      const boundary = createServerEmployeeProvisioningReconciliation({
+        tenantId: test.tenantId, resolveSession: async () => ({ status: "authenticated", subject: founder }),
+        sourceForPrincipal: () => runtime.pgSource,
+      });
+      return boundary.reconcile(new Request("https://empire-os.invalid"), {
+        original, requestSha256: createHash("sha256")
+          .update(JSON.stringify(employeeProvisioningRequest(test.tenantId, original))).digest("hex"),
+      });
     }
 
     it("keeps the real application release disabled despite the Vitest-only substitution", async () => {
@@ -520,6 +532,42 @@ describe.skipIf(configuration.status === "skip")(
       expect(runtime.releases).toEqual([true]);
       await Promise.all(endings);
       await unchanged(test);
+    });
+
+    it("reconciles SIMULATED lost COMMIT acknowledgement using only the actual committed immutable audit", async () => {
+      const test = await fixture();
+      const original = input();
+      const dispatch = source(founderLogin, "lost-commit-ack");
+      expect(await execute(test, original, dispatch)).toMatchObject({ status: "unavailable", outcome: "unknown" });
+      await Promise.all(endings);
+      const before = await state(test);
+      const read = source();
+      expect(await reconcile(test, original, read)).toMatchObject({
+        status: "verified-committed", resultingPolicyRevision: 2, observedPolicyRevision: 2,
+        operationId: original.operationId,
+      });
+      expect(read.statements.at(-1)).toBe("ROLLBACK");
+      expect(read.statements.some(sql => sql.includes("FROM empire_os_authorization.provision_member"))).toBe(false);
+      expect(read.statements).not.toContain("COMMIT");
+      expect(await state(test)).toEqual(before);
+    });
+
+    it("keeps absent original evidence unknown until a real committed authority advance permanently fences the request", async () => {
+      const test = await fixture();
+      const original = input();
+      const dispatch = source(founderLogin, "commit-not-sent");
+      expect(await execute(test, original, dispatch)).toMatchObject({ status: "unavailable", outcome: "unknown" });
+      await Promise.all(endings);
+      expect(await reconcile(test, original)).toEqual({ status: "unknown", reason: "absence-without-revision-fence" });
+      await unchanged(test);
+      // A DIFFERENT operation advances authority. Reconciliation itself never writes.
+      expect(await execute(test, input())).toMatchObject({ status: "executed" });
+      const before = await state(test);
+      expect(await reconcile(test, original)).toMatchObject({
+        status: "verified-not-committed", reason: "original-revision-permanently-fenced",
+        observedPolicyRevision: 2,
+      });
+      expect(await state(test)).toEqual(before);
     });
 
     it("serializes simultaneous adapter transactions: exactly one success and one fenced revision", async () => {
