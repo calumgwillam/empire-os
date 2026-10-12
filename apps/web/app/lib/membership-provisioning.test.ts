@@ -115,6 +115,54 @@ describe("Provisioning identity and evidence integrity", () => {
       .toBe("inconsistent");
   });
 
+  it("rejects a role that has since been revoked", () => {
+    const before = initial();
+    const revoked: DurableAuthorityState = {
+      ...before,
+      snapshot: {
+        ...before.snapshot,
+        roles: before.snapshot.roles.map(role => ({ ...role, status: "revoked" as const })),
+      },
+      revocations: [{
+        kind: "role",
+        id: "worker-role",
+        operationId: "revoke-worker-role",
+        policyRevision: 4,
+        revokedAt: 1000,
+      }],
+    };
+    expect(validate(revoked, provision(revoked), founder, 1000).status)
+      .toBe("inconsistent");
+  });
+
+  it("rejects duplicate role assignments", () => {
+    const next = provision();
+    const duplicateRoles = {
+      ...next,
+      snapshot: {
+        ...next.snapshot,
+        memberships: next.snapshot.memberships.map((member, index) =>
+          index === 1 ? { ...member, roleIds: ["worker-role", "worker-role"] } : member),
+      },
+    };
+    expect(validate(initial(), duplicateRoles, founder, 1000).status)
+      .toBe("inconsistent");
+  });
+
+  it("rejects malformed employee identities", () => {
+    const next = provision();
+    const invalid = {
+      ...next,
+      snapshot: {
+        ...next.snapshot,
+        memberships: next.snapshot.memberships.map((member, index) =>
+          index === 1 ? { ...member, subject: "not-a-clerk-identity" } : member),
+      },
+    };
+    expect(validate(initial(), invalid, founder, 1000).status)
+      .toBe("inconsistent");
+  });
+
   it("rejects duplicate employee identities", () => {
     const next = provision();
     const tampered = structuredClone(next);
@@ -122,6 +170,33 @@ describe("Provisioning identity and evidence integrity", () => {
       memberships: [...tampered.snapshot.memberships,
         tampered.snapshot.memberships[1]] } };
     expect(validate(initial(), invalid, founder, 1000).status)
+      .toBe("inconsistent");
+  });
+
+  it("rejects identities retained as revoked tombstones", () => {
+    const before = initial();
+    const removed: DurableAuthorityState = {
+      ...before,
+      snapshot: {
+        ...before.snapshot,
+        revision: 6,
+        memberships: [...before.snapshot.memberships, {
+          subject: worker,
+          tenantId: "tenant-a",
+          revision: 2,
+          status: "revoked",
+          roleIds: [],
+        }],
+      },
+      revocations: [{
+        kind: "membership",
+        id: worker,
+        operationId: "remove-worker",
+        policyRevision: 6,
+        revokedAt: 1000,
+      }],
+    };
+    expect(validate(removed, provision(removed), founder, 2000).status)
       .toBe("inconsistent");
   });
 

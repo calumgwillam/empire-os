@@ -80,6 +80,19 @@ export async function migrateEmptyAuthorizationDisposable(client: Client): Promi
   }
 }
 
+export async function migrateEmptyProvisioningDisposable(client: Client): Promise<void> {
+  await migrateEmptyAuthorizationDisposable(client);
+  for (const name of ["provisioning-upgrade.sql", "provision-member.sql"]) {
+    const sql = await readFile(new URL(`../design/sql/${name}`, import.meta.url), "utf8");
+    try {
+      await client.query(sql);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    }
+  }
+}
+
 export async function seedDataset(client: Client, id: string): Promise<void> {
   requireVerifiedConnection(client);
   await client.query(`INSERT INTO empire_os_preparation.datasets(dataset_id,generation) VALUES ($1,1)`, [id]);

@@ -387,6 +387,11 @@ Delegations bind current, directly assigned, delegable source authority, never a
 delegation. Revoking a role/member invalidates its delegations through current-state
 evaluation rather than rewriting their historical source evidence.
 
+The employee-provisioning SQL in `design/sql/provisioning-upgrade.sql` and
+`design/sql/provision-member.sql` is a non-deployable candidate only. Migration 005 remains
+fail-closed, the candidate grants no execution privileges, and its PostgreSQL integration
+suite is skipped unless a separately verified fresh disposable database is configured.
+
 [authorization-transaction-contract.ts](../app/lib/authorization-transaction-contract.ts)
 defines a separate opt-in transactional store. Existing `ServerPersistenceRepository`
 methods and their confirmed-commit receipts are unchanged. Its `stagePersistence` method

@@ -69,6 +69,7 @@ export function validateMembershipProvisioningTransition(
   if (added.length !== 1 || added[0].status !== "active" ||
       added[0].revision !== 1 ||
       !/^user_[a-zA-Z0-9_]+$/.test(added[0].subject) ||
+      new Set(added[0].roleIds).size !== added[0].roleIds.length ||
       !added[0].roleIds.every(id =>
         old.roles.some(role => role.id === id && role.status === "active"))) {
     return deny("Invalid new employee membership.");
