@@ -410,6 +410,33 @@ These test definitions are not evidence of PostgreSQL verification until run on 
 created, explicitly marked empty disposable database; existing populated test databases
 must never be reused or reset.
 
+The inactive server integration boundary is
+[clerk-employee-provisioning.ts](../app/lib/clerk-employee-provisioning.ts), composing the
+existing verified Clerk resolver with
+[server-employee-provisioning.ts](../app/lib/server-employee-provisioning.ts). It reuses the
+same process-local authenticated principal brand as persistence; submitted actor, tenant,
+dataset, authorization and readiness claims are rejected. The tenant is configured by
+trusted server code, and a per-principal restricted database source is mandatory.
+
+[employee-provisioning-release.ts](../app/lib/employee-provisioning-release.ts) deliberately
+always returns migration-005-disabled. There is no request/environment override, endpoint,
+Server Action, pool initialization or runtime wiring. Both the boundary and adapter check
+this interlock before acquiring a database connection. A future reviewed release must also
+verify the database contract; candidate function existence alone is not release approval.
+
+The dormant [PostgreSQL adapter](../app/lib/postgres-employee-provisioning-store.ts) reuses
+READ COMMITTED transaction setup and the tenant-locked `lookup_operation` API to bind the
+database actor to the verified principal. It reuses owner authorization and transition
+validation, builds the existing SHA-256/request/decision conventions, calls only the atomic
+SQL provisioning function, verifies returned authority/audit, and returns a minimal receipt
+only after confirmed COMMIT. Lost COMMIT or rollback acknowledgement returns unknown and
+discards the connection; there is no automatic retry or replacement operation ID.
+Its tests mock release approval and driver responses only, not PostgreSQL execution.
+Production activation, restricted login lifecycle/TLS pool wiring, provisioning-specific
+unknown-outcome reconciliation and any future transport/CSRF review remain blockers.
+Clerk account creation/invitations, People records, role definitions, ownership and browser
+localStorage are deliberately outside this membership boundary.
+
 [authorization-transaction-contract.ts](../app/lib/authorization-transaction-contract.ts)
 defines a separate opt-in transactional store. Existing `ServerPersistenceRepository`
 methods and their confirmed-commit receipts are unchanged. Its `stagePersistence` method

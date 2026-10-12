@@ -59,11 +59,15 @@ function unavailable(
   return { status: "unavailable", outcome, message };
 }
 
-export function createServerPersistenceAuthority(dependencies: ServerPersistenceAuthorityDependencies) {
-  async function resolvePrincipal(request: Request): Promise<AuthenticatedPrincipal | PersistenceProblem> {
+// Trusted server session providers only; the returned principal cannot be reconstructed
+// from request JSON or transported across processes.
+export function createServerPrincipalResolver(
+  resolveSession: ServerPersistenceAuthorityDependencies["resolveSession"],
+) {
+  return async function resolvePrincipal(request: Request): Promise<AuthenticatedPrincipal | PersistenceProblem> {
     let resolution: ServerSessionResolution;
     try {
-      resolution = await dependencies.resolveSession(request);
+      resolution = await resolveSession(request);
     } catch {
       return unavailable("not-submitted", "Authentication service is unavailable.");
     }
@@ -76,8 +80,11 @@ export function createServerPersistenceAuthority(dependencies: ServerPersistence
     const principal = Object.freeze({ subject: resolution.subject, [authenticatedPrincipalBrand]: true as const });
     authenticatedPrincipals.add(principal);
     return principal;
-  }
+  };
+}
 
+export function createServerPersistenceAuthority(dependencies: ServerPersistenceAuthorityDependencies) {
+  const resolvePrincipal = createServerPrincipalResolver(dependencies.resolveSession);
   async function execute<T>(
     principal: AuthenticatedPrincipal,
     datasetId: string,
