@@ -353,6 +353,32 @@ that no write races with marker creation. IndexedDB persistence is not wired int
 dashboard and has no atomic fence shared with this localStorage marker; it remains
 unactivated and must not be treated as protected by this mechanism.
 
+### Exceptional recovery evidence foundation (not a restore permission)
+
+[exceptional-recovery-evidence.ts](../app/lib/exceptional-recovery-evidence.ts) defines a
+version-1 `empire-os-exceptional-recovery-evidence` envelope for a future operator-
+controlled recovery workflow. Its purpose is explicitly
+`preserve-readable-corrupt-recovery-history-and-pre-restore-business-state`. It records
+whether the recovery-history key was present and its exact raw JavaScript string, plus
+exact values (including `null` for absent stores) for every registered business store.
+The recovery-history, business-store and whole-envelope SHA-256 fingerprints are checked
+independently. The business-store fingerprint reuses the established framed UTF-16 source
+hash protocol, preserving NUL and lone surrogates. JSON encoding round-trips exact string
+values; corrupt recovery-history bytes are never parsed by this feature.
+
+Preparation can write only to the separate
+`empire-os-exceptional-recovery-evidence-v1` slot. Any existing value, including an empty
+string or malformed data, makes the slot occupied and blocks writing. Read, write and
+exact read-back failures fail closed; uncertain evidence is retained for inspection and
+is never automatically deleted or replaced. Source stores and raw history are captured
+twice and checked again after slot read-back. The ordinary restore transaction is
+unchanged. This envelope and its local slot do not authorize restoration, establish an
+independent backup, or make browser storage durable. A future restore must separately
+bind the selected complete-backup fingerprint, evidence fingerprint, current browser
+state and operator confirmation to one attempt; any state change must invalidate that
+authorization. The interruption marker remains authoritative, and localStorage checks
+cannot exclude a cross-tab race.
+
 ### Separate opt-in integration harness
 
 [authorization.postgres.integration.test.ts](./tests/authorization.postgres.integration.test.ts)
