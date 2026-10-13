@@ -1,7 +1,7 @@
 import { assertBackupRecoveryReferences, EMPIRE_OS_BACKUP_STORAGE_KEYS, type BackupStorage } from "./backup";
 import { backupStorageContent, sha256 } from "./independent-backup";
 import type { MigrationFence, MigrationPreparationCoordinator } from "./migration-coordinator";
-import { readStartupStorage } from "./startup-hydration";
+import { readStartupStorage, validateStartupStorageValues } from "./startup-hydration";
 import { isFence } from "./writer-fencing";
 
 export type ActivationBlockReason = "missing-evidence" | "invalid-evidence" | "unsupported-storage-mode"
@@ -67,7 +67,7 @@ export class PreparationActivationAuthority implements MigrationActivationAuthor
       const staged = Object.fromEntries(entries.map(({ key, rawValue }) => [key, rawValue]));
       let source: Record<string, string | null>;
       try {
-        readStartupStorage({ getItem: (key) => staged[key] });
+        validateStartupStorageValues(staged);
         assertBackupRecoveryReferences(staged);
         source = readStartupStorage(this.legacySource);
       } catch {

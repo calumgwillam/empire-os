@@ -11,6 +11,7 @@ import {
   PERSON_STORAGE_KEY,
   PROJECT_STORAGE_KEY,
   RECOVERY_SNAPSHOTS_STORAGE_KEY,
+  RESTORE_INTERRUPTION_STORAGE_KEY,
   STORAGE_KEY,
   buildFullBackup,
   buildStableFullBackup,
@@ -339,6 +340,8 @@ describe("buildFullBackup", () => {
   it("captures exactly the supported keys, with missing values as null", () => {
     const backup = buildFullBackup(new MemoryStorage(initialLiveData), "2026-09-30T08:00:00.000Z");
     expect(Object.keys(backup.storage)).toEqual([...EMPIRE_OS_BACKUP_STORAGE_KEYS]);
+    expect(EMPIRE_OS_BACKUP_STORAGE_KEYS).not.toContain(RESTORE_INTERRUPTION_STORAGE_KEY);
+    expect(backup.storage).not.toHaveProperty(RESTORE_INTERRUPTION_STORAGE_KEY);
     expect(backup.storage[STORAGE_KEY]).toBe(initialLiveData[STORAGE_KEY]);
     expect(backup.storage[CASH_POSITION_STORAGE_KEY]).toBe(initialLiveData[CASH_POSITION_STORAGE_KEY]);
     expect(backup.storage[PROJECT_STORAGE_KEY]).toBeNull();
@@ -388,6 +391,45 @@ describe("buildStableFullBackup", () => {
 });
 
 describe("runBackupRestoreTransaction", () => {
+  it("leaves a durable startup block after an interrupted restore and clears it only after explicit complete recovery", () => {
+    const storage = new MemoryStorage({
+      [STORAGE_KEY]: '[{"id":"partially-restored"}]',
+      [RESTORE_INTERRUPTION_STORAGE_KEY]: JSON.stringify({ version: 1, startedAt: "2026-10-13T18:00:00.000Z" }),
+    });
+    expect(runBackupRestoreTransaction(storage, restoreBackup)).toMatchObject({ ok: false, writesStarted: false });
+    expect(storage.getItem(RESTORE_INTERRUPTION_STORAGE_KEY)).not.toBeNull();
+    expect(storage.getItem(STORAGE_KEY)).toBe('[{"id":"partially-restored"}]');
+
+    const complete = buildFullBackup({ getItem: () => null }, "2026-10-13T18:01:00.000Z");
+    expect(runBackupRestoreTransaction(storage, complete)).toEqual({ ok: true });
+    expect(storage.getItem(RESTORE_INTERRUPTION_STORAGE_KEY)).toBeNull();
+    expect(storage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it("writes the interruption marker before any business store and clears it after a verified rollback", () => {
+    const storage = new MemoryStorage(initialLiveData);
+    const result = runBackupRestoreTransaction(storage, restoreBackup);
+    expect(result.ok).toBe(true);
+    const markerWrite = storage.writes.indexOf(`set:${RESTORE_INTERRUPTION_STORAGE_KEY}`);
+    const firstBusinessWrite = storage.writes.findIndex((write) => write.includes(STORAGE_KEY));
+    expect(markerWrite).toBeGreaterThanOrEqual(0);
+    expect(firstBusinessWrite).toBeGreaterThan(markerWrite);
+    expect(storage.getItem(RESTORE_INTERRUPTION_STORAGE_KEY)).toBeNull();
+  });
+
+  it("retains the interruption marker if rollback cannot be verified", () => {
+    const storage = new MemoryStorage(initialLiveData);
+    storage.onSet = (key, value) => key === PROJECT_STORAGE_KEY && value === restoreBackup.storage[PROJECT_STORAGE_KEY]
+      ? "corrupted" : value;
+    storage.onRemove = (key) => {
+      if (key === RESTORE_INTERRUPTION_STORAGE_KEY) throw new Error("Marker removal unavailable.");
+    };
+    const result = runBackupRestoreTransaction(storage, restoreBackup);
+    expect(result).toMatchObject({ ok: false, writesStarted: true });
+    expect(result.ok ? [] : result.rollbackFailures).toContain(RESTORE_INTERRUPTION_STORAGE_KEY);
+    expect(storage.getItem(RESTORE_INTERRUPTION_STORAGE_KEY)).not.toBeNull();
+  });
+
   it("rejects malformed Phase 4 records before safety callbacks or live storage writes", () => {
     const storage = new MemoryStorage(initialLiveData);
     let callbackCalled = false;

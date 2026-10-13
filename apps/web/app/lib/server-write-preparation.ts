@@ -1,6 +1,6 @@
 import { assertBackupRecoveryReferences } from "./backup";
 import { sha256 } from "./independent-backup";
-import { readStartupStorage } from "./startup-hydration";
+import { validateStartupStorageValues } from "./startup-hydration";
 import {
   checkBatchPreconditions, validateSnapshot, validateWriteBatch, writeBatchContent,
   type BatchConflict, type DatasetSnapshot, type PersistenceProblem, type Validation, type WriteBatch,
@@ -26,7 +26,7 @@ export async function prepareServerWrite(value: unknown): Promise<Validation<Pre
 // Throws if the full business dataset would not hydrate or would break recovery references.
 export function assertDatasetContent(snapshot: DatasetSnapshot): void {
   const storage = Object.fromEntries(snapshot.values.map(({ key, rawValue }) => [key, rawValue]));
-  readStartupStorage({ getItem: (key) => storage[key] });
+  validateStartupStorageValues(storage);
   assertBackupRecoveryReferences(storage);
 }
 

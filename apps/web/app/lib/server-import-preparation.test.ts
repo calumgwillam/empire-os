@@ -1,6 +1,7 @@
 import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CONVERSION_STORAGE_KEY, DEFAULT_SAVED_VIEW_STORAGE_KEY, EMPIRE_OS_BACKUP_STORAGE_KEYS, STORAGE_KEY } from "./backup";
+import { CONVERSION_STORAGE_KEY, DEFAULT_SAVED_VIEW_STORAGE_KEY, EMPIRE_OS_BACKUP_STORAGE_KEYS,
+  RESTORE_INTERRUPTION_STORAGE_KEY, STORAGE_KEY } from "./backup";
 import {
   decodeRawStoreValue, encodeRawStoreValue, importSourceSha256, prepareServerImport, stageImportContent,
   validateStageImportRequest, verifyServerImportPlan, verifyStageImportSnapshot,
@@ -64,6 +65,21 @@ describe("Server import preparation unit tests (no database)", () => {
     expect(second).toEqual(first);
     const verified = await verifyServerImportPlan(first);
     expect(verified).toEqual({ status: "prepared", plan: first });
+  });
+  it("verifies explicit import data independently of an interrupted browser-local restore", async () => {
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => key === RESTORE_INTERRUPTION_STORAGE_KEY ? "interrupted" : null,
+    });
+    const submitted = await plan();
+    expect(submitted.entries.some(({ key }) => String(key) === RESTORE_INTERRUPTION_STORAGE_KEY)).toBe(false);
+    expect(await verifyServerImportPlan(submitted)).toMatchObject({ status: "prepared" });
+  });
+  it("still blocks capture from a live source carrying the browser interruption marker", async () => {
+    const { values, storage } = source();
+    values.set(RESTORE_INTERRUPTION_STORAGE_KEY, "interrupted");
+    expect(await prepareServerImport(storage)).toMatchObject({
+      status: "source-invalid", message: expect.stringContaining("previous multi-store restore was interrupted"),
+    });
   });
   it.each(["not-json", "[null]", "{}"])("rejects malformed source without rewriting it: %s", async (raw) => {
     const { values, storage } = source();

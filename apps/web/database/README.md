@@ -329,6 +329,15 @@ stored in this browser. A drill is evidence of a past isolated simulation, not p
 future external access or real-device recovery. Local snapshots remain on-device evidence,
 not independent backups.
 
+Multi-store browser restore writes a small interruption marker only after preserving a
+pinned pre-restore snapshot. Startup refuses to hydrate or enable persistence while that
+marker exists. This covers tab/process termination between store writes, which synchronous
+rollback cannot catch. The system never auto-restores: an operator must explicitly choose
+a complete 21-store backup; the marker clears only after exact store read-back. A
+synchronous failure clears the marker only after rollback is verified; uncertain rollback
+or marker cleanup leaves startup blocked so potentially mixed data is not silently treated
+as healthy.
+
 ### Separate opt-in integration harness
 
 [authorization.postgres.integration.test.ts](./tests/authorization.postgres.integration.test.ts)

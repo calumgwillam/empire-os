@@ -1,6 +1,6 @@
 import { assertBackupRecoveryReferences, EMPIRE_OS_BACKUP_STORAGE_KEYS, type BackupStorage } from "./backup";
 import { prepareLegacyImport, type LegacyImportPlan, type PersistenceErrorDetails } from "./indexeddb-persistence";
-import { readStartupStorage } from "./startup-hydration";
+import { readStartupStorage, validateStartupStorageValues } from "./startup-hydration";
 
 const STORE = "migration-state";
 const RECORD = "legacy-to-indexeddb";
@@ -146,7 +146,7 @@ export class IndexedDbMigrationCoordinator implements MigrationPreparationCoordi
       }
       try {
         const staged = snapshotStorage(state.snapshot);
-        readStartupStorage({ getItem: (key) => staged[key] });
+        validateStartupStorageValues(staged);
         assertBackupRecoveryReferences(staged);
         const current = readStartupStorage(source);
         const changed = EMPIRE_OS_BACKUP_STORAGE_KEYS.filter((key) => current[key] !== staged[key]);

@@ -1,7 +1,8 @@
 import { webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CONVERSION_STORAGE_KEY, EMPIRE_OS_BACKUP_STORAGE_KEYS, PROJECT_STORAGE_KEY, STORAGE_KEY } from "./backup";
+import { CONVERSION_STORAGE_KEY, EMPIRE_OS_BACKUP_STORAGE_KEYS, PROJECT_STORAGE_KEY,
+  RESTORE_INTERRUPTION_STORAGE_KEY, STORAGE_KEY } from "./backup";
 import { sha256 } from "./independent-backup";
 import { prepareServerWrite, prepareWriteCandidate } from "./server-write-preparation";
 import { validateWriteBatch, writeBatchContent, type DatasetSnapshot, type WriteBatch } from "./server-persistence-contract";
@@ -44,6 +45,12 @@ describe("Server write preparation unit tests (no transaction simulator)", () =>
     });
     expect(candidate.value.commitSequence).toBe(1);
     expect(JSON.stringify(before)).toBe(serialized);
+  });
+  it("validates an explicit database candidate independently of browser restore state", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => key === RESTORE_INTERRUPTION_STORAGE_KEY ? "interrupted" : null,
+    });
+    expect(prepareWriteCandidate(batch(), snapshot()).status).toBe("valid");
   });
   it("null and same-value writes still advance revisions", () => {
     const before = snapshot();

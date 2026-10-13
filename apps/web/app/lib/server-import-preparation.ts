@@ -1,6 +1,6 @@
 import { assertBackupRecoveryReferences, EMPIRE_OS_BACKUP_STORAGE_KEYS, type BackupStorage, type EmpireOsBackup } from "./backup";
 import { backupStorageContent } from "./independent-backup";
-import { readStartupStorage } from "./startup-hydration";
+import { readStartupStorage, validateStartupStorageValues } from "./startup-hydration";
 import {
   hasOnlyFields, isBusinessKey, isIdempotencyKey, isObject, isSha256, validateDatasetFence, validateSnapshot,
   type DatasetSnapshot, type ImportPlan, type PersistenceProblem, type StageImportRequest, type Validation,
@@ -64,7 +64,7 @@ export async function verifyServerImportPlan(value: unknown): Promise<ImportPrep
     storage[entry.key] = entry.rawValue;
   }
   try {
-    readStartupStorage({ getItem: (key) => storage[key] });
+    validateStartupStorageValues(storage);
     assertBackupRecoveryReferences(storage);
   } catch (error) {
     return { status: "source-invalid", message: message(error) };

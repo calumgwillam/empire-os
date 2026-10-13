@@ -31,6 +31,7 @@ export const STRATEGIC_REVIEWS_STORAGE_KEY = "empire-os-strategic-reviews";
 export const WORKING_RELATIONSHIP_STORAGE_KEY = "empire-os-working-relationships";
 export const FOUNDER_INTELLIGENCE_STORAGE_KEY = "empire-os-founder-intelligence";
 export const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
+export const RESTORE_INTERRUPTION_STORAGE_KEY = "empire-os-restore-interruption-v1";
 
 export const BACKUP_FORMAT = "empire-os-backup";
 export const BACKUP_VERSION = 1;
@@ -130,13 +131,18 @@ export function validateStandaloneBackup(value: unknown): EmpireOsBackup {
   return backup;
 }
 
-// beforeWrites runs after the pre-restore snapshot and before any live write; if it throws, nothing is written.
+// beforeWrites runs after the pre-restore snapshot and before any live write; if it throws, no business store is written.
+// The marker blocks startup after process termination; only complete recovery can clear an existing marker.
 export function runBackupRestoreTransaction(target: BackupStorage, backup: EmpireOsBackup, beforeWrites?: (safetyBackup: EmpireOsBackup) => void): BackupRestoreResult {
   const previousStorage: Record<string, string | null> = {};
   let writesStarted = false;
+  let interruptionMarkerWritten = false;
+  let priorInterruptionMarker: string | null = null;
 
   try {
     const validated = validateEmpireOsBackup(backup);
+    priorInterruptionMarker = target.getItem(RESTORE_INTERRUPTION_STORAGE_KEY);
+    if (priorInterruptionMarker !== null) validateStandaloneBackup(validated);
     for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) previousStorage[key] = target.getItem(key);
     const effective = validateEmpireOsBackup({ ...validated, storage: { ...previousStorage, ...validated.storage } });
     assertBackupRecoveryReferences(effective.storage);
@@ -147,6 +153,15 @@ export function runBackupRestoreTransaction(target: BackupStorage, backup: Empir
       throw new Error("Live data changed during restore preparation; reload and review the backup before retrying.");
     }
     retainRecoverySnapshot(target, safetyBackup, true);
+
+    if (priorInterruptionMarker === null) {
+      const marker = JSON.stringify({ version: 1, startedAt: new Date().toISOString() });
+      target.setItem(RESTORE_INTERRUPTION_STORAGE_KEY, marker);
+      if (target.getItem(RESTORE_INTERRUPTION_STORAGE_KEY) !== marker) {
+        throw new Error("Restore interruption marker could not be verified; no business-store writes were started.");
+      }
+      interruptionMarkerWritten = true;
+    }
 
     writesStarted = true;
     for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
@@ -162,6 +177,10 @@ export function runBackupRestoreTransaction(target: BackupStorage, backup: Empir
     });
     if (failedKeys.length > 0) throw new Error(`Verification failed for: ${failedKeys.join(", ")}.`);
 
+    target.removeItem(RESTORE_INTERRUPTION_STORAGE_KEY);
+    if (target.getItem(RESTORE_INTERRUPTION_STORAGE_KEY) !== null) {
+      throw new Error("Restore completed but interruption marker could not be cleared; startup remains blocked for recovery review.");
+    }
     return { ok: true };
   } catch (error) {
     const rollbackFailures: string[] = [];
@@ -176,6 +195,14 @@ export function runBackupRestoreTransaction(target: BackupStorage, backup: Empir
         } catch {
           rollbackFailures.push(key);
         }
+      }
+    }
+    if (writesStarted && rollbackFailures.length === 0 && priorInterruptionMarker === null && interruptionMarkerWritten) {
+      try {
+        target.removeItem(RESTORE_INTERRUPTION_STORAGE_KEY);
+        if (target.getItem(RESTORE_INTERRUPTION_STORAGE_KEY) !== null) throw new Error("Restore interruption marker remains.");
+      } catch {
+        rollbackFailures.push(RESTORE_INTERRUPTION_STORAGE_KEY);
       }
     }
     return { ok: false, error, writesStarted, rollbackFailures };

@@ -4,7 +4,8 @@ import { transpileModule, ScriptTarget, ModuleKind } from "typescript";
 import { describe, expect, it } from "vitest";
 import { readStartupStorage, validateSavedViews } from "./startup-hydration";
 import { EMPIRE_OS_BACKUP_STORAGE_KEYS, DEFAULT_SAVED_VIEW_STORAGE_KEY, SAVED_VIEWS_STORAGE_KEY,
-  CASH_POSITION_STORAGE_KEY, FOUNDER_INTELLIGENCE_STORAGE_KEY, STORAGE_KEY, type BackupStorage } from "./backup";
+  CASH_POSITION_STORAGE_KEY, FOUNDER_INTELLIGENCE_STORAGE_KEY, RESTORE_INTERRUPTION_STORAGE_KEY,
+  STORAGE_KEY, type BackupStorage } from "./backup";
 import { persistJsonArray, persistJsonValue, persistJsonArraysTransaction } from "./persistence";
 import * as backup from "./backup";
 
@@ -32,6 +33,21 @@ function memory(initial: Record<string, string> = {}) {
 }
 
 describe("Startup storage validation", () => {
+  it("blocks hydration before reading business stores when a prior restore may have been interrupted", () => {
+    const target = memory({ [STORAGE_KEY]: '[{"id":"possibly-mixed"}]',
+      [RESTORE_INTERRUPTION_STORAGE_KEY]: "{unreadable-marker}" });
+    const originalGet = target.storage.getItem;
+    const reads: string[] = [];
+    target.storage.getItem = (key) => {
+      reads.push(key);
+      return originalGet(key);
+    };
+    expect(() => readStartupStorage(target.storage)).toThrow("previous multi-store restore was interrupted");
+    expect(reads).toEqual([RESTORE_INTERRUPTION_STORAGE_KEY]);
+    expect(target.data.get(STORAGE_KEY)).toBe('[{"id":"possibly-mixed"}]');
+    expect(target.writes).toEqual([]);
+  });
+
   it.each(EMPIRE_OS_BACKUP_STORAGE_KEYS.filter((key) => key !== DEFAULT_SAVED_VIEW_STORAGE_KEY))(
     "rejects malformed existing %s without any writes", (key) => {
       for (const malformed of ["", "{broken", "null", '"wrong shape"']) {
