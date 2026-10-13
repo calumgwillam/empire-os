@@ -13,6 +13,7 @@ import {
   RECOVERY_SNAPSHOTS_STORAGE_KEY,
   STORAGE_KEY,
   buildFullBackup,
+  buildStableFullBackup,
   getBackupHealth,
   runBackupRestoreTransaction,
   validateEmpireOsBackup,
@@ -348,6 +349,41 @@ describe("buildFullBackup", () => {
     const backup = buildFullBackup(new MemoryStorage(initialLiveData));
     expect(Number.isNaN(Date.parse(backup.createdAt))).toBe(false);
     expect(validateEmpireOsBackup(JSON.parse(JSON.stringify(backup)))).toEqual(backup);
+  });
+});
+
+describe("buildStableFullBackup", () => {
+  it("captures every registered store exactly, including unpaired UTF-16 code units", () => {
+    const initial: Record<string, string | null> = Object.fromEntries(EMPIRE_OS_BACKUP_STORAGE_KEYS.map((key) => [key, null]));
+    initial[STORAGE_KEY] = "\u0000\ud800\udfff";
+    const reads = new Map<string, number>();
+    const backup = buildStableFullBackup({ getItem: (key) => {
+      reads.set(key, (reads.get(key) ?? 0) + 1);
+      return initial[key];
+    } }, "2026-10-13T12:00:00.000Z");
+    expect(Object.keys(backup.storage)).toEqual([...EMPIRE_OS_BACKUP_STORAGE_KEYS]);
+    expect(backup.includedStorageKeys).toEqual([...EMPIRE_OS_BACKUP_STORAGE_KEYS]);
+    expect(backup.storage[STORAGE_KEY]).toBe("\u0000\ud800\udfff");
+    expect([...reads.values()]).toEqual(EMPIRE_OS_BACKUP_STORAGE_KEYS.map(() => 2));
+  });
+
+  it("refuses a mixed snapshot if a registered store changes during capture without writing to storage", () => {
+    const original = new Map<string, string>([[STORAGE_KEY, '[{"id":"retained"}]']]);
+    const writes: string[] = [];
+    const reads = new Map<string, number>();
+    const source: BackupStorage = {
+      getItem: (key) => {
+        const count = (reads.get(key) ?? 0) + 1;
+        reads.set(key, count);
+        if (key === STORAGE_KEY && count === 2) return '[{"id":"concurrent-update"}]';
+        return original.get(key) ?? null;
+      },
+      setItem: (key) => { writes.push(key); },
+      removeItem: (key) => { writes.push(key); },
+    };
+    expect(() => buildStableFullBackup(source)).toThrow(`Stored data changed during full-store capture: ${STORAGE_KEY}`);
+    expect(original.get(STORAGE_KEY)).toBe('[{"id":"retained"}]');
+    expect(writes).toEqual([]);
   });
 });
 

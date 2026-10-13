@@ -1,4 +1,4 @@
-import { buildFullBackup, RECOVERY_SNAPSHOTS_STORAGE_KEY, RecoverySnapshotError, retainRecoverySnapshot,
+import { BackupCaptureChangedError, buildStableFullBackup, RECOVERY_SNAPSHOTS_STORAGE_KEY, RecoverySnapshotError, retainRecoverySnapshot,
   type BackupStorage, type RecoverySnapshotFailure, type RecoverySnapshotResult } from "./backup";
 
 type AutomaticRecoveryStorage = BackupStorage & {
@@ -22,7 +22,7 @@ export class AutomaticRecoverySnapshots {
     const checkedAt = new Date().toISOString();
     let signature = "";
     try {
-      const backup = buildFullBackup(storage, checkedAt);
+      const backup = buildStableFullBackup(storage, checkedAt);
       if (Object.values(backup.storage).every((value) => value === null)) {
         this.blocked = null;
         return { status: "empty", checkedAt };
@@ -39,9 +39,11 @@ export class AutomaticRecoverySnapshots {
     } catch (error) {
       const result: Extract<AutomaticRecoveryStatus, { status: "blocked" }> = {
         status: "blocked", checkedAt,
-        reason: error instanceof RecoverySnapshotError ? error.reason : "storage",
+        reason: error instanceof BackupCaptureChangedError ? "source-changed"
+          : error instanceof RecoverySnapshotError ? error.reason : "storage",
         message: error instanceof Error ? error.message : String(error),
-        existingEvidencePreserved: error instanceof RecoverySnapshotError && error.existingEvidencePreserved,
+        existingEvidencePreserved: error instanceof BackupCaptureChangedError
+          || error instanceof RecoverySnapshotError && error.existingEvidencePreserved,
         retrySuppressed: false,
       };
       if (result.reason === "budget" || result.reason === "quota") {
@@ -81,6 +83,7 @@ export function automaticRecoveryMessage(result: AutomaticRecoveryStatus): strin
     verification: "Recovery verification failure",
     storage: "Recovery storage access/write failure",
     rollback: "Recovery-history rollback failure",
+    "source-changed": "Business data changed during recovery capture",
   };
   return `${label[result.reason]}. ${result.message}${result.retrySuppressed
     ? " Unchanged insufficient storage was not retried." : ""}`;

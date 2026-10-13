@@ -1,4 +1,4 @@
-import { buildFullBackup, EMPIRE_OS_BACKUP_STORAGE_KEYS, isPlainObject, validateStandaloneBackup,
+import { buildStableFullBackup, EMPIRE_OS_BACKUP_STORAGE_KEYS, isPlainObject, validateStandaloneBackup,
   BACKUP_CURRENT_DAYS, BACKUP_STALE_DAYS, type BackupStorage, type EmpireOsBackup } from "./backup";
 import { persistJsonArraysTransaction } from "./persistence";
 import { runRecoveryDrill } from "./recovery-drill";
@@ -82,7 +82,7 @@ export function recordBackupVerification(storage: BackupStorage, record: BackupF
 }
 
 export async function currentBackupStorageDigest(storage: Pick<BackupStorage, "getItem">, digest: Digest = sha256): Promise<string> {
-  return digest(backupStorageContent(buildFullBackup(storage).storage));
+  return digest(backupStorageContent(buildStableFullBackup(storage).storage));
 }
 
 export function independentBackupHealth(records: readonly BackupFileVerification[], currentDigest: string, nowMs: number): {

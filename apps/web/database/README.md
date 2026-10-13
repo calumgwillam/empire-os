@@ -318,8 +318,11 @@ these primitives, the transactional executor and the reconciler:
 confirmation: exact for a direct commit, at least the original for recovered receipts.
 `createDurableServerPersistenceAuthority` composes a session resolver and a per-principal
 restricted connection source, but nothing imports it: there is no route, identity provider,
-runtime role provisioning or approval. Browser localStorage, backup and recovery behaviour
-is unchanged.
+runtime role provisioning or approval. Browser localStorage remains authoritative.
+Full backup exports, automatic recovery snapshots and current-data backup fingerprints use
+a two-pass inventory of the 21 registered stores and fail closed if any value changes
+during capture; this detects mixed reads but does not lock other tabs or prevent a later
+write. Local snapshots remain on-device evidence, not independent backups.
 
 ### Separate opt-in integration harness
 

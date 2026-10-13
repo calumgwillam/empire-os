@@ -91,6 +91,23 @@ export function buildFullBackup(source: Pick<BackupStorage, "getItem">, createdA
   };
 }
 
+// Detects writes during sequential localStorage capture; it cannot lock other tabs or prevent a later write.
+export class BackupCaptureChangedError extends Error {
+  constructor(readonly changedKeys: readonly string[]) {
+    super(`Stored data changed during full-store capture: ${changedKeys.join(", ")}. Retry after writes settle.`);
+    this.name = "BackupCaptureChangedError";
+  }
+}
+
+export function buildStableFullBackup(
+  source: Pick<BackupStorage, "getItem">, createdAt: string = new Date().toISOString(),
+): EmpireOsBackup {
+  const backup = buildFullBackup(source, createdAt);
+  const changed = EMPIRE_OS_BACKUP_STORAGE_KEYS.filter((key) => source.getItem(key) !== backup.storage[key]);
+  if (changed.length) throw new BackupCaptureChangedError(changed);
+  return backup;
+}
+
 export type BackupRestoreResult =
   | { ok: true }
   | { ok: false; error: unknown; writesStarted: boolean; rollbackFailures: string[] };
@@ -169,7 +186,7 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export type RecoverySnapshotFailure = "budget" | "quota" | "decoding" | "verification" | "storage" | "rollback";
+export type RecoverySnapshotFailure = "budget" | "quota" | "decoding" | "verification" | "storage" | "rollback" | "source-changed";
 
 export class RecoverySnapshotError extends Error {
   constructor(message: string, readonly reason: RecoverySnapshotFailure, readonly existingEvidencePreserved: boolean) {

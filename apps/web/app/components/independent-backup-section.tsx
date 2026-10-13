@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { backupStorageContent, currentBackupStorageDigest, independentBackupHealth, readBackupVerifications,
   recordBackupVerification, verifyBackupFile, verifyBackupRecoveryDrill } from "../lib/independent-backup";
-import { buildFullBackup } from "../lib/backup";
+import { buildStableFullBackup } from "../lib/backup";
 
 export function IndependentBackupSection({ revision, disabled }: { revision: unknown; disabled: boolean }) {
   const [health, setHealth] = useState<ReturnType<typeof independentBackupHealth>>({ label: "Checking external backup evidence", warning: true });
@@ -38,10 +38,10 @@ export function IndependentBackupSection({ revision, disabled }: { revision: unk
       try {
         const records = readBackupVerifications(window.localStorage);
         writable.current = true;
-        const before = backupStorageContent(buildFullBackup(window.localStorage).storage);
+        const before = backupStorageContent(buildStableFullBackup(window.localStorage).storage);
         const digest = await currentBackupStorageDigest(window.localStorage);
         if (!active || run !== healthRun.current) return;
-        if (before !== backupStorageContent(buildFullBackup(window.localStorage).storage)
+        if (before !== backupStorageContent(buildStableFullBackup(window.localStorage).storage)
           || JSON.stringify(records) !== JSON.stringify(readBackupVerifications(window.localStorage))) {
           setHealth({ label: "Data changed during backup check; verification pending", warning: true });
           return;

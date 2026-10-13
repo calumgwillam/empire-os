@@ -4,7 +4,7 @@ import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { transpileModule, ScriptTarget, ModuleKind } from "typescript";
 import { buildFullBackup, validateEmpireOsBackup, validateStandaloneBackup, runBackupRestoreTransaction, EMPIRE_OS_BACKUP_STORAGE_KEYS,
-  STORAGE_KEY, CONVERSION_STORAGE_KEY, LEAD_STORAGE_KEY, INCOME_STORAGE_KEY, RECOVERY_SNAPSHOTS_STORAGE_KEY,
+  buildStableFullBackup, STORAGE_KEY, CONVERSION_STORAGE_KEY, LEAD_STORAGE_KEY, INCOME_STORAGE_KEY, RECOVERY_SNAPSHOTS_STORAGE_KEY,
   type BackupStorage } from "./backup";
 import { BACKUP_VERIFICATIONS_STORAGE_KEY, backupStorageContent, currentBackupStorageDigest, independentBackupHealth,
   readBackupVerifications, recordBackupVerification, sha256, verifyBackupFile, verifyBackupRecoveryDrill } from "./independent-backup";
@@ -52,6 +52,19 @@ describe("Independent saved-file assurance", () => {
   it("uses real browser SHA-256 rather than an invented file fingerprint", async () => {
     vi.stubGlobal("crypto", webcrypto);
     expect(await sha256("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  });
+  it("does not fingerprint a mixed cross-store read as current backup coverage", async () => {
+    const target = memory({ [STORAGE_KEY]: '[{"id":"retained"}]' });
+    const original = target.storage.getItem;
+    let reads = 0;
+    target.storage.getItem = (key) => {
+      if (key === STORAGE_KEY && ++reads === 2) return '[{"id":"changed-during-fingerprint"}]';
+      return original(key);
+    };
+    await expect(currentBackupStorageDigest(target.storage, digest)).rejects.toThrow(
+      `Stored data changed during full-store capture: ${STORAGE_KEY}`,
+    );
+    expect(target.writes).toEqual([]);
   });
   it.each(["verifier", "externalLocation", "fileName"] as const)("requires explicit %s attribution", async (field) => {
     await expect(verifyBackupFile(JSON.stringify(full()), { ...request, [field]: " " }, digest)).rejects.toThrow("Name the verifier");
@@ -283,7 +296,7 @@ describe("Production saved-file verification and download semantics", () => {
     const context = {
       active: true, healthRun: { current: 0 }, writable: { current: false },
       pending: undefined as Promise<void> | undefined, window: { localStorage: target.storage },
-      readBackupVerifications, backupStorageContent, buildFullBackup, independentBackupHealth, Error,
+      readBackupVerifications, backupStorageContent, buildStableFullBackup, independentBackupHealth, Error,
       currentBackupStorageDigest: () => new Promise<string>((done) => { finish = done; }),
       setHealth: (value: { label: string; warning: boolean }) => { statuses.push(value); }, setCheckError: () => {},
     };

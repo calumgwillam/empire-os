@@ -45,6 +45,23 @@ function overBudget() {
 }
 
 describe("Safe automatic snapshot replacement", () => {
+  it("does not write a local snapshot from a mixed cross-store capture", () => {
+    const target = memory({ [STORAGE_KEY]: '[{"id":"known-good"}]',
+      [RECOVERY_SNAPSHOTS_STORAGE_KEY]: "[]" });
+    const original = target.storage.getItem;
+    let reads = 0;
+    target.storage.getItem = (key) => {
+      if (key === STORAGE_KEY && ++reads === 2) return '[{"id":"concurrent-change"}]';
+      return original(key);
+    };
+    const before = target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
+    const result = new AutomaticRecoverySnapshots().check(target.storage);
+    expect(result).toMatchObject({ status: "blocked", reason: "source-changed", existingEvidencePreserved: true });
+    expect(automaticRecoveryMessage(result)).toContain("Business data changed during recovery capture");
+    expect(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)).toBe(before);
+    expect(target.attempts()).toBe(0);
+  });
+
   it("replaces only eligible automatic copies in an over-budget store without growing it", () => {
     const target = overBudget();
     expect(2 * target.initial[RECOVERY_SNAPSHOTS_STORAGE_KEY].length).toBeGreaterThan(RECOVERY_SNAPSHOT_BUDGET_BYTES);

@@ -176,7 +176,7 @@ import {
 import {
   BACKUP_FORMAT,
   BACKUP_VERSION,
-  buildFullBackup,
+  buildStableFullBackup,
   CASH_POSITION_STORAGE_KEY,
   CHANGE_HISTORY_STORAGE_KEY,
   COMMITMENT_STORAGE_KEY,
@@ -16754,7 +16754,7 @@ export default function Home() {
   }, []);
 
   function createFullBackup(): EmpireOsBackup {
-    return buildFullBackup(window.localStorage);
+    return buildStableFullBackup(window.localStorage);
   }
 
   function downloadBackup(backup: EmpireOsBackup, filePrefix: string) {
