@@ -379,6 +379,15 @@ state and operator confirmation to one attempt; any state change must invalidate
 authorization. The interruption marker remains authoritative, and localStorage checks
 cannot exclude a cross-tab race.
 
+The evidence envelope can be exported as a versioned JSON file using
+`exportExceptionalRecoveryEvidenceFile`. JSON escaping preserves JavaScript strings
+exactly, including NUL and lone UTF-16 surrogates. Reselected evidence is strictly
+validated, then compared with a fresh stable capture of all 21 stores and the raw recovery
+history. Verification reports an exact current-state match, changed stores/history, an
+invalid file, an unstable capture, or an unavailable/marker-blocked source. A match is
+only evidence that the selected file matches browser state at verification time; it does
+not authorize restoration or prove the external file will remain available.
+
 ### Separate opt-in integration harness
 
 [authorization.postgres.integration.test.ts](./tests/authorization.postgres.integration.test.ts)

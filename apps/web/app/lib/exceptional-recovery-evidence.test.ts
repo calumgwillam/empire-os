@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EMPIRE_OS_BACKUP_STORAGE_KEYS, RECOVERY_SNAPSHOTS_STORAGE_KEY, STORAGE_KEY } from "./backup";
 import {
   createExceptionalRecoveryEvidence, decodeExceptionalRecoveryEvidence, encodeExceptionalRecoveryEvidence,
+  exportExceptionalRecoveryEvidenceFile,
   EXCEPTIONAL_RECOVERY_EVIDENCE_STORAGE_KEY, ExceptionalRecoveryEvidenceError,
-  prepareExceptionalRecoveryEvidence, validateExceptionalRecoveryEvidence,
+  prepareExceptionalRecoveryEvidence, validateExceptionalRecoveryEvidence, verifyExceptionalRecoveryEvidenceFile,
 } from "./exceptional-recovery-evidence";
 import { RESTORE_INTERRUPTION_STORAGE_KEY } from "./browser-write-fence";
 import { importSourceSha256 } from "./server-import-preparation";
@@ -62,6 +63,76 @@ describe("Exceptional recovery evidence envelope", () => {
     expect(presentEmpty.recoveryHistory).toEqual({ present: true, rawValue: "" });
     expect(absent.recoveryHistorySha256).not.toBe(presentEmpty.recoveryHistorySha256);
     expect(absent.evidenceSha256).not.toBe(presentEmpty.evidenceSha256);
+  });
+
+  it("exports and independently re-verifies exact source strings without authorizing recovery", async () => {
+    const history = "{corrupt\u0000history:\ud800}";
+    const rawStore = ' \n[{"id":"raw","value":"\udfff"}] ';
+    const source = fullSource({
+      [RECOVERY_SNAPSHOTS_STORAGE_KEY]: history,
+      [STORAGE_KEY]: rawStore,
+    });
+    const evidence = await createExceptionalRecoveryEvidence(source);
+    const file = await exportExceptionalRecoveryEvidenceFile(evidence);
+    expect(file).toContain("\\ud800");
+    expect(file).toContain("\\udfff");
+    expect(await verifyExceptionalRecoveryEvidenceFile(file, source)).toEqual({
+      status: "matches-current-state",
+      evidenceSha256: evidence.evidenceSha256,
+      storesSha256: evidence.storesSha256,
+      recoveryHistorySha256: evidence.recoveryHistorySha256,
+      storeCount: 21,
+    });
+  });
+
+  it("identifies changed business stores and recovery-history raw bytes independently", async () => {
+    const source = fullSource({
+      [RECOVERY_SNAPSHOTS_STORAGE_KEY]: "{first}",
+      [STORAGE_KEY]: "first-store",
+    });
+    const file = await exportExceptionalRecoveryEvidenceFile(await createExceptionalRecoveryEvidence(source));
+    source.values.set(STORAGE_KEY, "changed-store");
+    const storeMismatch = await verifyExceptionalRecoveryEvidenceFile(file, source);
+    expect(storeMismatch).toMatchObject({ status: "mismatch", changedStores: [STORAGE_KEY], recoveryHistoryChanged: false });
+
+    source.values.set(STORAGE_KEY, "first-store");
+    source.values.set(RECOVERY_SNAPSHOTS_STORAGE_KEY, "{changed}");
+    const historyMismatch = await verifyExceptionalRecoveryEvidenceFile(file, source);
+    expect(historyMismatch).toMatchObject({ status: "mismatch", changedStores: [], recoveryHistoryChanged: true });
+  });
+
+  it("rejects malformed, incomplete, unsupported and fingerprint-forged selected files", async () => {
+    const source = fullSource();
+    const evidence = await createExceptionalRecoveryEvidence(source);
+    const malformed = await verifyExceptionalRecoveryEvidenceFile("{broken", source);
+    expect(malformed).toMatchObject({ status: "invalid-file" });
+
+    const alteredFiles = [
+      JSON.stringify({ ...evidence, stores: Object.fromEntries(Object.entries(evidence.stores).slice(1)) }),
+      JSON.stringify({ ...evidence, version: 2 }),
+      JSON.stringify({ ...evidence, storesSha256: "0".repeat(64) }),
+    ];
+    for (const file of alteredFiles) {
+      expect(await verifyExceptionalRecoveryEvidenceFile(file, source)).toMatchObject({ status: "invalid-file" });
+    }
+  });
+
+  it("does not verify evidence if current capture is unstable, unavailable or marker-blocked", async () => {
+    const stableSource = fullSource();
+    const file = await exportExceptionalRecoveryEvidenceFile(await createExceptionalRecoveryEvidence(stableSource));
+
+    let reads = 0;
+    const changingSource = {
+      getItem: (key: string) => key === STORAGE_KEY && ++reads === 2 ? "changed-during-capture" : stableSource.getItem(key),
+    };
+    expect(await verifyExceptionalRecoveryEvidenceFile(file, changingSource)).toMatchObject({ status: "source-changed" });
+
+    expect(await verifyExceptionalRecoveryEvidenceFile(file, {
+      getItem: () => { throw new Error("Browser storage unavailable"); },
+    })).toMatchObject({ status: "source-unavailable" });
+
+    stableSource.values.set(RESTORE_INTERRUPTION_STORAGE_KEY, "interrupted");
+    expect(await verifyExceptionalRecoveryEvidenceFile(file, stableSource)).toMatchObject({ status: "source-unavailable" });
   });
 
   it("rejects missing, additional, malformed and fingerprint-tampered evidence", async () => {

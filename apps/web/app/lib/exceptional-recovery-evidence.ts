@@ -24,6 +24,19 @@ export type ExceptionalRecoveryEvidence = ExceptionalRecoveryEvidenceFields & Re
 
 export type ExceptionalRecoveryEvidenceStorage = Pick<BackupStorage, "getItem" | "setItem">;
 
+export type ExceptionalRecoveryEvidenceFileVerification =
+  | Readonly<{
+    status: "matches-current-state";
+    evidenceSha256: string;
+    storesSha256: string;
+    recoveryHistorySha256: string;
+    storeCount: number;
+  }>
+  | Readonly<{ status: "mismatch"; changedStores: readonly string[]; recoveryHistoryChanged: boolean }>
+  | Readonly<{ status: "invalid-file"; message: string }>
+  | Readonly<{ status: "source-changed"; message: string }>
+  | Readonly<{ status: "source-unavailable"; message: string }>;
+
 export type ExceptionalRecoveryEvidenceErrorCode =
   | "marker-present"
   | "storage-unavailable"
@@ -224,6 +237,10 @@ export async function encodeExceptionalRecoveryEvidence(value: unknown): Promise
   return serialized;
 }
 
+export async function exportExceptionalRecoveryEvidenceFile(value: unknown): Promise<string> {
+  return encodeExceptionalRecoveryEvidence(value);
+}
+
 export async function decodeExceptionalRecoveryEvidence(raw: string): Promise<ExceptionalRecoveryEvidence> {
   let parsed: unknown;
   try {
@@ -233,6 +250,48 @@ export async function decodeExceptionalRecoveryEvidence(raw: string): Promise<Ex
       "Exceptional recovery evidence is not valid JSON.", false, error);
   }
   return validateExceptionalRecoveryEvidence(parsed);
+}
+
+export async function verifyExceptionalRecoveryEvidenceFile(
+  fileContents: string,
+  currentSource: Pick<BackupStorage, "getItem">,
+): Promise<ExceptionalRecoveryEvidenceFileVerification> {
+  let selected: ExceptionalRecoveryEvidence;
+  try {
+    selected = await decodeExceptionalRecoveryEvidence(fileContents);
+  } catch (error) {
+    return {
+      status: "invalid-file",
+      message: error instanceof Error ? error.message : "Selected evidence file is invalid.",
+    };
+  }
+
+  let current: ExceptionalRecoveryEvidence;
+  try {
+    current = await createExceptionalRecoveryEvidence(currentSource);
+  } catch (error) {
+    if (error instanceof ExceptionalRecoveryEvidenceError && error.code === "source-changed") {
+      return { status: "source-changed", message: error.message };
+    }
+    return {
+      status: "source-unavailable",
+      message: error instanceof Error ? error.message : "Current browser evidence could not be read safely.",
+    };
+  }
+
+  const changedStores = EMPIRE_OS_BACKUP_STORAGE_KEYS.filter((key) => selected.stores[key] !== current.stores[key]);
+  const recoveryHistoryChanged = selected.recoveryHistory.present !== current.recoveryHistory.present
+    || selected.recoveryHistory.rawValue !== current.recoveryHistory.rawValue;
+  if (changedStores.length || recoveryHistoryChanged) {
+    return Object.freeze({ status: "mismatch", changedStores: Object.freeze(changedStores), recoveryHistoryChanged });
+  }
+  return Object.freeze({
+    status: "matches-current-state",
+    evidenceSha256: selected.evidenceSha256,
+    storesSha256: selected.storesSha256,
+    recoveryHistorySha256: selected.recoveryHistorySha256,
+    storeCount: EMPIRE_OS_BACKUP_STORAGE_KEYS.length,
+  });
 }
 
 export async function prepareExceptionalRecoveryEvidence(
