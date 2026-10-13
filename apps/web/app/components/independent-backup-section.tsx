@@ -108,9 +108,9 @@ export function IndependentBackupSection({ revision, disabled }: { revision: unk
       <p>Read-back verified: {new Date(health.verification.verifiedAt).toLocaleString()} by {health.verification.verifier}</p>
       <p>User-reported external location: {health.verification.externalLocation}</p>
       <p className="mt-1">{health.verification.recoveryDrill
-        ? `Simulated restore passed: ${new Date(health.verification.recoveryDrill.completedAt).toLocaleString()} (${health.verification.recoveryDrill.checkedStoreCount} stores checked).`
+        ? `Recorded isolated-drill receipt: ${new Date(health.verification.recoveryDrill.completedAt).toLocaleString()} (${health.verification.recoveryDrill.checkedStoreCount} stores checked).`
         : "File verification only; no simulated restore in this verification receipt."}</p>
-      <p>Real disaster-recovery readiness is not established: independent access, available devices, browser storage capacity and application operation after recovery require separate real-world checks.</p>
+      <p>Health remains a warning because the file location and ongoing independent access are user-declared, and receipts are stored in this browser. Real disaster-recovery readiness is not established: available devices, browser storage capacity and application operation after recovery require separate real-world checks.</p>
       <details className="mt-1"><summary>Verification fingerprint</summary><p className="break-all">SHA-256: {health.verification.fileSha256}</p>
         <p>These receipts cover this file fingerprint only; they do not prove future file availability or a real-device restore.</p></details>
     </div> : null}

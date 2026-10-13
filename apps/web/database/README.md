@@ -322,7 +322,12 @@ runtime role provisioning or approval. Browser localStorage remains authoritativ
 Full backup exports, automatic recovery snapshots and current-data backup fingerprints use
 a two-pass inventory of the 21 registered stores and fail closed if any value changes
 during capture; this detects mixed reads but does not lock other tabs or prevent a later
-write. Local snapshots remain on-device evidence, not independent backups.
+write. Backup assurance distinguishes file read-back from an isolated recovery-drill
+receipt. Even a complete matching file and drill receipt remain a warning: external
+location and ongoing availability are user-declared, and the receipts themselves are
+stored in this browser. A drill is evidence of a past isolated simulation, not proof of
+future external access or real-device recovery. Local snapshots remain on-device evidence,
+not independent backups.
 
 ### Separate opt-in integration harness
 

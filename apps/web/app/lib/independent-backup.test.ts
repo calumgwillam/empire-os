@@ -44,7 +44,8 @@ describe("Independent saved-file assurance", () => {
     for (const [key, value] of Object.entries(before)) expect(target.storage.getItem(key)).toBe(value);
     expect(readBackupVerifications(target.storage)).toEqual([verification]);
     expect(independentBackupHealth(readBackupVerifications(target.storage), await currentBackupStorageDigest(target.storage, digest), NOW))
-      .toMatchObject({ label: "Verified file matches current stored data", warning: false });
+      .toMatchObject({ label: "User-declared file matches current data; complete isolated recovery drill not recorded",
+        warning: true, verification });
     const recovery = memory();
     expect(runBackupRestoreTransaction(recovery.storage, validateStandaloneBackup(JSON.parse(text)))).toEqual({ ok: true });
     for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) expect(recovery.storage.getItem(key)).toBe(backup.storage[key]);
@@ -101,6 +102,11 @@ describe("Independent saved-file assurance", () => {
       await expect(verifyBackupFile(kind === "corrupt JSON" ? "{invalid" : JSON.stringify(backup), request, digest)).rejects.toThrow();
       expect(target.storage.getItem(BACKUP_VERIFICATIONS_STORAGE_KEY)).toBe(prior);
     });
+  it("rejects verification evidence whose identity no longer matches its file fingerprint", async () => {
+    const record = await verifyBackupFile(JSON.stringify(full()), request, digest);
+    const raw = JSON.stringify([{ ...record, id: "fabricated-receipt" }]);
+    expect(() => readBackupVerifications({ getItem: () => raw })).toThrow("identities do not match");
+  });
   it("keeps historical file verification but warns that later business changes are not covered", async () => {
     const backup = full();
     const target = memory({ [STORAGE_KEY]: backup.storage[STORAGE_KEY]! });
@@ -108,10 +114,13 @@ describe("Independent saved-file assurance", () => {
     recordBackupVerification(target.storage, record);
     target.storage.setItem(STORAGE_KEY, '[{"id":"capture","rawNote":"Subsequent real change"}]');
     expect(independentBackupHealth([record], await currentBackupStorageDigest(target.storage, digest), NOW))
-      .toMatchObject({ label: "Verified file exists; current data is not covered", warning: true, verification: record });
+      .toMatchObject({ label: "User-declared external file verified; current data is not covered", warning: true, verification: record });
   });
   it("age is based on backed-up data creation, so rechecking an old file cannot make it current", async () => {
-    for (const [days, label] of [[8, "Verified matching file is getting stale"], [31, "Verified matching file is stale"]] as const) {
+    for (const [days, label] of [
+      [8, "User-declared matching file is getting stale; external availability is unverified"],
+      [31, "User-declared matching file is stale; external availability is unverified"],
+    ] as const) {
       const backup = full(new Date(NOW - days * 86400000).toISOString());
       const record = await verifyBackupFile(JSON.stringify(backup), request, digest);
       expect(independentBackupHealth([record], record.storageSha256, NOW)).toMatchObject({ label, warning: true });
@@ -123,7 +132,37 @@ describe("Independent saved-file assurance", () => {
     const other = full();
     other.storage[STORAGE_KEY] = '[{"id":"different"}]';
     const newer = await verifyBackupFile(JSON.stringify(other), request, digest);
-    expect(independentBackupHealth([matching, newer], matching.storageSha256, NOW)).toMatchObject({ verification: matching, warning: false });
+    expect(independentBackupHealth([matching, newer], matching.storageSha256, NOW)).toMatchObject({
+      verification: matching, warning: true,
+      label: "User-declared file matches current data; complete isolated recovery drill not recorded",
+    });
+  });
+  it("reports an isolated recovery drill without asserting the external copy is still available", async () => {
+    const backup = full();
+    const drilled = await verifyBackupRecoveryDrill(JSON.stringify(backup), request, digest, () => NOW + 1);
+    expect(independentBackupHealth([drilled], drilled.storageSha256, NOW + 1)).toMatchObject({
+      label: "User-declared file matches current data; isolated recovery drill receipt recorded; external availability unverified",
+      warning: true, verification: drilled,
+    });
+  });
+  it("does not treat a future-dated drill receipt as completed recovery evidence", async () => {
+    const backup = full();
+    const drilled = await verifyBackupRecoveryDrill(JSON.stringify(backup), request, digest, () => NOW + 1);
+    const future = { ...drilled, recoveryDrill: {
+      ...drilled.recoveryDrill!, completedAt: new Date(NOW + 86400000).toISOString(),
+    } };
+    expect(independentBackupHealth([future], future.storageSha256, NOW)).toMatchObject({
+      label: "User-declared file matches current data; complete isolated recovery drill not recorded",
+      warning: true, verification: future,
+    });
+  });
+  it("prefers a matching drilled file over a newer file-only receipt for identical store content", async () => {
+    const backup = full();
+    const fileOnly = await verifyBackupFile(JSON.stringify(backup), request, digest);
+    const drilled = await verifyBackupRecoveryDrill(JSON.stringify(backup),
+      { ...request, nowMs: NOW + 1 }, digest, () => NOW + 2);
+    expect(independentBackupHealth([drilled, fileOnly], fileOnly.storageSha256, NOW + 2))
+      .toMatchObject({ verification: drilled, warning: true });
   });
   it("hashes exact file bytes while ordering store keys deterministically for coverage comparison", async () => {
     const backup = full();

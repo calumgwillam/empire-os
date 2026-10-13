@@ -40,6 +40,9 @@ export function readBackupVerifications(storage: Pick<BackupStorage, "getItem">)
     throw new Error("Backup verification history is malformed; stored evidence was preserved. It cannot establish a verified external copy.");
   }
   const typed = records as BackupFileVerification[];
+  if (typed.some((record) => record.id !== `${record.verifiedAt}:${record.fileSha256}${record.recoveryDrill ? ":recovery-drill" : ""}`)) {
+    throw new Error("Backup verification identities do not match their recorded file fingerprints; preserve and reconcile the evidence.");
+  }
   if (new Set(typed.map((record) => record.id)).size !== typed.length) throw new Error("Backup verification identities are duplicated; reconcile stored verification evidence.");
   return typed;
 }
@@ -86,16 +89,30 @@ export async function currentBackupStorageDigest(storage: Pick<BackupStorage, "g
 }
 
 export function independentBackupHealth(records: readonly BackupFileVerification[], currentDigest: string, nowMs: number): {
-  label: string; warning: boolean; verification?: BackupFileVerification;
+  label: string; warning: true; verification?: BackupFileVerification;
 } {
+  // Browser-held receipts cannot independently prove that a user-reported external copy remains accessible.
   const valid = records.filter((record) => Date.parse(record.verifiedAt) <= nowMs && Date.parse(record.backupCreatedAt) <= Date.parse(record.verifiedAt));
   const matching = valid.filter((record) => record.storageSha256 === currentDigest)
     .sort((left, right) => right.backupCreatedAt.localeCompare(left.backupCreatedAt) || right.verifiedAt.localeCompare(left.verifiedAt));
-  const verification = matching[0] || [...valid].sort((left, right) => right.verifiedAt.localeCompare(left.verifiedAt))[0];
+  const drilledMatching = matching.find((record) => record.recoveryDrill
+    && record.recoveryDrill.checkedStoreCount === EMPIRE_OS_BACKUP_STORAGE_KEYS.length
+    && Date.parse(record.recoveryDrill.completedAt) <= nowMs);
+  const verification = drilledMatching || matching[0]
+    || [...valid].sort((left, right) => right.verifiedAt.localeCompare(left.verifiedAt))[0];
   if (!verification) return { label: "No verified external backup file", warning: true };
-  if (!matching.length) return { label: "Verified file exists; current data is not covered", warning: true, verification };
+  if (!matching.length) return { label: "User-declared external file verified; current data is not covered", warning: true, verification };
   const ageDays = (nowMs - Date.parse(verification.backupCreatedAt)) / 86400000;
-  if (ageDays > BACKUP_STALE_DAYS) return { label: "Verified matching file is stale", warning: true, verification };
-  if (ageDays > BACKUP_CURRENT_DAYS) return { label: "Verified matching file is getting stale", warning: true, verification };
-  return { label: "Verified file matches current stored data", warning: false, verification };
+  if (ageDays > BACKUP_STALE_DAYS) {
+    return { label: "User-declared matching file is stale; external availability is unverified", warning: true, verification };
+  }
+  if (ageDays > BACKUP_CURRENT_DAYS) {
+    return { label: "User-declared matching file is getting stale; external availability is unverified", warning: true, verification };
+  }
+  if (!drilledMatching) {
+    return { label: "User-declared file matches current data; complete isolated recovery drill not recorded",
+      warning: true, verification };
+  }
+  return { label: "User-declared file matches current data; isolated recovery drill receipt recorded; external availability unverified",
+    warning: true, verification: drilledMatching };
 }
