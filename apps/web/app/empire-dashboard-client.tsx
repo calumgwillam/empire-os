@@ -210,6 +210,7 @@ import {
 } from "./lib/backup";
 import { decodeRecoverySnapshots } from "./lib/recovery-snapshot-storage";
 import { AutomaticRecoverySnapshots, automaticRecoveryMessage, type AutomaticRecoveryStatus } from "./lib/automatic-recovery";
+import { removeBrowserBusinessItem, setBrowserBusinessItem } from "./lib/browser-write-fence";
 import { readStartupStorage, validateSavedViews } from "./lib/startup-hydration";
 import { IndependentBackupSection } from "./components/independent-backup-section";
 import {
@@ -1442,9 +1443,9 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
     }
 
     if (savedViews.length === 0) {
-      window.localStorage.removeItem(SAVED_VIEWS_STORAGE_KEY);
+      removeBrowserBusinessItem(window.localStorage, SAVED_VIEWS_STORAGE_KEY);
     } else {
-      window.localStorage.setItem(SAVED_VIEWS_STORAGE_KEY, JSON.stringify(savedViews));
+      setBrowserBusinessItem(window.localStorage, SAVED_VIEWS_STORAGE_KEY, JSON.stringify(savedViews));
     }
   }, [savedViews, savedViewsLoaded]);
 
@@ -1454,9 +1455,9 @@ function CommandRecordRegister({ groups, attentionRecordKeys, testSourceCaptureI
     }
 
     if (defaultSavedViewId) {
-      window.localStorage.setItem(DEFAULT_SAVED_VIEW_STORAGE_KEY, defaultSavedViewId);
+      setBrowserBusinessItem(window.localStorage, DEFAULT_SAVED_VIEW_STORAGE_KEY, defaultSavedViewId);
     } else {
-      window.localStorage.removeItem(DEFAULT_SAVED_VIEW_STORAGE_KEY);
+      removeBrowserBusinessItem(window.localStorage, DEFAULT_SAVED_VIEW_STORAGE_KEY);
     }
   }, [defaultSavedViewId, defaultSavedViewLoaded]);
   const typeOptions: Array<{ label: string; value: CommandRecordType }> = [
@@ -9611,7 +9612,7 @@ export default function Home() {
   useEffect(() => {
     if (!operatingDataLoaded || !strategicObjectivesLoaded || !strategicObjectivesWritableRef.current || auditRestoreInProgressRef.current) return;
     try {
-      window.localStorage.setItem(STRATEGIC_OBJECTIVES_STORAGE_KEY, JSON.stringify(strategicObjectives));
+      setBrowserBusinessItem(window.localStorage, STRATEGIC_OBJECTIVES_STORAGE_KEY, JSON.stringify(strategicObjectives));
     } catch {
       setFeedback({ type: "error", message: "Strategic objectives could not be saved. Check browser storage before continuing." });
     }
@@ -9621,7 +9622,7 @@ export default function Home() {
     if (!operatingDataLoaded || !strategicReviewsLoaded || !strategicReviewsWritableRef.current || auditRestoreInProgressRef.current) return;
     try {
       const serialized = JSON.stringify(strategicReviews);
-      window.localStorage.setItem(STRATEGIC_REVIEWS_STORAGE_KEY, serialized);
+      setBrowserBusinessItem(window.localStorage, STRATEGIC_REVIEWS_STORAGE_KEY, serialized);
       if (pendingReviewSaveRef.current) {
         if (window.localStorage.getItem(STRATEGIC_REVIEWS_STORAGE_KEY) !== serialized) throw new Error("Strategic Review write could not be verified.");
         const pending = pendingReviewSaveRef.current;
@@ -9853,7 +9854,7 @@ export default function Home() {
         const existing: unknown = stored === null ? [] : JSON.parse(stored);
         if (!Array.isArray(existing) || !existing.every(isValidChangeEvent)) throw new Error("Stored history is invalid.");
         const next = [...existing, ...events];
-        window.localStorage.setItem(CHANGE_HISTORY_STORAGE_KEY, JSON.stringify(next));
+        setBrowserBusinessItem(window.localStorage, CHANGE_HISTORY_STORAGE_KEY, JSON.stringify(next));
         setChangeHistory(next);
       } catch {
         setFeedback({ type: "error", message: "Change history could not be saved. Download a safety backup and check available browser storage." });
@@ -12156,12 +12157,12 @@ export default function Home() {
         }
         const next = [...current];
         next[existingTodayIndex] = replacement;
-        window.localStorage.setItem(DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, JSON.stringify(next));
+        setBrowserBusinessItem(window.localStorage, DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, JSON.stringify(next));
         return next;
       }
 
       const next = [...current, todaySnapshot].sort((a, b) => a.date.localeCompare(b.date));
-      window.localStorage.setItem(DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, JSON.stringify(next));
+      setBrowserBusinessItem(window.localStorage, DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY, JSON.stringify(next));
       return next;
     });
   }, [todaySnapshotJson, todaySnapshotDate, operatingDataLoaded, changeHistoryLoaded, strategicObjectivesLoaded, strategicReviewsLoaded, icarusLoaded]);
@@ -14472,18 +14473,18 @@ export default function Home() {
         ...diffChangeRecords("Strategic Review", strategicReviews as unknown as Record<string, unknown>[], nextReviews as unknown as Record<string, unknown>[], "reviewDate"),
         ...diffChangeRecords("Strategic Objective", strategicObjectives as unknown as Record<string, unknown>[], nextObjectives as unknown as Record<string, unknown>[], "title")];
       auditRestoreInProgressRef.current = true;
+      setBrowserBusinessItem(window.localStorage, STRATEGIC_REVIEWS_STORAGE_KEY, JSON.stringify(nextReviews));
       writesStarted = true;
-      window.localStorage.setItem(STRATEGIC_REVIEWS_STORAGE_KEY, JSON.stringify(nextReviews));
-      window.localStorage.setItem(STRATEGIC_OBJECTIVES_STORAGE_KEY, JSON.stringify(nextObjectives));
-      window.localStorage.setItem(CHANGE_HISTORY_STORAGE_KEY, JSON.stringify(history));
+      setBrowserBusinessItem(window.localStorage, STRATEGIC_OBJECTIVES_STORAGE_KEY, JSON.stringify(nextObjectives));
+      setBrowserBusinessItem(window.localStorage, CHANGE_HISTORY_STORAGE_KEY, JSON.stringify(history));
       if (keys.some((key) => window.localStorage.getItem(key) !== (key === STRATEGIC_REVIEWS_STORAGE_KEY ? JSON.stringify(nextReviews) : key === STRATEGIC_OBJECTIVES_STORAGE_KEY ? JSON.stringify(nextObjectives) : JSON.stringify(history)))) throw new Error("Storage verification failed.");
       window.location.reload();
     } catch (error) {
       const failedRollback: string[] = [];
       if (writesStarted) for (const key of keys) {
         try {
-          if (previous[key] === null) window.localStorage.removeItem(key);
-          else window.localStorage.setItem(key, previous[key]!);
+          if (previous[key] === null) removeBrowserBusinessItem(window.localStorage, key);
+          else setBrowserBusinessItem(window.localStorage, key, previous[key]!);
           if (window.localStorage.getItem(key) !== previous[key]) failedRollback.push(key);
         } catch { failedRollback.push(key); }
       }

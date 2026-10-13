@@ -1,10 +1,10 @@
 import { buildFullBackup, validateEmpireOsBackup, isPlainObject, EMPIRE_OS_BACKUP_STORAGE_KEYS,
-  RESTORE_INTERRUPTION_STORAGE_KEY,
   BACKUP_FORMAT, BACKUP_VERSION,
   CASH_POSITION_STORAGE_KEY, FOUNDER_INTELLIGENCE_STORAGE_KEY, DEFAULT_SAVED_VIEW_STORAGE_KEY,
   SAVED_VIEWS_STORAGE_KEY, DAILY_POSTURE_SNAPSHOTS_STORAGE_KEY,
   STRATEGIC_OBJECTIVES_STORAGE_KEY, STRATEGIC_REVIEWS_STORAGE_KEY, type BackupStorage } from "./backup";
 import { isStrategicObjectiveRecord, isStrategicReview } from "./strategic-reviews";
+import { RESTORE_INTERRUPTION_STORAGE_KEY } from "./browser-write-fence";
 
 export function validateSavedViews(raw: string | null): void {
   if (raw === null) return;

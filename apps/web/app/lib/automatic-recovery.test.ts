@@ -5,6 +5,7 @@ import { buildFullBackup, retainRecoverySnapshot, runBackupRestoreTransaction, R
 import { BACKUP_VERIFICATIONS_STORAGE_KEY } from "./independent-backup";
 import { decodeRecoverySnapshots, encodeRecoverySnapshots, RECOVERY_SNAPSHOT_BUDGET_BYTES,
   type RecoverySnapshot } from "./recovery-snapshot-storage";
+import { RESTORE_INTERRUPTION_STORAGE_KEY } from "./browser-write-fence";
 
 function memory(initial: Record<string, string> = {}) {
   const data = new Map(Object.entries(initial));
@@ -185,6 +186,38 @@ describe("Safe automatic snapshot replacement", () => {
 });
 
 describe("Automatic recovery outcomes and retry state", () => {
+  it("does not mutate recovery snapshots when restore is interrupted or marker reads fail", () => {
+    const interrupted = memory({
+      [STORAGE_KEY]: "[]",
+      [RECOVERY_SNAPSHOTS_STORAGE_KEY]: "[]",
+      [RESTORE_INTERRUPTION_STORAGE_KEY]: "interrupted",
+    });
+    const blocked = new AutomaticRecoverySnapshots().check(interrupted.storage);
+    expect(blocked).toMatchObject({ status: "blocked", reason: "storage", existingEvidencePreserved: true });
+    expect(interrupted.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)).toBe("[]");
+    expect(interrupted.attempts()).toBe(0);
+
+    const unreadable = memory({ [STORAGE_KEY]: "[]", [RECOVERY_SNAPSHOTS_STORAGE_KEY]: "[]" });
+    const getItem = unreadable.storage.getItem;
+    unreadable.storage.getItem = (key) => {
+      if (key === RESTORE_INTERRUPTION_STORAGE_KEY) throw new Error("Marker read denied");
+      return getItem(key);
+    };
+    expect(new AutomaticRecoverySnapshots().check(unreadable.storage))
+      .toMatchObject({ status: "blocked", reason: "storage", existingEvidencePreserved: false });
+    expect(unreadable.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)).toBe("[]");
+    expect(unreadable.attempts()).toBe(0);
+  });
+
+  it("does not let a caller-declared pinned snapshot bypass the browser write fence", () => {
+    const target = memory({ [STORAGE_KEY]: "[]", [RESTORE_INTERRUPTION_STORAGE_KEY]: "interrupted",
+      [RECOVERY_SNAPSHOTS_STORAGE_KEY]: "[]" });
+    expect(() => retainRecoverySnapshot(target.storage, buildFullBackup(target.storage), true))
+      .toThrow("multi-store restore was interrupted");
+    expect(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)).toBe("[]");
+    expect(target.attempts()).toBe(0);
+  });
+
   it("distinguishes created, existing and blocked outcomes and clears stale failures on a successful recheck", () => {
     const target = memory({ [STORAGE_KEY]: "[]" });
     const checker = new AutomaticRecoverySnapshots();

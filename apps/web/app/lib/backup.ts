@@ -9,6 +9,8 @@ import { assertCapacityResolutionRecord } from "./capacity-resolution";
 import { assertDelegationHandoffs } from "./delegation-handoffs";
 import { getRecoveryReferenceIssues } from "./recovery-consistency";
 import { decodeRecoverySnapshots, encodeRecoverySnapshots, RECOVERY_SNAPSHOT_BUDGET_BYTES, type RecoverySnapshot } from "./recovery-snapshot-storage";
+import { assertBrowserBusinessWritesAllowed, RESTORE_INTERRUPTION_STORAGE_KEY } from "./browser-write-fence";
+export { RESTORE_INTERRUPTION_STORAGE_KEY } from "./browser-write-fence";
 
 export const STORAGE_KEY = "empire-os-captures";
 export const CONVERSION_STORAGE_KEY = "empire-os-capture-conversions";
@@ -31,7 +33,6 @@ export const STRATEGIC_REVIEWS_STORAGE_KEY = "empire-os-strategic-reviews";
 export const WORKING_RELATIONSHIP_STORAGE_KEY = "empire-os-working-relationships";
 export const FOUNDER_INTELLIGENCE_STORAGE_KEY = "empire-os-founder-intelligence";
 export const RECOVERY_SNAPSHOTS_STORAGE_KEY = "empire-os-recovery-snapshots-v1";
-export const RESTORE_INTERRUPTION_STORAGE_KEY = "empire-os-restore-interruption-v1";
 
 export const BACKUP_FORMAT = "empire-os-backup";
 export const BACKUP_VERSION = 1;
@@ -152,7 +153,7 @@ export function runBackupRestoreTransaction(target: BackupStorage, backup: Empir
     if (EMPIRE_OS_BACKUP_STORAGE_KEYS.some((key) => target.getItem(key) !== previousStorage[key])) {
       throw new Error("Live data changed during restore preparation; reload and review the backup before retrying.");
     }
-    retainRecoverySnapshot(target, safetyBackup, true);
+    retainRecoverySnapshotInternal(target, safetyBackup, true, true);
 
     if (priorInterruptionMarker === null) {
       const marker = JSON.stringify({ version: 1, startedAt: new Date().toISOString() });
@@ -229,7 +230,13 @@ export type RecoverySnapshotResult = {
   estimatedBytes: number;
 };
 
-export function retainRecoverySnapshot(target: BackupStorage, backup: EmpireOsBackup, pinned = false): RecoverySnapshotResult {
+function retainRecoverySnapshotInternal(
+  target: BackupStorage,
+  backup: EmpireOsBackup,
+  pinned: boolean,
+  explicitRestore: boolean,
+): RecoverySnapshotResult {
+  if (!explicitRestore) assertBrowserBusinessWritesAllowed(target);
   const raw = target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
   let existing: RecoverySnapshot[];
   try {
@@ -304,6 +311,7 @@ export function retainRecoverySnapshot(target: BackupStorage, backup: EmpireOsBa
     throw new RecoverySnapshotError("Recovery history changed during preparation. No new snapshot was saved; the changed recovery evidence was left untouched.", "storage", false);
   }
   try {
+    if (!explicitRestore) assertBrowserBusinessWritesAllowed(target);
     target.setItem(RECOVERY_SNAPSHOTS_STORAGE_KEY, serialized);
     if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== serialized) {
       throw new RecoverySnapshotError("Recovery snapshot write could not be verified.", "verification", false);
@@ -318,6 +326,7 @@ export function retainRecoverySnapshot(target: BackupStorage, backup: EmpireOsBa
   } catch (error) {
     try {
       if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== raw) {
+        if (!explicitRestore) assertBrowserBusinessWritesAllowed(target);
         if (raw === null) target.removeItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
         else target.setItem(RECOVERY_SNAPSHOTS_STORAGE_KEY, raw);
       }
@@ -330,6 +339,10 @@ export function retainRecoverySnapshot(target: BackupStorage, backup: EmpireOsBa
     throw new RecoverySnapshotError(`Recovery snapshot was not saved: ${error instanceof Error ? error.message : String(error)}. Previous recovery evidence was restored and verified; preserve an external backup and check available browser storage.`, reason, true);
   }
   return result;
+}
+
+export function retainRecoverySnapshot(target: BackupStorage, backup: EmpireOsBackup, pinned = false): RecoverySnapshotResult {
+  return retainRecoverySnapshotInternal(target, backup, pinned, false);
 }
 
 export type ChangeField = { field: string; before: unknown; after: unknown };

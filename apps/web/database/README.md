@@ -338,6 +338,21 @@ synchronous failure clears the marker only after rollback is verified; uncertain
 or marker cleanup leaves startup blocked so potentially mixed data is not silently treated
 as healthy.
 
+Browser business-store writes now check the interruption key immediately before each
+guarded localStorage mutation. Shared JSON persistence helpers, dashboard direct writes,
+and automatic recovery-snapshot creation use this boundary; an unreadable marker blocks
+the write. Manual automatic-recovery rechecks therefore cannot rotate snapshots while
+the marker is present. The explicit restore transaction uses a separate internal path so
+an operator can preserve a pinned pre-restore snapshot and restore a complete backup.
+
+This is a synchronous fail-closed check, not cross-tab mutual exclusion: another tab may
+write the marker after a check and before a mutation, or continue running code outside
+these guarded paths. localStorage provides no atomic lock spanning tabs and a series of
+store writes. Startup blocks on the marker after reload, but this fence cannot guarantee
+that no write races with marker creation. IndexedDB persistence is not wired into the live
+dashboard and has no atomic fence shared with this localStorage marker; it remains
+unactivated and must not be treated as protected by this mechanism.
+
 ### Separate opt-in integration harness
 
 [authorization.postgres.integration.test.ts](./tests/authorization.postgres.integration.test.ts)

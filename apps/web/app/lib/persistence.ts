@@ -1,19 +1,21 @@
+import { assertBrowserBusinessWritesAllowed, removeBrowserBusinessItem, setBrowserBusinessItem } from "./browser-write-fence";
+
 export type PersistenceStorage = {
-  getItem?(key: string): string | null;
+  getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
 };
 
 export function persistJsonArray(storage: PersistenceStorage, key: string, records: readonly unknown[]): void {
   if (records.length === 0) {
-    storage.removeItem(key);
+    removeBrowserBusinessItem(storage, key);
   } else {
-    storage.setItem(key, JSON.stringify(records));
+    setBrowserBusinessItem(storage, key, JSON.stringify(records));
   }
 }
 
 export function persistJsonValue(storage: PersistenceStorage, key: string, value: unknown): void {
-  storage.setItem(key, JSON.stringify(value));
+  setBrowserBusinessItem(storage, key, JSON.stringify(value));
 }
 
 export class PersistenceTransactionError extends Error {
@@ -34,8 +36,8 @@ export function persistJsonArraysTransaction(
   try {
     writes.forEach(({ key, before, after }) => {
       if (before === after) return;
-      if (after === null) storage.removeItem(key);
-      else storage.setItem(key, after);
+      if (after === null) removeBrowserBusinessItem(storage, key);
+      else setBrowserBusinessItem(storage, key, after);
     });
     if (writes.some(({ key, after }) => storage.getItem(key) !== after)) throw new Error("Storage transaction verification failed.");
   } catch (error) {
@@ -43,8 +45,8 @@ export function persistJsonArraysTransaction(
     writes.forEach(({ key, before }) => {
       try {
         if (storage.getItem(key) === before) return;
-        if (before === null) storage.removeItem(key);
-        else storage.setItem(key, before);
+        if (before === null) removeBrowserBusinessItem(storage, key);
+        else setBrowserBusinessItem(storage, key, before);
         if (storage.getItem(key) !== before) failures.push(key);
       } catch {
         failures.push(key);

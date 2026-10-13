@@ -8,6 +8,7 @@ import { EMPIRE_OS_BACKUP_STORAGE_KEYS, DEFAULT_SAVED_VIEW_STORAGE_KEY, SAVED_VI
   STORAGE_KEY, type BackupStorage } from "./backup";
 import { persistJsonArray, persistJsonValue, persistJsonArraysTransaction } from "./persistence";
 import * as backup from "./backup";
+import { removeBrowserBusinessItem, setBrowserBusinessItem } from "./browser-write-fence";
 
 const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
 function execute(code: string, context: Record<string, unknown>) {
@@ -106,7 +107,8 @@ describe("Production saved-view hydration and persistence", () => {
   const saveDefault = effect("  }, [defaultSavedViewId, defaultSavedViewLoaded]);");
   function context(target: ReturnType<typeof memory>) {
     const state: Record<string, unknown> = {
-      ...backup, window: { localStorage: target.storage }, validateSavedViews,
+      ...backup, setBrowserBusinessItem, removeBrowserBusinessItem,
+      window: { localStorage: target.storage }, validateSavedViews,
       savedViewsLoaded: false, defaultSavedViewLoaded: false, savedViews: [], defaultSavedViewId: "",
       getDefaultRecordControls: () => ({}),
       setSelectedSavedViewId: () => {}, setRenameViewName: () => {}, setRecordControls: () => {},
@@ -154,6 +156,17 @@ describe("Production saved-view hydration and persistence", () => {
     const state = context(target);
     execute(load + saveDefault, state);
     expect(target.storage.getItem(DEFAULT_SAVED_VIEW_STORAGE_KEY)).toBe("legacy-selection");
+  });
+  it("does not save already-hydrated saved views after an interruption marker appears", () => {
+    const target = memory({ [SAVED_VIEWS_STORAGE_KEY]: "[]", [DEFAULT_SAVED_VIEW_STORAGE_KEY]: "legacy-selection" });
+    const state = context(target);
+    execute(load, state);
+    target.storage.setItem(RESTORE_INTERRUPTION_STORAGE_KEY, "interrupted");
+    state.savedViews = [{ id: "new", name: "Do not persist", controls: {} }];
+    expect(() => execute(saveViews + saveDefault, state)).toThrow("multi-store restore was interrupted");
+    expect(target.storage.getItem(SAVED_VIEWS_STORAGE_KEY)).toBe("[]");
+    expect(target.storage.getItem(DEFAULT_SAVED_VIEW_STORAGE_KEY)).toBe("legacy-selection");
+    expect(target.storage.getItem(RESTORE_INTERRUPTION_STORAGE_KEY)).toBe("interrupted");
   });
 });
 
@@ -206,6 +219,7 @@ describe("Production operating persistence gates", () => {
     const target = memory({ [STORAGE_KEY]: '[{"id":"old"}]' });
     execute(effect("  }, [captures, operatingDataLoaded]);"), {
       ...backup, persistJsonArray, persistJsonValue, persistJsonArraysTransaction,
+      setBrowserBusinessItem, removeBrowserBusinessItem,
       window: { localStorage: target.storage }, operatingDataLoaded: true,
       restoreInProgressRef: { current: false }, captures: [{ id: "new" }],
     });
@@ -217,6 +231,7 @@ describe("Production operating persistence gates", () => {
     expect(storage[STORAGE_KEY]).toBeNull();
     execute(effect("  }, [captures, operatingDataLoaded]);"), {
       ...backup, persistJsonArray, window: { localStorage: target.storage },
+      setBrowserBusinessItem, removeBrowserBusinessItem,
       operatingDataLoaded: true, restoreInProgressRef: { current: false }, captures: [{ id: "first-record" }],
     });
     expect(target.storage.getItem(STORAGE_KEY)).toBe('[{"id":"first-record"}]');

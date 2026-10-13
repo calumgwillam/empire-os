@@ -1,5 +1,6 @@
 import { BackupCaptureChangedError, buildStableFullBackup, RECOVERY_SNAPSHOTS_STORAGE_KEY, RecoverySnapshotError, retainRecoverySnapshot,
   type BackupStorage, type RecoverySnapshotFailure, type RecoverySnapshotResult } from "./backup";
+import { assertBrowserBusinessWritesAllowed, BrowserWriteFenceError } from "./browser-write-fence";
 
 type AutomaticRecoveryStorage = BackupStorage & {
   readonly length?: number;
@@ -22,6 +23,7 @@ export class AutomaticRecoverySnapshots {
     const checkedAt = new Date().toISOString();
     let signature = "";
     try {
+      assertBrowserBusinessWritesAllowed(storage);
       const backup = buildStableFullBackup(storage, checkedAt);
       if (Object.values(backup.storage).every((value) => value === null)) {
         this.blocked = null;
@@ -43,7 +45,8 @@ export class AutomaticRecoverySnapshots {
           : error instanceof RecoverySnapshotError ? error.reason : "storage",
         message: error instanceof Error ? error.message : String(error),
         existingEvidencePreserved: error instanceof BackupCaptureChangedError
-          || error instanceof RecoverySnapshotError && error.existingEvidencePreserved,
+          || error instanceof RecoverySnapshotError && error.existingEvidencePreserved
+          || error instanceof BrowserWriteFenceError && error.reason === "interrupted",
         retrySuppressed: false,
       };
       if (result.reason === "budget" || result.reason === "quota") {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { persistJsonArray, persistJsonValue, persistJsonArraysTransaction, PersistenceTransactionError, type PersistenceStorage } from "./persistence";
+import { RESTORE_INTERRUPTION_STORAGE_KEY } from "./browser-write-fence";
 
 const createStorage = (initial: Record<string, string> = {}) => {
   const data = new Map(Object.entries(initial));
@@ -47,6 +48,7 @@ describe("persistJsonArray", () => {
 
   it("propagates setItem errors", () => {
     const storage: PersistenceStorage = {
+      getItem: () => null,
       setItem: () => {
         throw new Error("QuotaExceededError");
       },
@@ -57,12 +59,33 @@ describe("persistJsonArray", () => {
 
   it("propagates removeItem errors", () => {
     const storage: PersistenceStorage = {
+      getItem: () => null,
       setItem: () => {},
       removeItem: () => {
         throw new Error("remove failed");
       },
     };
     expect(() => persistJsonArray(storage, "k", [])).toThrow("remove failed");
+  });
+
+  it("blocks writes from an already-loaded session when a restore marker appears", () => {
+    const storage = createStorage({ "records-key": '[{"id":"loaded"}]' });
+    storage.data.set(RESTORE_INTERRUPTION_STORAGE_KEY, "interrupted");
+    expect(() => persistJsonArray(storage, "records-key", [{ id: "new" }])).toThrow("multi-store restore was interrupted");
+    expect(() => persistJsonArray(storage, "records-key", [])).toThrow("multi-store restore was interrupted");
+    expect(storage.getItem("records-key")).toBe('[{"id":"loaded"}]');
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+
+  it("fails closed without writing when the marker cannot be read", () => {
+    const storage = createStorage();
+    storage.getItem.mockImplementation((key) => {
+      if (key === RESTORE_INTERRUPTION_STORAGE_KEY) throw new Error("Storage read denied");
+      return null;
+    });
+    expect(() => persistJsonArray(storage, "records-key", [{ id: "new" }])).toThrow("could not be verified");
+    expect(storage.setItem).not.toHaveBeenCalled();
   });
 });
 
@@ -80,6 +103,12 @@ describe("persistJsonValue", () => {
       ["array-key", "[]"],
     ]);
     expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+
+  it("blocks scalar autosaves while interruption state is present", () => {
+    const storage = createStorage({ [RESTORE_INTERRUPTION_STORAGE_KEY]: "interrupted" });
+    expect(() => persistJsonValue(storage, "cash-position", { currentCash: "100" })).toThrow("multi-store restore was interrupted");
+    expect(storage.setItem).not.toHaveBeenCalled();
   });
 
   describe("persistJsonArraysTransaction", () => {
@@ -100,6 +129,21 @@ describe("persistJsonValue", () => {
       ])).toThrow("Previous storage restored");
       expect(storage.getItem("actions")).toBe('[{"id":"old-action"}]');
       expect(storage.getItem("plans")).toBe('[{"id":"old-plan"}]');
+    });
+
+    it("stops a multi-store transaction if interruption is observed between writes and reports uncertain rollback", () => {
+      const storage = createStorage({ actions: "old-actions", plans: "old-plans" });
+      const setItem = storage.setItem.getMockImplementation();
+      storage.setItem.mockImplementation((key, value) => {
+        setItem?.(key, value);
+        if (key === "actions") storage.data.set(RESTORE_INTERRUPTION_STORAGE_KEY, "interrupted");
+      });
+      expect(() => persistJsonArraysTransaction(storage, [
+        { key: "actions", records: ["new-actions"] }, { key: "plans", records: ["new-plans"] },
+      ])).toThrow("Rollback failed");
+      expect(storage.getItem("plans")).toBe("old-plans");
+      expect(storage.getItem("actions")).toBe('["new-actions"]');
+      expect(storage.getItem(RESTORE_INTERRUPTION_STORAGE_KEY)).toBe("interrupted");
     });
 
     it("rejects silent writes and exposes failed rollback instead of claiming success", () => {
@@ -166,6 +210,7 @@ describe("persistJsonValue", () => {
 
   it("propagates setItem errors", () => {
     const storage: PersistenceStorage = {
+      getItem: () => null,
       setItem: () => {
         throw new Error("QuotaExceededError");
       },
