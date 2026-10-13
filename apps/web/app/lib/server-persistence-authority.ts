@@ -157,7 +157,8 @@ export function createServerPersistenceAuthority(dependencies: ServerPersistence
       if (!("subject" in principal)) return principal;
 
       const validated = await validateStageImportRequest(input);
-      if (validated.status !== "valid") return validated;
+      if (validated.status !== "valid") return validated.status === "source-invalid" || validated.status === "source-changed"
+        ? { status: "invalid-request", message: validated.message } : validated;
       return execute(principal, validated.value.fence.datasetId, "import",
         (repository) => repository.stageImport(validated.value),
         (stage) => stage === "operation"

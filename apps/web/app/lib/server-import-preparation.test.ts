@@ -1,11 +1,11 @@
 import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CONVERSION_STORAGE_KEY, DEFAULT_SAVED_VIEW_STORAGE_KEY, EMPIRE_OS_BACKUP_STORAGE_KEYS, STORAGE_KEY } from "./backup";
-import { backupStorageContent, sha256 } from "./independent-backup";
 import {
-  decodeRawStoreValue, encodeRawStoreValue, prepareServerImport, stageImportContent, validateStageImportRequest, verifyServerImportPlan,
+  decodeRawStoreValue, encodeRawStoreValue, importSourceSha256, prepareServerImport, stageImportContent,
+  validateStageImportRequest, verifyServerImportPlan, verifyStageImportSnapshot,
 } from "./server-import-preparation";
-import type { ImportPlan } from "./server-persistence-contract";
+import type { DatasetSnapshot, ImportPlan } from "./server-persistence-contract";
 
 beforeEach(() => { vi.stubGlobal("crypto", webcrypto); });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
@@ -33,9 +33,9 @@ describe("Server import preparation unit tests (no database)", () => {
     expect(result.status).toBe("prepared");
     if (result.status !== "prepared") throw new Error(JSON.stringify(result));
     expect(result.plan.entries).toEqual(EMPIRE_OS_BACKUP_STORAGE_KEYS.map((key) => ({ key, rawValue: values.get(key) ?? null })));
-    expect(result.plan.sourceSha256).toBe(await sha256(backupStorageContent(Object.fromEntries(
+    expect(result.plan.sourceSha256).toBe(await importSourceSha256(Object.fromEntries(
       result.plan.entries.map(({ key, rawValue }) => [key, rawValue]),
-    ))));
+    )));
     expect(Object.isFrozen(result.plan)).toBe(true);
     expect(Object.isFrozen(result.plan.entries)).toBe(true);
     expect(Object.isFrozen(result.plan.entries[0])).toBe(true);
@@ -48,6 +48,15 @@ describe("Server import preparation unit tests (no database)", () => {
     if (result.status !== "prepared") throw new Error(JSON.stringify(result));
     expect(result.plan.entries).toHaveLength(21);
     expect(result.plan.entries.every((entry) => entry.rawValue === null)).toBe(true);
+  });
+  it("fingerprints null, empty and exact UTF-16 code-unit values distinctly", async () => {
+    const storage: Record<string, string | null> = Object.fromEntries(EMPIRE_OS_BACKUP_STORAGE_KEYS.map((key) => [key, null]));
+    const absent = await importSourceSha256(storage);
+    expect(await importSourceSha256({ ...storage, [DEFAULT_SAVED_VIEW_STORAGE_KEY]: "" })).not.toBe(absent);
+    expect(await importSourceSha256({ ...storage, [DEFAULT_SAVED_VIEW_STORAGE_KEY]: "\u0000" }))
+      .not.toBe(await importSourceSha256({ ...storage, [DEFAULT_SAVED_VIEW_STORAGE_KEY]: "\ud800" }));
+    expect(await importSourceSha256({ ...storage, [DEFAULT_SAVED_VIEW_STORAGE_KEY]: "\ud800" }))
+      .not.toBe(await importSourceSha256({ ...storage, [DEFAULT_SAVED_VIEW_STORAGE_KEY]: "\ufffd" }));
   });
   it("repeated preparation and independent verification yield the same immutable content", async () => {
     const first = await plan();
@@ -118,7 +127,7 @@ describe("Server import preparation unit tests (no database)", () => {
     const original = await plan();
     const entries = original.entries.map((entry) => entry.key === CONVERSION_STORAGE_KEY
       ? { ...entry, rawValue: '[{"id":"a","targetType":"Convert to Action","deliveryLeadId":"missing"}]' } : entry);
-    const sourceSha256 = await sha256(backupStorageContent(Object.fromEntries(entries.map(({ key, rawValue }) => [key, rawValue]))));
+    const sourceSha256 = await importSourceSha256(Object.fromEntries(entries.map(({ key, rawValue }) => [key, rawValue])));
     expect((await verifyServerImportPlan({ ...original, entries, sourceSha256 })).status).toBe("source-invalid");
   });
   it("preserves raw default-view strings containing NUL and lone surrogates through preparation", async () => {
@@ -153,6 +162,32 @@ describe("Server import preparation unit tests (no database)", () => {
     expect(stageImportContent({ ...result.value, idempotencyKey: "import:two" })).not.toBe(first);
     expect(stageImportContent({ ...result.value, fence: { ...result.value.fence, generation: 2 } })).not.toBe(first);
     expect(first).not.toContain("empire-os-write");
+  });
+  it("reconciles an authorized database snapshot against every exact source code unit", async () => {
+    const storage = new Map<string, string>([
+      [STORAGE_KEY, ' [ {"id":"raw","unknown":"\\u0061"} ] '],
+      [DEFAULT_SAVED_VIEW_STORAGE_KEY, "\u0000\ud800\udfff\u00e9"],
+    ]);
+    const prepared = await prepareServerImport({ getItem: (key) => storage.get(key) ?? null });
+    if (prepared.status !== "prepared") throw new Error(JSON.stringify(prepared));
+    const request = {
+      fence: { datasetId: "00000000-0000-4000-8000-000000000001", protocolVersion: 1 as const, generation: 1, authorityRevision: 0 },
+      idempotencyKey: "import:readback", plan: prepared.plan,
+    };
+    const snapshot: DatasetSnapshot = {
+      ...request.fence, commitSequence: 1,
+      values: prepared.plan.entries.map(({ key, rawValue }) => ({ key, rawValue, revision: 1 })),
+    };
+    expect(await verifyStageImportSnapshot(request, snapshot)).toEqual({
+      status: "matches", sourceSha256: prepared.plan.sourceSha256,
+    });
+    const altered = {
+      ...snapshot, values: snapshot.values.map((entry) => entry.key === DEFAULT_SAVED_VIEW_STORAGE_KEY
+        ? { ...entry, rawValue: "\u0000\ud800\udfff\u00e8" } : entry),
+    };
+    expect(await verifyStageImportSnapshot(request, altered)).toEqual({ status: "mismatch", reason: "store-values" });
+    expect(await verifyStageImportSnapshot(request, { ...snapshot, commitSequence: 2 }))
+      .toEqual({ status: "mismatch", reason: "commit-shape" });
   });
 });
 

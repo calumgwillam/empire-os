@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:postgres": "vitest run database/tests/postgres.integration.test.ts"
+    "test:postgres": "vitest run database/tests/postgres.integration.test.ts",
+    "test:postgres:stage-v9": "vitest run --config vitest.stage-v9.config.ts database/tests/stage-import-v9.postgres.integration.test.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.14",

@@ -136,9 +136,10 @@ export function createOperationReconciler(store: OperationReconciliationStore) {
       if (executed) {
         if (executed.requestSha256 !== requestSha256 || executed.operation !== request.command.kind
           || executed.datasetId !== datasetId) {
-          // For a write, the executed request's policy revision lets trusted code re-check an exact
+          // The executed persistence request's policy revision lets trusted code re-check an exact
           // replay; the request content itself must still match that record's fingerprint.
-          const committed = executed.operation === "write" && executed.datasetId === datasetId
+          const committed = (executed.operation === "write" || executed.operation === "stage-import")
+            && executed.datasetId === datasetId
             ? allowedDecision(executed.decision, revision) : null;
           return {
             status: "conflict", operationId: request.operationId, message: "Operation ID was used for a different request.",

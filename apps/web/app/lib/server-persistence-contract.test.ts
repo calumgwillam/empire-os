@@ -191,7 +191,7 @@ describe("Server persistence contract unit tests (no database)", () => {
   });
   it("the unconfigured repository never claims a snapshot, import or commit", async () => {
     const repository = new UnconfiguredServerPersistenceRepository();
-    const plan = { version: 1 as const, sourceSha256: "a".repeat(64),
+    const plan = { version: 2 as const, sourceSha256: "a".repeat(64),
       entries: snapshot().values.map(({ key, rawValue }) => ({ key, rawValue })) };
     const results = await Promise.all([
       repository.readSnapshot({ datasetId: fence.datasetId, protocolVersion: 1 }),

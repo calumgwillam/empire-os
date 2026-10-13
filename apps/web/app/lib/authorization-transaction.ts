@@ -41,7 +41,7 @@ export async function validateTransactionAuthorizationInput(value: unknown): Pro
       case "stage-import": {
         const staged = await validateStageImportRequest(command.request);
         if (staged.status === "failed") throw new Error("Import fingerprint validation is unavailable.");
-        if (staged.status !== "valid") return null;
+        if (staged.status !== "valid" || staged.value.idempotencyKey !== value.operationId) return null;
         validated = { kind: "stage-import", request: staged.value };
         break;
       }
@@ -143,7 +143,7 @@ export function auditDecisionId(transactionId: string, operationId: string): str
 // Hex preserves every UTF-16 code unit, including values PostgreSQL JSONB cannot represent.
 export function authorizationRequestContent(input: TransactionAuthorizationRequest): string {
   const command = input.command;
-  return JSON.stringify(command.kind === "write" ? {
+  if (command.kind === "write") return JSON.stringify({
     ...input, command: { kind: "write", request: {
       ...command.request,
       writes: command.request.writes.map(({ rawValue, ...entry }) => {
@@ -151,7 +151,20 @@ export function authorizationRequestContent(input: TransactionAuthorizationReque
         return { ...entry, rawValueHex: bytes === null ? null : Buffer.from(bytes).toString("hex") };
       }),
     } },
-  } : input);
+  });
+  if (command.kind === "stage-import") return JSON.stringify({
+    ...input, command: { kind: "stage-import", request: {
+      ...command.request,
+      plan: {
+        ...command.request.plan,
+        entries: command.request.plan.entries.map(({ rawValue, ...entry }) => {
+          const bytes = encodeRawStoreValue(rawValue);
+          return { ...entry, rawValueHex: bytes === null ? null : Buffer.from(bytes).toString("hex") };
+        }),
+      },
+    } },
+  });
+  return JSON.stringify(input);
 }
 
 export function createTransactionalAuthorizationExecutor(store: TransactionalAuthorizationStore) {

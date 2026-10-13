@@ -1,9 +1,9 @@
-import { assertBackupRecoveryReferences, EMPIRE_OS_BACKUP_STORAGE_KEYS, type BackupStorage } from "./backup";
-import { backupStorageContent, sha256 } from "./independent-backup";
+import { assertBackupRecoveryReferences, EMPIRE_OS_BACKUP_STORAGE_KEYS, type BackupStorage, type EmpireOsBackup } from "./backup";
+import { backupStorageContent } from "./independent-backup";
 import { readStartupStorage } from "./startup-hydration";
 import {
-  hasOnlyFields, isBusinessKey, isIdempotencyKey, isObject, isSha256, validateDatasetFence,
-  type ImportPlan, type PersistenceProblem, type StageImportRequest, type Validation,
+  hasOnlyFields, isBusinessKey, isIdempotencyKey, isObject, isSha256, validateDatasetFence, validateSnapshot,
+  type DatasetSnapshot, type ImportPlan, type PersistenceProblem, type StageImportRequest, type Validation,
 } from "./server-persistence-contract";
 
 type PreparationFailure =
@@ -17,7 +17,7 @@ function message(error: unknown): string {
 }
 function freezePlan(storage: Record<string, string | null>, sourceSha256: string): ImportPlan {
   return Object.freeze({
-    version: 1, sourceSha256,
+    version: 2, sourceSha256,
     entries: Object.freeze(EMPIRE_OS_BACKUP_STORAGE_KEYS.map((key) => Object.freeze({ key, rawValue: storage[key] }))),
   });
 }
@@ -32,7 +32,7 @@ export async function prepareServerImport(source: Pick<BackupStorage, "getItem">
   }
   let fingerprint: string;
   try {
-    fingerprint = await sha256(backupStorageContent(storage));
+    fingerprint = await importSourceSha256(storage);
   } catch (error) {
     return { status: "failed", outcome: "not-submitted", message: `Source fingerprint could not be established: ${message(error)}` };
   }
@@ -49,7 +49,7 @@ export async function prepareServerImport(source: Pick<BackupStorage, "getItem">
 
 // Recompute on the server; a submitted fingerprint is evidence to check, not authority to trust.
 export async function verifyServerImportPlan(value: unknown): Promise<ImportPreparationResult> {
-  if (!isObject(value) || !hasOnlyFields(value, ["version", "sourceSha256", "entries"]) || value.version !== 1
+  if (!isObject(value) || !hasOnlyFields(value, ["version", "sourceSha256", "entries"]) || value.version !== 2
     || !isSha256(value.sourceSha256) || !Array.isArray(value.entries) || value.entries.length !== EMPIRE_OS_BACKUP_STORAGE_KEYS.length) {
     return { status: "source-invalid", message: "Import plan must contain all 21 stores and a SHA-256 fingerprint." };
   }
@@ -71,7 +71,7 @@ export async function verifyServerImportPlan(value: unknown): Promise<ImportPrep
   }
   let fingerprint: string;
   try {
-    fingerprint = await sha256(backupStorageContent(storage));
+    fingerprint = await importSourceSha256(storage);
   } catch (error) {
     return { status: "failed", outcome: "not-submitted", message: `Import fingerprint verification failed: ${message(error)}` };
   }
@@ -98,6 +98,75 @@ export function stageImportContent(request: StageImportRequest): string {
     request.plan.version, request.plan.sourceSha256,
     backupStorageContent(Object.fromEntries(request.plan.entries.map(({ key, rawValue }) => [key, rawValue]))),
   ]);
+}
+
+// A framed byte protocol makes the import source digest independently reproducible in PostgreSQL,
+// including NULs and lone surrogates which PostgreSQL text and JSONB cannot represent.
+export function importSourceContent(storage: EmpireOsBackup["storage"]): Uint8Array {
+  const encoder = new TextEncoder();
+  const chunks: Uint8Array[] = [encoder.encode("empire-os-import-source-v2\u0000")];
+  for (const key of EMPIRE_OS_BACKUP_STORAGE_KEYS) {
+    const keyBytes = encoder.encode(key);
+    if (keyBytes.length > 0xffff) throw new Error("Import source key exceeds the canonical encoding limit.");
+    chunks.push(new Uint8Array([keyBytes.length >>> 8, keyBytes.length & 0xff]), keyBytes);
+    const rawValue = storage[key];
+    if (rawValue === null) {
+      chunks.push(new Uint8Array([0]));
+      continue;
+    }
+    const length = rawValue.length;
+    if (!Number.isSafeInteger(length)) throw new Error("Import source value exceeds the canonical encoding limit.");
+    const encodedLength = new Uint8Array(8);
+    let remaining = length;
+    for (let index = encodedLength.length - 1; index >= 0; index -= 1) {
+      encodedLength[index] = remaining % 256;
+      remaining = Math.floor(remaining / 256);
+    }
+    const rawBytes = encodeRawStoreValue(rawValue);
+    if (rawBytes === null) throw new Error("Import source value encoding failed.");
+    chunks.push(new Uint8Array([1]), encodedLength, rawBytes);
+  }
+  const size = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const content = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    content.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return content;
+}
+
+export async function importSourceSha256(storage: EmpireOsBackup["storage"]): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", Uint8Array.from(importSourceContent(storage)).buffer);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export type StageImportSnapshotVerification =
+  | Readonly<{ status: "matches"; sourceSha256: string }>
+  | Readonly<{ status: "mismatch"; reason: "fence" | "commit-shape" | "store-values" | "source-fingerprint" }>;
+
+export async function verifyStageImportSnapshot(
+  request: StageImportRequest,
+  observed: unknown,
+): Promise<StageImportSnapshotVerification> {
+  const snapshot = validateSnapshot(observed);
+  if (snapshot.status !== "valid") return { status: "mismatch", reason: "store-values" };
+  const value = snapshot.value;
+  if (value.datasetId !== request.fence.datasetId || value.protocolVersion !== request.fence.protocolVersion
+    || value.generation !== request.fence.generation || value.authorityRevision !== request.fence.authorityRevision) {
+    return { status: "mismatch", reason: "fence" };
+  }
+  if (value.commitSequence !== 1 || value.values.some((entry) => entry.revision !== 1)) {
+    return { status: "mismatch", reason: "commit-shape" };
+  }
+  const source = Object.fromEntries(value.values.map(({ key, rawValue }) => [key, rawValue]));
+  if (request.plan.entries.some((entry) => source[entry.key] !== entry.rawValue)) {
+    return { status: "mismatch", reason: "store-values" };
+  }
+  if (await importSourceSha256(source) !== request.plan.sourceSha256) {
+    return { status: "mismatch", reason: "source-fingerprint" };
+  }
+  return { status: "matches", sourceSha256: request.plan.sourceSha256 };
 }
 
 // PostgreSQL text and UTF-8 encoders cannot losslessly represent every localStorage UTF-16 string.

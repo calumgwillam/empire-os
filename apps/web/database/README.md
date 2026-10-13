@@ -1,9 +1,10 @@
 # Isolated server persistence foundation
 
-Status: contract, proposed schema, fail-closed server authority/configuration boundaries
-and opt-in real PostgreSQL test harness.
-The `pg` driver is declared as a development-only dependency; no authenticated adapter,
-route handler, activation API, live import or production storage switch is installed.
+Status: server-only durable repository and import-staging implementation, fail-closed
+authority/configuration boundaries, and opt-in real PostgreSQL test harness. Import SQL
+is an inactive candidate in [006_stage_import_candidate.sql](./design/sql/006_stage_import_candidate.sql);
+it has not been applied or granted to any runtime role. The `pg` driver is development-only;
+no authenticated route, activation API, live import or production storage switch is installed.
 The migration was executed against the designated disposable PostgreSQL integration
 database, which is now nonempty. Never rerun the migration or integration suite against
 that instance, and never reset or clear it. Use a separate fresh disposable database for
@@ -187,8 +188,9 @@ UTF-16 bytea values and store revision expectations starting at zero. Existing
 `store_values`, transaction receipts and business datasets are not updated. This is
 an isolated enforcement probe, NOT the full `ServerPersistenceRepository` adapter.
 Generation/authority fences belong to the new immutable dataset mapping, separately
-from tenant policy revision. Stage-import operations explicitly roll back as unsupported;
-full import generation/source/idempotency/commit-sequence semantics remain unimplemented.
+from tenant policy revision. Candidate 006 extends the audit allow-list and deferred
+write check to support atomic first-import staging; it does not add a generation workflow
+or permit production activation.
 
 Audit and preparation effects use deferred foreign-key/constraint checks. An effect
 requires an allowed matching dataset/write audit; an authority update requires a
@@ -302,8 +304,15 @@ these primitives, the transactional executor and the reconciler:
   (`replayed: true`); different content under a used key is `idempotency-key-reused`;
   a stale policy is `unavailable/not-submitted` (retry the same request); a lost COMMIT
   acknowledgement or rollback is resolved through reconciliation, never assumed.
-- `lookupCommit` returns `unresolved` (the reconciler needs the exact original batch) and
-  `stageImport` returns `unavailable`; neither is implemented by this slice.
+- `lookupCommit` returns `unresolved` (the reconciler needs the exact original batch).
+- `stageImport` validates the full source twice, requires server-owned import and read
+  authority, checks for an empty dataset, stages through candidate 006 in the same tenant-
+  locked audited transaction, and verifies the first commit through authenticated exact
+  read-back. It neither allocates a generation nor activates/cuts over a dataset. Exact
+  retries reconcile against immutable request evidence; conflicting keys and occupied
+  targets fail without overwrites. Unknown COMMIT outcomes remain unknown until exact
+  operation reconciliation proves a committed audit. PostgreSQL support is dormant until
+  candidate review, fresh-database integration testing, and explicit runtime grants.
 
 `commitSequence` in a receipt is the dataset's committed write count observed at
 confirmation: exact for a direct commit, at least the original for recovered receipts.
@@ -743,12 +752,17 @@ It exercises both revocation/write orderings, stale decisions, tenant isolation,
 delegations, role assignment, audit failures, rollback, acknowledgement loss, source
 revocation, counter exhaustion and provenance/tombstone preservation. Its result explicitly
 says `test-model-only`. The model is not a full persistence-protocol implementation:
-it checks representative dataset fences but does not implement all store conflict,
-import generation, source durability or database idempotency semantics.
+the authorization model alone does not implement all PostgreSQL store-conflict or
+database durability semantics. The separate durable repository model covers import
+source validation, atomic staging, idempotency and uncertain outcomes, but remains a
+unit model rather than executable PostgreSQL evidence.
 
 No actual transactional database enforcement is implemented or verified by these tests.
-No new SQL migration, RLS policy, runtime connection, provider, endpoint or live writer
-is installed. The existing populated disposable integration database is untouched.
+The import repository has a transactional unit model, but candidate SQL has not been
+executed against PostgreSQL. Candidate 006 changes existing audit/trigger contracts and
+adds a SECURITY DEFINER staging function; it creates no new tables and remains inactive.
+No runtime role grant, provider, endpoint or live writer is installed. The existing
+populated disposable integration database is untouched.
 The existing `dataset_access` table is NOT automatically authoritative for this tenant
 model and is not a fallback if authority state is missing.
 
@@ -780,21 +794,26 @@ and advance revision, avoiding deletion/recreation ABA. Numeric counters are con
 to JavaScript's safe integer range; an adapter must validate PostgreSQL bigint conversions
 and fail on exhaustion rather than reset a counter.
 
-The source digest is SHA-256 over the existing registry-ordered `backupStorageContent`
-serialization, encoded as UTF-8. This serialization escapes lone surrogates; hashing raw
-strings with TextEncoder instead would lose information. `canonical_source` stores those
-serialized bytes. Raw values are never normalized or reserialized.
+The existing `import_sources.canonical_source` column belongs to the separate generation
+schema described above and is not used by candidate 006. Version-2 import plans use a framed, registry-ordered SHA-256 protocol over UTF-8 keys and exact UTF-16LE value bytes, with
+explicit null/string tags and code-unit lengths. Candidate 006 independently recomputes
+this digest from the hex-encoded request before writing. This preserves NUL and lone
+surrogates without coercing them through PostgreSQL text or JSONB. Raw values are never
+normalized or reserialized.
 Import generation and idempotency metadata are outside the unchanged version-1 backup
-format. Backup exports must use a consistent database snapshot and emit all 21 exact
+format. Candidate 006 stores the exact submitted request in the existing immutable audit
+row and the 21 raw values in `preparation_writes`; this is staging evidence, not a durable
+independent backup. Backup exports must use a consistent database snapshot and emit all 21 exact
 strings/nulls. Recovery snapshots and external-backup receipts are separate legacy
 evidence, not silently included in or discarded by a business-data import.
 
-The SQL enforces key membership, counter bounds, null semantics, append-only evidence,
-store update revision increments and absence of a live mode. It does **not yet enforce**
-21-row completeness, source-hash recomputation, verified-generation immutability,
-authority revision transitions, full receipt correctness or membership-based policies.
-Those require the reviewed adapter/constraints and actual database tests. SQL constraints
-alone do not implement the repository transaction protocol.
+Migrations 001–005 do not permit database-enforced import staging. Candidate 006 adds
+complete 21-key validation, source-digest recomputation, tenant/actor/import authorization,
+an uninitialized-target check, and atomic audit plus all-store insertion through the
+existing transaction. Candidate SQL has only static/offline parser coverage so far:
+these database guarantees remain unverified until a new disposable PostgreSQL candidate
+integration suite passes. It does not activate a dataset, change generations, modify
+migrations 001–005 or update existing business `store_values`.
 
 ## Required adapter transaction algorithm
 
@@ -862,16 +881,18 @@ integrity, hashes immutable copied values, then checks for source changes after 
 It cannot prevent legacy changes after the final reread. `verifyServerImportPlan`
 independently repeats validation/hash checks; a claimed hash is not trusted.
 
-The future `stageImport` implementation must validate its envelope, recompute the
-`stageImportContent` request digest, authorize import, take the dataset lock,
-check idempotency and expected authority, and allocate a strictly newer generation.
-Save source evidence, all 21 copied values, verification and replay metadata atomically.
-It must not change the dataset's current generation or activate storage. Different
-sources allocate distinct generations; they never overwrite prior source evidence.
-Existing same-digest evidence must be compared byte-for-byte before reuse. Conflicting
-idempotency reuse fails. Failed preparation leaves the prior generation/evidence intact;
-committed preparation is safely replayable. There is no source-completeness or cutover
-guarantee, even when every destination row verifies.
+`stageImport` is implemented in the dormant repository path. It recomputes the request
+and source fingerprints, verifies the full snapshot, requires import plus read
+authorization, and uses an empty-target check followed by atomic audit/21-store staging.
+Candidate 006 binds the exact UTF-16LE source values to the source digest and records them
+with immutable authorization evidence. Every success path—including exact replay and
+reconciliation after an uncertain COMMIT acknowledgement—requires a fresh authenticated
+read-back matching all 21 exact values, revision 1 and commit sequence 1. Replay receipts
+retain the hash of the exact request recorded at commit, even if policy revision has since
+advanced. Replays are exact-key and exact-request only; collisions fail closed. The
+implementation does not allocate a new generation, alter the current generation, activate
+storage, migrate browser data or provide independent backup/recovery. Those are separate
+future decisions.
 
 ## Required real PostgreSQL validation
 
@@ -888,6 +909,97 @@ version, with separate migration/runtime identities and real concurrent connecti
 - Default RLS denial, unauthenticated requests, cross-dataset/actor isolation and pooled
   connection identity leakage.
 - Durable recovery into a fresh database, backup retention and documented operator access.
+
+Candidate 006 additionally requires a separate, explicitly approved integration run on a
+**new empty disposable database** after migrations 001–004. A dedicated test helper must
+apply the candidate only in that suite; it must not enter ordinary migration/startup
+flows. Before any candidate approval, real adapter tests must prove: valid 21-store import
+and exact read-back (including null, empty, NUL, paired/lone surrogates); DB-side rejection
+of a forged source digest; malformed/incomplete/duplicate stores; occupied target;
+idempotent exact replay and conflicting replay; actor/tenant/dataset mismatch; failure
+after partial insert and atomic rollback of rows plus audit; lost COMMIT acknowledgement
+followed by locked exact reconciliation; role grants/default denial; and registry order
+and byte-level hash parity with TypeScript. They must use fresh disposable PostgreSQL databases, separate migration and restricted
+runtime identities, and must not touch the existing
+populated integration databases. No such candidate PostgreSQL test has yet been executed.
+
+### Candidate 006 real PostgreSQL v9 verification
+
+[stage-import-v9.postgres.integration.test.ts](./tests/stage-import-v9.postgres.integration.test.ts)
+is a dedicated opt-in suite, separate from the shared v1–v8 configurations. It accepts
+only the fixed one-use database `empire_os_test_stage_v9_20261013_1754`, on literal
+loopback, with the exact marker `empire-os-stage-import-v9-disposable-only`, PostgreSQL
+16, and dedicated `EMPIRE_OS_STAGE_V9_TEST_PG_*` settings. Before any migration, it
+checks database/user/marker/primary/version, requires a superuser belonging only to the
+disposable local cluster, takes its own advisory lock, and verifies there are no
+non-system schemas or public objects. Any mismatch or existing object stops setup; there
+is no reset or rerun path. It applies exactly migrations 001–004 and candidate 006, never
+005. The candidate remains ungranted to PUBLIC; runtime test logins receive only the
+specific tenant-scoped reads and reviewed function EXECUTE privileges used by this
+adapter, with no direct DML rights.
+
+Use a newly provisioned isolated local PostgreSQL 16 cluster. These commands are
+instructions only; do not point them at any shared cluster, port-forward, prior v1–v8
+database, or existing `empire_os_test_stage_v9_20261013_1754` database. Choose a
+test-only password for the local superuser and enter it at the prompt:
+
+```sh
+export PATH="/Applications/Postgres.app/Contents/Versions/latest/bin:$PATH"
+export STAGE_V9_CLUSTER="$(mktemp -d /tmp/empire-os-stage-v9.XXXXXX)"
+initdb -D "$STAGE_V9_CLUSTER" --username=empire_os_test_owner \
+  --auth-local=scram-sha-256 --auth-host=scram-sha-256 --pwprompt
+pg_ctl -D "$STAGE_V9_CLUSTER" -l "$STAGE_V9_CLUSTER/server.log" \
+  -o "-h 127.0.0.1 -p 55439" start
+
+read -rs "EMPIRE_OS_STAGE_V9_TEST_PG_PASSWORD?Disposable PostgreSQL password: "; echo
+export EMPIRE_OS_STAGE_V9_TEST_PG_PASSWORD
+PGPASSWORD="$EMPIRE_OS_STAGE_V9_TEST_PG_PASSWORD" createdb \
+  --host=127.0.0.1 --port=55439 --username=empire_os_test_owner \
+  empire_os_test_stage_v9_20261013_1754
+PGPASSWORD="$EMPIRE_OS_STAGE_V9_TEST_PG_PASSWORD" psql \
+  --host=127.0.0.1 --port=55439 --username=empire_os_test_owner --dbname=postgres \
+  --set=ON_ERROR_STOP=1 \
+  --command="COMMENT ON DATABASE empire_os_test_stage_v9_20261013_1754 IS 'empire-os-stage-import-v9-disposable-only'"
+```
+
+From `apps/web`, set `EMPIRE_OS_STAGE_V9_TEST_PG_HOST=127.0.0.1`,
+`EMPIRE_OS_STAGE_V9_TEST_PG_PORT=55439`,
+`EMPIRE_OS_STAGE_V9_TEST_PG_DATABASE=empire_os_test_stage_v9_20261013_1754`,
+`EMPIRE_OS_STAGE_V9_TEST_PG_USER=empire_os_test_owner`, and
+`EMPIRE_OS_STAGE_V9_TEST_PG_CONFIRM=empire_os_test_stage_v9_20261013_1754:empire-os-stage-import-v9-disposable-only`.
+Supply the test-only password through `EMPIRE_OS_STAGE_V9_TEST_PG_PASSWORD`, then run:
+
+```sh
+npm run test:postgres:stage-v9
+```
+
+The suite intentionally leaves the migrated database and generated role fixtures in
+place. Its strict empty-database guard makes this exact one-use database non-rerunnable;
+do not drop/reset it. A future verification must receive a separately reviewed unique
+v9 database name/configuration and a new empty local instance. After the run, stop only
+the cluster created above and clear the shell variable:
+
+```sh
+pg_ctl -D "$STAGE_V9_CLUSTER" stop
+unset EMPIRE_OS_STAGE_V9_TEST_PG_PASSWORD
+```
+
+Coverage includes TypeScript/PostgreSQL v2 digest parity over all 21 registry keys and
+database rejection of a well-formed request with a forged source digest,
+null/empty/NUL/paired and lone surrogates/NFC-vs-NFD values, exact authenticated
+read-back, source-bound replay and key conflict, occupancy in both legacy `store_values`
+and authorization `preparation_writes`, malformed and incomplete SQL payloads,
+tenant/actor/capability denial, membership revocation, injected mid-loop database
+failure with audit-and-row rollback, actual COMMIT followed by simulated lost
+acknowledgement and immutable-audit reconciliation, competing concurrent imports,
+default-PUBLIC execute denial, restricted-login privilege flags, direct evidence
+read/DML denial, and SET ROLE escalation denial.
+
+The integration file and SQL parser/static tests have not been run here. A successful
+run is necessary but not sufficient for activation: the suite uses a superuser only for
+isolated schema/fixture/test-trigger setup, does not test TLS or pool identity lifecycle,
+and does not certify backup/restore or production durability. Candidate 006 remains
+inactive and requires independent SQL review before any runtime grant or deployment.
 
 No local PostgreSQL service/configuration was established for this increment, and no
 terminal probes were run. Database availability and all database guarantees above remain

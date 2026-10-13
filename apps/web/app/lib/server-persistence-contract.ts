@@ -54,7 +54,7 @@ export type CommitLookup = SnapshotRequest & Readonly<{
 export type LookupResult = CommitResult | { status: "unresolved"; retry: "same-request-only" };
 
 export type ImportPlan = Readonly<{
-  version: 1;
+  version: 2;
   sourceSha256: string;
   entries: readonly Readonly<{ key: BusinessStorageKey; rawValue: string | null }>[];
 }>;

@@ -1,7 +1,7 @@
 import { versions } from "node:process";
 import { evaluateAuthorization } from "./authorization-policy";
 import { createOperationReconciler } from "./authorization-reconciliation";
-import { createTransactionalAuthorizationExecutor } from "./authorization-transaction";
+import { authorizationRequestContent, createTransactionalAuthorizationExecutor } from "./authorization-transaction";
 import type {
   OperationReconciliationStore, TransactionAuthorizationRequest, TransactionalAuthorizationStore,
 } from "./authorization-transaction-contract";
@@ -17,9 +17,11 @@ import {
 import {
   validateCommitLookup, validateCommitReceipt, validateSnapshot, validateSnapshotRequest, writeBatchContent,
   type BatchConflict, type CommitResult, type DatasetSnapshot, type PersistenceProblem, type ServerPersistenceRepository,
-  type WriteBatch,
+  type StageImportResult, type WriteBatch,
 } from "./server-persistence-contract";
 import { assertDatasetContent, prepareServerWrite, prepareWriteCandidate, type PreparedWrite } from "./server-write-preparation";
+import { verifyStageImportSnapshot, validateStageImportRequest } from "./server-import-preparation";
+import { sha256 } from "./independent-backup";
 
 if (!versions.node) throw new Error("Durable dataset persistence requires the Node.js runtime.");
 
@@ -35,9 +37,9 @@ export type DurableDatasetRepositoryDependencies = Readonly<{
   reconciliationStore: OperationReconciliationStore;
 }>;
 
-type Observed = Readonly<{ authority: DurableAuthorityState; snapshot: DatasetSnapshot }>;
+type Observed = Readonly<{ authority: DurableAuthorityState; snapshot: DatasetSnapshot; checkedAt: number }>;
 type Resolution =
-  | Readonly<{ kind: "executed"; transactionId: string }>
+  | Readonly<{ kind: "executed"; transactionId: string; requestSha256: string }>
   | Readonly<{ kind: "absent" }>
   | Readonly<{ kind: "reused" }>
   | Readonly<{ kind: "problem"; problem: Extract<PersistenceProblem, { status: "unauthorized" }> | "unavailable" }>;
@@ -46,6 +48,7 @@ function unavailable(outcome: "not-submitted" | "unknown", message: string): Per
   return { status: "unavailable", outcome, message };
 }
 const CONFIRMATION_LOST = "The write outcome could not be confirmed; retry only the exact original request.";
+const IMPORT_CONFIRMATION_LOST = "The import outcome could not be confirmed; retry only the exact original request.";
 
 // Commit receipts are issued ONLY from database-confirmed COMMIT or committed audit evidence.
 // commitSequence is the dataset's committed write count observed when the receipt was confirmed:
@@ -92,7 +95,7 @@ export function createDurableDatasetRepository(dependencies: DurableDatasetRepos
       // Fail closed: never serve stored business data that would not hydrate or recover.
       return unavailable("not-submitted", "Stored dataset failed integrity validation.");
     }
-    return { authority: authority.value, snapshot: snapshot.value };
+    return { authority: authority.value, snapshot: snapshot.value, checkedAt: observation.checkedAt };
   }
 
   function receipt(prepared: PreparedWrite, transactionId: string, commitSequence: number, replayed: boolean): CommitResult {
@@ -119,16 +122,23 @@ export function createDurableDatasetRepository(dependencies: DurableDatasetRepos
   async function resolve(request: TransactionAuthorizationRequest): Promise<Resolution> {
     const first = await reconcileOnce(request);
     let result = first;
+    let reconciledRequest = request;
     if (first?.status === "conflict" && first.executedPolicyRevision !== undefined
       && first.executedPolicyRevision !== request.expectedPolicyRevision) {
-      result = await reconcileOnce({ ...request, expectedPolicyRevision: first.executedPolicyRevision });
+      reconciledRequest = { ...request, expectedPolicyRevision: first.executedPolicyRevision };
+      result = await reconcileOnce(reconciledRequest);
       if (result?.status === "not-executed" || result?.status === "conflict") return { kind: "reused" };
     }
     if (!result) return { kind: "problem", problem: "unavailable" };
     switch (result.status) {
       case "executed":
-        return result.source === "committed-database-read" ? { kind: "executed", transactionId: result.transactionId }
-          : { kind: "problem", problem: "unavailable" };
+        if (result.source !== "committed-database-read") return { kind: "problem", problem: "unavailable" };
+        try {
+          return { kind: "executed", transactionId: result.transactionId,
+            requestSha256: await sha256(authorizationRequestContent(reconciledRequest)) };
+        } catch {
+          return { kind: "problem", problem: "unavailable" };
+        }
       case "not-executed": return { kind: "absent" };
       // A different allowed write holds this key. Without that hint only denied attempts (or a
       // non-write) used it, so THIS batch has no committed effect.
@@ -251,8 +261,122 @@ export function createDurableDatasetRepository(dependencies: DurableDatasetRepos
       return { status: "unresolved" as const, retry: "same-request-only" as const };
     },
 
-    async stageImport() {
-      return unavailable("not-submitted", "Durable import staging is not implemented.");
+    async stageImport(input: unknown): Promise<StageImportResult> {
+      const validated = await validateStageImportRequest(input);
+      if (validated.status !== "valid") return validated.status === "source-invalid" || validated.status === "source-changed"
+        ? { status: "invalid-request", message: validated.message } : validated;
+      const stage = validated.value;
+
+      // Import requires both import authority and read authority: the existing committed snapshot
+      // is the occupancy guard, and a first commit must be independently read back before success.
+      const before = await observe(stage.fence.datasetId);
+      if (!("snapshot" in before)) return before;
+      const importDecision = evaluateAuthorization(principal, before.authority.snapshot, {
+        tenantId, datasetId: stage.fence.datasetId, expectedPolicyRevision: before.authority.snapshot.revision,
+        operation: "access", capability: "import",
+      }, before.checkedAt);
+      if (importDecision.status !== "allowed") return { status: "unauthorized", reason: "forbidden" };
+
+      const request: TransactionAuthorizationRequest = {
+        operationId: stage.idempotencyKey, tenantId,
+        expectedPolicyRevision: before.authority.snapshot.revision,
+        command: { kind: "stage-import", request: stage },
+      };
+      let requestSha256: string;
+      try {
+        requestSha256 = await sha256(authorizationRequestContent(request));
+      } catch {
+        return unavailable("not-submitted", "Import request fingerprint could not be established.");
+      }
+      const toResult = (transactionId: string, committedRequestSha256: string, replayed: boolean): StageImportResult => ({
+        status: "staged", replayed, receipt: Object.freeze({
+          fence: stage.fence, generation: stage.fence.generation, sourceSha256: stage.plan.sourceSha256,
+          transactionId, idempotencyKey: stage.idempotencyKey, requestSha256: committedRequestSha256, commitSequence: 1,
+          durability: "database-commit-confirmed",
+        }),
+      });
+      const confirmCommittedImport = async (
+        transactionId: string, committedRequestSha256: string, replayed: boolean,
+      ): Promise<StageImportResult> => {
+        const after = await observe(stage.fence.datasetId);
+        if (!("snapshot" in after)) return unavailable("unknown",
+          "Import COMMIT was confirmed, but authorized read-back could not be completed; retry only the exact original request.");
+        let verification: Awaited<ReturnType<typeof verifyStageImportSnapshot>>;
+        try {
+          verification = await verifyStageImportSnapshot(stage, after.snapshot);
+        } catch {
+          return unavailable("unknown",
+            "Import COMMIT was confirmed, but exact source-to-database verification could not be completed; preserve the database state for investigation.");
+        }
+        if (verification.status !== "matches") return unavailable("unknown",
+          "Import COMMIT was confirmed, but exact source-to-database verification failed; preserve the database state for investigation.");
+        return toResult(transactionId, committedRequestSha256, replayed);
+      };
+      const resolution = await resolve(request);
+      if (resolution.kind === "executed") {
+        return confirmCommittedImport(resolution.transactionId, resolution.requestSha256, true);
+      }
+      if (resolution.kind === "reused") {
+        return { status: "conflict", reason: "idempotency-key-reused", message: "Import idempotency key was used for different content." };
+      }
+      if (resolution.kind === "problem") {
+        return resolution.problem === "unavailable"
+          ? unavailable("not-submitted", "Import replay could not be verified.") : resolution.problem;
+      }
+
+      const isEmpty = before.snapshot.commitSequence === 0
+        && before.snapshot.values.every((value) => value.revision === 0 && value.rawValue === null);
+      if (!isEmpty) return {
+        status: "conflict", reason: "import-source",
+        message: "Import target is already initialized; no stored values were changed.",
+      };
+
+      let executed: Awaited<ReturnType<ReturnType<typeof createTransactionalAuthorizationExecutor>["execute"]>>;
+      try {
+        executed = await createTransactionalAuthorizationExecutor(
+          dependencies.transactionStore(() => undefined),
+        ).execute(principal, request);
+      } catch {
+        executed = { status: "unavailable", outcome: "unknown", message: IMPORT_CONFIRMATION_LOST };
+      }
+
+      if (executed.status === "executed") {
+        if (executed.durability !== "transaction-commit-confirmed") return unavailable("unknown", IMPORT_CONFIRMATION_LOST);
+        return confirmCommittedImport(executed.transactionId, requestSha256, false);
+      }
+
+      if (executed.status === "unauthorized") return executed;
+      if (executed.status === "invalid-request") return executed;
+      if (executed.status === "unavailable" && executed.outcome === "not-submitted") return executed;
+      if (executed.status === "denied") {
+        return executed.decision.reason === "stale-policy"
+          ? unavailable("not-submitted", "Authorization changed during import; retry the exact original request.")
+          : { status: "unauthorized", reason: "forbidden" };
+      }
+
+      const resolved = await resolve(request);
+      if (resolved.kind === "executed") {
+        return confirmCommittedImport(resolved.transactionId, resolved.requestSha256, true);
+      }
+      if (resolved.kind === "reused") {
+        return { status: "conflict", reason: "idempotency-key-reused", message: "Import idempotency key was used for different content." };
+      }
+      if (resolved.kind === "problem") {
+        return resolved.problem === "unavailable"
+          ? unavailable(executed.status === "unavailable" && executed.outcome === "unknown" ? "unknown" : "not-submitted",
+            IMPORT_CONFIRMATION_LOST)
+          : resolved.problem;
+      }
+      if (executed.status === "failed" && executed.outcome === "rolled-back") {
+        const current = await observe(stage.fence.datasetId);
+        if ("snapshot" in current && (current.snapshot.commitSequence !== 0
+          || current.snapshot.values.some((value) => value.revision !== 0 || value.rawValue !== null))) {
+          return { status: "conflict", reason: "import-source",
+            message: "Import target became initialized; no stored values were overwritten." };
+        }
+        return executed;
+      }
+      return unavailable("not-submitted", "The import did not commit; retry only the exact original request.");
     },
   }) as ServerPersistenceRepository;
 }
@@ -284,15 +408,18 @@ export function createDurableServerPersistenceAuthority(dependencies: DurableSer
   return createServerPersistenceAuthority({
     resolveSession: (request) => dependencies.resolveSession(request),
     async authorize(principal: AuthenticatedPrincipal, datasetId: string, capability: PersistenceCapability) {
-      if (capability === "import") return false;
       const read = await createPostgresDatasetSnapshotReader(dependencies.sourceForPrincipal(principal)).readDataset(tenantId, datasetId);
       if (read.status !== "observed" || read.observation.actorSubject !== principal.subject) {
         throw new Error("Authorization state is unavailable.");
       }
       const { authority, checkedAt } = read.observation;
-      return evaluateAuthorization(principal, authority.snapshot, {
-        tenantId, datasetId, expectedPolicyRevision: authority.snapshot.revision, operation: "access", capability,
+      const allowed = (requestedCapability: PersistenceCapability) => evaluateAuthorization(principal, authority.snapshot, {
+        tenantId, datasetId, expectedPolicyRevision: authority.snapshot.revision,
+        operation: "access", capability: requestedCapability,
       }, checkedAt).status === "allowed";
+      if (!allowed(capability)) return false;
+      // The repository requires read authorization to guard occupancy and verify exact read-back.
+      return capability !== "import" || allowed("read");
     },
     repositoryForPrincipal: (principal) => createPostgresDurableDatasetRepository(
       principal, tenantId, dependencies.sourceForPrincipal(principal)),

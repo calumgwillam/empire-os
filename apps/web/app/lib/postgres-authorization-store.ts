@@ -11,6 +11,7 @@ import { validateAuthorityTransition, validateDurableAuthorityState, type Durabl
 import { isAuthorityIdentifier } from "./authorization-policy";
 import { isCounter, isDatasetId, isIdempotencyKey, validateWriteBatch, type DatasetSnapshot, type WriteBatch } from "./server-persistence-contract";
 import { authorizationRequestContent } from "./authorization-transaction";
+import { validateStageImportRequest } from "./server-import-preparation";
 import {
   decodeDatasetSnapshotRow, READ_DATASET_SNAPSHOT_SQL, type AuthorizedDatasetReader, type DatasetReadResult,
 } from "./authorized-dataset-read";
@@ -233,42 +234,61 @@ export function createPostgresAuthorizationStore(
           stagePersistence: async (command: SensitivePersistenceCommand) => {
             assertActive();
             if (authorityWrites || persistenceWrites) throw new Error("Only one sensitive operation is allowed.");
-            if (command.kind !== "write") throw new Error("PostgreSQL import staging is not implemented.");
-            const batch = validateWriteBatch(command.request);
-            if (batch.status !== "valid") throw new Error("Invalid preparation write.");
-            const request = batch.value;
-            if (!state.snapshot.datasets.some((entry) => entry.datasetId === request.fence.datasetId)) throw new Error("Invalid tenant dataset.");
+            let fenceRequest: WriteBatch["fence"];
+            let idempotencyKey: string;
+            let importEntryCount: number | undefined;
+            if (command.kind === "write") {
+              const batch = validateWriteBatch(command.request);
+              if (batch.status !== "valid") throw new Error("Invalid preparation write.");
+              fenceRequest = batch.value.fence;
+              idempotencyKey = batch.value.idempotencyKey;
+            } else {
+              const imported = await validateStageImportRequest(command.request);
+              if (imported.status !== "valid" || imported.value.idempotencyKey !== request.operationId) {
+                throw new Error("Invalid staged import.");
+              }
+              fenceRequest = imported.value.fence;
+              idempotencyKey = imported.value.idempotencyKey;
+              importEntryCount = imported.value.plan.entries.length;
+            }
+            if (!state.snapshot.datasets.some((entry) => entry.datasetId === fenceRequest.datasetId)) throw new Error("Invalid tenant dataset.");
             const fence = await client.query<{ generation: string; authority_revision: string; authority_mode: string }>(
               `SELECT generation::text,authority_revision::text,authority_mode FROM empire_os_authorization.datasets
-               WHERE tenant_id=$1 AND dataset_id=$2`, [tenantId, request.fence.datasetId],
+               WHERE tenant_id=$1 AND dataset_id=$2`, [tenantId, fenceRequest.datasetId],
             );
             if (fence.rows.length !== 1 || fence.rows[0].authority_mode !== "preparation-only"
-              || counter(fence.rows[0].generation) !== request.fence.generation
-              || counter(fence.rows[0].authority_revision) !== request.fence.authorityRevision) throw new Error("Preparation dataset fence mismatch.");
+              || counter(fence.rows[0].generation) !== fenceRequest.generation
+              || counter(fence.rows[0].authority_revision) !== fenceRequest.authorityRevision) throw new Error("Preparation dataset fence mismatch.");
             const revisions = await client.query<{ store_key: string; revision: string }>(
               `SELECT store_key,max(revision)::text AS revision FROM empire_os_authorization.preparation_writes
-               WHERE tenant_id=$1 AND dataset_id=$2 GROUP BY store_key`, [tenantId, request.fence.datasetId],
+               WHERE tenant_id=$1 AND dataset_id=$2 GROUP BY store_key`, [tenantId, fenceRequest.datasetId],
             );
             const current = new Map(revisions.rows.map((row) => [row.store_key, counter(row.revision)]));
-            for (const entry of [...request.reads, ...request.writes]) {
-              if ((current.get(entry.key) ?? 0) !== entry.expectedRevision) throw new Error("Preparation store revision conflict.");
-            }
-            if (lockedWriteCandidate) {
-              const read = await client.query(READ_DATASET_SNAPSHOT_SQL, [tenantId, request.fence.datasetId]);
-              if (read.rows.length !== 1) throw new Error("Locked dataset snapshot unavailable.");
-              const locked = decodeDatasetSnapshotRow(read.rows[0], tenantId, request.fence.datasetId);
-              // Same transaction and lock: the re-read must match the authority and revisions already checked.
-              if (!locked.snapshot || locked.readDecision.status !== "allowed" || !same(locked.authority, state)
-                || locked.snapshot.generation !== request.fence.generation
-                || locked.snapshot.authorityRevision !== request.fence.authorityRevision
-                || locked.snapshot.values.some((entry) => (current.get(entry.key) ?? 0) !== entry.revision)) {
-                throw new Error("Locked dataset snapshot is inconsistent.");
+            if (command.kind === "write") {
+              const batch = validateWriteBatch(command.request);
+              if (batch.status !== "valid") throw new Error("Invalid preparation write.");
+              for (const entry of [...batch.value.reads, ...batch.value.writes]) {
+                if ((current.get(entry.key) ?? 0) !== entry.expectedRevision) throw new Error("Preparation store revision conflict.");
               }
-              lockedWriteCandidate(request, locked.snapshot);
+              if (lockedWriteCandidate) {
+                const read = await client.query(READ_DATASET_SNAPSHOT_SQL, [tenantId, fenceRequest.datasetId]);
+                if (read.rows.length !== 1) throw new Error("Locked dataset snapshot unavailable.");
+                const locked = decodeDatasetSnapshotRow(read.rows[0], tenantId, fenceRequest.datasetId);
+                // Same transaction and lock: the re-read must match the authority and revisions already checked.
+                if (!locked.snapshot || locked.readDecision.status !== "allowed" || !same(locked.authority, state)
+                  || locked.snapshot.generation !== fenceRequest.generation
+                  || locked.snapshot.authorityRevision !== fenceRequest.authorityRevision
+                  || locked.snapshot.values.some((entry) => (current.get(entry.key) ?? 0) !== entry.revision)) {
+                  throw new Error("Locked dataset snapshot is inconsistent.");
+                }
+                lockedWriteCandidate(batch.value, locked.snapshot);
+              }
+            } else if (current.size !== 0 || importEntryCount !== 21) {
+              throw new Error("Import target is not an uninitialized dataset.");
             }
             stagedCommand = structuredClone(command);
             persistenceWrites += 1;
-            stagedIdempotencyKey = request.idempotencyKey;
+            stagedIdempotencyKey = idempotencyKey;
             await refreshClock();
           },
           appendAudit: async (evidence: AuthorizationAuditEvidence) => {
@@ -280,8 +300,13 @@ export function createPostgresAuthorizationStore(
             }
             const stagedAudit = structuredClone(evidence);
             if (stagedCommand && !same(stagedCommand, request.command)) throw new Error("Staged request differs from bound request.");
-            await client.query("SELECT empire_os_authorization.apply_operation($1::text,$2::jsonb,$3::jsonb)",
-              [authorizationRequestContent(request), JSON.stringify(stagedAudit), proposedState ? JSON.stringify(proposedState) : null]);
+            if (request.command.kind === "stage-import") {
+              await client.query("SELECT empire_os_authorization.stage_import($1::text,$2::jsonb)",
+                [authorizationRequestContent(request), JSON.stringify(stagedAudit)]);
+            } else {
+              await client.query("SELECT empire_os_authorization.apply_operation($1::text,$2::jsonb,$3::jsonb)",
+                [authorizationRequestContent(request), JSON.stringify(stagedAudit), proposedState ? JSON.stringify(proposedState) : null]);
+            }
             auditState.evidence = stagedAudit;
             await refreshClock();
           },

@@ -7,12 +7,15 @@ import type {
 import { evaluateAuthorization } from "./authorization-policy";
 import { reconciliationPermitted } from "./authorization-reconciliation";
 import type { AuthorizedDatasetReader, DatasetReadObservation } from "./authorized-dataset-read";
-import { CONVERSION_STORAGE_KEY, EMPIRE_OS_BACKUP_STORAGE_KEYS, STORAGE_KEY } from "./backup";
+import {
+  CONVERSION_STORAGE_KEY, DEFAULT_SAVED_VIEW_STORAGE_KEY, EMPIRE_OS_BACKUP_STORAGE_KEYS, STORAGE_KEY,
+} from "./backup";
 import type { DurableAuthorityState } from "./durable-authorization-state";
 import { createDurableDatasetRepository } from "./durable-dataset-repository";
 import { sha256 } from "./independent-backup";
 import type { AuthenticatedPrincipal } from "./server-persistence-authority";
 import { assertDatasetContent } from "./server-write-preparation";
+import { prepareServerImport } from "./server-import-preparation";
 import {
   commitRetryPolicy, writeBatchContent, type DatasetSnapshot, type ServerPersistenceRepository, type WriteBatch,
 } from "./server-persistence-contract";
@@ -47,6 +50,7 @@ class DatasetDatabase {
   commitMode: "confirm" | "lost-ack" | "fail" = "confirm";
   beforeLockedCheck: (() => void) | undefined;
   readTamper: ((observation: DatasetReadObservation) => DatasetReadObservation) | undefined;
+  failImportAfterStore = false;
   clock = 1000;
   private tails = new Map<string, Promise<void>>();
 
@@ -88,7 +92,7 @@ class DatasetDatabase {
 
   transactionStore(actor: AuthenticatedPrincipal) {
     return (lockedWriteCandidate: (batch: WriteBatch, locked: DatasetSnapshot) => void): TransactionalAuthorizationStore => ({
-      runLocked: (tenantId, operation) => this.locked(tenantId, async (): Promise<AuthorizationStoreResult> => {
+      runLocked: (tenantId, operation, authorizationRequest) => this.locked(tenantId, async (): Promise<AuthorizationStoreResult> => {
         const transactionId = randomUUID();
         const staged: Row[] = [];
         const audits: AuthorizationAuditEvidence[] = [];
@@ -101,20 +105,32 @@ class DatasetDatabase {
             nowMs: () => this.clock,
             stageAuthority: async () => { throw new Error("Not modelled."); },
             stagePersistence: async (command) => {
-              if (command.kind !== "write") throw new Error("Not modelled.");
-              const request = command.request;
               this.beforeLockedCheck?.();
-              const current = this.snapshotOf(tenantId, request.fence.datasetId);
-              if (!this.states.get(tenantId)?.snapshot.datasets.some((entry) => entry.datasetId === request.fence.datasetId)
-                || request.fence.generation !== 1 || request.fence.authorityRevision !== 0) throw new Error("Fence mismatch.");
-              for (const entry of [...request.reads, ...request.writes]) {
-                if (current.values.find((value) => value.key === entry.key)?.revision !== entry.expectedRevision) {
-                  throw new Error("Revision conflict.");
+              if (command.kind === "write") {
+                const request = command.request;
+                const current = this.snapshotOf(tenantId, request.fence.datasetId);
+                if (!this.states.get(tenantId)?.snapshot.datasets.some((entry) => entry.datasetId === request.fence.datasetId)
+                  || request.fence.generation !== 1 || request.fence.authorityRevision !== 0) throw new Error("Fence mismatch.");
+                for (const entry of [...request.reads, ...request.writes]) {
+                  if (current.values.find((value) => value.key === entry.key)?.revision !== entry.expectedRevision) {
+                    throw new Error("Revision conflict.");
+                  }
                 }
+                lockedWriteCandidate(request, current);
+                staged.push(...request.writes.map((entry) => ({ tenantId, datasetId: request.fence.datasetId, key: entry.key,
+                  revision: entry.expectedRevision + 1, rawValue: entry.rawValue, transactionId })));
+              } else {
+                const request = command.request;
+                const current = this.snapshotOf(tenantId, request.fence.datasetId);
+                if (!this.states.get(tenantId)?.snapshot.datasets.some((entry) => entry.datasetId === request.fence.datasetId)
+                  || request.fence.generation !== 1 || request.fence.authorityRevision !== 0
+                  || current.commitSequence !== 0 || current.values.some((value) => value.revision !== 0 || value.rawValue !== null)
+                  || request.idempotencyKey !== authorizationRequest?.operationId) throw new Error("Import target is not pristine.");
+                request.plan.entries.forEach(({ key, rawValue }, index) => {
+                  staged.push({ tenantId, datasetId: request.fence.datasetId, key, revision: 1, rawValue, transactionId });
+                  if (this.failImportAfterStore && index === 9) throw new Error("Injected mid-import failure.");
+                });
               }
-              lockedWriteCandidate(request, current);
-              staged.push(...request.writes.map((entry) => ({ tenantId, datasetId: request.fence.datasetId, key: entry.key,
-                revision: entry.expectedRevision + 1, rawValue: entry.rawValue, transactionId })));
             },
             appendAudit: async (audit) => { audits.push(structuredClone(audit)); },
             beforeCommit: (guard) => { guards.push(guard); },
@@ -376,7 +392,7 @@ describe("durable dataset repository", () => {
     expect(await leaking.readSnapshot(request)).toMatchObject({ status: "unavailable" });
   });
 
-  it("never claims a commit when the reader is unavailable and does not implement lookup by fingerprint or imports", async () => {
+  it("never claims a commit when the reader is unavailable and leaves fingerprint lookup unresolved", async () => {
     const db = new DatasetDatabase();
     const actor = await owner();
     const broken = createDurableDatasetRepository({ principal: actor, tenantId: "tenant-a",
@@ -387,7 +403,151 @@ describe("durable dataset repository", () => {
     const repository = db.repository(actor);
     expect(await repository.lookupCommit({ datasetId: DATASET_A, protocolVersion: 1, generation: 1, idempotencyKey: "write-1",
       requestSha256: "0".repeat(64) })).toEqual({ status: "unresolved", retry: "same-request-only" });
-    expect(await repository.stageImport({} as never)).toMatchObject({ status: "unavailable", outcome: "not-submitted" });
+    expect(await repository.stageImport({} as never)).toMatchObject({ status: "invalid-request" });
     expect(await repository.writeBatch({} as never)).toMatchObject({ status: "invalid-request" });
+  });
+
+  async function importRequest(idempotencyKey = "import-one", source: Record<string, string | null> = {
+    [STORAGE_KEY]: ' [ {"id":"source","unknown":"\\u0061"} ] ',
+    [DEFAULT_SAVED_VIEW_STORAGE_KEY]: "view\u0000\ud800\udfff\ud83d\ude00",
+  }) {
+    const prepared = await prepareServerImport({ getItem: (key) => source[key] ?? null });
+    if (prepared.status !== "prepared") throw new Error(JSON.stringify(prepared));
+    return { fence: fence(), idempotencyKey, plan: prepared.plan };
+  }
+
+  it("atomically stages all registered values losslessly, confirms COMMIT, and reads back an exact match", async () => {
+    const db = new DatasetDatabase();
+    const repository = db.repository(await owner());
+    const request = await importRequest();
+    const result = await repository.stageImport(request);
+    expect(result).toMatchObject({
+      status: "staged", replayed: false, receipt: { idempotencyKey: "import-one", commitSequence: 1,
+        durability: "database-commit-confirmed", sourceSha256: request.plan.sourceSha256 },
+    });
+    expect(db.rows).toHaveLength(EMPIRE_OS_BACKUP_STORAGE_KEYS.length);
+    expect(db.audits).toHaveLength(1);
+    expect(db.audits[0]).toMatchObject({ operation: "stage-import", operationId: "import-one", decision: { status: "allowed" } });
+    const read = await repository.readSnapshot({ datasetId: DATASET_A, protocolVersion: 1 });
+    if (read.status !== "snapshot") throw new Error(JSON.stringify(read));
+    expect(read.snapshot.values).toEqual(request.plan.entries.map(({ key, rawValue }) => ({ key, rawValue, revision: 1 })));
+    expect(read.snapshot.values.find((entry) => entry.key === DEFAULT_SAVED_VIEW_STORAGE_KEY)?.rawValue)
+      .toBe("view\u0000\ud800\udfff\ud83d\ude00");
+  });
+
+  it("does not report staged success when authorized post-COMMIT read-back differs", async () => {
+    const db = new DatasetDatabase();
+    db.readTamper = (observation) => {
+      if (db.audits.length === 0 || observation.snapshot === null) return observation;
+      return { ...observation, snapshot: {
+        ...observation.snapshot,
+        values: observation.snapshot.values.map((entry) => entry.key === DEFAULT_SAVED_VIEW_STORAGE_KEY
+          ? { ...entry, rawValue: "tampered" } : entry),
+      } };
+    };
+    const result = await db.repository(await owner()).stageImport(await importRequest());
+    expect(result).toMatchObject({ status: "unavailable", outcome: "unknown" });
+    expect(db.rows).toHaveLength(EMPIRE_OS_BACKUP_STORAGE_KEYS.length);
+    expect(db.audits).toHaveLength(1);
+
+    const uncertain = new DatasetDatabase();
+    uncertain.commitMode = "lost-ack";
+    uncertain.readTamper = (observation) => uncertain.audits.length > 0 && observation.snapshot ? {
+      ...observation, snapshot: {
+        ...observation.snapshot,
+        values: observation.snapshot.values.map((entry) => entry.key === DEFAULT_SAVED_VIEW_STORAGE_KEY
+          ? { ...entry, rawValue: "unreconciled database value" } : entry),
+      },
+    } : observation;
+    const retryRepository = uncertain.repository(await owner());
+    const retryRequest = await importRequest("lost-ack-readback");
+    expect(await retryRepository.stageImport(retryRequest)).toMatchObject({ status: "unavailable", outcome: "unknown" });
+    expect(uncertain.rows).toHaveLength(EMPIRE_OS_BACKUP_STORAGE_KEYS.length);
+    expect(uncertain.audits).toHaveLength(1);
+    uncertain.readTamper = undefined;
+    expect(await retryRepository.stageImport(retryRequest)).toMatchObject({ status: "staged", replayed: true });
+    expect(uncertain.rows).toHaveLength(EMPIRE_OS_BACKUP_STORAGE_KEYS.length);
+    expect(uncertain.audits).toHaveLength(1);
+  });
+
+  it("rejects occupied targets and conflicting idempotency replay without changing committed rows", async () => {
+    const db = new DatasetDatabase();
+    const repository = db.repository(await owner());
+    const first = await importRequest();
+    expect((await repository.stageImport(first)).status).toBe("staged");
+    const committed = db.fingerprint();
+    expect(await repository.stageImport(await importRequest("import-two"))).toMatchObject({
+      status: "conflict", reason: "import-source",
+    });
+    expect(db.fingerprint()).toBe(committed);
+    const changed = await importRequest("import-one", {
+      [STORAGE_KEY]: '[{"id":"different"}]',
+      [DEFAULT_SAVED_VIEW_STORAGE_KEY]: "changed\u0000",
+    });
+    expect(await repository.stageImport(changed)).toMatchObject({ status: "conflict", reason: "idempotency-key-reused" });
+    expect(db.fingerprint()).toBe(committed);
+  });
+
+  it("reconciles a lost COMMIT acknowledgement and exact replay only after fresh authenticated read-back", async () => {
+    const db = new DatasetDatabase();
+    const repository = db.repository(await owner());
+    const request = await importRequest();
+    const first = await repository.stageImport(request);
+    expect(first).toMatchObject({ status: "staged", replayed: false });
+    if (first.status !== "staged") throw new Error(JSON.stringify(first));
+
+    db.readTamper = (observation) => observation.snapshot ? { ...observation, snapshot: {
+      ...observation.snapshot,
+      values: observation.snapshot.values.map((entry) => entry.key === DEFAULT_SAVED_VIEW_STORAGE_KEY
+        ? { ...entry, rawValue: "database value differs" } : entry),
+    } } : observation;
+    expect(await repository.stageImport(request)).toMatchObject({ status: "unavailable", outcome: "unknown" });
+    db.readTamper = undefined;
+
+    db.bumpPolicy();
+    expect(await repository.stageImport(request)).toMatchObject({ status: "staged", replayed: true,
+      receipt: { requestSha256: first.receipt.requestSha256, transactionId: first.receipt.transactionId } });
+    expect(db.rows).toHaveLength(EMPIRE_OS_BACKUP_STORAGE_KEYS.length);
+    expect(db.audits).toHaveLength(1);
+
+    const uncertain = new DatasetDatabase();
+    uncertain.commitMode = "lost-ack";
+    expect(await uncertain.repository(await owner()).stageImport(await importRequest("lost-ack")))
+      .toMatchObject({ status: "staged", replayed: true, receipt: { durability: "database-commit-confirmed" } });
+    expect(uncertain.rows).toHaveLength(EMPIRE_OS_BACKUP_STORAGE_KEYS.length);
+    expect(uncertain.audits).toHaveLength(1);
+  });
+
+  it("rolls back the entire import after a mid-batch failure and never exposes partial stores", async () => {
+    const db = new DatasetDatabase();
+    db.failImportAfterStore = true;
+    const result = await db.repository(await owner()).stageImport(await importRequest());
+    expect(result).toMatchObject({ status: "failed", outcome: "rolled-back" });
+    expect(db.rows).toEqual([]);
+    expect(db.audits).toEqual([]);
+  });
+
+  it("fails closed for actor mismatch, unauthorized import, and incomplete source plans", async () => {
+    const db = new DatasetDatabase();
+    const request = await importRequest();
+    const mismatched = createDurableDatasetRepository({
+      principal: await testPrincipal("owner", DATASET_A), tenantId: "tenant-a",
+      reader: db.reader(await testPrincipal("recipient", DATASET_A)),
+      transactionStore: db.transactionStore(await testPrincipal("owner", DATASET_A)),
+      reconciliationStore: db.reconciliationStore(await testPrincipal("owner", DATASET_A)),
+    });
+    expect(await mismatched.stageImport(request)).toMatchObject({ status: "unavailable", outcome: "not-submitted" });
+    const tenantMismatchActor = await testPrincipal("owner", DATASET_A);
+    const wrongTenant = createDurableDatasetRepository({ principal: tenantMismatchActor, tenantId: "tenant-b",
+      reader: db.reader(tenantMismatchActor), transactionStore: db.transactionStore(tenantMismatchActor),
+      reconciliationStore: db.reconciliationStore(tenantMismatchActor) });
+    expect(await wrongTenant.stageImport(request)).toMatchObject({ status: "unauthorized", reason: "forbidden" });
+    expect(await db.repository(await testPrincipal("recipient", DATASET_A)).stageImport(request))
+      .toMatchObject({ status: "unauthorized", reason: "forbidden" });
+    expect(await db.repository(await owner()).stageImport({
+      ...request, plan: { ...request.plan, entries: request.plan.entries.slice(1) },
+    })).toMatchObject({ status: "invalid-request" });
+    expect(db.rows).toEqual([]);
+    expect(db.audits).toEqual([]);
   });
 });
