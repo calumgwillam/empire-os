@@ -567,6 +567,125 @@ Phase 4A neither invokes nor modifies the existing ordinary restore executor. It
 not activate the PostgreSQL consumer, run database integration tests, alter persisted
 formats, migrate localStorage or change hydration/load/save behaviour.
 
+### Phase 4B: recovery journal format and read-only reconciliation
+
+[exceptional-recovery-journal.ts](../app/lib/exceptional-recovery-journal.ts) defines a
+version-1 **planning-only** journal, canonical serialization, complete rollback image,
+validator, monotonic transitions and crash-reconciliation assessment. Nothing persists
+the journal or checkpoint, reads live storage, changes business data, establishes an
+actual fence, restores values, clears markers, or enables restoration. Every result
+denies execution; reconciliation also explicitly denies resume, rollback and marker
+clearance. A structurally valid journal is not an execution permit or durability proof.
+
+**Binding and integrity**
+
+- Initial preparation requires an original, deeply frozen Phase 4A plan. The planner
+  now weakly tracks issuance identity; copied, fabricated and serialized plans cannot
+  create journals. This does not change plan contents, hash domains, confirmation
+  consumption, or repeatable planning, and does not strongly retain plan data.
+- The journal commits to the exact complete plan hash (including its versions, stages,
+  target values and rollback obligations), plan version, consumed confirmation and
+  attempt IDs, challenge/assessment identities, backup file/storage fingerprints,
+  evidence file/content fingerprints, all current-state fingerprints, original
+  history/marker fingerprints, acknowledgement/planning times and expiry.
+  The original plan must be retained separately if its contents are needed later;
+  the journal binds it by hash rather than duplicating its target payload.
+- The separate versioned rollback image binds the same attempt and plan and includes
+  exactly the ordered 21 business values, original recovery history and original
+  interruption marker. Missing, extra, duplicate or reordered keys are rejected.
+  Values remain exact strings or null: empty, absent, corrupt JSON, NUL and unpaired
+  UTF-16 surrogates are not normalized, repaired or discarded. The existing marker-aware
+  evidence implementation independently recomputes source-state, history and marker
+  fingerprints from the complete image.
+- Binding, image and each record use separate domains with the existing exact
+  UTF-16-code-unit fingerprint encoding. Records bind sequence, prior record hash,
+  time, state, readback observations and explicit failure reasons to the binding and
+  image hashes. Strict JSON parsing/canonical round-trip rejects partial records,
+  duplicate JSON fields, unknown fields and incompatible formats.
+- Validation and transitions require a separately trusted checkpoint containing the
+  expected attempt, plan, binding, image, sequence and head hashes. Older complete
+  journals, truncated histories, alternate branches and other attempts are refused
+  against that checkpoint. Never derive this trust anchor from the journal being
+  assessed; storing them together in the same untrusted slot proves nothing.
+
+**Monotonic state model**
+
+The preparation path is `prepared -> rollback-image-checked -> fence-observed`.
+Image checking requires exact canonical image readback **and all 23 unchanged current
+values**. Fence observation requires another complete image readback and all original
+values except the exact attempt/plan/image-bound marker. These functions inspect only
+caller-supplied snapshots; they cannot prove where a readback came from, that it is
+durable, or that another writer was absent. `fence-observed` is not execution readiness.
+
+Each preparation state can move to `interrupted`, `uncertain` or terminal `refused`.
+Interruption can only become uncertain or refused; uncertainty can only become refused;
+refusal has no successors. No state represents successful restoration, completed
+rollback, marker release or automatic resumption. Sequence strictly increases, time
+cannot move backwards, and records cannot skip or repeat preparation states. Preparation
+and fencing require time strictly before expiry. Failure/evidence retention remains
+possible after expiry: expiry must never erase rollback obligations or interruption
+evidence. Time is supplied by trusted composition; no clock is read or reserved here.
+
+Read-only reconciliation rejects invalid records, unknown checkpoints, incomplete live
+snapshots and missing/mismatched image readback. Otherwise it reports changed business
+keys, history equality, original/attempt/unexpected marker classification, expiry and
+the recorded state. Even a complete unchanged before-image is not proof that no writes
+ever occurred (ABA remains possible). Changed bytes may be concurrent or partial
+restoration writes; the assessment deliberately does not attribute ownership, infer
+success, or authorize overwriting them. Original marker bytes are rollback evidence,
+not permission to replace or clear the active interruption fence.
+
+**Durability and storage failure remain unresolved**
+
+This phase establishes a serializable format, not durable storage. Deterministic pure
+transitions do not consume heads: two callers can independently propose successors to
+the same checkpoint. Repeated read-only validation is intentionally safe. Process-local
+issuance identity is not a durable replay ledger, and SHA-256 is not a signature.
+An attacker who can replace both a journal and its trusted checkpoint can forge their
+relationship. After a reload, validation is useful only with an independently
+authenticated, current checkpoint; absence or uncertainty must stop recovery rather
+than rebuilding trust from journal bytes.
+
+Before persistence or execution is implemented, separately review and prove:
+
+1. Durable single-use attempt reservation and atomic checkpoint compare-and-swap,
+   including protection against rollback/replay across browser/server restarts.
+2. Enforceable cross-tab/all-writer exclusion. Existing localStorage fences are
+   check-then-write guards, not locks; neither multi-key writes nor journal/checkpoint/
+   marker updates are atomic.
+3. Pinned, externally recoverable complete image and journal storage with capacity,
+   quota, lossless UTF-16 readback, access-control and retention guarantees. Corrupt
+   existing recovery history must not be decoded, evicted or overwritten to store it.
+4. A persistence protocol for every crash window between image, journal, checkpoint
+   and marker writes. Quota/IO errors, partial writes, uncertain acknowledgements,
+   missing checkpoints and failed readback must retain all available evidence and
+   fences, prohibit automatic retry/reset, and require read-only reconciliation.
+   A refused pure function cannot itself durably latch a failure.
+5. Fresh trusted clocks and live authority/state/attempt checks at actual write
+   boundaries, audited durable confirmation composition, and separately reviewed
+   forward-write, rollback, crash-fault-injection and fence-release protocols.
+
+Journal/image serializations contain sensitive raw business data and may be large.
+No size/durability capacity guarantee or persistence location is supplied by this
+format. Do not log, upload, automatically export or persist these values.
+
+[exceptional-recovery-journal.test.ts](../app/lib/exceptional-recovery-journal.test.ts)
+adds offline cases for exact bindings, original-plan provenance, independent fingerprint
+compatibility, all 23 stale values, null/empty/lone-surrogate preservation, complete
+readback, invalid/skipped/repeated transitions, expiry and backward clocks, interruption,
+uncertainty, terminal refusal, tampering, partial writes, incompatible records, replay,
+forks, asynchronous input capture, crypto failure and read-only crash reconciliation.
+Recommended focused offline validation from `apps/web` (not integration tests):
+
+```sh
+npm test -- app/lib/exceptional-recovery-journal.test.ts app/lib/exceptional-recovery-execution-plan.test.ts app/lib/exceptional-recovery-transaction-gate.test.ts app/lib/exceptional-recovery-authorization.test.ts
+npx tsc --noEmit
+```
+
+Existing storage formats, ordinary backup/restore, browser write-fencing, hydration,
+database uniqueness/replay enforcement and dormant PostgreSQL fixtures are unchanged.
+No migration or persisted-data conversion is required.
+
 ### Exceptional recovery durable confirmation consumer (inactive)
 
 [postgres-exceptional-recovery-confirmation-consumer.ts](../app/lib/postgres-exceptional-recovery-confirmation-consumer.ts)

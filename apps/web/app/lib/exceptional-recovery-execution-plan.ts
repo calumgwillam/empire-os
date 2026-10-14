@@ -17,7 +17,12 @@ import {
 import { isObject, isSha256 } from "./server-persistence-contract";
 
 export const EXCEPTIONAL_RECOVERY_PLAN_VERSION = 1;
+const issuedExecutionPlans = new WeakSet<object>();
 const RAW_KEYS = [...EMPIRE_OS_BACKUP_STORAGE_KEYS, RECOVERY_SNAPSHOTS_STORAGE_KEY, RESTORE_INTERRUPTION_STORAGE_KEY];
+
+export function isOriginalExceptionalRecoveryExecutionPlan(value: unknown): value is ExceptionalRecoveryExecutionPlan {
+  return value !== null && typeof value === "object" && issuedExecutionPlans.has(value);
+}
 
 export type ExceptionalRecoveryExecutionPlanInput = Readonly<{
   selection: Readonly<{ backupFileContents: string; evidenceFileContents: string }>;
@@ -226,7 +231,9 @@ export async function planExceptionalRecoveryExecution(input: ExceptionalRecover
     const planSha256 = await exceptionalRecoveryFingerprint(
       "empire-os-exceptional-recovery-execution-plan-v1", JSON.stringify(body),
     );
-    return Object.freeze({ status: "planned" as const, executionAllowed: false as const, plan: Object.freeze({ ...body, planSha256 }) });
+    const plan = Object.freeze({ ...body, planSha256 });
+    issuedExecutionPlans.add(plan);
+    return Object.freeze({ status: "planned" as const, executionAllowed: false as const, plan });
   } catch (error) {
     return refuse("planning-failed", `Recovery planning failed without writes: ${error instanceof Error ? error.message : String(error)}`);
   }
