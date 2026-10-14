@@ -85,6 +85,137 @@ describe("Exceptional recovery evidence envelope", () => {
     });
   });
 
+  it("captures, exports and re-verifies exact marker-present state without writing", async () => {
+    const marker = "restore interrupted:\u0000\ud800";
+    const history = "{damaged\u0000history:\udfff";
+    const source = fullSource({
+      [RESTORE_INTERRUPTION_STORAGE_KEY]: marker,
+      [RECOVERY_SNAPSHOTS_STORAGE_KEY]: history,
+      [STORAGE_KEY]: "\ud800\u0000store",
+      [EMPIRE_OS_BACKUP_STORAGE_KEYS[1]]: "",
+    });
+    const before = [...source.values];
+
+    await expect(createExceptionalRecoveryEvidence(source))
+      .rejects.toMatchObject({ code: "marker-present" });
+    const evidence = await createExceptionalRecoveryEvidence(source, { allowInterruptedMarker: true });
+    expect(evidence.version).toBe(2);
+    expect(evidence.interruptionMarker).toEqual({ present: true, rawValue: marker });
+    expect(evidence.recoveryHistory).toEqual({ present: true, rawValue: history });
+    expect(evidence.stores[STORAGE_KEY]).toBe("\ud800\u0000store");
+    expect(evidence.stores[EMPIRE_OS_BACKUP_STORAGE_KEYS[1]]).toBe("");
+    expect(evidence.stores[EMPIRE_OS_BACKUP_STORAGE_KEYS[2]]).toBeNull();
+    const file = await exportExceptionalRecoveryEvidenceFile(evidence);
+    expect(file).toContain("\\ud800");
+    expect(file).toContain("\\udfff");
+    expect(await verifyExceptionalRecoveryEvidenceFile(file, source, { allowInterruptedMarker: true })).toEqual({
+      status: "matches-current-state",
+      evidenceSha256: evidence.evidenceSha256,
+      storesSha256: evidence.storesSha256,
+      recoveryHistorySha256: evidence.recoveryHistorySha256,
+      storeCount: 21,
+      interruptionMarkerPresent: true,
+    });
+    expect([...source.values]).toEqual(before);
+  });
+
+  it("binds exact marker bytes into evidence identity and reports marker changes on re-verification", async () => {
+    const source = fullSource({ [RESTORE_INTERRUPTION_STORAGE_KEY]: String.fromCharCode(0xd800) });
+    const first = await createExceptionalRecoveryEvidence(source, { allowInterruptedMarker: true });
+    const file = await exportExceptionalRecoveryEvidenceFile(first);
+    source.values.set(RESTORE_INTERRUPTION_STORAGE_KEY, String.fromCharCode(0xd801));
+
+    expect(await verifyExceptionalRecoveryEvidenceFile(file, source, { allowInterruptedMarker: true }))
+      .toMatchObject({
+        status: "mismatch",
+        changedStores: [],
+        recoveryHistoryChanged: false,
+        interruptionMarkerChanged: true,
+      });
+    const second = await createExceptionalRecoveryEvidence(source, { allowInterruptedMarker: true });
+    expect(second.evidenceSha256).not.toBe(first.evidenceSha256);
+    expect(await verifyExceptionalRecoveryEvidenceFile(file, source))
+      .toMatchObject({ status: "source-unavailable" });
+  });
+
+  it("rejects marker changes during capture and verification", async () => {
+    const changingCapture = fullSource({ [RESTORE_INTERRUPTION_STORAGE_KEY]: "before" });
+    let markerReads = 0;
+    const captureSource = {
+      getItem: (key: string) => {
+        if (key === RESTORE_INTERRUPTION_STORAGE_KEY && ++markerReads === 2) {
+          return "changed-between-capture-passes";
+        }
+        return changingCapture.getItem(key);
+      },
+    };
+    await expect(createExceptionalRecoveryEvidence(captureSource, { allowInterruptedMarker: true }))
+      .rejects.toMatchObject({ code: "source-changed" });
+
+    const source = fullSource({ [RESTORE_INTERRUPTION_STORAGE_KEY]: "before" });
+    const file = await exportExceptionalRecoveryEvidenceFile(
+      await createExceptionalRecoveryEvidence(source, { allowInterruptedMarker: true }),
+    );
+    const changingVerification = {
+      getItem: (key: string) => {
+        if (key === STORAGE_KEY) source.values.set(RESTORE_INTERRUPTION_STORAGE_KEY, "changed-during-verification");
+        return source.getItem(key);
+      },
+    };
+    expect(await verifyExceptionalRecoveryEvidenceFile(file, changingVerification, { allowInterruptedMarker: true }))
+      .toMatchObject({ status: "source-changed" });
+  });
+
+  it("preserves version-1 files but never treats them as marker-present evidence", async () => {
+    const source = fullSource();
+    const legacyFile = await exportExceptionalRecoveryEvidenceFile(await createExceptionalRecoveryEvidence(source));
+    expect(JSON.parse(legacyFile).version).toBe(1);
+    expect(await verifyExceptionalRecoveryEvidenceFile(legacyFile, source))
+      .toMatchObject({ status: "matches-current-state" });
+
+    source.values.set(RESTORE_INTERRUPTION_STORAGE_KEY, "interrupted");
+    expect(await verifyExceptionalRecoveryEvidenceFile(legacyFile, source, { allowInterruptedMarker: true }))
+      .toMatchObject({ status: "invalid-file" });
+  });
+
+  it("fails closed when marker or any registered store is unreadable", async () => {
+    const inaccessibleMarker = {
+      getItem: (key: string) => {
+        if (key === RESTORE_INTERRUPTION_STORAGE_KEY) throw new Error("Marker read denied");
+        return null;
+      },
+    };
+    await expect(createExceptionalRecoveryEvidence(inaccessibleMarker, { allowInterruptedMarker: true }))
+      .rejects.toMatchObject({ code: "storage-unavailable" });
+
+    const inaccessibleStore = {
+      getItem: (key: string) => {
+        if (key === EMPIRE_OS_BACKUP_STORAGE_KEYS[7]) throw new Error("Store read denied");
+        return null;
+      },
+    };
+    await expect(createExceptionalRecoveryEvidence(inaccessibleStore, { allowInterruptedMarker: true }))
+      .rejects.toMatchObject({ code: "storage-unavailable" });
+  });
+
+  it("strictly validates the version-2 marker claim and preserves corrupt history as raw bytes", async () => {
+    const history = "{not-json\u0000\ud800";
+    const source = fullSource({
+      [RESTORE_INTERRUPTION_STORAGE_KEY]: "",
+      [RECOVERY_SNAPSHOTS_STORAGE_KEY]: history,
+    });
+    const evidence = await createExceptionalRecoveryEvidence(source, { allowInterruptedMarker: true });
+    expect(evidence.interruptionMarker).toEqual({ present: true, rawValue: "" });
+    expect(evidence.recoveryHistory.rawValue).toBe(history);
+    const forged = { ...evidence, interruptionMarker: { present: false, rawValue: "" } };
+    await expect(validateExceptionalRecoveryEvidence(forged))
+      .rejects.toBeInstanceOf(ExceptionalRecoveryEvidenceError);
+    await expect(validateExceptionalRecoveryEvidence({ ...evidence, interruptionMarkerSha256: "0".repeat(64) }))
+      .rejects.toBeInstanceOf(ExceptionalRecoveryEvidenceError);
+    await expect(validateExceptionalRecoveryEvidence({ ...evidence, interruptionMarker: { present: true, rawValue: null } }))
+      .rejects.toBeInstanceOf(ExceptionalRecoveryEvidenceError);
+  });
+
   it("identifies changed business stores and recovery-history raw bytes independently", async () => {
     const source = fullSource({
       [RECOVERY_SNAPSHOTS_STORAGE_KEY]: "{first}",
