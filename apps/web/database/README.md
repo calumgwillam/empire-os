@@ -437,6 +437,31 @@ revalidate references and evidence freshness, and obtain/consume a fresh explici
 confirmation immediately before writes. That future transaction, execution model,
 pre-restore pinning, rollback and marker handling are outside this assessment module.
 
+### Exceptional recovery transaction-time safety gate (still no restore execution)
+
+[exceptional-recovery-transaction-gate.ts](../app/lib/exceptional-recovery-transaction-gate.ts)
+adds a separate last-check model. It requires a Phase 2 assessment, then independently
+reruns Phase 2's complete standalone-backup validation, external-evidence decoding and
+verification, and current 21-store/history/marker observation three times, including
+immediately before asking an injected confirmation consumer to atomically claim the nonce and exact
+confirmation identity. It compares those fresh bindings and assessment identity with the
+prior assessment and challenge. Changed state returns `changed-state`; malformed or failed
+validation returns `validation-refused`; a prior claim returns `replay-refused`; and any
+unconfirmed/ambiguous consume result returns `consumption-uncertain`, never readiness.
+
+The caller must obtain a nonce from `createTrustedExceptionalRecoveryNonce`, which requires
+32 bytes from Web Crypto's CSPRNG, rejects low-diversity output, and brands the result for
+runtime checking. Repeated values generated or consumed in this module instance are
+rejected. The injected consumer must provide atomic consume-if-unused semantics for both
+nonce and confirmation ID, and must fail closed for unknown outcomes. A process-local or
+localStorage-backed implementation cannot provide cross-tab atomicity; a future
+production consumer needs a shared authoritative atomic service. Consumer success yields
+only a short-lived attempt-scoped `transaction-ready` observation with
+`transactionExecutionAllowed: false`. It is neither restoration authority nor executable
+permission; no restoration code consumes it in this phase. A future writer must still
+repeat all checks against fresh state at its own write boundary and preserve the pinned
+pre-restore/rollback/marker requirements.
+
 ### Separate opt-in integration harness
 
 [authorization.postgres.integration.test.ts](./tests/authorization.postgres.integration.test.ts)
