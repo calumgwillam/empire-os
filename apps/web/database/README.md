@@ -538,6 +538,97 @@ candidate to that fixture, and performs no cleanup. Each run needs a newly provi
 database; it must never reuse the previous v9 database or any prior integration database.
 The integration suite has not been run as part of this change.
 
+#### Recovery integration harness safety (Phase 3C, still dormant)
+
+[recovery-confirmation-harness.ts](./tests/recovery-confirmation-harness.ts) now owns
+the recovery suite's identity, exclusive claim, empty-database check and candidate setup.
+It does not call the shared migration harness and never applies migrations 001–006.
+The five tests run sequentially with test retries and repeats disabled. No infrastructure
+is created by the harness.
+
+Use a completely new, local PostgreSQL **16** cluster for each attempted run. Proposed
+port **55440** is only a planning choice: independently prove it is free before provisioning.
+The recovery configuration explicitly rejects **55432** (protected production) and
+**55439** (protected historical v9), including numerically equivalent port settings.
+Never reuse any v1–v9 cluster, database, role credentials or data directory. The older
+port-55432 provisioning example elsewhere in this document is not permission to use that
+port and must not be used for recovery verification.
+
+In addition to the existing dedicated `HOST`, `PORT`, `DATABASE`, `USER`, `PASSWORD`,
+`FIXTURE_ID` and exact `CONFIRM` values, the prefix
+`EMPIRE_OS_RECOVERY_CONFIRM_TEST_PG_` now requires:
+
+- `CLUSTER_DIRECTORY`: the absolute, canonical data-directory path, with final component
+  exactly `empire-os-recovery-<32-hex-fixture-id>`. No symlink aliases, relative paths,
+  trailing separators or normalized-path substitutions are accepted. Use the actual
+  canonical path, for example `/private/tmp/...`, not a `/tmp` symlink alias on macOS.
+- `CLUSTER_SYSTEM_IDENTIFIER`: the new cluster's positive uint64 system identifier,
+  independently recorded from its local control data after separately authorized
+  provisioning, never copied from an unverified database response.
+
+All dedicated settings must be absent to skip; any partial or invalid configuration
+refuses setup. Validated configuration objects are immutable and runtime-branded.
+The cluster directory's `PG_VERSION` must be 16 before the driver is constructed.
+
+Before connecting, the harness exclusively creates `.recovery-confirmation-spent`
+inside the new cluster directory, records the fixture binding, and syncs both file and
+directory. An existing file, failed write/sync, or uncertain persistence stops setup.
+This file is never removed: even connection failure spends the fixture. Permissions
+must allow the invoking operator to record and sync this guard.
+
+The connected database must match the database, login/effective user, loopback server
+address, port, exact data directory, cluster system identifier, PostgreSQL 16 version,
+primary status and fresh database-comment marker. The setup identity must be the
+disposable superuser. No databases other than the target and the standard three may
+exist, no additional non-system roles may exist, and no other client sessions may be
+present. Do not run a parallel psql inspector while starting the tests.
+
+The harness takes the nonblocking **session** advisory lock `(172914, 30)`, rechecks
+identity/marker after acquiring it, and holds it through the five tests until the admin
+connection closes. It then commits a database comment ending in `:spent` before the
+catalog check or candidate. Missing/ambiguous lock or claim acknowledgements stop setup.
+The local file and database marker are independent guards; neither is automatically reset.
+
+The catalog check refuses public functions, custom types, relations (including
+sequences), other namespace-dependent objects, user-range catalog objects, non-default
+extensions/languages, large objects, publications, subscriptions, event triggers,
+foreign-data wrappers/servers, replication origins, default ACLs and database/role settings.
+It also rejects user-defined casts/access methods, transforms, parameter ACLs, replication
+slots and prepared transactions.
+Every expected count must be present exactly once and equal to the string `"0"`.
+An empty-looking table list is not proof of an empty fixture.
+
+Only then is the unchanged inactive candidate read and submitted. Its inactive/no-grants
+header and outer transaction boundaries are checked, and a final COMMIT acknowledgement
+is required. Setup uses a 5-second connection timeout, 5-second lock timeout, 10-second
+statement timeout, 12-second query timeout and 15-second idle-in-transaction timeout,
+with `pg_catalog` search path and synchronous commit pinned at connection startup.
+Driver passwords and replication settings explicitly override ambient pg fallbacks.
+The generated runtime login remains distinct, non-owner and least-privileged; it receives
+only recovery-schema USAGE and confirmation-table SELECT/INSERT, with no business access.
+
+On any failed, interrupted or uncertain attempt, retain the cluster, database, roles,
+spent file and marker for separately authorized inspection. Never retry the fixture,
+remove either guard, overwrite its comment, reset, recreate or clean it. A new attempt
+requires a new ID, cluster and database. Teardown closes connections only; it does not
+delete or reset anything. An identity failure never authorizes a write to the mismatched
+server. Operators must still independently verify the local port/process, cluster
+provenance, credentials and exclusivity: advisory locks do not constrain unrelated
+superusers, and the harness cannot protect against deliberate filesystem/marker tampering.
+
+Offline safeguards are covered by
+[recovery-confirmation-disposable-config.test.ts](./tests/recovery-confirmation-disposable-config.test.ts)
+and [recovery-confirmation-harness.test.ts](./tests/recovery-confirmation-harness.test.ts).
+The latter mocks the driver and filesystem; its SQL parser executes no SQL. Recommended
+focused offline validation from `apps/web` (not an integration run):
+
+```sh
+npm test -- database/tests/recovery-confirmation-disposable-config.test.ts database/tests/recovery-confirmation-harness.test.ts
+```
+
+No recovery integration test, database provisioning or candidate application was performed
+as part of this hardening. Production activation and restoration remain out of scope.
+
 ### Separate opt-in integration harness
 
 [authorization.postgres.integration.test.ts](./tests/authorization.postgres.integration.test.ts)

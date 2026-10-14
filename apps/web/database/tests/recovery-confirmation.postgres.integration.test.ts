@@ -1,20 +1,17 @@
-import { readFile } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
-import { Client, Pool } from "pg";
+import { Pool, type Client, type PoolConfig } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 import { createPostgresExceptionalRecoveryConfirmationConsumer } from "../../app/lib/postgres-exceptional-recovery-confirmation-consumer";
 import type { ExceptionalRecoveryConsumptionRequest } from "../../app/lib/exceptional-recovery-transaction-gate";
-import {
-  recoveryConfirmationDisposableConfig,
-  RECOVERY_CONFIRMATION_DISPOSABLE_MARKER,
-  verifyRecoveryConfirmationDatabaseIdentity,
-} from "./recovery-confirmation-disposable-config";
+import { recoveryConfirmationDisposableConfig } from "./recovery-confirmation-disposable-config";
+import { prepareRecoveryConfirmationFixture } from "./recovery-confirmation-harness";
 
 const configuration = recoveryConfirmationDisposableConfig(process.env);
-const CANDIDATE_URL = new URL("../design/sql/exceptional-recovery-confirmation-candidate.sql", import.meta.url);
 
-describe.skipIf(configuration.status === "skip")("REAL new disposable PostgreSQL recovery confirmation", () => {
+describe.skipIf(configuration.status === "skip")("REAL new disposable PostgreSQL recovery confirmation", {
+  concurrent: false, shuffle: false, retry: 0, repeats: 0,
+}, () => {
   let admin: Client;
   let runtimePool: Pool;
   let consumer: ReturnType<typeof createPostgresExceptionalRecoveryConfirmationConsumer>;
@@ -22,32 +19,7 @@ describe.skipIf(configuration.status === "skip")("REAL new disposable PostgreSQL
   beforeAll(async () => {
     if (configuration.status !== "configured") throw new Error("A separately marked recovery confirmation database is required.");
     const config = configuration.config;
-    admin = new Client({
-      host: config.host, port: config.port, database: config.database, user: config.user,
-      password: config.password, ssl: false, connectionTimeoutMillis: config.connectionTimeoutMillis,
-      application_name: config.application_name,
-    });
-    await admin.connect();
-    const identity = await admin.query<{
-      database: string; principal: string; marker: string | null; recovery: boolean; superuser: boolean;
-    }>(`SELECT current_database() AS database,current_user AS principal,
-        shobj_description(oid,'pg_database') AS marker,pg_is_in_recovery() AS recovery,
-        (SELECT rolsuper FROM pg_roles WHERE rolname=current_user) AS superuser
-      FROM pg_database WHERE datname=current_database()`);
-    if (identity.rows.length !== 1) throw new Error("Recovery fixture database identity is unavailable.");
-    verifyRecoveryConfirmationDatabaseIdentity(config, identity.rows[0]);
-    if (identity.rows[0].superuser !== true) throw new Error("Fresh recovery fixture setup requires its disposable instance owner.");
-
-    const empty = await admin.query<{ schemas: string; public_relations: string; extensions: string }>(`SELECT
-      (SELECT count(*)::text FROM pg_namespace
-        WHERE nspname NOT IN ('public','information_schema') AND nspname NOT LIKE 'pg_%') AS schemas,
-      (SELECT count(*)::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-        WHERE n.nspname='public') AS public_relations,
-      (SELECT count(*)::text FROM pg_extension WHERE extname <> 'plpgsql') AS extensions`);
-    if (empty.rows[0].schemas !== "0" || empty.rows[0].public_relations !== "0" || empty.rows[0].extensions !== "0") {
-      throw new Error("Recovery fixture is not a fresh empty database; refusing migration or overwrite.");
-    }
-    await admin.query(await readFile(CANDIDATE_URL, "utf8"));
+    admin = await prepareRecoveryConfirmationFixture(config);
 
     // Empty test-only schema probes prove the consumer role cannot reach business authorities.
     await admin.query("CREATE SCHEMA empire_os_preparation");
@@ -62,15 +34,17 @@ describe.skipIf(configuration.status === "skip")("REAL new disposable PostgreSQL
     await admin.query(`GRANT USAGE ON SCHEMA empire_os_recovery TO "${runtimeLogin}"`);
     await admin.query(`GRANT SELECT,INSERT ON empire_os_recovery.confirmations TO "${runtimeLogin}"`);
 
-    runtimePool = new Pool({
+    const runtimeOptions: PoolConfig & { replication: string } = {
       host: config.host, port: config.port, database: config.database,
       user: runtimeLogin, password: runtimePassword, ssl: false,
       max: 2, connectionTimeoutMillis: config.connectionTimeoutMillis,
       statement_timeout: 10000, query_timeout: 12000, lock_timeout: 5000,
       idle_in_transaction_session_timeout: 15000,
       options: "-c search_path=pg_catalog -c row_security=on",
+      replication: "false",
       application_name: "empire-os-recovery-confirmation-integration",
-    });
+    };
+    runtimePool = new Pool(runtimeOptions);
     consumer = createPostgresExceptionalRecoveryConfirmationConsumer({
       database: config.database,
       login: runtimeLogin,
@@ -89,8 +63,11 @@ describe.skipIf(configuration.status === "skip")("REAL new disposable PostgreSQL
   }, 30000);
 
   afterAll(async () => {
-    if (runtimePool) await runtimePool.end();
-    if (admin) await admin.end();
+    try {
+      if (runtimePool) await runtimePool.end();
+    } finally {
+      if (admin) await admin.end();
+    }
     // No schema, role, evidence or fixture cleanup. Each run requires a new marked database.
   });
 
