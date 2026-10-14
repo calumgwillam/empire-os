@@ -463,6 +463,110 @@ permission; no restoration code consumes it in this phase. A future writer must 
 repeat all checks against fresh state at its own write boundary and preserve the pinned
 pre-restore/rollback/marker requirements.
 
+### Phase 4A: non-destructive exceptional recovery execution planning
+
+[exceptional-recovery-execution-plan.ts](../app/lib/exceptional-recovery-execution-plan.ts)
+adds a pure planning boundary, not an executor. No route, UI, startup hook, localStorage
+mutation, restoration call, marker removal or database access is introduced. Every
+result explicitly says `executionAllowed: false`.
+
+The caller must explicitly select the backup and external evidence file contents,
+provide a complete raw snapshot containing exactly the 21 registered business stores,
+recovery-history value and interruption-marker value, select an expected attempt ID,
+and supply the original successful transaction-gate result, challenge, confirmation and
+trusted observation time. Missing keys are not defaulted to null. Accessor-backed raw
+snapshots are refused. Inputs are copied before asynchronous verification; the planner
+does not read live browser storage, a clock, a database or a confirmation consumer.
+
+Successful gate results now have private in-memory planning provenance, recording their
+challenge, assessment, nonce and acknowledgement time without changing the existing
+public result shape. Preflight alone, a fabricated object, a copied/JSON-round-tripped
+gate result, a refused replay or a different attempt cannot establish this provenance.
+The consumer/source supplying the original gate still needs independently trusted
+composition: this process-local receipt does not authenticate a backend or prove HA
+durability. Reloads lose provenance and cannot resume from serialized plans.
+
+The planner independently decodes and verifies marker-aware version-2 evidence, runs
+the existing complete backup/reference and confirmation checks against the copied raw
+snapshot, and requires all fresh bindings, assessment identity and expiry to match the
+gate receipt. Legacy marker-absent version-1 evidence remains supported by earlier
+assessment paths but is deliberately insufficient for Phase 4A planning. Planning time
+must be a safe integer at or after acknowledgement and strictly before expiry. Time is
+an explicit trusted observation input for deterministic testing, not a user-supplied
+authority claim; a future writer must take fresh trusted clock readings at its own
+boundaries. A plan may expire during/after construction and never reserves validity.
+
+The deeply frozen version-1 plan includes:
+
+- Exact backup-file/storage and evidence-file/evidence/current-state SHA-256 bindings.
+- All 23 raw values, preserving absence, empty strings and exact UTF-16 code units,
+  including lone surrogates. Existing corrupt business/history bytes remain raw rollback
+  evidence; they are not repaired, interpreted as valid target data or silently dropped.
+- The consumed confirmation ID, attempt ID, challenge/assessment identities,
+  acknowledgement/planning times, expiry, relevant version identifiers and ordered
+  business-store registry.
+- Ordered per-key before/target values, set/remove/unchanged classifications, expected
+  raw readbacks and history/marker fingerprints.
+- Ordered safety stages for boundary revalidation and writer exclusion, verified
+  external evidence and a pinned raw rollback image, durable interruption fencing,
+  forward writes, complete target verification and durable outcome recording.
+- Rollback obligations covering every business key, exact raw verification, preservation
+  of original history/marker evidence and continued interruption fencing on uncertainty.
+  Expiry does not erase rollback obligations. Rollback still requires exclusive writer
+  control; loss of control requires reconciliation rather than blindly overwriting
+  another tab's unattributed writes. No automatic marker clearing is planned.
+- A domain-separated SHA-256 over the complete deterministic plan body. This is an
+  integrity identifier, not a signature, execution permit, journal or durable claim.
+
+Plans contain raw business and rollback data. Treat them as sensitive; do not log them,
+send them to analytics or persist/export them without a separately reviewed retention
+and access-control policy. The planner itself retains no plan or replay ledger.
+
+The existing UTF-16 fingerprint algorithm is shared through
+[exceptional-recovery-fingerprint.ts](../app/lib/exceptional-recovery-fingerprint.ts);
+earlier challenge, assessment, confirmation and attempt hash domains/encodings are
+unchanged. Repeating planning with the same inputs yields the same plan, does not
+consume confirmation again, and is intentionally permitted for inspection. Gate replay
+protections remain unchanged. Future exactly-once execution/reconciliation must be
+separate from repeatable planning.
+
+**Unresolved prerequisites before any real execution:**
+
+1. A separately reviewed execution-authority boundary and durable attempt/outcome journal
+   binding plan, operator, before-image, progress, failure and reconciliation decisions.
+2. Enforceable cross-tab writer exclusion and a reviewed protocol for all current,
+   historical and non-cooperating writers. The existing fence is a check-then-write
+   guard, not a lock; sequential snapshots/readbacks cannot exclude ABA changes.
+3. A verified durable, externally recoverable pre-restore image that can retain corrupt
+   raw values and existing marker/history bytes without relying on decoding or replacing
+   corrupt recovery history. Capacity/quota and lossless readback must be proven first.
+4. Fresh exact live-state, file, attempt, permission and expiry checks immediately at the
+   write boundary, plus a protocol for distinguishing authorized journal/fence changes
+   from unexpected concurrent mutations.
+5. Crash-safe progress and rollback rules for failure between any two localStorage
+   operations, including rollback failure, lost writer control, expired attempts and
+   uncertain acknowledgement. localStorage has no multi-store atomic transaction.
+6. Separately reviewed successful-completion/fence-release rules that cannot erase a
+   pre-existing interruption's provenance or unblock hydration on partial recovery.
+7. Audited authority/consumer composition, replay retention across server failure or
+   restore, and independently authorized offline/browser fault-injection verification.
+
+[exceptional-recovery-execution-plan.test.ts](../app/lib/exceptional-recovery-execution-plan.test.ts)
+covers deterministic/deeply immutable output, complete bindings, corrupt raw rollback
+preservation, every store/history/marker stale-state change, file-byte changes, malformed
+or legacy evidence, incomplete targets, provenance forgery, mismatched attempts,
+confirmation changes, replay, expiry, interruption and rollback safeguards, asynchronous
+input mutation, cryptographic failure and independent fingerprint compatibility.
+Recommended focused offline validation from `apps/web`:
+
+```sh
+npm test -- app/lib/exceptional-recovery-execution-plan.test.ts app/lib/exceptional-recovery-transaction-gate.test.ts app/lib/exceptional-recovery-authorization.test.ts
+```
+
+Phase 4A neither invokes nor modifies the existing ordinary restore executor. It does
+not activate the PostgreSQL consumer, run database integration tests, alter persisted
+formats, migrate localStorage or change hydration/load/save behaviour.
+
 ### Exceptional recovery durable confirmation consumer (inactive)
 
 [postgres-exceptional-recovery-confirmation-consumer.ts](../app/lib/postgres-exceptional-recovery-confirmation-consumer.ts)

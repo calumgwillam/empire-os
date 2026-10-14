@@ -6,12 +6,24 @@ import {
   type ExceptionalRestoreConfirmationChallenge,
   type ExceptionalRestoreInputs,
 } from "./exceptional-recovery-authorization";
-import { encodeRawStoreValue } from "./server-import-preparation";
+import { exceptionalRecoveryFingerprint } from "./exceptional-recovery-fingerprint";
 
 const nonceTokenBrand: unique symbol = Symbol("trusted-exceptional-recovery-nonce");
 const issuedNonceTokens = new WeakSet<object>();
 const issuedNonceValues = new Set<string>();
 const consumedNonceValues = new Set<string>();
+const planningReceipts = new WeakMap<object, ExceptionalRecoveryPlanningReceipt>();
+
+export type ExceptionalRecoveryPlanningReceipt = Readonly<{
+  nonce: string;
+  challengeSha256: string;
+  assessmentId: string;
+  acknowledgedAtMs: number;
+}>;
+
+export function exceptionalRecoveryPlanningReceipt(value: unknown): ExceptionalRecoveryPlanningReceipt | undefined {
+  return value !== null && typeof value === "object" ? planningReceipts.get(value) : undefined;
+}
 
 export type TrustedExceptionalRecoveryNonce = Readonly<{
   value: string;
@@ -146,23 +158,9 @@ function isConsumptionResult(value: unknown): value is ExceptionalRecoveryConsum
 }
 
 async function sha256Identity(domain: string, value: unknown): Promise<string> {
-  const domainBytes = new TextEncoder().encode(`${domain}\u0000`);
   const serialized = JSON.stringify(value);
   if (typeof serialized !== "string") throw new Error("Identity value could not be serialized.");
-  const valueBytes = encodeRawStoreValue(serialized);
-  if (valueBytes === null) throw new Error("Identity encoding unexpectedly returned null.");
-  const length = new Uint8Array(8);
-  let remaining = serialized.length;
-  for (let index = length.length - 1; index >= 0; index -= 1) {
-    length[index] = remaining % 256;
-    remaining = Math.floor(remaining / 256);
-  }
-  const content = new Uint8Array(domainBytes.length + length.length + valueBytes.length);
-  content.set(domainBytes);
-  content.set(length, domainBytes.length);
-  content.set(valueBytes, domainBytes.length + length.length);
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", Uint8Array.from(content).buffer);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return exceptionalRecoveryFingerprint(domain, serialized);
 }
 
 async function assess(
@@ -335,7 +333,7 @@ export async function assessExceptionalRecoveryTransactionGate(
     return refused("validation-refused", "The challenge expired before confirmation consumption was acknowledged; obtain fresh confirmation.");
   }
 
-  return Object.freeze({
+  const readiness: ExceptionalRecoveryTransactionReadiness = Object.freeze({
     status: "transaction-ready",
     transactionExecutionAllowed: false,
     attemptId,
@@ -344,4 +342,11 @@ export async function assessExceptionalRecoveryTransactionGate(
     binding: Object.freeze({ ...finalAssessment.binding }),
     notice: "Attempt-scoped safety gate only; no restoration was executed or authorized.",
   });
+  planningReceipts.set(readiness, Object.freeze({
+    nonce: input.nonce.value,
+    challengeSha256: challenge.challengeSha256,
+    assessmentId: finalAssessment.assessmentId,
+    acknowledgedAtMs: completionNowMs,
+  }));
+  return readiness;
 }

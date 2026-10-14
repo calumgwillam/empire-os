@@ -18,6 +18,7 @@ import { createExceptionalRecoveryEvidence, exportExceptionalRecoveryEvidenceFil
 import {
   assessExceptionalRecoveryTransactionGate,
   createTrustedExceptionalRecoveryNonce,
+  exceptionalRecoveryPlanningReceipt,
   type ExceptionalRecoveryConsumptionRequest,
   type ExceptionalRecoveryConsumptionResult,
   type ExceptionalRecoveryTransactionGateInput,
@@ -137,6 +138,14 @@ describe("exceptional recovery transaction safety gate", () => {
       expiresAtMs: challenge.expiresAtMs,
     });
     expect(Object.isFrozen(result)).toBe(true);
+    const receipt = exceptionalRecoveryPlanningReceipt(result);
+    expect(receipt).toMatchObject({
+      nonce: input.nonce.value,
+      challengeSha256: challenge.challengeSha256,
+      acknowledgedAtMs: 1_100,
+    });
+    expect(Object.isFrozen(receipt)).toBe(true);
+    expect(exceptionalRecoveryPlanningReceipt({ ...result })).toBeUndefined();
     expect([...currentSource.values]).toEqual(before);
   });
 
