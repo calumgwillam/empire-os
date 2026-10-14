@@ -406,6 +406,37 @@ or an unavailable/marker-blocked source. A match is only evidence that the selec
 matches browser state at verification time; it does not authorize restoration or prove the
 external file will remain available.
 
+### Exceptional restore authorization assessment (not executable authority)
+
+[exceptional-recovery-authorization.ts](../app/lib/exceptional-recovery-authorization.ts)
+composes the existing standalone-backup validator, strict evidence decoder and
+marker-aware current-state verifier into a pure, read-only preflight. It requires exactly
+the 21 registered business stores, all existing backup validation and reference checks,
+and a selected evidence file that matches a fresh observation. The binding fingerprints
+cover the exact selected backup file text, its ordered store values, the exact evidence
+file text, the evidence identity and a version-2 current-state evidence identity (all
+stores, raw recovery history and marker presence/value). Version-1 evidence remains valid
+only for marker-absent state; it cannot be treated as marker-present evidence.
+
+The operator challenge binds those fingerprints and a caller-supplied fresh, unpredictable
+nonce to a 60-second observation window. Confirmation must provide the exact displayed challenge
+text, the same nonce, a non-empty operator name and a timestamp within the window.
+Refusals distinguish invalid/incomplete backups, invalid/unsupported/stale evidence,
+unavailable or changing source state, invalid clocks/nonces/challenges, expiry, binding
+mismatch and missing/invalid confirmation. Recovery history is reported as absent,
+empty, valid or corrupt; interruption-marker state is reported as absent, present-empty
+or present-value.
+
+A `preflight-passed` assessment is explicitly marked `restoreAuthorized: false`. It is
+not a transferable permission, a durable receipt, or a restore command. The stateless
+assessment does not maintain a replay ledger, prove that a person actually reviewed/confirmed the
+displayed text, or provide cross-tab atomic isolation. A caller must generate a fresh
+nonce for each confirmation. Any future transaction must independently parse and fully
+validate the exact backup and evidence, reread and rebind every store/history/marker value,
+revalidate references and evidence freshness, and obtain/consume a fresh explicit
+confirmation immediately before writes. That future transaction, execution model,
+pre-restore pinning, rollback and marker handling are outside this assessment module.
+
 ### Separate opt-in integration harness
 
 [authorization.postgres.integration.test.ts](./tests/authorization.postgres.integration.test.ts)
