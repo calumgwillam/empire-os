@@ -21,19 +21,21 @@ export type TrustedExceptionalRecoveryNonce = Readonly<{
 export type ExceptionalRecoveryNonceSource = Pick<Crypto, "getRandomValues">;
 
 export type ExceptionalRecoveryConsumptionRequest = Readonly<{
+  challengeSha256: string;
   nonce: string;
   confirmationId: string;
   attemptId: string;
   expiresAtMs: number;
 }>;
 
-export type ExceptionalRecoveryConsumptionResult =
-  | Readonly<{ status: "consumed" }>
-  | Readonly<{ status: "already-consumed" }>
-  | Readonly<{ status: "uncertain"; message?: string }>;
+export type ExceptionalRecoveryConsumptionResult = Readonly<{
+  status: "consumed" | "already-consumed" | "conflict" | "expired" | "invalid-input" | "unavailable" | "uncertain";
+  message?: string;
+}>;
 
 export interface ExceptionalRecoveryConfirmationConsumer {
-  // Implementations must atomically claim both nonce and confirmationId; process-local or browser storage is not cross-tab atomic.
+  // Implementations atomically bind the challenge, nonce, confirmation, attempt and expiry.
+  // Process-local or browser storage is not cross-tab atomic.
   consumeIfUnused(request: ExceptionalRecoveryConsumptionRequest): Promise<ExceptionalRecoveryConsumptionResult>;
 }
 
@@ -61,7 +63,8 @@ export type ExceptionalRecoveryTransactionReadiness =
   }>
   | Readonly<{
     status: "refused";
-    reason: "validation-refused" | "changed-state" | "replay-refused" | "consumption-uncertain";
+    reason: "validation-refused" | "changed-state" | "replay-refused" | "conflict-refused"
+      | "consumption-unavailable" | "consumption-uncertain";
     detail: string;
   }>;
 
@@ -136,10 +139,8 @@ function isChallenge(value: unknown): value is ExceptionalRestoreConfirmationCha
 
 function isConsumptionResult(value: unknown): value is ExceptionalRecoveryConsumptionResult {
   if (!isObject(value) || typeof value.status !== "string") return false;
-  if (value.status === "consumed" || value.status === "already-consumed") {
-    return Object.keys(value).length === 1;
-  }
-  return value.status === "uncertain"
+  return ["consumed", "already-consumed", "conflict", "expired", "invalid-input", "unavailable", "uncertain"]
+    .includes(value.status)
     && Object.keys(value).every((key) => key === "status" || key === "message")
     && (value.message === undefined || typeof value.message === "string");
 }
@@ -279,6 +280,7 @@ export async function assessExceptionalRecoveryTransactionGate(
   let consumed: ExceptionalRecoveryConsumptionResult;
   try {
     consumed = await input.consumer.consumeIfUnused(Object.freeze({
+      challengeSha256: challenge.challengeSha256,
       nonce: input.nonce.value,
       confirmationId,
       attemptId,
@@ -293,6 +295,15 @@ export async function assessExceptionalRecoveryTransactionGate(
   }
   if (consumed.status === "already-consumed") {
     return refused("replay-refused", "Confirmation or nonce has already been consumed by an attempt.");
+  }
+  if (consumed.status === "conflict") {
+    return refused("conflict-refused", consumed.message || "Confirmation identifiers conflict with an existing attempt.");
+  }
+  if (consumed.status === "expired" || consumed.status === "invalid-input") {
+    return refused("validation-refused", consumed.message || "The confirmation request was invalid or expired.");
+  }
+  if (consumed.status === "unavailable") {
+    return refused("consumption-unavailable", consumed.message || "Durable confirmation storage is unavailable.");
   }
   if (consumed.status !== "consumed") {
     return refused("consumption-uncertain", consumed.message || "Atomic confirmation consumption could not be established.");

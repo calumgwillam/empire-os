@@ -452,15 +452,91 @@ unconfirmed/ambiguous consume result returns `consumption-uncertain`, never read
 The caller must obtain a nonce from `createTrustedExceptionalRecoveryNonce`, which requires
 32 bytes from Web Crypto's CSPRNG, rejects low-diversity output, and brands the result for
 runtime checking. Repeated values generated or consumed in this module instance are
-rejected. The injected consumer must provide atomic consume-if-unused semantics for both
-nonce and confirmation ID, and must fail closed for unknown outcomes. A process-local or
-localStorage-backed implementation cannot provide cross-tab atomicity; a future
-production consumer needs a shared authoritative atomic service. Consumer success yields
+rejected. The injected consumer must atomically bind the challenge, nonce, confirmation
+ID, attempt ID and expiry, and must fail closed for unknown outcomes. A process-local or
+localStorage-backed implementation cannot provide cross-tab atomicity. The Phase 3B
+PostgreSQL adapter is a dormant implementation, not an activated provider or deployed
+authoritative service. Consumer success yields
 only a short-lived attempt-scoped `transaction-ready` observation with
 `transactionExecutionAllowed: false`. It is neither restoration authority nor executable
 permission; no restoration code consumes it in this phase. A future writer must still
 repeat all checks against fresh state at its own write boundary and preserve the pinned
 pre-restore/rollback/marker requirements.
+
+### Exceptional recovery durable confirmation consumer (inactive)
+
+[postgres-exceptional-recovery-confirmation-consumer.ts](../app/lib/postgres-exceptional-recovery-confirmation-consumer.ts)
+implements the Phase 3A `ExceptionalRecoveryConfirmationConsumer` contract as a separate
+server-only adapter. It is not imported by a route, startup path or production provider,
+has no default connection, and is not active. The inactive schema candidate is
+[exceptional-recovery-confirmation-candidate.sql](./design/sql/exceptional-recovery-confirmation-candidate.sql);
+it is not a numbered/live migration and has not been applied. Migrations 005 and 006
+remain dormant and unchanged.
+
+The candidate creates only `empire_os_recovery.confirmations`. Database constraints make
+the nonce a primary key and confirmation ID and attempt ID independently unique. Each
+append-only row binds the exact challenge SHA-256, nonce, confirmation identity, attempt
+identity and expiry timestamp. Before each consume, the adapter verifies the exact
+logged table shape, three valid non-deferrable unique constraints, and the deferred
+commit-time expiry trigger. At deployment, provision a separate non-owner LOGIN with
+only `USAGE` on `empire_os_recovery` and `SELECT, INSERT` on this table. Do not grant
+`UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`, schema `CREATE`, database
+`CREATE`, role membership, or any access to `empire_os_preparation` or
+`empire_os_authorization`. Provision a dedicated database for this capability; do not
+install it into a live business/authority database. The runtime role must have no
+privileges on any other user schema, table, sequence or function. The adapter verifies
+these boundaries, the expected database and login, primary-server status, active TLS
+in production mode, a `pg_catalog`-only search path, a logged permanent table,
+`fsync=on`, `full_page_writes=on`, and
+`synchronous_commit=on`. The schema owner and runtime identity must be different.
+Deployment must independently review the role, connection source, backup/failover policy,
+TLS certificate/hostname verification, database identity and permissions before any
+activation.
+
+The transaction acknowledgement guarantees the local PostgreSQL commit under those
+server settings; it does not by itself guarantee retention through asynchronous replica
+failover, point-in-time restore, or backup rollback. The deployment must prevent
+acknowledged consumed confirmations from disappearing across failover/restore, or provide
+a separately reviewed replay-prevention recovery procedure. That HA/reconciliation
+guarantee is not implemented, so the consumer remains inactive until it is established.
+
+The adapter starts a bounded `READ COMMITTED` transaction, sets local lock/statement/
+idle timeouts and synchronous commit, and attempts one insert using `ON CONFLICT DO
+NOTHING`. Database uniqueness serializes concurrent consumers. If the insert does not
+occur, it checks server time and reads any conflicting row in a subsequent statement:
+an exact identity is `already-consumed`, any reused nonce/confirmation/attempt bound to
+different values is `conflict`, and elapsed expiry is `expired`. It never overwrites or
+deletes evidence. A deferred database constraint trigger checks expiry again at commit.
+A successful first use is returned only after PostgreSQL confirms
+`COMMIT`. A connection failure or confirmed rollback returns `unavailable`; malformed
+or expired requests return `invalid-input` or `expired`; conflicting and exact replays
+remain distinct. A lost/invalid COMMIT acknowledgement, failed rollback, timeout with
+unknown transaction state, or failed connection disposal returns `uncertain`, destroys
+the connection where possible, and cannot produce transaction readiness. The Phase 3A
+gate maps these to refusal; callers must not retry an uncertain attempt under a new
+identity. Reusing the exact identity can determine whether a committed unique row exists,
+but a separate operational reconciliation protocol is not implemented.
+
+To connect it to Phase 3A, deployment code must create this adapter from a separately
+verified source and pass the returned consumer as the gate's `consumer`. No such source,
+credential, provider, route, restore integration or live database configuration is
+installed here. The consumer has no operation that references or activates any of the 21
+business stores. PostgreSQL confirmation atomicity does not make browser localStorage
+restoration atomic and does not eliminate cross-tab interference; the restore writer
+must independently recheck current state immediately at its write boundary.
+
+Pure adversarial tests are in
+[postgres-exceptional-recovery-confirmation-consumer.test.ts](../app/lib/postgres-exceptional-recovery-confirmation-consumer.test.ts).
+The optional real PostgreSQL suite,
+[recovery-confirmation.postgres.integration.test.ts](./tests/recovery-confirmation.postgres.integration.test.ts),
+uses only `EMPIRE_OS_RECOVERY_CONFIRM_TEST_PG_*` settings and requires a new loopback
+database named `empire_os_test_recovery_<32-hex-fixture-id>`, with a newly generated,
+one-use fixture ID included in `EMPIRE_OS_RECOVERY_CONFIRM_TEST_PG_FIXTURE_ID`, the
+database comment (`<database>:empire-os-recovery-confirmation-disposable-only:<fixture-id>`)
+and explicit confirmation. It refuses an existing schema or nonempty fixture, applies only the inactive
+candidate to that fixture, and performs no cleanup. Each run needs a newly provisioned
+database; it must never reuse the previous v9 database or any prior integration database.
+The integration suite has not been run as part of this change.
 
 ### Separate opt-in integration harness
 

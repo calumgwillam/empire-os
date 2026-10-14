@@ -230,6 +230,16 @@ describe("exceptional recovery transaction safety gate", () => {
     expect(malformed.requests).toHaveLength(0);
   });
 
+  it("rejects a trusted nonce that does not match the selected challenge", async () => {
+    const { input, requests } = await setup();
+    const differentNonce = createTrustedExceptionalRecoveryNonce();
+    expect(await assessExceptionalRecoveryTransactionGate({
+      ...input,
+      nonce: differentNonce,
+    })).toMatchObject({ status: "refused", reason: "validation-refused" });
+    expect(requests).toHaveLength(0);
+  });
+
   it("allows at most one of concurrent requests to consume the same attempt", async () => {
     const { input, requests } = await setup();
     const used = new Set<string>();
@@ -260,5 +270,20 @@ describe("exceptional recovery transaction safety gate", () => {
       confirmation: { ...input.confirmation!, text: "confirm something else" },
     })).toMatchObject({ status: "refused", reason: "validation-refused" });
     expect(requests).toHaveLength(0);
+  });
+
+  it.each([
+    ["conflict", "conflict-refused"],
+    ["expired", "validation-refused"],
+    ["invalid-input", "validation-refused"],
+    ["unavailable", "consumption-unavailable"],
+    ["uncertain", "consumption-uncertain"],
+  ] as const)("maps durable-consumer %s to %s without readiness", async (status, reason) => {
+    const { input } = await setup();
+    const consumer = {
+      consumeIfUnused: async (): Promise<ExceptionalRecoveryConsumptionResult> => ({ status }),
+    };
+    expect(await assessExceptionalRecoveryTransactionGate({ ...input, consumer }))
+      .toMatchObject({ status: "refused", reason });
   });
 });
