@@ -95,9 +95,24 @@ describe("restricted PostgreSQL provider (mocked driver, NO database/TLS handsha
 
   it("checks mutation privileges on views and foreign relations as well as base tables", () => {
     expect(RESTRICTED_LEASE_IDENTITY_SQL).toContain("c.relkind IN ('r','p','v','m','f')");
+    expect(RESTRICTED_LEASE_IDENTITY_SQL).toContain("has_any_column_privilege(r.oid,c.oid,'SELECT')");
+    expect(RESTRICTED_LEASE_IDENTITY_SQL).toContain("has_any_column_privilege(r.oid,c.oid,'REFERENCES')");
     expect(RESTRICTED_LEASE_IDENTITY_SQL).toContain("has_any_column_privilege(r.oid,c.oid,'INSERT')");
     expect(RESTRICTED_LEASE_IDENTITY_SQL).toContain("has_any_column_privilege(r.oid,c.oid,'UPDATE')");
     expect(RESTRICTED_LEASE_IDENTITY_SQL).toContain("has_table_privilege(r.oid,c.oid,'DELETE')");
+  });
+  it("rejects unsafe column privileges again inside each transaction", async () => {
+    const h = await harness();
+    const connection = await h.pending;
+    await beginRestrictedTransaction(connection);
+    const sql = h.raw.query.mock.calls.find(([statement]) => String(statement).includes("AS unsafe"))?.[0];
+    expect(sql).toContain("has_any_column_privilege(current_user,c.oid,'SELECT')");
+    expect(sql).toContain("has_any_column_privilege(current_user,c.oid,'REFERENCES')");
+    expect(sql).toContain("has_any_column_privilege(current_user,c.oid,'INSERT')");
+    expect(sql).toContain("has_any_column_privilege(current_user,c.oid,'UPDATE')");
+    await connection.query("ROLLBACK");
+    connection.release();
+    await h.provider.dispose();
   });
   it("creates no pool until acquisition and exposes no configuration/credentials", async () => {
     const actor = await principal();

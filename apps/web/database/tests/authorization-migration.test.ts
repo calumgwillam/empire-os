@@ -70,7 +70,11 @@ describe("authorization migration security contract (static, not PostgreSQL exec
     expect(sql).toContain("p_next IS DISTINCT FROM expected_state");
     expect(sql).toContain("sha256(convert_to(p_request_text,'UTF8'))");
     expect(sql).toContain("AND issuer->>'status'='active'");
+    expect(sql).toContain("has_any_column_privilege(runtime_role,c.oid,'SELECT')");
+    expect(sql).toContain("has_any_column_privilege(runtime_role,c.oid,'INSERT')");
     expect(sql).toContain("has_any_column_privilege(runtime_role,c.oid,'UPDATE')");
+    expect(sql).toContain("has_any_column_privilege(runtime_role,c.oid,'REFERENCES')");
+    expect(sql).toContain("c.relkind IN ('r','p','v','m','f')");
     expect(sql).toContain("CREATE TRIGGER serialize_binding BEFORE INSERT OR UPDATE OR DELETE");
     expect(sql).toContain("current_setting('transaction_isolation') <> 'read committed'");
   });

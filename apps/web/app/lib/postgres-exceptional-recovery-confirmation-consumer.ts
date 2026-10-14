@@ -45,7 +45,11 @@ const CONNECTION_IDENTITY_SQL = `SELECT
     WHERE n.nspname NOT IN ('pg_catalog','information_schema','empire_os_recovery')
       AND n.nspname !~ '^pg_'
       AND c.relkind IN ('r','p','v','m','f')
-      AND (has_table_privilege(r.oid,c.oid,'SELECT') OR has_table_privilege(r.oid,c.oid,'INSERT')
+      AND (has_any_column_privilege(r.oid,c.oid,'SELECT')
+        OR has_any_column_privilege(r.oid,c.oid,'INSERT')
+        OR has_any_column_privilege(r.oid,c.oid,'UPDATE')
+        OR has_any_column_privilege(r.oid,c.oid,'REFERENCES')
+        OR has_table_privilege(r.oid,c.oid,'SELECT') OR has_table_privilege(r.oid,c.oid,'INSERT')
         OR has_table_privilege(r.oid,c.oid,'UPDATE') OR has_table_privilege(r.oid,c.oid,'DELETE')
         OR has_table_privilege(r.oid,c.oid,'TRUNCATE') OR has_table_privilege(r.oid,c.oid,'REFERENCES')
         OR has_table_privilege(r.oid,c.oid,'TRIGGER'))) AS no_other_table_access,
@@ -68,9 +72,11 @@ const CONNECTION_IDENTITY_SQL = `SELECT
   has_table_privilege(r.oid,'empire_os_recovery.confirmations','SELECT')
     AND has_table_privilege(r.oid,'empire_os_recovery.confirmations','INSERT')
     AND NOT has_table_privilege(r.oid,'empire_os_recovery.confirmations','UPDATE')
+    AND NOT has_any_column_privilege(r.oid,'empire_os_recovery.confirmations','UPDATE')
     AND NOT has_table_privilege(r.oid,'empire_os_recovery.confirmations','DELETE')
     AND NOT has_table_privilege(r.oid,'empire_os_recovery.confirmations','TRUNCATE')
     AND NOT has_table_privilege(r.oid,'empire_os_recovery.confirmations','REFERENCES')
+    AND NOT has_any_column_privilege(r.oid,'empire_os_recovery.confirmations','REFERENCES')
     AND NOT has_table_privilege(r.oid,'empire_os_recovery.confirmations','TRIGGER') AS recovery_table_access,
   NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
     WHERE n.nspname='empire_os_recovery' AND c.relname='confirmations'
@@ -111,12 +117,19 @@ const SCHEMA_CONTRACT_SQL = `SELECT
   (SELECT count(*)=1 FROM pg_trigger t
     JOIN pg_proc p ON p.oid=t.tgfoid
     JOIN pg_namespace n ON n.oid=p.pronamespace
+    JOIN pg_language l ON l.oid=p.prolang
+    JOIN pg_constraint c ON c.oid=t.tgconstraint
     WHERE t.tgrelid=to_regclass('empire_os_recovery.confirmations')
-      AND NOT t.tgisinternal AND (t.tgtype & 4)<>0
+      AND NOT t.tgisinternal AND t.tgtype=5
+      AND t.tgenabled IN ('O','A')
+      AND t.tgqual IS NULL AND t.tgargs = ''::bytea AND t.tgparentid=0
       AND t.tgname='unexpired_confirmation_at_commit'
       AND t.tgdeferrable AND t.tginitdeferred AND t.tgconstraint<>0
+      AND c.conrelid=t.tgrelid AND c.contype='t' AND c.condeferrable AND c.condeferred
       AND n.nspname='empire_os_recovery' AND p.proname='reject_expired_confirmation'
-      AND NOT p.prosecdef)
+      AND l.lanname='plpgsql' AND p.pronargs=0 AND p.prorettype='trigger'::regtype
+      AND NOT p.prosecdef AND p.proconfig = ARRAY['search_path=pg_catalog']::text[]
+      AND p.prosrc=E'\\nBEGIN\\n  IF NEW.expires_at_ms <= floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint THEN\\n    RAISE EXCEPTION ''Exceptional recovery confirmation expired before commit''\\n      USING ERRCODE = ''22023'';\\n  END IF;\\n  RETURN NULL;\\nEND;\\n')
     AND NOT EXISTS (SELECT 1 FROM pg_trigger t
       WHERE t.tgrelid=to_regclass('empire_os_recovery.confirmations')
         AND NOT t.tgisinternal AND (t.tgtype & 4)<>0

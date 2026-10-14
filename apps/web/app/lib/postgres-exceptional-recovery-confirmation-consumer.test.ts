@@ -153,6 +153,10 @@ describe("PostgreSQL exceptional recovery confirmation consumer", () => {
     const consumer = createPostgresExceptionalRecoveryConfirmationConsumer(sourceFor(scripted.client));
     const result = await consumer.consumeIfUnused(request());
     expect(result).toEqual({ status: "consumed" });
+    const identitySql = scripted.calls.find((call) => call.sql.includes("current_database() AS database"))?.sql;
+    expect(identitySql).toContain("has_any_column_privilege(r.oid,c.oid,'SELECT')");
+    expect(identitySql).toContain("has_any_column_privilege(r.oid,c.oid,'REFERENCES')");
+    expect(identitySql).toContain("has_any_column_privilege(r.oid,'empire_os_recovery.confirmations','UPDATE')");
     const insert = scripted.calls.find((call) => call.sql.startsWith("INSERT INTO"));
     expect(insert?.values).toEqual([challengeSha256, nonce, confirmationId, attemptId, expect.any(Number)]);
     expect(scripted.calls.map((call) => call.sql)).toContain("SET LOCAL search_path = pg_catalog");
@@ -215,6 +219,33 @@ describe("PostgreSQL exceptional recovery confirmation consumer", () => {
     expect(await createPostgresExceptionalRecoveryConfirmationConsumer(sourceFor(missingUnique.client)).consumeIfUnused(request()))
       .toMatchObject({ status: "unavailable" });
     expect(missingUnique.calls.some((call) => call.sql.startsWith("BEGIN"))).toBe(false);
+  });
+
+  it("requires the exact enabled deferred expiry trigger and its enforcing function", async () => {
+    const disabledTrigger = scriptedConnection({
+      contract: {
+        table_exists: true,
+        permanent_table: true,
+        exact_columns: true,
+        nonce_unique: true,
+        confirmation_unique: true,
+        attempt_unique: true,
+        deferred_expiry_trigger: false,
+        no_mutating_rules: true,
+      },
+    });
+    expect(await createPostgresExceptionalRecoveryConfirmationConsumer(sourceFor(disabledTrigger.client))
+      .consumeIfUnused(request())).toMatchObject({ status: "unavailable" });
+    expect(disabledTrigger.calls.some((call) => call.sql.startsWith("BEGIN"))).toBe(false);
+
+    const schemaContract = disabledTrigger.calls.find((call) => call.sql.includes("deferred_expiry_trigger"))?.sql;
+    expect(schemaContract).toContain("t.tgenabled IN ('O','A')");
+    expect(schemaContract).toContain("t.tgtype=5");
+    expect(schemaContract).toContain("t.tgdeferrable AND t.tginitdeferred");
+    expect(schemaContract).toContain("c.conrelid=t.tgrelid AND c.contype='t' AND c.condeferrable AND c.condeferred");
+    expect(schemaContract).toContain("p.prosrc=");
+    expect(schemaContract).toContain("clock_timestamp()");
+    expect(schemaContract).toContain("NOT p.prosecdef AND p.proconfig = ARRAY['search_path=pg_catalog']::text[]");
   });
 
   it("fails closed for connection, transaction, rollback, and ambiguous commit failures", async () => {

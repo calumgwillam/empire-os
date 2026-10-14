@@ -48,7 +48,19 @@ export async function migrateEmptyDisposable(client: Client): Promise<void> {
       WHERE n.nspname = 'public')
     + (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
       WHERE n.nspname = 'public')
+    + (SELECT count(*) FROM pg_depend d
+      JOIN pg_namespace n ON d.refclassid = 'pg_namespace'::regclass AND d.refobjid = n.oid
+      WHERE n.nspname = 'public')
     + (SELECT count(*) FROM pg_extension WHERE extname <> 'plpgsql')
+    + (SELECT count(*) FROM pg_largeobject_metadata)
+    + (SELECT count(*) FROM pg_publication)
+    + (SELECT count(*) FROM pg_subscription)
+    + (SELECT count(*) FROM pg_event_trigger)
+    + (SELECT count(*) FROM pg_foreign_data_wrapper)
+    + (SELECT count(*) FROM pg_foreign_server)
+    + (SELECT count(*) FROM pg_replication_origin)
+    + (SELECT count(*) FROM pg_language
+      WHERE lanname NOT IN ('internal','c','sql','plpgsql'))
   )::text AS count`);
   if (objects.rows[0].count !== "0" || relations.rows[0].count !== "0") {
     throw new Error("Test database is not empty. Refusing reset, overwrite or migration. Use a fresh disposable database.");

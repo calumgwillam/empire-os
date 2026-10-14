@@ -262,8 +262,11 @@ BEGIN
     OR EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
       WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation')
       AND (c.relowner=(SELECT oid FROM pg_roles WHERE rolname=runtime_role)
-        OR (c.relkind='r' AND (has_any_column_privilege(runtime_role,c.oid,'INSERT')
+        OR (c.relkind IN ('r','p','v','m','f') AND (
+          has_any_column_privilege(runtime_role,c.oid,'SELECT')
+          OR has_any_column_privilege(runtime_role,c.oid,'INSERT')
           OR has_any_column_privilege(runtime_role,c.oid,'UPDATE')
+          OR has_any_column_privilege(runtime_role,c.oid,'REFERENCES')
           OR has_table_privilege(runtime_role,c.oid,'DELETE')
           OR has_table_privilege(runtime_role,c.oid,'TRUNCATE'))))) THEN
     RAISE EXCEPTION 'Unsafe authorization database identity' USING ERRCODE='42501';

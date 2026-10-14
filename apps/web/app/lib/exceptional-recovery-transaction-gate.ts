@@ -276,6 +276,19 @@ export async function assessExceptionalRecoveryTransactionGate(
     return refused("changed-state", "Selected files or current stores/history/marker changed immediately before confirmation consumption.");
   }
 
+  let consumptionStartedAtMs: number;
+  try {
+    consumptionStartedAtMs = Date.now();
+  } catch {
+    return refused("validation-refused", "A trusted pre-consumption clock reading was unavailable; transaction readiness denied.");
+  }
+  if (!Number.isSafeInteger(consumptionStartedAtMs) || consumptionStartedAtMs < input.nowMs) {
+    return refused("validation-refused", "A trusted pre-consumption clock reading was invalid or moved backwards; transaction readiness denied.");
+  }
+  if (consumptionStartedAtMs >= challenge.expiresAtMs) {
+    return refused("validation-refused", "The challenge expired before confirmation consumption; obtain fresh confirmation.");
+  }
+
   consumedNonceValues.add(input.nonce.value);
   let consumed: ExceptionalRecoveryConsumptionResult;
   try {
@@ -307,6 +320,19 @@ export async function assessExceptionalRecoveryTransactionGate(
   }
   if (consumed.status !== "consumed") {
     return refused("consumption-uncertain", consumed.message || "Atomic confirmation consumption could not be established.");
+  }
+
+  let completionNowMs: number;
+  try {
+    completionNowMs = Date.now();
+  } catch {
+    return refused("validation-refused", "A trusted completion-time clock reading was unavailable; transaction readiness denied.");
+  }
+  if (!Number.isSafeInteger(completionNowMs) || completionNowMs < consumptionStartedAtMs) {
+    return refused("validation-refused", "A trusted completion-time clock reading was invalid or moved backwards; transaction readiness denied.");
+  }
+  if (completionNowMs >= challenge.expiresAtMs) {
+    return refused("validation-refused", "The challenge expired before confirmation consumption was acknowledged; obtain fresh confirmation.");
   }
 
   return Object.freeze({

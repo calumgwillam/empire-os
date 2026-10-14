@@ -23,7 +23,12 @@ import {
   type ExceptionalRecoveryTransactionGateInput,
 } from "./exceptional-recovery-transaction-gate";
 
-beforeEach(() => { vi.stubGlobal("crypto", webcrypto); });
+let freshNowMs = 1_100;
+beforeEach(() => {
+  freshNowMs = 1_100;
+  vi.stubGlobal("crypto", webcrypto);
+  vi.spyOn(Date, "now").mockImplementation(() => freshNowMs);
+});
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 function backupText(overrides: Partial<EmpireOsBackup["storage"]> = {}): string {
@@ -228,6 +233,49 @@ describe("exceptional recovery transaction safety gate", () => {
       challenge: {},
     })).toMatchObject({ status: "refused", reason: "validation-refused" });
     expect(malformed.requests).toHaveLength(0);
+  });
+
+  it("refuses readiness when the consumer acknowledgement arrives at or after expiry", async () => {
+    const { input, challenge } = await setup();
+    const result = await assessExceptionalRecoveryTransactionGate({
+      ...input,
+      consumer: {
+        consumeIfUnused: async () => {
+          await Promise.resolve();
+          freshNowMs = challenge.expiresAtMs;
+          return { status: "consumed" };
+        },
+      },
+    });
+    expect(result).toMatchObject({ status: "refused", reason: "validation-refused" });
+  });
+
+  it("fails closed when the fresh completion-time clock is invalid", async () => {
+    const { input } = await setup();
+    const result = await assessExceptionalRecoveryTransactionGate({
+      ...input,
+      consumer: {
+        consumeIfUnused: async () => {
+          freshNowMs = Number.NaN;
+          return { status: "consumed" };
+        },
+      },
+    });
+    expect(result).toMatchObject({ status: "refused", reason: "validation-refused" });
+  });
+
+  it("fails closed when the trusted clock moves backwards during acknowledgement", async () => {
+    const { input } = await setup();
+    const result = await assessExceptionalRecoveryTransactionGate({
+      ...input,
+      consumer: {
+        consumeIfUnused: async () => {
+          freshNowMs = input.nowMs - 1;
+          return { status: "consumed" };
+        },
+      },
+    });
+    expect(result).toMatchObject({ status: "refused", reason: "validation-refused" });
   });
 
   it("rejects a trusted nonce that does not match the selected challenge", async () => {

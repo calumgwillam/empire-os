@@ -69,6 +69,10 @@ describe("Employee provisioning SQL candidate (offline)", () => {
     expect(operation).toContain("pg_has_role(session_user, r.oid, 'MEMBER')");
     expect(operation).toContain("pg_has_role(runtime_role, r.oid, 'MEMBER')");
     expect(operation).toContain("has_schema_privilege(r.oid, n.oid, 'CREATE')");
+    expect(operation).toContain("has_any_column_privilege(r.oid, c.oid, 'SELECT')");
+    expect(operation).toContain("has_any_column_privilege(r.oid, c.oid, 'REFERENCES')");
+    expect(operation).toContain("has_any_column_privilege(r.oid, c.oid, 'INSERT')");
+    expect(operation).toContain("has_any_column_privilege(r.oid, c.oid, 'UPDATE')");
     expect(operation).toContain("binding.actor_subject IS DISTINCT FROM actor");
     expect(operation).toContain(
       "REVOKE ALL ON FUNCTION empire_os_authorization.provisioning_subject(text) FROM PUBLIC",

@@ -48,6 +48,28 @@ describe("Provisioning disposable harness (offline mocks, no PostgreSQL executio
     expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("CREATE SCHEMA"))).toBe(false);
   });
 
+  it.each([
+    "FROM pg_depend d",
+    "FROM pg_largeobject_metadata",
+    "FROM pg_publication",
+    "FROM pg_subscription",
+    "FROM pg_event_trigger",
+    "FROM pg_foreign_data_wrapper",
+    "FROM pg_foreign_server",
+    "FROM pg_replication_origin",
+    "FROM pg_language",
+  ])("refuses setup when relevant non-system catalog objects exist (%s)", async (catalog) => {
+    const client = await connectDisposable(config);
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("pg_try_advisory_lock")) return { rows: [{ acquired: true }] };
+      if (sql.includes("FROM pg_namespace WHERE")) return { rows: [{ count: "0" }] };
+      if (sql.includes(catalog)) return { rows: [{ count: "1" }] };
+      throw new Error("A migration must never be submitted.");
+    });
+    await expect(migrateEmptyProvisioningDisposable(client)).rejects.toThrow("not empty");
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("CREATE SCHEMA"))).toBe(false);
+  });
+
   it("installs the two candidate halves in one transaction, without migration 005", async () => {
     const client = await connectDisposable(config);
     await migrateEmptyProvisioningDisposable(client);
