@@ -29,6 +29,11 @@ The implementation lives in:
 
 ## Inspected prior art and compatibility
 
+[Contribution Intelligence Phase 2](./contribution-intelligence.md) adds a pure,
+inactive analytical layer over this foundation, with explicit personal agreements,
+delivery observations, comparisons and trends. It does not change stored formats
+or activate collection, dashboards or reward decisions.
+
 Existing People records have stable `id` values but operational role, manager,
 pillar and access-level descriptions are not authenticated server authority.
 Actions support `ownerPersonId`, while older ownership/project/accountability paths

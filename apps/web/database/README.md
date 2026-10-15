@@ -21,6 +21,14 @@ table, localStorage schema, monitoring, UI activation or automatic entitlement c
 The design documents server-enforced access, privacy, concurrency and durable evidence
 requirements that must be satisfied before activation.
 
+[Contribution Intelligence Phase 2](./design/contribution-intelligence.md) adds pure
+person-period measurements, explicit individual commitment/deadline observations,
+evidence-aware comparisons and sustained recorded trends. It reuses Phase 1
+unique-outcome and reviewed-attribution rules, establishes no actual-underperformance
+verdict or automatic reward, and activates no collection, storage or dashboard.
+The design lists remaining durable agreement, privacy, authorisation and concurrency
+prerequisites.
+
 ## Authority and security
 
 The intended authority is authenticated PostgreSQL, not a production IndexedDB phase.

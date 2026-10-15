@@ -100,6 +100,7 @@ export type ContributionPeriodReport = Readonly<{
   asOfMs: number;
   period: ContributionPeriod;
   people: readonly ContributionPersonSummary[];
+  recordAssessments: readonly ContributionRecordAssessment[];
   peopleWithNoIncludedRecords: readonly string[];
   results: readonly ContributionResultSummary[];
   uniqueResultCounts: Readonly<{ deliverable: number; outcome: number; financial: number }>;
@@ -109,6 +110,16 @@ export type ContributionPeriodReport = Readonly<{
   coverage: "not-established";
   valueJudgement: "not-calculated";
 }> & typeof CONTRIBUTION_SAFETY;
+
+export type ContributionRecordAssessment = Readonly<{
+  recordId: string;
+  version: number;
+  personId: string;
+  businessId: string;
+  evidenceAndContextSupported: boolean;
+  corroboratedMinutes: number | null;
+  issueCodes: readonly string[];
+}>;
 
 function same(left: unknown, right: unknown): boolean { return JSON.stringify(left) === JSON.stringify(right); }
 function compareKey(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
@@ -120,7 +131,7 @@ function ids(value: unknown): string[] {
   if (new Set(result).size !== result.length) throw new Error("Ambiguous duplicate reference identities.");
   return result;
 }
-function referenceSnapshot(value: unknown): ContributionReferenceSnapshot {
+export function decodeContributionReferenceSnapshot(value: unknown): ContributionReferenceSnapshot {
   const item = contributionFields(value, [
     "scope", "asOfMs", "people", "businessIds", "roles", "departments", "projects", "actions", "financialRecords", "evidence",
   ]);
@@ -195,7 +206,7 @@ export function buildContributionPeriodReport(
   | ContributionDomainRefusal {
   try {
     const period = decodeContributionPeriod(periodValue);
-    const references = referenceSnapshot(referencesValue);
+    const references = decodeContributionReferenceSnapshot(referencesValue);
     const projected = projectContributionLedger(ledgerValue, nowMs, asOfMs);
     if (projected.status === "refused") return projected;
     const projection = projected.projection;
@@ -499,6 +510,13 @@ export function buildContributionPeriodReport(
       report: {
         ...CONTRIBUTION_SAFETY, scope: projection.scope, sourceRevision: projection.sourceRevision,
         observedRevision: projection.observedRevision, asOfMs, period, people: summaries,
+        recordAssessments: included.map(state => ({
+          recordId: state.entity.id, version: state.version, personId: state.entity.personId,
+          businessId: state.entity.businessId,
+          evidenceAndContextSupported: validRecords.get(state.entity.id) === true,
+          corroboratedMinutes: corroboratedByRecord.get(state.entity.id) ?? null,
+          issueCodes: unique(issues.filter(entry => entry.entityId === state.entity.id).map(entry => entry.code)),
+        })).sort((left, right) => compareKey(left.recordId, right.recordId)),
         peopleWithNoIncludedRecords: references.people.filter(person => !summaries.some(row => row.personId === person.id)).map(person => person.id).sort(),
         results: resultRows,
         uniqueResultCounts: {
