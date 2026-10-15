@@ -35,6 +35,13 @@ Phase 2 analysis remains unchanged; dimension metrics derive from explicit Phase
 record associations, preserving spanning, unallocated and disputed attribution.
 No UI, storage or automatic reward/profit-sharing calculation is activated.
 
+[Contribution Intelligence Phase 4](./design/contribution-collection.md) adds an
+inactive authenticated collection/review preview foundation: explicit subject/Person
+bindings and scoped purposes, independent review, separately approved corrections,
+operational evidence candidates and idempotency reconciliation modelling. No loader,
+writer, endpoint or migration is installed. Durable binding/policy and correction/
+agreement provenance remain deployment blockers.
+
 ## Authority and security
 
 The intended authority is authenticated PostgreSQL, not a production IndexedDB phase.

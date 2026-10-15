@@ -28,6 +28,11 @@ or reward scores. Existing founder relationship intelligence is also separate.
 
 ## Validated source boundary
 
+[Phase 4 collection readiness](./contribution-collection.md) adds inactive authenticated
+submission/review/disclosure previews and documents the durable binding, policy,
+correction audit and transaction gates required before using these read models with
+live multi-user data. It does not activate this dashboard or grant disclosure access.
+
 `prepareContributionDashboardSource` accepts the existing Phase 2 analysis input,
 invokes Phase 2 validation/analysis and Phase 1 projection/reporting at the exact
 same scope, audit cutoff and source revision. It preserves detached, frozen source

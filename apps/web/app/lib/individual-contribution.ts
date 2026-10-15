@@ -350,7 +350,7 @@ function entity(value: unknown): ContributionEntity {
   }
   throw new Error("Unsupported contribution entity.");
 }
-function eventBody(value: unknown): EventBody {
+export function decodeContributionEventBody(value: unknown): ContributionAuditEvent["body"] {
   const type = dataTag(value, "type");
   if (type === "created") {
     const item = contributionFields(value, ["type", "entity"]);
@@ -387,7 +387,7 @@ function auditEvent(value: unknown): ContributionAuditEvent {
   const item = contributionFields(value, ["id", "sequence", "previousEventId", "actorPersonId", "recordedAtMs", "body"]);
   return {
     id: contributionId(item.id), sequence: positive(item.sequence), previousEventId: nullableId(item.previousEventId),
-    actorPersonId: contributionId(item.actorPersonId), recordedAtMs: contributionCounter(item.recordedAtMs), body: eventBody(item.body),
+    actorPersonId: contributionId(item.actorPersonId), recordedAtMs: contributionCounter(item.recordedAtMs), body: decodeContributionEventBody(item.body),
   };
 }
 function same(left: unknown, right: unknown): boolean { return JSON.stringify(left) === JSON.stringify(right); }
