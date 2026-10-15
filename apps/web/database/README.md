@@ -686,6 +686,163 @@ Existing storage formats, ordinary backup/restore, browser write-fencing, hydrat
 database uniqueness/replay enforcement and dormant PostgreSQL fixtures are unchanged.
 No migration or persisted-data conversion is required.
 
+### Phase 4C: trusted checkpoint coordination design (non-executing)
+
+[exceptional-recovery-checkpoint-coordination.ts](../app/lib/exceptional-recovery-checkpoint-coordination.ts)
+adds an injected authority contract, a read/receipt boundary, side-effect-free proposals,
+a pure CAS reference model, and conservative crash reconciliation. **There is no
+checkpoint storage adapter, submission path, restoration executor or UI activation.**
+The reader exposes only `read` and `lookup`; no production function calls the
+contract's `compareAndSwap`. Every operational result explicitly denies execution,
+resume, rollback and marker clearance. A model result says `would-advance` or
+`already-modelled`, never that anything was durably committed.
+
+#### Architectural decision and inspected boundaries
+
+The Phase 4A original-plan receipt binds the confirmed attempt and all 23 source
+values. Phase 4B validates complete canonical journal/image evidence and history
+against a separately supplied checkpoint, but cannot make that checkpoint trusted,
+durable or exclusive. Its `rollback-image-checked` and `fence-observed` proofs describe
+caller-supplied readbacks; their hashes do not prove physical storage or exclusion.
+Neither an original plan nor a journal hash is authority to execute.
+
+The browser interruption marker blocks participating business writers but is a
+check-then-write guard, not a lock. Preparation writer credentials operate in a
+separate isolated database and are not business-store recovery exclusion. The
+server persistence contract distinguishes confirmed database commits from requests
+and ambiguous outcomes, and binds authority to server-resolved identity. The dormant
+confirmation consumer covers single-use confirmation, not journal CAS, all-writer
+exclusion or atomic composition with localStorage.
+
+The selected approach is a **separately authenticated, linearizable authority for one
+dataset recovery scope**, with complete journal/image evidence and the checkpoint
+committed in the same logical atomic boundary. A marker, localStorage readback,
+process-local mutex, hash, timestamp or tab identifier cannot enforce this contract.
+The cost is a larger evidence-bearing request and conservative unavailability. This
+is preferable to a small checkpoint-only write whose evidence may be missing after a
+crash, or to an automatic lease/takeover policy that could overwrite another attempt.
+An eventual backend may pin immutable blobs, but must prove durable reachability,
+lossless bytes and atomic checkpoint publication before acknowledging success.
+
+#### Authority and CAS invariants
+
+- The deployment pins an authority identifier, dataset UUID and nonreusable epoch
+  independently of journal/request bytes. Verified session authorization must bind
+  access to this scope; request fields are not authentication.
+- A provisioned snapshot contains a positive safe-integer revision, exact checkpoint,
+  complete canonical journal, complete canonical 23-value rollback-image readback,
+  and the last committed request fingerprint. No empty-state initialization exists.
+  Missing authority is a refusal, not revision zero or a new trust anchor.
+- Enrollment is intentionally absent. A separately reviewed durable transaction must
+  reserve the scope exclusively, bind the authentic Phase 4A attempt/plan/consumed
+  confirmation, verify and pin the initial evidence, and establish revision/epoch
+  history. Restart must never re-enroll from a caller's self-consistent journal.
+- CAS compares the **entire** expected snapshot, not just the journal head. A
+  successful new checkpoint advances the scope revision exactly once without
+  overflow, wrapping or reset, and appends exactly one valid journal record. It
+  preserves attempt, full plan binding, confirmation, rollback image and exact record
+  prefix. Distinct branches and attempts cannot share a successful expected revision.
+- A request fingerprint covers protocol version, identity/epoch, full expected
+  snapshot and complete proposed evidence using the existing lossless UTF-16
+  fingerprint helper. It is an integrity/idempotency identifier, not a signature.
+  Input objects are captured before asynchronous hashing; accessors and extra fields
+  are rejected at captured data boundaries.
+- Exact duplicate requests describe the same successor, not a second increment.
+  The model recognizes an exact already-modelled successor even after expiry.
+  A future backend must retain immutable historical receipts and bind the same
+  fingerprint to the same request; a stale/foreign request is never silently rebased.
+- Forward preparation must still be unexpired at the actual enforcing CAS boundary.
+  Failure evidence may be retained after expiry. Historical receipt validation is
+  separate from permission to make a new advancement. Expiry never releases a scope,
+  removes evidence, clears a marker, or authorizes another attempt.
+- There is no transfer, reset, deletion, takeover or release API, including for
+  terminal/refused attempts. Those lifecycle decisions remain execution-blocking work.
+
+The reference model can show which serialized schedule would win **if** a real
+backend atomically enforces these invariants. It neither serializes concurrent callers
+nor proves any backend atomicity. A read/proposal/model result is never a COMMIT receipt.
+
+#### Durable acknowledgement versus observations
+
+Only the injected authority's authenticated `current` response with confirmed-commit
+durability, or its exact immutable commit lookup, enters the provenance boundary.
+Complete evidence is independently validated before an opaque, process-local token is
+issued. Caller checkpoints, model outputs, durability strings, copied tokens, and
+deserialized tokens cannot be passed off as those observations/acknowledgements.
+
+The injection point itself is trusted composition: a dishonest or in-memory adapter
+can lie about durability. WeakMap provenance is not authentication against arbitrary
+same-origin code, a durable replay ledger, a lock or a cross-process capability.
+There is deliberately no default browser adapter or public result-to-token converter.
+
+Each reader conservatively rejects backwards clocks/revisions, same-revision content
+changes, cross-attempt/forked history, and impossible revision/history deltas. A
+newly observed head supersedes older observations. An unavailable, malformed, missing,
+revoked, uncertain or failed read/lookup invalidates that reader's previous tokens,
+including in-flight verification. Fresh successful reads can re-establish observation,
+but cannot make an old proposal current or release a recovery scope.
+
+These are process-local sanity checks, not durable anti-rollback protection. After
+reload, authenticated fresh authority and a nonreusable epoch must be established
+externally. An observation is a point-in-time snapshot, **not a live writer lease**;
+an unseen subsequent change is caught only by the future enforcing CAS. Recovery
+execution may never depend on these tokens alone.
+
+#### Crash reconciliation and conservative dispositions
+
+| Observed crash window or conflict | Non-executing disposition |
+| --- | --- |
+| Candidate journal/image prepared but authority submission absent or unknown | Retain candidate evidence and fence; no commit inference or automatic submission. |
+| Image/journal write missing, partial or noncanonical | Refuse checkpoint proposal/reconciliation; preserve all available bytes. |
+| Authority may have committed, but acknowledgement was lost | Lookup only the exact original request and independently read current authority. |
+| Lookup is not-found, times out, is unavailable, or authority disappeared | Uncertain; absence is not proof of no commit, no retry/reset/takeover. |
+| Complete exact durable receipt and matching current head, but local journal/image is old, ahead, forked or incomplete | Refuse reconciliation; no automatic local repair, replacement or deletion. |
+| Exact receipt, current authority and complete local evidence all agree | Report checkpoint commit only; deny execution, resume, rollback and marker clearance. |
+| Receipt belongs to another request/epoch/revision, or current authority has advanced | Refuse; an old durable receipt is not current authority. |
+| Identical business before-image or marker is observed again (ABA) | No claim that no writes occurred; independent writer exclusion is still required. |
+| Attempt expires or reaches a failure/terminal state | Preserve obligations and fence; no automatic release or takeover. |
+
+The new reconciliation checks checkpoint evidence and authority agreement; it does
+not read live business data. Phase 4B's separate read-only reconciliation still
+classifies all 23 caller-observed live values and marker/history differences. Neither
+assessment attributes competing writes, repairs data, latches a durable refusal,
+performs rollback, resumes recovery or clears interruption state.
+
+#### Remaining execution-blocking gaps
+
+1. An authenticated, authorized, genuinely durable enforcing backend with atomic
+   expected-state comparison, monotonic non-resettable revisions, independently
+   pinned epochs, durable initial attempt enrollment and immutable receipt retention.
+   No adapter, schema, SQL migration, endpoint or database change is supplied here.
+2. Evidence storage capacity, quota/IO behaviour, sensitive-data access control,
+   exact UTF-16 preservation, externally recoverable/pinned retention, and tested
+   crash safety at every image/journal/checkpoint publication boundary.
+3. Atomic durable composition with the single-use confirmation consumer, trusted
+   clock/expiry checks at commit, and a reviewed lifecycle for competing attempts.
+   The test confirmation stub proves none of these deployment guarantees.
+4. Independent writer exclusion across every browser/server writer and actual write
+   boundary. A checkpoint CAS cannot make localStorage business writes atomic, detect
+   all business-data ABA, close marker check-then-write races, or prove that a recorded
+   readback/fence was ever physically durable.
+5. A separately reviewed execution authority and crash-tested forward-write,
+   verification, rollback, outcome retention and fence-release protocols. No marker
+   clearing, automatic recovery, business writes or deletions are enabled.
+
+[exceptional-recovery-checkpoint-coordination.test.ts](../app/lib/exceptional-recovery-checkpoint-coordination.test.ts)
+adds deterministic scheduled branch/duplicate-tab races, foreign attempts, stale/ABA
+revisions, epoch/scope changes, overflow, replay, complete-evidence failures,
+input capture, provenance forgery, expiry, loss of authority during reads/hashing,
+receipt substitution and interrupted-update reconciliation cases. The test-only
+scheduled authority simulates acknowledgements in memory; it is not an adapter and
+does not prove storage durability or parallel backend isolation. These tests were
+**added, not run**, in Phase 4C. No tests, builds, terminal commands, database access,
+Git commands, commits or pushes were performed for this phase.
+
+The new module is not imported by runtime callers. Existing Phase 4A/4B formats,
+hashes, tests, ordinary restore, localStorage keys/data, writer fences, hydration,
+server persistence contracts and dormant confirmation integration remain unchanged.
+No stored-data migration or backward-compatibility conversion is needed.
+
 ### Exceptional recovery durable confirmation consumer (inactive)
 
 [postgres-exceptional-recovery-confirmation-consumer.ts](../app/lib/postgres-exceptional-recovery-confirmation-consumer.ts)
