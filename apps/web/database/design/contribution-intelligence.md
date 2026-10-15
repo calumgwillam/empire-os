@@ -49,6 +49,11 @@ occurred. No existing operational record is automatically converted into them.
 
 ## Input, identity and historical boundaries
 
+[Phase 3 founder read model](./contribution-dashboard.md) consumes validated analysis
+without changing these person-wide totals. Dimension filtering derives separate
+metrics from explicit Phase 1 records, with spanning/unallocated/disputed attribution,
+trace packets and a separately minimised person-specific projection. No UI is activated.
+
 The caller supplies one ledger, a scope-matched reference snapshot, a unique set
 of Person IDs, named nonoverlapping half-open periods, agreements, delivery
 observations, `nowMs`, `asOfMs` and an explicit trend policy. There are no implicit

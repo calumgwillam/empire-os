@@ -29,6 +29,12 @@ verdict or automatic reward, and activates no collection, storage or dashboard.
 The design lists remaining durable agreement, privacy, authorisation and concurrency
 prerequisites.
 
+[Contribution Intelligence Phase 3](./design/contribution-dashboard.md) adds an
+inactive founder read model and minimised person-specific projection. Person-wide
+Phase 2 analysis remains unchanged; dimension metrics derive from explicit Phase 1
+record associations, preserving spanning, unallocated and disputed attribution.
+No UI, storage or automatic reward/profit-sharing calculation is activated.
+
 ## Authority and security
 
 The intended authority is authenticated PostgreSQL, not a production IndexedDB phase.
