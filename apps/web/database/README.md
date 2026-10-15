@@ -11,6 +11,16 @@ that instance, and never reset or clear it. Use a separate fresh disposable data
 future real PostgreSQL integration runs. Do not interpret unit tests as database
 integration or durability tests.
 
+## Individual contribution domain (inactive)
+
+[Individual contribution Phase 1](./design/individual-contribution.md) defines a
+separate, non-executing domain foundation for person-linked work, append-only
+corrections/disputes, unique shared outcomes, independently reviewed allocations,
+role expectations and evidence-aware reporting. It supplies no adapter, production
+table, localStorage schema, monitoring, UI activation or automatic entitlement changes.
+The design documents server-enforced access, privacy, concurrency and durable evidence
+requirements that must be satisfied before activation.
+
 ## Authority and security
 
 The intended authority is authenticated PostgreSQL, not a production IndexedDB phase.
