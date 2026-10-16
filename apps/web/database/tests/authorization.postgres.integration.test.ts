@@ -11,7 +11,7 @@ import type { AuthorizationAuditEvidence } from "../../app/lib/authorization-tra
 import type { TransactionalAuthorizationStore } from "../../app/lib/authorization-transaction-contract";
 import { authorityFixture, membershipRevocation, preparationWrite, testPrincipal } from "./authorization-fixtures";
 import { authorizationDisposableConfig } from "./authorization-disposable-config";
-import { connectDisposable, migrateEmptyAuthorizationDisposable, seedDataset } from "./postgres-harness";
+import { connectDisposable, migrateEmptyAuthorizationDisposable, seedDatasetInTransaction } from "./postgres-harness";
 
 const configuration = authorizationDisposableConfig(process.env);
 // Dedicated variables only. Never fall back to the populated persistence test database.
@@ -56,7 +56,7 @@ describe.skipIf(configuration.status === "skip")("REAL NEW disposable PostgreSQL
     const datasetId = randomUUID();
     await admin.query("BEGIN");
     try {
-      await seedDataset(admin, datasetId);
+      await seedDatasetInTransaction(admin, datasetId);
       await admin.query("INSERT INTO empire_os_authorization.tenants(tenant_id,revision,state) VALUES ($1,1,$2::jsonb)",
         [tenantId, JSON.stringify(authorityFixture(tenantId, datasetId))]);
       await admin.query("INSERT INTO empire_os_authorization.datasets(tenant_id,dataset_id) VALUES ($1,$2)", [tenantId, datasetId]);
@@ -456,7 +456,7 @@ describe.skipIf(configuration.status === "skip")("REAL NEW disposable PostgreSQL
     await admin.query("BEGIN");
     const extraTenant = randomUUID();
     const extraDataset = randomUUID();
-    await seedDataset(admin, extraDataset);
+    await seedDatasetInTransaction(admin, extraDataset);
     const initial = authorityFixture(extraTenant, extraDataset);
     const state = { ...initial, snapshot: { ...initial.snapshot, delegations: [{
       id: "expiring", tenantId: extraTenant, datasetId: extraDataset,

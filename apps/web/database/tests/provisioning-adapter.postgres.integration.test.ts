@@ -24,7 +24,7 @@ import { createServerEmployeeProvisioningReconciliation } from "../../app/lib/se
 import { PROVISIONING_CATALOG_SQL } from "../../app/lib/employee-provisioning-readiness";
 import { RESTRICTED_LEASE_IDENTITY_SQL } from "../../app/lib/restricted-postgres-provider";
 import { createServerPrincipalResolver, isAuthenticatedPrincipal } from "../../app/lib/server-persistence-authority";
-import { connectDisposable, migrateEmptyProvisioningDisposable, seedDataset } from "./postgres-harness";
+import { connectDisposable, migrateEmptyProvisioningDisposable, seedDatasetInTransaction } from "./postgres-harness";
 import { provisioningAdapterDisposableConfig } from "./provisioning-adapter-disposable-config";
 
 const configuration = provisioningAdapterDisposableConfig(process.env);
@@ -125,7 +125,7 @@ describe.skipIf(configuration.status === "skip")(
       expect(validateDurableAuthorityState(before).status).toBe("valid");
       await admin.query("BEGIN");
       try {
-        for (const datasetId of datasetIds) await seedDataset(admin, datasetId);
+        for (const datasetId of datasetIds) await seedDatasetInTransaction(admin, datasetId);
         await admin.query("INSERT INTO empire_os_authorization.tenants(tenant_id,revision,state) VALUES ($1,$2,$3::jsonb)",
           [tenantId, revision, JSON.stringify(before)]);
         for (const datasetId of datasetIds) {

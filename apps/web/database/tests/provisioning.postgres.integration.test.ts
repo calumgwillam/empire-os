@@ -7,7 +7,7 @@ import { provisioningDisposableConfig } from "./provisioning-disposable-config";
 import {
   connectDisposable,
   migrateEmptyProvisioningDisposable,
-  seedDataset,
+  seedDatasetInTransaction,
 } from "./postgres-harness";
 
 const configuration = provisioningDisposableConfig(process.env);
@@ -197,7 +197,7 @@ describe.skipIf(configuration.status === "skip")(
 
       await admin.query("BEGIN");
       try {
-        await seedDataset(admin, datasetId);
+        await seedDatasetInTransaction(admin, datasetId);
         await admin.query(
           "INSERT INTO empire_os_authorization.tenants(tenant_id,revision,state) VALUES ($1,$2,$3::jsonb)",
           [tenantId, revision, JSON.stringify(state)],

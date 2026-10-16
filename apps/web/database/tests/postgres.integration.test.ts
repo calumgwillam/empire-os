@@ -79,7 +79,7 @@ describe.skipIf(configuration.status === "skip")("REAL disposable PostgreSQL sch
   it("denies two independent principals, even after explicit test-only SELECT grants", async () => {
     await harness.transaction(admin, async () => {
       const id = randomUUID();
-      await harness.seedDataset(admin, id);
+      await harness.seedDatasetInTransaction(admin, id);
       for (let index = 0; index < 2; index++) {
         const name = `empire_os_test_role_${randomUUID().replaceAll("-", "")}`;
         await admin.query(`CREATE ROLE "${name}" NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT`);
@@ -101,7 +101,7 @@ describe.skipIf(configuration.status === "skip")("REAL disposable PostgreSQL sch
     "round-trips exact bytea values through PostgreSQL: %j", async (raw) => {
       await harness.transaction(admin, async () => {
         const id = randomUUID();
-        await harness.seedDataset(admin, id);
+        await harness.seedDatasetInTransaction(admin, id);
         await admin.query(`UPDATE empire_os_preparation.store_values SET raw_value=$1,revision=revision+1
           WHERE dataset_id=$2 AND store_key=$3`, [encodeRawStoreValue(raw), id, STORAGE_KEY]);
         const result = await admin.query<{ raw_value: Buffer | null; revision: string }>(
@@ -117,7 +117,7 @@ describe.skipIf(configuration.status === "skip")("REAL disposable PostgreSQL sch
   it("rejects unknown keys, malformed bytea, unsafe revisions and production authority", async () => {
     await harness.transaction(admin, async () => {
       const id = randomUUID();
-      await harness.seedDataset(admin, id);
+      await harness.seedDatasetInTransaction(admin, id);
       const cases = [
         { sql: "UPDATE empire_os_preparation.store_values SET raw_value=$1,revision=1 WHERE dataset_id=$2 AND store_key=$3",
           params: [Buffer.from([1]), id, STORAGE_KEY], code: "23514" },
@@ -139,7 +139,7 @@ describe.skipIf(configuration.status === "skip")("REAL disposable PostgreSQL sch
   it("rejects revision skipping, row deletion and source-evidence mutation", async () => {
     await harness.transaction(admin, async () => {
       const id = randomUUID();
-      await harness.seedDataset(admin, id);
+      await harness.seedDatasetInTransaction(admin, id);
       await admin.query(`INSERT INTO empire_os_preparation.import_sources(dataset_id,source_sha256,canonical_source)
         VALUES ($1,$2,$3)`, [id, "a".repeat(64), Buffer.from("synthetic")]);
       const operations = [
@@ -159,7 +159,7 @@ describe.skipIf(configuration.status === "skip")("REAL disposable PostgreSQL sch
   it("rolls back an earlier multi-store write after a later constraint failure", async () => {
     const id = randomUUID();
     await harness.transaction(admin, async () => {
-      await harness.seedDataset(admin, id);
+      await harness.seedDatasetInTransaction(admin, id);
       await admin.query("SAVEPOINT batch");
       await admin.query(`UPDATE empire_os_preparation.store_values SET revision=1,raw_value=$1
         WHERE dataset_id=$2 AND store_key=$3`, [encodeRawStoreValue("first"), id, STORAGE_KEY]);
@@ -179,7 +179,7 @@ describe.skipIf(configuration.status === "skip")("REAL disposable PostgreSQL sch
     await harness.transaction(admin, async () => {
       const id = randomUUID();
       const transactionId = randomUUID();
-      await harness.seedDataset(admin, id);
+      await harness.seedDatasetInTransaction(admin, id);
       await admin.query(`INSERT INTO empire_os_preparation.transactions
         (transaction_id,dataset_id,generation,authority_revision,protocol_version,commit_sequence,principal_id,operation,request_sha256)
         VALUES ($1,$2,1,0,1,1,'principal-a','write',$3)`, [transactionId, id, "a".repeat(64)]);
@@ -211,7 +211,7 @@ describe.skipIf(configuration.status === "skip")("REAL disposable PostgreSQL sch
     if (configuration.status !== "configured") throw new Error("Missing disposable configuration.");
     const id = randomUUID();
     await admin.query("BEGIN");
-    await harness.seedDataset(admin, id);
+    await harness.seedDatasetInTransaction(admin, id);
     await admin.query("COMMIT");
     const first = await harness.connectDisposable(configuration.config);
     let second: Client | undefined;
@@ -259,7 +259,7 @@ describe.skipIf(configuration.status === "skip")("REAL disposable PostgreSQL sch
     if (configuration.status !== "configured") throw new Error("Missing disposable configuration.");
     const id = randomUUID();
     await admin.query("BEGIN");
-    await harness.seedDataset(admin, id);
+    await harness.seedDatasetInTransaction(admin, id);
     await admin.query("COMMIT");
     const reader = await harness.connectDisposable(configuration.config);
     try {

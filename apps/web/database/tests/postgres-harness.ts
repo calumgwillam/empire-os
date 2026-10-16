@@ -125,10 +125,29 @@ export async function migrateEmptyProvisioningDisposable(client: Client): Promis
   }
 }
 
-export async function seedDataset(client: Client, id: string): Promise<void> {
+// Requires a caller-owned transaction. The caller must roll back on failure and
+// owns completion, including the deferred dataset_generation constraint check.
+export async function seedDatasetInTransaction(client: Client, id: string): Promise<void> {
   requireVerifiedConnection(client);
   await client.query(`INSERT INTO empire_os_preparation.datasets(dataset_id,generation) VALUES ($1,1)`, [id]);
   await client.query(`INSERT INTO empire_os_preparation.generations(dataset_id,generation) VALUES ($1,1)`, [id]);
   await client.query(`INSERT INTO empire_os_preparation.store_values(dataset_id,generation,store_key)
     SELECT $1,1,store_key FROM empire_os_preparation.store_registry`, [id]);
+}
+
+// Standalone only: owns BEGIN/COMMIT/ROLLBACK. Inside an existing transaction use
+// seedDatasetInTransaction instead; PostgreSQL does not nest BEGIN transactions.
+export async function seedDataset(client: Client, id: string): Promise<void> {
+  requireVerifiedConnection(client);
+  try {
+    await client.query("BEGIN");
+    await seedDatasetInTransaction(client, id);
+    await client.query("COMMIT");
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } finally {
+      throw error;
+    }
+  }
 }
