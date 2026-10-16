@@ -117,6 +117,12 @@ A self-interested founder cannot approve their own outcome/allocation or corrobo
 their own time. Review scope must cover all affected participants; narrowing the
 requested view does not hide collaborators from integrity checks.
 
+Phase 5 adds separate `view-own-contributions` and
+`view-founder-comparative` purposes. Neither is inferred from a Person kind or
+organisational role, and both remain previews with `mayDisclose: false`; actual
+founder intelligence and personal report access still require a future server-side
+read path with field-level minimisation.
+
 Submission validation reuses the Phase 1 body decoder, append preview and full-history
 report. Collection does not calculate a competing result count, time sum, allocation
 or contribution rating. It additionally checks new-event evidence descriptors and
@@ -211,10 +217,13 @@ existing Phase 1 financial-record evidence and separate review.
 
 ## Exact shortest safe deployment sequence
 
-1. **Govern identity/policy first.** Approve a durable tenant/dataset/subject-to-Person
-   schema, provisioning/revocation/account-linking process, contribution purpose/row/
-   evidence policy, independent reviewer/resolver assignment and privacy/recourse.
-   Existing employee membership provisioning does not implement this binding.
+1. **Complete identity/policy implementation before activation.** Phase 5 approves the
+   Founder/System Owner-controlled administrator model and implements its inactive
+   policy/schema foundation. The verified account-linking provider, authoritative
+   PostgreSQL People source, transaction API, revocation/session integration,
+   independent recovery process, contribution row/evidence policy and privacy/recourse
+   remain deployment blockers. Existing employee membership provisioning does not
+   implement identity binding.
 2. **Close historical provenance gaps.** Specify durable correction proposal/approval/
    rejection audit and interested-author handling, plus versioned personal commitment
    acceptance and deadline changes required by Phase 2. Agree retention/redaction and

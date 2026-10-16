@@ -19,6 +19,7 @@ const PURPOSES = [
   "corroborate-time", "review-result", "review-allocation", "review-expectation",
   "propose-correction", "approve-correction", "open-dispute", "resolve-dispute", "withdraw",
   "disclose-own", "disclose-business-summary", "disclose-evidence",
+  "view-own-contributions", "view-founder-comparative",
 ] as const;
 export type ContributionCollectionPurpose = (typeof PURPOSES)[number];
 export type ContributionCollectionAuthority = Readonly<{
@@ -359,14 +360,25 @@ export function previewContributionDisclosure(principal: AuthenticatedPrincipal,
   try {
     const ctx = context(principal, observation, nowMs);
     const item = contributionFields(value, ["purpose", "businessId", "personIds", "expectedPolicyRevision", "expectedBindingRevision"]);
-    const purpose = contributionChoice(item.purpose, ["disclose-own", "disclose-business-summary", "disclose-evidence"]);
+    const purpose = contributionChoice(item.purpose, [
+      "disclose-own", "disclose-business-summary", "disclose-evidence",
+      "view-own-contributions", "view-founder-comparative",
+    ]);
     const businessId = contributionId(item.businessId);
     const personIds = uniqueIds(item.personIds);
     if (contributionCounter(item.expectedPolicyRevision) !== ctx.policy.policyRevision
       || contributionCounter(item.expectedBindingRevision) !== ctx.policy.bindingRevision) throw new Error("Stale disclosure authority.");
-    if (purpose === "disclose-own" && (personIds.length !== 1 || personIds[0] !== ctx.personId)) throw new Error("Private disclosure must bind the authenticated subject.");
+    if (["disclose-own", "view-own-contributions"].includes(purpose)
+      && (personIds.length !== 1 || personIds[0] !== ctx.personId)) {
+      throw new Error("Private disclosure must bind the authenticated subject.");
+    }
     if (!allowed(ctx, purpose, businessId, personIds) || personIds.some(id => !ctx.references.people.some(person => person.id === id))) {
       throw new Error("Contribution disclosure is not authorised.");
+    }
+    if (purpose === "view-founder-comparative" && !ctx.policy.grants.some(grant =>
+      grant.subject === ctx.subject && grant.businessId === businessId
+        && grant.purposes.includes(purpose) && grant.personIds === null)) {
+      throw new Error("Founder comparative access requires an explicit business-wide grant.");
     }
     return freezeContributionValue({
       status: "disclosure-preview", ...CONTRIBUTION_SAFETY, purpose, businessId, personIds, mayDisclose: false, requiresFieldAndEvidenceChecks: true,

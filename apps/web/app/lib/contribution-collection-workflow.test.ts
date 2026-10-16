@@ -20,6 +20,7 @@ const ALL: readonly ContributionCollectionPurpose[] = [
   "submit-own", "submit-on-behalf", "submit-result", "propose-allocation", "define-expectation", "corroborate-time",
   "review-result", "review-allocation", "review-expectation", "propose-correction", "approve-correction",
   "open-dispute", "resolve-dispute", "withdraw", "disclose-own", "disclose-business-summary", "disclose-evidence",
+  "view-own-contributions", "view-founder-comparative",
 ];
 async function actor(subject = "employee"): Promise<AuthenticatedPrincipal> {
   const result = await createServerPrincipalResolver(async () => ({ status: "authenticated", subject: `user_${subject}` }))(new Request("https://empire.invalid"));
@@ -413,6 +414,44 @@ describe("disclosure separation, operational evidence and idempotency model", ()
     refused(previewContributionDisclosure(await actor(), observed, { ...input, personIds: ["founder"] }, NOW));
     refused(previewContributionDisclosure(await actor(), observed, { ...input, purpose: "disclose-business-summary", businessId: "other-org" }, NOW));
     refused(previewContributionDisclosure(await actor(), observed, { ...input, expectedPolicyRevision: 3 }, NOW));
+  });
+
+  it("requires explicit grants for personal and founder-comparative contribution views", async () => {
+    const observed = observation();
+    const own = {
+      purpose: "view-own-contributions", businessId: "org", personIds: ["employee"],
+      expectedPolicyRevision: 4, expectedBindingRevision: 2,
+    };
+    expect(previewContributionDisclosure(await actor(), observed, own, NOW)).toMatchObject({
+      status: "disclosure-preview", purpose: "view-own-contributions", personIds: ["employee"], mayDisclose: false,
+    });
+    refused(previewContributionDisclosure(await actor(), observed, { ...own, personIds: ["founder"] }, NOW));
+
+    const comparative = {
+      purpose: "view-founder-comparative", businessId: "org", personIds: ["employee", "founder"],
+      expectedPolicyRevision: 4, expectedBindingRevision: 2,
+    };
+    expect(previewContributionDisclosure(await actor(), observed, comparative, NOW)).toMatchObject({
+      status: "disclosure-preview", purpose: "view-founder-comparative", mayDisclose: false,
+    });
+    const scopedComparative = {
+      ...observed,
+      authority: {
+        ...policy(),
+        grants: policy().grants.map(grant => grant.subject === "user_employee"
+          ? { ...grant, personIds: ["employee", "founder"] }
+          : grant),
+      },
+    };
+    refused(previewContributionDisclosure(await actor(), scopedComparative, comparative, NOW));
+    const withoutFounderGrant = {
+      ...observed,
+      authority: {
+        ...policy(),
+        grants: policy().grants.filter(grant => grant.subject !== "user_founder"),
+      },
+    };
+    refused(previewContributionDisclosure(await actor("founder"), withoutFounderGrant, comparative, NOW));
   });
 
   it.each(["Action", "Project"])("treats completed %s snapshots as context, never proof of time, quality or outcomes", kind => {

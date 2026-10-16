@@ -42,6 +42,16 @@ operational evidence candidates and idempotency reconciliation modelling. No loa
 writer, endpoint or migration is installed. Durable binding/policy and correction/
 agreement provenance remain deployment blockers.
 
+[Contribution Intelligence Phase 5](./design/contribution-identity.md) adds a
+server-only identity-administration policy model, a global one-to-one binding history
+contract, organisation-scoped delegated identity capabilities and separate
+personal/founder-comparative view purposes. Reassignment previews require independent
+fresh approval and carry all affected membership fences; no role grants or historical
+contribution attribution are transferred. The PostgreSQL schema is an inactive design
+candidate only: there is no writer, verifier, runtime grant, migration or live binding.
+The People records still lack an authoritative PostgreSQL source, so identity
+activation and durable contribution collection remain blocked.
+
 ## Authority and security
 
 The intended authority is authenticated PostgreSQL, not a production IndexedDB phase.
