@@ -31,7 +31,10 @@ export async function connectDisposable(config: DisposableConfig): Promise<Clien
   }
 }
 
-export async function migrateEmptyDisposable(client: Client): Promise<void> {
+export async function migrateEmptyDisposable(
+  client: Client,
+  beforeMigration?: (client: Client) => Promise<void>,
+): Promise<void> {
   requireVerifiedConnection(client);
   // Held until this connection closes: concurrent harness runs cannot reset or race this schema.
   const lock = await client.query<{ acquired: boolean }>(
@@ -65,6 +68,7 @@ export async function migrateEmptyDisposable(client: Client): Promise<void> {
   if (objects.rows[0].count !== "0" || relations.rows[0].count !== "0") {
     throw new Error("Test database is not empty. Refusing reset, overwrite or migration. Use a fresh disposable database.");
   }
+  if (beforeMigration) await beforeMigration(client);
   const sql = await readFile(new URL("../migrations/001_isolated_persistence.sql", import.meta.url), "utf8");
   try {
     await client.query(sql);
@@ -84,9 +88,12 @@ export async function transaction<T>(client: Client, work: () => Promise<T>): Pr
   }
 }
 
-export async function migrateEmptyAuthorizationDisposable(client: Client): Promise<void> {
+export async function migrateEmptyAuthorizationDisposable(
+  client: Client,
+  beforeMigration?: (client: Client) => Promise<void>,
+): Promise<void> {
   // Reuse every original connection, advisory-lock and empty-database guard unchanged.
-  await migrateEmptyDisposable(client);
+  await migrateEmptyDisposable(client, beforeMigration);
   for (const name of ["002_isolated_authorization.sql", "003_authorization_reconciliation.sql", "004_authorized_dataset_snapshot.sql"]) {
     const sql = await readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8");
     try {

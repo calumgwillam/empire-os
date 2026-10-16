@@ -35,7 +35,7 @@ function same(left: unknown, right: unknown): boolean { return JSON.stringify(le
 const UNSAFE_IDENTITY_SQL = `SELECT
           r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolreplication OR
           EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-            WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation') AND
+            WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation','empire_os_identity') AND
               (c.relowner=r.oid OR (c.relkind IN ('r','p','v','m','f') AND (
                 has_any_column_privilege(current_user,c.oid,'SELECT') OR
                 has_any_column_privilege(current_user,c.oid,'REFERENCES') OR

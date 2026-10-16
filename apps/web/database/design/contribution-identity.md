@@ -13,6 +13,11 @@ receipts or proof of database durability. Runtime activation remains prohibited 
 a trusted identity verifier, PostgreSQL transaction adapter, complete People source,
 recovery procedure and isolated-database integration tests exist.
 
+[Phase 6](./contribution-identity-persistence.md) now supplies a disabled repository
+and an alternative transactional schema candidate. It does not activate this phase,
+install the missing trusted providers or approve migration. The Phase 5 schema
+candidate remains unchanged and must not be installed alongside the Phase 6 candidate.
+
 ## Identity authority
 
 [contribution-identity-authority.ts](../../app/lib/contribution-identity-authority.ts)

@@ -40,10 +40,10 @@ export const RESTRICTED_LEASE_IDENTITY_SQL = `SELECT
   NOT EXISTS (SELECT 1 FROM pg_roles reachable
     WHERE reachable.oid<>r.oid AND pg_has_role(r.oid,reachable.oid,'MEMBER')) AS standalone,
   NOT EXISTS (SELECT 1 FROM pg_namespace n
-    WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation')
+    WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation','empire_os_identity')
       AND (n.nspowner=r.oid OR has_schema_privilege(r.oid,n.oid,'CREATE'))) AS safe_schema,
   NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-    WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation')
+    WHERE n.nspname IN ('empire_os_authorization','empire_os_preparation','empire_os_identity')
       AND (c.relowner=r.oid OR (c.relkind IN ('r','p','v','m','f') AND (
         has_any_column_privilege(r.oid,c.oid,'SELECT')
         OR has_any_column_privilege(r.oid,c.oid,'REFERENCES')

@@ -93,6 +93,10 @@ describe("restricted PostgreSQL provider (mocked driver, NO database/TLS handsha
     await expect(parse(RESTRICTED_LEASE_IDENTITY_SQL)).resolves.toBeDefined();
   });
 
+  it("includes identity tables and schema ownership in restricted-role safety checks", () => {
+    expect(RESTRICTED_LEASE_IDENTITY_SQL.match(/'empire_os_identity'/g)).toHaveLength(2);
+  });
+
   it("checks mutation privileges on views and foreign relations as well as base tables", () => {
     expect(RESTRICTED_LEASE_IDENTITY_SQL).toContain("c.relkind IN ('r','p','v','m','f')");
     expect(RESTRICTED_LEASE_IDENTITY_SQL).toContain("has_any_column_privilege(r.oid,c.oid,'SELECT')");

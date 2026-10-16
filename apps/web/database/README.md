@@ -52,6 +52,14 @@ candidate only: there is no writer, verifier, runtime grant, migration or live b
 The People records still lack an authoritative PostgreSQL source, so identity
 activation and durable contribution collection remain blocked.
 
+[Contribution Intelligence Phase 6](./design/contribution-identity-persistence.md)
+adds a disabled restricted identity repository, request-bound trusted-issuer records,
+an alternative transactional SQL candidate and offline/disposable integration tests.
+It reuses the Phase 5 planner and existing membership/audit model. No candidate has
+been applied and no issuer, verifier, authoritative People loader, session worker,
+endpoint or live identity management is activated. See the design for coarse-lock
+tradeoffs, uncertain-commit handling, recovery and exact activation prerequisites.
+
 ## Authority and security
 
 The intended authority is authenticated PostgreSQL, not a production IndexedDB phase.

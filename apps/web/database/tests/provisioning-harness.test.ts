@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DISPOSABLE_MARKER, type DisposableConfig } from "./disposable-config";
-import { connectDisposable, migrateEmptyProvisioningDisposable } from "./postgres-harness";
+import { connectDisposable, migrateEmptyDisposable, migrateEmptyProvisioningDisposable } from "./postgres-harness";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -36,6 +36,39 @@ beforeEach(() => {
 });
 
 describe("Provisioning disposable harness (offline mocks, no PostgreSQL execution)", () => {
+  it("does not consume a disposable attempt marker before verified-empty checks pass", async () => {
+    const client = await connectDisposable(config);
+    const consume = vi.fn(async () => {});
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("pg_try_advisory_lock")) return { rows: [{ acquired: true }] };
+      if (sql.includes("AS count")) return { rows: [{ count: "1" }] };
+      throw new Error("No migration or marker write is permitted.");
+    });
+    await expect(migrateEmptyDisposable(client, consume)).rejects.toThrow("not empty");
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it("consumes the new identity attempt marker before DDL even if the first migration fails", async () => {
+    const client = await connectDisposable(config);
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("pg_try_advisory_lock")) return { rows: [{ acquired: true }] };
+      if (sql.includes("AS count")) return { rows: [{ count: "0" }] };
+      if (sql.includes("CREATE SCHEMA")) throw new Error("Simulated first migration failure.");
+      return { rows: [], command: "OK" };
+    });
+    const consume = vi.fn(async () => {
+      await client.query(`COMMENT ON DATABASE "${config.database}" IS 'empire-os-identity-test-attempt-consumed'`);
+    });
+    await expect(migrateEmptyDisposable(client, consume)).rejects.toThrow("first migration failure");
+    const statements = mocks.query.mock.calls.map(([sql]) => String(sql));
+    const marker = statements.findIndex(sql => sql.startsWith("COMMENT ON DATABASE"));
+    const ddl = statements.findIndex(sql => sql.includes("CREATE SCHEMA"));
+    expect(marker).toBeGreaterThan(-1);
+    expect(marker).toBeLessThan(ddl);
+    expect(consume).toHaveBeenCalledOnce();
+    expect(statements.filter(sql => sql.startsWith("COMMENT ON DATABASE"))).toHaveLength(1);
+  });
+
   it("refuses any candidate setup when public functions, types or extensions make the database non-empty", async () => {
     const client = await connectDisposable(config);
     mocks.query.mockImplementation(async (sql: string) => {
