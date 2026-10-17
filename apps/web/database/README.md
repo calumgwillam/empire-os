@@ -58,6 +58,44 @@ release gates, migration blockers, founder-only UI and browser persistence remai
 unchanged. Offline tests prove validation and refusal behavior, not PostgreSQL
 concurrency, live issuer provenance or production readiness.
 
+### Phase 8 eligibility provenance contract (inactive)
+
+[Eligibility provenance](../app/lib/person-eligibility-provenance.ts) separates
+current authenticated founder identity from historical eligibility issuance. Its
+readiness inspection resolves a Clerk session into the existing process-branded
+principal and checks the same server-side founder configuration as the dashboard.
+Matching `founderSubject` strings, request headers, Person labels and generic
+identity-administrator capabilities cannot substitute for that authentication.
+This check does not grant issuance, reassignment, recovery or employee access.
+
+There is still **no independently approved issuer source**. Even the authenticated
+founder receives `unavailable/not-submitted`, listing the missing issuer authority/
+revocation source, verified Person source reference/digest, and locked latest-event/
+exact-event reconciliation boundary. No verifier callback, persistence operation,
+source fallback, route, grant, approval switch or independently writable registry
+is installed.
+
+The separate candidate validator checks consistency, not authenticated historical
+provenance. It requires an authenticated configured founder plus matching issuer
+status/revision, Person/tenant/current revision checkpoint, and the **entire**
+existing immutable eligibility event: issuer, operation ID, status/kind, source
+reference, evidence digest and recorded time included. A conflict in any event
+field is denied even if operation ID or digest matches. Exact inactive events can
+be compared for reconciliation; that does not establish active member eligibility.
+The returned copy is immutable and is neither a COMMIT receipt nor an execution
+grant. Matching fabricated envelopes can pass consistency checks but can never
+open operational readiness. Hash format is not verification of source contents.
+
+Future approved composition must derive all checkpoints and issuer observations
+independently of browser/request claims, verify source content against the recorded
+digest, observe revocation/current revisions under compatible registry-before-tenant
+locks, and reconcile the exact original event after uncertain COMMIT without
+resubmission. Current founder authentication cannot retroactively authenticate old
+events. Founder rotation/recovery and historical issuer validity need an approved
+policy; this foundation denies unrecognised founders and delegated issuers rather
+than modifying existing recovery or delegated-administration semantics. No business
+execution gate, existing append-only SQL contract or browser storage is changed.
+
 ## Individual contribution domain (inactive)
 
 [Individual contribution Phase 1](./design/individual-contribution.md) defines a

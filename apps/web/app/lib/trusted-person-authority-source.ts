@@ -50,11 +50,17 @@ function clerkSubject(value: unknown): value is string {
   return typeof value === "string" && /^user_[A-Za-z0-9_]+$/.test(value) && value.length <= 512;
 }
 
-function eligibilityEvent(value: unknown): value is PersonEligibilityEvent {
-  return isObject(value) && hasOnlyFields(value, [
+export function isPersonEligibilityEvent(value: unknown): value is PersonEligibilityEvent {
+  const fields = [
     "tenantId", "personId", "revision", "status", "kind", "operationId", "issuerSubject",
     "sourceReference", "evidenceSha256", "recordedAtMs",
-  ]) && isIdentityPerson({
+  ];
+  return isObject(value) && hasOnlyFields(value, fields)
+    && Reflect.ownKeys(value).length === fields.length
+    && fields.every(field => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, field);
+      return descriptor !== undefined && "value" in descriptor && descriptor.enumerable;
+    }) && isIdentityPerson({
     tenantId: value.tenantId, personId: value.personId, status: value.status, kind: value.kind,
   }) && isCounter(value.revision) && value.revision > 0
     && typeof value.operationId === "string" && /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/.test(value.operationId)
@@ -90,7 +96,7 @@ export function validateCandidatePersonAuthorityEvidence(
   if (!isCheckpoint(checkpoint)
     || !isObject(evidence) || !hasOnlyFields(evidence, ["registry", "authority", "person", "eligibility"])
     || !isContributionIdentityRegistry(evidence.registry) || !isIdentityPerson(evidence.person)
-    || !eligibilityEvent(evidence.eligibility)) return denied();
+    || !isPersonEligibilityEvent(evidence.eligibility)) return denied();
 
   const { registry, person, eligibility } = evidence;
   const authority = validateDurableAuthorityState(evidence.authority);
