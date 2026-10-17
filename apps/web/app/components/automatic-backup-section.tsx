@@ -148,6 +148,13 @@ export function AutomaticBackupSection({ revision, disabled }: { revision: unkno
     <p className="mt-2 font-medium text-[#7a352b]">Unattended off-device protection is not established.</p>
     <p className="mt-2">Checks run while this dashboard is open: after edits settle, every minute, and on return to the page. Closed browsers, sleeping laptops and browser throttling prevent a guaranteed schedule.</p>
     {localStatus ? <p className="mt-2" role="status">Browser-local check: {automaticRecoveryMessage(localStatus)} Checked {new Date(localStatus.checkedAt).toLocaleString()}. These copies share this browser&apos;s failure domain.</p> : null}
+    {localStatus && localStatus.status !== "empty" && localStatus.status !== "blocked" ? <p className="mt-2">
+      Estimated snapshot storage: {localStatus.estimatedBytes.toLocaleString()} bytes.
+      {" "}Protected floor, including the previous verified copy: {localStatus.protectedBytes?.toLocaleString()} bytes.
+      {" "}Automatic working allowance: {localStatus.workingBudgetBytes?.toLocaleString()} bytes.
+      {" "}These UTF-16 estimates are not the browser&apos;s actual quota. Quota refusals are detected during writes; unchanged capacity failures are retried after five minutes.
+    </p> : null}
+    <p className="mt-2">Closed-browser cloud recovery still requires durable business-data synchronisation, approved server authority and service identity, an approved remote destination, scheduling and independent alert delivery. No Google Drive API access or upload permission is assumed. This does not require Google Drive for desktop.</p>
     <p className="mt-2">Approved folder: {folderName || "none"}. Each new file contains all 21 stores, version metadata and SHA-256 checks, is read back, and passes an isolated restore drill. Previous files are never overwritten or automatically deleted.</p>
     {fileStatus ? <div className="mt-2" role="status">
       <p>{fileStatus.status === "created" ? "New full file written and verified."

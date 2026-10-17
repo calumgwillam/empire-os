@@ -94,28 +94,28 @@ describe("Safe automatic snapshot replacement", () => {
     expect(retained).toContainEqual(JSON.parse(JSON.stringify(unknown)));
   });
 
-  it("blocks even a duplicate check when protected evidence alone exceeds budget, with no writes or warning suppression", () => {
+  it("recognises an unchanged protected recovery point above the working budget without writes or deletion", () => {
     const pinned = { ...copy(0, 1100000), pinned: true };
     const raw = encodeRecoverySnapshots([pinned]);
     const target = memory({ [RECOVERY_SNAPSHOTS_STORAGE_KEY]: raw, [STORAGE_KEY]: pinned.storage[STORAGE_KEY]! });
     const checker = new AutomaticRecoverySnapshots();
     const first = checker.check(target.storage);
     const repeated = checker.check(target.storage);
-    expect(first).toMatchObject({ status: "blocked", reason: "budget", existingEvidencePreserved: true });
-    expect(repeated).toMatchObject({ status: "blocked", reason: "budget", retrySuppressed: true });
-    expect(automaticRecoveryMessage(repeated)).toContain("Protected recovery evidence alone");
-    expect(automaticRecoveryMessage(repeated)).toContain("creation remains blocked");
+    expect(first).toMatchObject({ status: "existing", overBudget: true });
+    expect(repeated).toMatchObject({ status: "existing", overBudget: true });
+    expect(automaticRecoveryMessage(repeated)).toContain("no recovery point was deleted");
     expect(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)).toBe(raw);
     expect(target.attempts()).toBe(0);
   });
 
-  it("blocks if the last verified unpinned copy alone exceeds budget instead of deleting it", () => {
+  it("preserves a previously verified oversized copy while retaining a bounded new automatic point", () => {
     const previous = copy(0, 1100000);
     const raw = encodeRecoverySnapshots([previous]);
     const target = memory({ [RECOVERY_SNAPSHOTS_STORAGE_KEY]: raw, [STORAGE_KEY]: "[]" });
-    expect(() => retainRecoverySnapshot(target.storage, buildFullBackup(target.storage))).toThrow("Protected recovery evidence alone");
-    expect(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)).toBe(raw);
-    expect(target.attempts()).toBe(0);
+    const result = retainRecoverySnapshot(target.storage, buildFullBackup(target.storage));
+    expect(result.status).toBe("created");
+    expect(decodeRecoverySnapshots(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY))).toContainEqual(previous);
+    expect(result.estimatedBytes).toBeLessThanOrEqual(result.protectedBytes! + RECOVERY_SNAPSHOT_BUDGET_BYTES);
   });
 
   it("refuses a growing over-budget candidate even after exhausting eligible replacements", () => {
@@ -127,18 +127,13 @@ describe("Safe automatic snapshot replacement", () => {
     expect(target.attempts()).toBe(0);
   });
 
-  it.each(["quota", "silent", "corrupt", "throw after write"] as const)("restores exact original recovery bytes on replacement failure: %s", (mode) => {
+  it.each(["silent", "corrupt", "throw after write"] as const)("restores exact original recovery bytes on non-quota replacement failure: %s", (mode) => {
     const target = overBudget();
     const originalSet = target.storage.setItem;
     let failed = false;
     target.storage.setItem = (key, value) => {
       if (!failed) {
         failed = true;
-        if (mode === "quota") {
-          const error = new Error("Storage full");
-          error.name = "QuotaExceededError";
-          throw error;
-        }
         if (mode === "silent") return;
         originalSet(key, mode === "corrupt" ? "{corrupted" : value);
         if (mode === "throw after write") throw new Error("Write failed after mutation");
@@ -153,7 +148,7 @@ describe("Safe automatic snapshot replacement", () => {
       error = failure;
     }
     expect(error).toBeInstanceOf(RecoverySnapshotError);
-    expect(error).toMatchObject({ reason: mode === "quota" ? "quota" : mode === "throw after write" ? "storage" : "verification",
+    expect(error).toMatchObject({ reason: mode === "throw after write" ? "storage" : "verification",
       existingEvidencePreserved: true });
     expect(Object.fromEntries(target.data)).toEqual(target.initial);
     expect(decodeRecoverySnapshots(target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY))).toEqual(target.snapshots);

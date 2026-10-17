@@ -17235,7 +17235,7 @@ export default function Home() {
 
             <div className="mt-2 px-1 text-[10px] leading-4 text-[#6b655f]">
               <div>{hasValidLastBackupAt ? `Last download request (not file verification): ${new Date(lastBackupAt).toLocaleString()}` : "No download request recorded"}</div>
-              <p className="mt-2">Local recovery rotates eligible unpinned automatic copies while retaining all protected evidence and a previously verified recovery copy. The budget is 2 MiB estimated storage; existing over-budget stores permit only non-growing automatic replacement when protected evidence fits the budget. Business history is never truncated.</p>
+              <p className="mt-2">Local recovery preserves protected evidence and the previous verified recovery copy. The normal working budget is 2 MiB estimated storage. Existing oversized protected evidence is grandfathered separately, with at most 2 MiB of additional automatic working storage; non-growing replacement is preferred. Actual browser quota failures reduce only eligible automatic copies, or block safely if no candidate fits. Business history is never truncated. Pinned pre-restore safety copies retain their stricter budget checks.</p>
               {automaticRecoveryStatus ? (
                 <div className="mt-2" role="status">
                   <p>Local recovery check at {new Date(automaticRecoveryStatus.checkedAt).toLocaleString()}: {automaticRecoveryMessage(automaticRecoveryStatus)}</p>

@@ -230,6 +230,9 @@ export type RecoverySnapshotResult = {
   compacted: boolean;
   overBudget: boolean;
   estimatedBytes: number;
+  protectedBytes?: number;
+  workingBudgetBytes?: number;
+  quotaLimited?: boolean;
 };
 
 function retainRecoverySnapshotInternal(
@@ -246,7 +249,6 @@ function retainRecoverySnapshotInternal(
   } catch (error) {
     throw new RecoverySnapshotError(`Recovery history could not be decoded: ${error instanceof Error ? error.message : String(error)}. Existing recovery evidence was preserved; no new snapshot was saved.`, "decoding", true);
   }
-  const duplicate = !pinned && existing.some((entry) => JSON.stringify(entry.storage) === JSON.stringify(backup.storage));
   const verified = existing.map((entry) => {
     try {
       validateStandaloneBackup(entry);
@@ -256,6 +258,8 @@ function retainRecoverySnapshotInternal(
       return false;
     }
   });
+  const duplicate = !pinned && existing.some((entry, index) => verified[index]
+    && JSON.stringify(entry.storage) === JSON.stringify(backup.storage));
   const lastVerifiedIndex = verified.findIndex(Boolean);
   const automatic = existing.map((entry, index) => entry.pinned !== true && verified[index]
     && Object.keys(entry).every((key) => ["format", "version", "createdAt", "storage", "includedStorageKeys", "pinned", "automatic"].includes(key))
@@ -273,9 +277,15 @@ function retainRecoverySnapshotInternal(
     }
   };
   const protectedBytes = bytes(encodeVerified(protectedSnapshots));
-  if (protectedBytes > RECOVERY_SNAPSHOT_BUDGET_BYTES) {
+  if (pinned && protectedBytes > RECOVERY_SNAPSHOT_BUDGET_BYTES) {
     throw new RecoverySnapshotError(`Protected recovery evidence alone requires ${protectedBytes} estimated bytes, exceeding the 2 MiB storage budget. Local snapshot creation remains blocked. Existing recovery evidence was preserved; no new snapshot was saved and nothing was deleted.`, "budget", true);
   }
+  // Grandfather existing protected evidence, not an unlimited larger cache.
+  // Only automatic snapshots get a bounded working allowance above that floor;
+  // pinned restore safety copies retain their stricter, explicit failure rules.
+  const oversizedProtectedFloor = protectedBytes > RECOVERY_SNAPSHOT_BUDGET_BYTES;
+  const budget = !pinned && oversizedProtectedFloor
+    ? protectedBytes + RECOVERY_SNAPSHOT_BUDGET_BYTES : RECOVERY_SNAPSHOT_BUDGET_BYTES;
   const keptAutomaticCount = (pinned ? 5 : 4) - (automatic[lastVerifiedIndex] ? 1 : 0);
   let automaticCount = 0;
   const retainedExisting = existing.filter((_, index) => !eligible[index] || automaticCount++ < keptAutomaticCount);
@@ -285,28 +295,39 @@ function retainRecoverySnapshotInternal(
     ...retainedExisting,
   ];
   let candidate = encodeVerified(retained);
-  // Try fewer eligible automatic copies only when the existing over-budget store cannot grow.
-  if (!pinned && !duplicate && raw !== null && bytes(candidate) > RECOVERY_SNAPSHOT_BUDGET_BYTES && candidate.length > raw.length) {
+  // Prefer non-growing replacement above the protected floor before using
+  // additional working space. Never remove protected or last-verified evidence.
+  if (!pinned && !duplicate && raw !== null
+    && (candidate.length > raw.length && bytes(candidate) > budget
+      || oversizedProtectedFloor && (bytes(candidate) > budget || candidate.length > raw.length))) {
     for (let index = retained.length - 1; index > 0; index--) {
       const existingIndex = existing.indexOf(retained[index]);
       if (existingIndex < 0 || !eligible[existingIndex]) continue;
       retained = retained.filter((_, retainedIndex) => retainedIndex !== index);
       candidate = encodeVerified(retained);
-      if (bytes(candidate) <= RECOVERY_SNAPSHOT_BUDGET_BYTES || candidate.length <= raw.length) break;
+      if (oversizedProtectedFloor
+        ? bytes(candidate) <= budget && candidate.length <= raw.length
+        : bytes(candidate) <= budget || candidate.length <= raw.length) break;
     }
   }
-  const removedCount = duplicate ? 0 : existing.length + 1 - retained.length;
-  const budgetExceeded = bytes(candidate) > RECOVERY_SNAPSHOT_BUDGET_BYTES;
-  const safeReplacement = !pinned && !duplicate && removedCount > 0 && raw !== null && candidate.length <= raw.length;
+  let removedCount = duplicate ? 0 : existing.length + 1 - retained.length;
+  const budgetExceeded = bytes(candidate) > budget;
+  const safeReplacement = !pinned && !duplicate && !oversizedProtectedFloor
+    && removedCount > 0 && raw !== null && candidate.length <= raw.length;
   if (budgetExceeded && !duplicate && !safeReplacement) {
     throw new RecoverySnapshotError(`Local recovery snapshots exceed the 2 MiB storage budget (${bytes(candidate)} estimated candidate bytes; ${protectedBytes} protected bytes). No new snapshot was saved; all existing recovery evidence was preserved. No eligible non-growing replacement fits.`, "budget", true);
   }
-  const serialized = candidate;
+  let serialized = candidate;
+  let concurrentHistory = false;
+  let quotaRefused = false;
   const result: RecoverySnapshotResult = {
     status: duplicate ? "existing" : removedCount > 0 ? "replaced" : "created",
     compacted: duplicate && serialized !== raw,
     overBudget: 2 * (RECOVERY_SNAPSHOTS_STORAGE_KEY.length + serialized.length) > RECOVERY_SNAPSHOT_BUDGET_BYTES,
     estimatedBytes: 2 * (RECOVERY_SNAPSHOTS_STORAGE_KEY.length + serialized.length),
+    protectedBytes,
+    workingBudgetBytes: RECOVERY_SNAPSHOT_BUDGET_BYTES,
+    quotaLimited: false,
   };
   if (serialized === raw) return result;
   if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== raw) {
@@ -314,7 +335,38 @@ function retainRecoverySnapshotInternal(
   }
   try {
     if (!explicitRestore) assertBrowserBusinessWritesAllowed(target);
-    target.setItem(RECOVERY_SNAPSHOTS_STORAGE_KEY, serialized);
+    // navigator.storage.estimate() is origin-wide and does NOT reveal the
+    // localStorage quota. Only an actual atomic setItem can establish fit.
+    while (true) {
+      try {
+        quotaRefused = false;
+        target.setItem(RECOVERY_SNAPSHOTS_STORAGE_KEY, serialized);
+        break;
+      } catch (error) {
+        if (!isPlainObject(error) || error.name !== "QuotaExceededError") throw error;
+        quotaRefused = true;
+        const observed = target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
+        if (observed !== raw) {
+          concurrentHistory = true;
+          throw error;
+        }
+        if (pinned || duplicate) throw error;
+        let removeIndex = -1;
+        for (let index = retained.length - 1; index > 0; index--) {
+          if (eligible[existing.indexOf(retained[index])]) { removeIndex = index; break; }
+        }
+        if (removeIndex < 0) throw error;
+        retained = retained.filter((_, index) => index !== removeIndex);
+        serialized = encodeVerified(retained);
+        // Recheck before each attempt, never rebase onto concurrent evidence.
+        if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== raw) {
+          concurrentHistory = true;
+          throw new RecoverySnapshotError("Recovery history changed during quota-aware retention; concurrent evidence was preserved.", "storage", false);
+        }
+        if (!explicitRestore) assertBrowserBusinessWritesAllowed(target);
+        result.quotaLimited = true;
+      }
+    }
     if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== serialized) {
       throw new RecoverySnapshotError("Recovery snapshot write could not be verified.", "verification", false);
     }
@@ -326,6 +378,19 @@ function retainRecoverySnapshotInternal(
       throw new RecoverySnapshotError(`Recovery-data reconstruction after writing could not be verified: ${error instanceof Error ? error.message : String(error)}`, "verification", false);
     }
   } catch (error) {
+    // A quota refusal is atomic: changed history is not ours to roll back,
+    // even when it matches the attempted candidate. Recheck before rollback
+    // in case another writer changed it after the first failure inspection.
+    if (quotaRefused && !concurrentHistory) {
+      try {
+        concurrentHistory = target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== raw;
+      } catch {
+        throw new RecoverySnapshotError("Recovery history could not be inspected after quota refusal. No rollback or deletion was attempted; recovery coverage and evidence preservation could not be confirmed.", "storage", false);
+      }
+    }
+    if (concurrentHistory) {
+      throw new RecoverySnapshotError("Recovery history changed during quota-aware retention. Concurrent evidence was left untouched; no current-data recovery coverage was established.", "storage", false);
+    }
     try {
       if (target.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY) !== raw) {
         if (!explicitRestore) assertBrowserBusinessWritesAllowed(target);
@@ -340,6 +405,10 @@ function retainRecoverySnapshotInternal(
       : isPlainObject(error) && error.name === "QuotaExceededError" ? "quota" : "storage";
     throw new RecoverySnapshotError(`Recovery snapshot was not saved: ${error instanceof Error ? error.message : String(error)}. Previous recovery evidence was restored and verified; preserve an external backup and check available browser storage.`, reason, true);
   }
+  removedCount = duplicate ? 0 : existing.length + 1 - retained.length;
+  result.status = duplicate ? "existing" : removedCount > 0 ? "replaced" : "created";
+  result.estimatedBytes = bytes(serialized);
+  result.overBudget = result.estimatedBytes > RECOVERY_SNAPSHOT_BUDGET_BYTES;
   return result;
 }
 

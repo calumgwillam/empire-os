@@ -128,18 +128,18 @@ describe("Lossless recovery storage", () => {
     expect(target.writes).toEqual([]);
   });
 
-  it("blocks creation when protected evidence alone is over budget without modifying any existing evidence", () => {
+  it("compacts oversized protected evidence losslessly before adding a bounded automatic snapshot", () => {
     const copies = Array.from({ length: 3 }, (_, index) => ({
       ...snapshot({ [STORAGE_KEY]: "p".repeat(1100000) }, true), receipt: `protected-${index}`,
     }));
     const raw = JSON.stringify(copies);
     const target = memory({ [RECOVERY_SNAPSHOTS_STORAGE_KEY]: raw }, 2300000);
-    expect(() => retainRecoverySnapshot(target.storage, backup('[{"id":"new"}]'))).toThrow("Protected recovery evidence alone");
+    expect(() => retainRecoverySnapshot(target.storage, backup('[{"id":"new"}]'))).not.toThrow();
     const stored = target.storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY)!;
-    expect(stored).toBe(raw);
-    expect(decodeRecoverySnapshots(stored)).toEqual(copies);
+    expect(stored.length).toBeLessThan(raw.length);
+    expect(decodeRecoverySnapshots(stored).slice(1)).toEqual(copies);
     expect(2 * stored.length).toBeGreaterThan(RECOVERY_SNAPSHOT_BUDGET_BYTES);
-    expect(target.writes).toEqual([]);
+    expect(target.writes).toEqual([RECOVERY_SNAPSHOTS_STORAGE_KEY]);
   });
 
   it("reports quota exhaustion and preserves the exact original bytes without a delete-and-retry fallback", () => {

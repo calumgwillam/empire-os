@@ -15,7 +15,7 @@ export type AutomaticRecoveryStatus =
   | { status: "blocked"; checkedAt: string; reason: RecoverySnapshotFailure; message: string;
     existingEvidencePreserved: boolean; retrySuppressed: boolean };
 
-// Session-only cache: unchanged capacity failures are not retried by repeated startup effects.
+// Suppress repeated startup attempts, but periodically retry recovered capacity.
 export class AutomaticRecoverySnapshots {
   private blocked: { signature: string; result: Extract<AutomaticRecoveryStatus, { status: "blocked" }> } | null = null;
 
@@ -32,8 +32,9 @@ export class AutomaticRecoverySnapshots {
       const raw = storage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
       const totalCodeUnits = this.totalCodeUnits(storage);
       signature = JSON.stringify([backup.storage, raw, totalCodeUnits]);
-      if (!retry && this.blocked?.signature === signature) {
-        return { ...this.blocked.result, retrySuppressed: true };
+      if (!retry && this.blocked?.signature === signature
+        && Date.parse(checkedAt) - Date.parse(this.blocked.result.checkedAt) < 5 * 60_000) {
+        return { ...this.blocked.result, checkedAt, retrySuppressed: true };
       }
       const result = retainRecoverySnapshot(storage, backup);
       this.blocked = null;
@@ -73,12 +74,13 @@ export class AutomaticRecoverySnapshots {
 export function automaticRecoveryMessage(result: AutomaticRecoveryStatus): string {
   if (result.status === "empty") return "No stored business data at the last recovery check; no new snapshot was created.";
   if (result.status === "created") return `New automatic recovery snapshot created and its write verified.${result.overBudget
-    ? " Existing over-budget recovery storage did not grow; all pinned evidence was preserved." : ""}`;
+    ? " Existing protected evidence was preserved with a bounded automatic working allowance." : ""}`;
   if (result.status === "replaced") return `New automatic recovery snapshot saved by safely replacing eligible unpinned automatic copies. Exact recovery data and the write were verified; all protected evidence and a previously verified recovery copy were preserved.${result.overBudget
-    ? " Existing over-budget recovery storage did not grow." : ""}`;
+    ? " Existing protected evidence was preserved; automatic working storage remains bounded." : ""}${result.quotaLimited
+    ? " Browser quota required fewer eligible automatic copies; protected evidence and the previous verified copy were retained." : ""}`;
   if (result.status === "existing") return `Matching recovery evidence already exists; no new snapshot was created.${result.compacted
     ? " Existing evidence was losslessly compacted and its write verified." : " Existing recovery evidence was preserved."}${result.overBudget
-    ? " Recovery storage remains over budget; further growth is blocked." : ""}`;
+    ? " Protected evidence exceeds the normal working budget; no recovery point was deleted by this duplicate check." : ""}`;
   const label: Record<RecoverySnapshotFailure, string> = {
     budget: "Snapshot-store budget rejection",
     quota: "Browser localStorage QuotaExceededError",
