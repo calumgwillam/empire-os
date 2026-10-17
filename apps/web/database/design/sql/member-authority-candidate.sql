@@ -27,6 +27,9 @@
 --   connection loss and unconfirmed rollback discard observations without retries.
 -- A returned observation is historical only; it cannot authorize later operations.
 -- Business write/audit/idempotency/reconciliation integration remains unimplemented.
+-- Phase 8 extends the locked result with this Person's exact eligibility audit
+-- fields. These are stored claims, NOT historical issuer authentication. The
+-- server adapter must refuse approval until independent provenance is implemented.
 BEGIN;
 DO $$
 BEGIN
@@ -193,7 +196,7 @@ CREATE FUNCTION empire_os_identity.lock_member_authority(p_tenant text,p_dataset
 RETURNS TABLE(actor_subject text,binding_id text,person_id text,
   registry_revision bigint,binding_revision bigint,person_revision bigint,
   person_status text,person_kind text,state jsonb,revision bigint,
-  decision jsonb,checked_at bigint)
+  decision jsonb,checked_at bigint,eligibility_event jsonb)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 DECLARE
   actor text; initial_actor text; saved jsonb; bound empire_os_identity.active_bindings%ROWTYPE;
@@ -244,6 +247,7 @@ BEGIN
     OR last_event->>'subject' IS DISTINCT FROM actor
     OR last_event->>'personId' IS DISTINCT FROM bound.person_id
     OR last_event->>'bindingId' IS DISTINCT FROM bound.binding_id
+    OR last_event->>'tenantId' IS DISTINCT FROM p_tenant
     OR last_event->>'eventId' IS DISTINCT FROM bound.event_id
     OR NOT EXISTS (SELECT 1 FROM empire_os_identity.identity_events e
       WHERE e.event_id=bound.event_id AND e.event=last_event) THEN
@@ -263,7 +267,13 @@ BEGIN
   RETURN QUERY SELECT actor,bound.binding_id,bound.person_id,
     (saved->>'revision')::bigint,(saved->>'bindingRevision')::bigint,
     person_event.revision,person_event.status,person_event.kind,
-    snapshot.state,snapshot.revision,snapshot.decision,snapshot.checked_at;
+    snapshot.state,snapshot.revision,snapshot.decision,snapshot.checked_at,
+    jsonb_build_object(
+      'tenantId',person_event.tenant_id,'personId',person_event.person_id,
+      'revision',person_event.revision,'status',person_event.status,'kind',person_event.kind,
+      'operationId',person_event.operation_id,'issuerSubject',person_event.issuer_subject,
+      'sourceReference',person_event.source_reference,'evidenceSha256',person_event.evidence_sha256,
+      'recordedAtMs',person_event.recorded_at_ms);
 END;
 $$;
 REVOKE ALL ON TABLE empire_os_identity.person_authority_events FROM PUBLIC;

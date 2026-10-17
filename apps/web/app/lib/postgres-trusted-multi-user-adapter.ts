@@ -17,6 +17,7 @@ type ExecutionOptions = Parameters<TrustedMultiUserAuthorityDependencies["reposi
 export const TRUSTED_POSTGRES_MISSING_DEPENDENCIES = Object.freeze([
   "ordinary-member-identity-lock-and-minimised-binding-read",
   "authoritative-people-read-with-transactional-eligibility-lock",
+  "independently-verified-historical-eligibility-issuer-provenance",
   "identity-aware-atomic-persistence-and-reconciliation",
 ] as const);
 

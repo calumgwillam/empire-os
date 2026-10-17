@@ -96,6 +96,53 @@ policy; this foundation denies unrecognised founders and delegated issuers rathe
 than modifying existing recovery or delegated-administration semantics. No business
 execution gate, existing append-only SQL contract or browser storage is changed.
 
+### Phase 8 transaction-owned eligibility verification read (inactive)
+
+The existing [member SQL candidate](./design/sql/member-authority-candidate.sql)
+now returns `eligibility_event` alongside its locked member/policy observation.
+It projects the latest existing `person_authority_events` row's Person, tenant,
+revision, status/kind, operation ID, issuer, source reference, digest and recorded
+time. It creates no additional tables, issuer records, grants or write APIs.
+The current binding's historical event must also belong to the requested tenant.
+
+[The existing member adapter](../app/lib/postgres-member-authority.ts) consumes
+that event on the same restricted lease and bounded transaction as binding,
+membership and dataset/read permission checks. It rejects missing audit fields
+(including older SQL result shapes), cross-tenant/Person mismatches, inconsistent
+status/kind/revision and future events. The original registry-before-tenant lock
+order and compatible writer fences remain in force. Completion refreshes the
+database clock and re-evaluates permission before the provenance boundary.
+
+**Historical issuer authenticity is not established by these database structures.**
+The identity candidate's `approved_operations` authorizes binding administration;
+there is no eligibility-event foreign key or exact issuance approval connecting it
+to Person eligibility. Reusing an operation ID, issuer string, hash, schema-owner
+write, transaction ID or current founder session would not repair that absence.
+No such inference is made.
+
+The adapter now calls the real stored-event provenance refusal **before rollback,
+while the same locks remain held**. It returns `unavailable/not-submitted`, never
+an `observed` identity, because independent historical issuer authority and source
+verification remain unimplemented. Failed rollback/disposal replaces that result
+with `unavailable/unknown`. No audit evidence or Person observation is disclosed
+on refusal; no business query, write, COMMIT, retry or second connection is added.
+Readiness in the dormant business adapter explicitly lists historical issuer
+provenance as a missing dependency.
+
+This is measurable integration of the existing read path, **not a complete or
+approved authority chain**. There is no newly trusted source. Existing synthetic
+tests that model a future successful observation substitute the provenance gate
+explicitly; separate tests retain the real gate and prove refusal even when the
+member release is substituted as approved. Offline SQL/parser tests do not prove
+PostgreSQL locking or permissions for this changed artifact.
+
+The candidate result shape changed; this is not an upgrade migration. Any future
+real verification requires separately approved fresh disposable provisioning and
+exact-artifact tests. The retired Phase 7 database must never be rerun or altered.
+The opt-in test's expected result columns have been updated, but it has not been
+executed for this change. All production/member/provisioning/business gates remain
+closed, and the 21 browser-local business stores remain untouched.
+
 ## Individual contribution domain (inactive)
 
 [Individual contribution Phase 1](./design/individual-contribution.md) defines a

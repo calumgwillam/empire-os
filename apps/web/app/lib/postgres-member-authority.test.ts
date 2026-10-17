@@ -6,6 +6,10 @@ vi.mock("server-only", () => ({}));
 vi.mock("./clerk-session-resolver", () => ({ resolveClerkSession: vi.fn() }));
 vi.mock("./member-authority-release", () => ({ memberAuthorityRelease: vi.fn() }));
 vi.mock("./restricted-postgres-provider", () => ({ restrictedSourceBinding: vi.fn() }));
+vi.mock("./person-eligibility-provenance", async importOriginal => ({
+  ...await importOriginal<typeof import("./person-eligibility-provenance")>(),
+  storedEligibilityProvenanceProblem: vi.fn(),
+}));
 vi.mock("pg", () => ({
   Pool: vi.fn(function () { throw new Error("Offline tests cannot connect to PostgreSQL."); }),
 }));
@@ -14,6 +18,7 @@ import { Pool } from "pg";
 import { resolveClerkSession } from "./clerk-session-resolver";
 import { memberAuthorityRelease } from "./member-authority-release";
 import { restrictedSourceBinding } from "./restricted-postgres-provider";
+import { storedEligibilityProvenanceProblem } from "./person-eligibility-provenance";
 import type { AuthorizationPostgresConnection } from "./postgres-authorization-store";
 import { IDENTITY_CONTRACT_SQL } from "./postgres-contribution-identity-store";
 import {
@@ -48,6 +53,11 @@ function lockedRow(): QueryResultRow {
     registry_revision: "5", binding_revision: "4", person_revision: "1", person_status: "active", person_kind: "other",
     state: { schemaVersion: 1, snapshot: policy(), revocations: [] }, revision: "3", checked_at: "1000",
     decision: { status: "allowed", reason: "direct-grant", policyVersion: 1, observedPolicyRevision: 3, evidenceId: "read" },
+    eligibility_event: {
+      tenantId: TENANT, personId: "person-member", revision: 1, status: "active", kind: "other",
+      operationId: "eligibility:member:1", issuerSubject: "user_founder",
+      sourceReference: "source:member:1", evidenceSha256: "a".repeat(64), recordedAtMs: 900,
+    },
   };
 }
 
@@ -95,6 +105,9 @@ beforeEach(() => {
   // Deliberate test-only bypass of the hard-coded release interlock. All SQL
   // responses and the provider brand are synthetic, not evidence of real locks.
   vi.mocked(memberAuthorityRelease).mockReturnValue({ status: "approved" });
+  // Hypothetical post-provenance sequencing only. Separate cases below restore
+  // the real verifier, which MUST refuse even when this release is bypassed.
+  vi.mocked(storedEligibilityProvenanceProblem).mockReturnValue(null);
   vi.mocked(restrictedSourceBinding).mockReturnValue({
     subject: SUBJECT, tenantId: TENANT, database: "offline-only", login: "member_login",
     databaseIdentitySha256: "a".repeat(64),
@@ -140,6 +153,67 @@ describe("transaction-owned member authority (offline only)", () => {
     expect(isAuthenticatedPrincipal(h.sourceForPrincipal.mock.calls[0]?.[0])).toBe(true);
     expect(h.queries).not.toContain("COMMIT");
     expect(Object.keys(h.authority)).toEqual(["observe"]);
+    expect(storedEligibilityProvenanceProblem).toHaveBeenCalledExactlyOnceWith(lockedRow().eligibility_event);
+  });
+
+  it("real provenance refusal prevents an observation even if the member release alone is bypassed", async () => {
+    const actual = await vi.importActual<typeof import("./person-eligibility-provenance")>("./person-eligibility-provenance");
+    const h = harness();
+    vi.mocked(storedEligibilityProvenanceProblem).mockImplementation(event => {
+      // The real verifier is reached before rollback/release, on the same lease.
+      expect(h.queries.at(-1)).toBe(MEMBER_AUTHORITY_CLOCK_SQL);
+      expect(h.release).not.toHaveBeenCalled();
+      return actual.storedEligibilityProvenanceProblem(event);
+    });
+    const result = await h.authority.observe(request());
+    expect(result).toMatchObject({
+      status: "unavailable", outcome: "not-submitted",
+      message: expect.stringContaining("approved-independent-issuer-authority-and-revocation-source"),
+    });
+    expect(result).not.toHaveProperty("personId");
+    expect(result).not.toHaveProperty("eligibility_event");
+    expect(h.source.connect).toHaveBeenCalledTimes(1);
+    expect(h.queries.at(-1)).toBe("ROLLBACK");
+    expect(h.queries).not.toContain("COMMIT");
+    expect(h.release).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it.each([
+    { tenantId: "tenant-b" }, { personId: "other-person" }, { revision: 2 }, { revision: "1" },
+    { status: "inactive" }, { kind: "founder" }, { recordedAtMs: 1001 },
+    { issuerSubject: "" }, { sourceReference: "" }, { evidenceSha256: "bad" }, { approved: true },
+  ])("rejects inconsistent locked eligibility before provenance verification: %j", async change => {
+    const h = harness();
+    h.control.rows = [{
+      ...lockedRow(), eligibility_event: { ...lockedRow().eligibility_event, ...change },
+    }];
+    expect(await h.authority.observe(request())).toMatchObject({ status: "unavailable", outcome: "not-submitted" });
+    expect(storedEligibilityProvenanceProblem).not.toHaveBeenCalled();
+    expect(h.queries.at(-1)).toBe("ROLLBACK");
+  });
+
+  it.each([null, undefined, {}])("rejects absent legacy eligibility audit fields: %j", async event => {
+    const h = harness();
+    h.control.rows = [{ ...lockedRow(), eligibility_event: event }];
+    expect(await h.authority.observe(request())).toMatchObject({ status: "unavailable", outcome: "not-submitted" });
+    expect(storedEligibilityProvenanceProblem).not.toHaveBeenCalled();
+  });
+
+  it("propagates a provenance denial without disclosing an observation", async () => {
+    const h = harness();
+    vi.mocked(storedEligibilityProvenanceProblem).mockReturnValue({ status: "unauthorized", reason: "forbidden" });
+    expect(await h.authority.observe(request())).toEqual({ status: "unauthorized", reason: "forbidden" });
+    expect(h.queries.at(-1)).toBe("ROLLBACK");
+    expect(h.source.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not preserve a provenance refusal result if transaction cleanup is uncertain", async () => {
+    const actual = await vi.importActual<typeof import("./person-eligibility-provenance")>("./person-eligibility-provenance");
+    vi.mocked(storedEligibilityProvenanceProblem).mockImplementation(actual.storedEligibilityProvenanceProblem);
+    const h = harness();
+    h.control.fail.set("ROLLBACK", new Error("Unconfirmed rollback."));
+    expect(await h.authority.observe(request())).toMatchObject({ status: "unavailable", outcome: "unknown" });
+    expect(h.release).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   it("does not acquire a source for an unauthenticated request", async () => {

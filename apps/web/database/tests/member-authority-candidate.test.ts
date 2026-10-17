@@ -107,11 +107,26 @@ describe("member authority SQL candidate (offline structural checks, NOT databas
     const reader = definition("lock_member_authority");
     expect(reader).toContain("last_event->>'eventId' IS DISTINCT FROM bound.event_id");
     expect(reader).toContain("last_event->>'bindingId' IS DISTINCT FROM bound.binding_id");
+    expect(reader).toContain("last_event->>'tenantId' IS DISTINCT FROM p_tenant");
     expect(reader).toContain("e->>'previousPersonId'=bound.person_id");
     expect(reader).toContain("WHERE e.event_id=bound.event_id AND e.event=last_event");
     const result = reader.slice(reader.indexOf("RETURN QUERY"));
     expect(result).not.toMatch(/store_values|saved->'events'|registry\s*[,;]/);
     expect(reader).not.toContain("approved_operations");
+  });
+
+  it("returns exact eligibility audit fields from the locked latest event without claiming issuer verification", () => {
+    const reader = definition("lock_member_authority");
+    expect(reader).toContain("eligibility_event jsonb");
+    expect(reader).toContain("WHERE p.tenant_id=p_tenant AND p.person_id=bound.person_id ORDER BY p.revision DESC LIMIT 1");
+    const result = reader.slice(reader.indexOf("RETURN QUERY"));
+    for (const [field, column] of [
+      ["tenantId", "tenant_id"], ["personId", "person_id"], ["revision", "revision"],
+      ["status", "status"], ["kind", "kind"], ["operationId", "operation_id"],
+      ["issuerSubject", "issuer_subject"], ["sourceReference", "source_reference"],
+      ["evidenceSha256", "evidence_sha256"], ["recordedAtMs", "recorded_at_ms"],
+    ]) expect(result).toContain(`'${field}',person_event.${column}`);
+    expect(result).not.toMatch(/issuerVerified|provenanceVerified|approved_operations|database_transaction/);
   });
 
   it("fails closed on absent or disabled locking triggers rather than assuming their presence", () => {

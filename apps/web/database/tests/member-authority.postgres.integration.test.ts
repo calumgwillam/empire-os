@@ -205,7 +205,7 @@ describe.skipIf(configuration.status === "skip").sequential(
         });
         expect(Object.keys(result.rows[0]).sort()).toEqual([
           "actor_subject", "binding_id", "person_id", "registry_revision", "binding_revision", "person_revision",
-          "person_status", "person_kind", "state", "revision", "decision", "checked_at",
+          "person_status", "person_kind", "state", "revision", "decision", "checked_at", "eligibility_event",
         ].sort());
       } finally { await rollbackAll(client); }
       await assertIdle(target, pid);

@@ -14,6 +14,7 @@ import { trustedPersonAuthoritySourceProblem, type PersonEligibilityEvent } from
 import {
   ELIGIBILITY_PROVENANCE_MISSING_DEPENDENCIES, inspectEligibilityProvenanceReadiness,
   validateCandidateEligibilityProvenance,
+  storedEligibilityProvenanceProblem,
   type CandidateEligibilityProvenance, type EligibilityProvenanceCheckpoint,
 } from "./person-eligibility-provenance";
 
@@ -158,6 +159,17 @@ describe("dormant eligibility provenance consistency contract", () => {
 });
 
 describe("real provenance readiness refusal", () => {
+  it("never treats a stored valid event or configured founder as historical issuer proof", async () => {
+    const issuer = await principal();
+    expect(validateCandidateEligibilityProvenance(issuer, checkpoint(), event(), provenance()).status).toBe("valid");
+    expect(storedEligibilityProvenanceProblem(event())).toMatchObject({
+      status: "unavailable", outcome: "not-submitted",
+      message: expect.stringContaining("approved-independent-issuer-authority-and-revocation-source"),
+    });
+    expect(storedEligibilityProvenanceProblem({ ...event(), database_transaction: "12345" })).toEqual(denied);
+    expect(storedEligibilityProvenanceProblem({ ...event(), issuerVerified: true })).toEqual(denied);
+    expect(storedEligibilityProvenanceProblem(null)).toEqual(denied);
+  });
   it("returns explicit independent-source dependencies even for the Clerk-authenticated founder", async () => {
     const result = await inspectEligibilityProvenanceReadiness(request());
     expect(result).toMatchObject({ status: "unavailable", outcome: "not-submitted" });

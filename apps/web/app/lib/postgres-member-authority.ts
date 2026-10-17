@@ -4,6 +4,7 @@ import { resolveClerkSession } from "./clerk-session-resolver";
 import { isIdentityPerson } from "./contribution-identity-authority";
 import { validateDurableAuthorityState } from "./durable-authorization-state";
 import { memberAuthorityRelease } from "./member-authority-release";
+import { storedEligibilityProvenanceProblem } from "./person-eligibility-provenance";
 import { beginRestrictedTransaction, type AuthorizationPostgresConnection } from "./postgres-authorization-store";
 import { IDENTITY_CONTRACT_SQL } from "./postgres-contribution-identity-store";
 import { restrictedSourceBinding } from "./restricted-postgres-provider";
@@ -12,10 +13,11 @@ import {
 } from "./server-persistence-authority";
 import { isCounter, isDatasetId, isObject, type PersistenceProblem } from "./server-persistence-contract";
 import type { TrustedMultiUserAuthorityDependencies } from "./trusted-multi-user-authority";
+import { isPersonEligibilityEvent } from "./trusted-person-authority-source";
 
 export const LOCK_MEMBER_AUTHORITY_SQL = `SELECT actor_subject,binding_id,person_id,
   registry_revision::text,binding_revision::text,person_revision::text,person_status,person_kind,
-  state,revision::text,decision,checked_at::text
+  state,revision::text,decision,checked_at::text,eligibility_event
   FROM empire_os_identity.lock_member_authority($1::text,$2::uuid)`;
 export const MEMBER_AUTHORITY_CLOCK_SQL = `SELECT floor(extract(epoch FROM clock_timestamp())*1000)::text AS now_ms`;
 
@@ -98,7 +100,11 @@ export function createPostgresMemberAuthority(
         // expiry still needs the existing evaluator with a refreshed database clock.
         if (nowMs < observation.checkedAt) throw new Error("Authority clock moved backwards.");
         decode(row, principal, tenantId, datasetId, nowMs);
-        result = Object.freeze({ ...observation, checkedAt: nowMs });
+        // Reached only with current binding, eligibility and policy held in ONE
+        // transaction. Do not mistake stored issuer claims for verified provenance.
+        if (!isObject(row)) throw new Error("Missing locked eligibility evidence.");
+        const provenanceProblem = storedEligibilityProvenanceProblem(row.eligibility_event);
+        result = provenanceProblem ?? Object.freeze({ ...observation, checkedAt: nowMs });
       } catch (error) {
         destroy = true;
         result = isObject(error) && error.code === "42501" ? forbidden() : unavailable();
@@ -143,6 +149,12 @@ function decode(
   const personRevision = counter(row.person_revision);
   if (!member || registryRevision < bindingRevision || bindingRevision === 0 || personRevision === 0) {
     throw new Error("Missing binding or membership evidence.");
+  }
+  const event = row.eligibility_event;
+  if (!isPersonEligibilityEvent(event) || event.tenantId !== tenantId || event.personId !== personId
+    || event.revision !== personRevision || event.status !== row.person_status || event.kind !== row.person_kind
+    || event.recordedAtMs > checkedAt) {
+    throw new Error("Missing or inconsistent locked eligibility event.");
   }
   return {
     status: "observed", source: "committed-database-read", subject: principal.subject, tenantId, datasetId,

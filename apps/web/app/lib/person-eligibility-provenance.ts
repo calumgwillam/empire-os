@@ -37,6 +37,22 @@ function founderProblem(principal: unknown): PersistenceProblem | null {
   return isAuthorizedFounder(principal.subject, process.env.EMPIRE_OS_FOUNDER_CLERK_USER_ID) ? null : forbidden();
 }
 
+function missingProvenance(): PersistenceProblem {
+  return {
+    status: "unavailable", outcome: "not-submitted",
+    message: `Eligibility provenance is unresolved: ${ELIGIBILITY_PROVENANCE_MISSING_DEPENDENCIES.join(", ")}.`,
+  };
+}
+
+// Invoked while the existing member transaction still holds its locks. Database
+// ownership, issuer_subject, source_reference, digest and xid are not independent
+// proof that an authenticated authorized issuer approved this historical event.
+// No caller envelope, current founder session or candidate validator can release it.
+export function storedEligibilityProvenanceProblem(event: unknown): PersistenceProblem | null {
+  if (!isPersonEligibilityEvent(event)) return forbidden();
+  return missingProvenance();
+}
+
 // Authentication establishes the CURRENT founder, never historical event issuance.
 // No injectable verifier, source fallback, environment approval or success branch.
 export async function inspectEligibilityProvenanceReadiness(request: Request): Promise<PersistenceProblem> {
@@ -44,10 +60,7 @@ export async function inspectEligibilityProvenanceReadiness(request: Request): P
   if (!isAuthenticatedPrincipal(principal)) return principal;
   const problem = founderProblem(principal);
   if (problem) return problem;
-  return {
-    status: "unavailable", outcome: "not-submitted",
-    message: `Eligibility provenance is unresolved: ${ELIGIBILITY_PROVENANCE_MISSING_DEPENDENCIES.join(", ")}.`,
-  };
+  return missingProvenance();
 }
 
 // Consistency only. Even with an authenticated founder, caller-supplied provenance
