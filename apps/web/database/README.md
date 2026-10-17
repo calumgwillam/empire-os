@@ -203,6 +203,60 @@ founder bootstrap/rotation/recovery, and whether/when delegated issuance is allo
 No new trust source is invented here. All existing member, provenance, provisioning
 and business execution gates stay closed; no SQL candidate or migration changed.
 
+### Durable eligibility decision ledger foundation (unapplied and disabled)
+
+[The decision ledger SQL candidate](./design/sql/eligibility-decision-ledger-candidate.sql)
+defines append-only decision evidence referencing the **existing** Person eligibility
+events for both subject and issuer. It is not a People registry, migration entry
+point or an installed API. No application or integration harness installs it.
+
+The versioned [decision record contract](../app/lib/person-eligibility-provenance.ts)
+binds the exact event (tenant, Person, revision, operation, issuer, status, recorded
+time and source evidence) to subject and issuer binding IDs, issuer Person revision,
+registry/binding/policy/membership revisions, authentication time/expiry and opaque
+authentication/issuer-authority references. References must eventually identify
+independently verified server records, never bearer credentials or client claims.
+Their presence and format alone prove nothing.
+
+The SQL candidate has tenant-scoped operation uniqueness and one decision per
+Person event revision, foreign keys, owner-only forced RLS, immutable update/delete
+and truncate guards. Its insertion fence uses registry-before-tenant locks, checks
+current bindings, membership revisions, tenant ownership and subsequent Person
+events, and requires the exact referenced eligibility event in the same database
+transaction. Recorded time is derived from that existing database-stamped event.
+It provides no runtime grants, issuer API, recovery shortcut or bootstrap data.
+
+**All INSERTs deliberately raise an exception after preparatory checks.** The
+authenticated writer/source is missing; this candidate must not accumulate
+owner-asserted claims and relabel them authenticated decisions. A future writer
+must atomically append event and decision, with deferred completeness enforcement
+so no eligible event can commit without its authenticated decision. That reverse
+event-to-decision requirement is not installed by this candidate. Existing
+eligibility events remain legacy claims; no historical backfill is authorized.
+
+The candidate reconciliation validator compares every record and event field,
+ignoring object-key order but never refreshing timestamps or accepting matching
+operation IDs alone. A `consistent` result does not prove a COMMIT or authenticity.
+`verifyStoredEligibilityDecision` refuses malformed records and returns explicit
+`unavailable/not-submitted` for every well-formed record because there is no approved
+independent historical verifier or storage reader. The member adapter's real
+provenance refusal remains unchanged. Forged matching records cannot open a gate.
+
+Existing trust anchors: Clerk server authentication, configured current founder,
+binding/revocation history, durable tenant policy and transaction-bound Person
+event reads. Missing anchors: durable recent authentication evidence tied to the
+exact decision, independent issuer authority at issuance and current revocation
+policy, verified Person/source content, and issuer bootstrap/rotation/recovery.
+No table, reference, xid, source hash, current founder session or caller-provided
+signature can substitute for these.
+
+Next dependency: approve and implement that server authentication-to-decision
+capture/verification boundary and its transaction/recovery contract, then prove
+exact artifacts on separately approved fresh infrastructure. Current tests are
+offline parsers and synthetic consistency checks, not database constraint,
+concurrency, durability or independent authentication verification. All consumed
+PostgreSQL environments remain off-limits; no production gates are opened.
+
 ## Individual contribution domain (inactive)
 
 [Individual contribution Phase 1](./design/individual-contribution.md) defines a

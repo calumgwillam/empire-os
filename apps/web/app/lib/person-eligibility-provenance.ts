@@ -246,3 +246,71 @@ export async function submitFounderEligibilityDecision(request: Request, input: 
   if (!decisionRequest(input)) return { status: "invalid-request", message: "Invalid founder eligibility decision." };
   return missingProvenance();
 }
+
+// Serialized decision evidence for the existing Person event, not a new People
+// registry. References are opaque identifiers, never credentials/session tokens.
+// Format validation cannot establish that the referenced server evidence exists.
+export type EligibilityDecisionRecord = Readonly<{
+  version: 1;
+  subject: string;
+  bindingId: string;
+  issuerBindingId: string;
+  issuerPersonId: string;
+  issuerPersonRevision: number;
+  registryRevision: number;
+  bindingRevision: number;
+  policyRevision: number;
+  issuerMembershipRevision: number;
+  subjectMembershipRevision: number;
+  authenticatedAtMs: number;
+  validUntilMs: number;
+  authenticationReference: string;
+  issuerAuthorityReference: string;
+  decision: "issue" | "revoke";
+  event: PersonEligibilityEvent;
+}>;
+
+export function isEligibilityDecisionRecord(value: unknown): value is EligibilityDecisionRecord {
+  if (!exactData(value, [
+    "version", "subject", "bindingId", "issuerBindingId", "issuerPersonId", "issuerPersonRevision",
+    "registryRevision", "bindingRevision", "policyRevision", "issuerMembershipRevision", "subjectMembershipRevision",
+    "authenticatedAtMs", "validUntilMs", "authenticationReference", "issuerAuthorityReference", "decision", "event",
+  ]) || value.version !== 1 || !isPersonEligibilityEvent(value.event)
+    || typeof value.subject !== "string" || !/^user_[A-Za-z0-9_]+$/.test(value.subject) || value.subject.length > 512
+    || ![value.bindingId, value.issuerBindingId, value.issuerPersonId,
+      value.authenticationReference, value.issuerAuthorityReference].every(isAuthorityIdentifier)
+    || !isCounter(value.registryRevision) || !isCounter(value.bindingRevision)
+    || ![value.issuerPersonRevision, value.registryRevision, value.bindingRevision, value.policyRevision,
+      value.issuerMembershipRevision, value.subjectMembershipRevision].every(entry => isCounter(entry) && entry > 0)
+    || !isCounter(value.authenticatedAtMs) || !isCounter(value.validUntilMs)
+    || (value.decision !== "issue" && value.decision !== "revoke")) return false;
+  const event = value.event;
+  return value.subject !== event.issuerSubject && value.issuerPersonId !== event.personId
+    && value.bindingId !== value.issuerBindingId && event.kind === "other"
+    && value.registryRevision >= value.bindingRevision
+    && value.authenticatedAtMs <= event.recordedAtMs && event.recordedAtMs < value.validUntilMs
+    && value.validUntilMs === value.authenticatedAtMs + IDENTITY_REAUTHENTICATION_WINDOW_MS
+    && (value.decision === "issue" ? event.status === "active" && event.revision === 1
+      : event.status === "inactive" && event.revision > 1);
+}
+
+// Historical reconciliation compares EVERY scalar and event field; never refresh
+// timestamps, overwrite evidence or infer success from an operation-ID match.
+export function validateCandidateEligibilityDecisionRecord(
+  expected: unknown, stored: unknown,
+): Readonly<{ status: "consistent" }> | PersistenceProblem {
+  if (!isEligibilityDecisionRecord(expected) || !isEligibilityDecisionRecord(stored)) return forbidden();
+  const scalarFields = Object.keys(expected).filter(field => field !== "event") as Exclude<keyof EligibilityDecisionRecord, "event">[];
+  const eventFields = Object.keys(expected.event) as (keyof PersonEligibilityEvent)[];
+  if (scalarFields.some(field => expected[field] !== stored[field])
+    || eventFields.some(field => expected.event[field] !== stored.event[field])) return forbidden();
+  return Object.freeze({ status: "consistent" });
+}
+
+// No approved storage reader or independent historical authentication verifier
+// exists. Even an exact record (or one received from SQL) is not issuance proof.
+// No caller-supplied issuer status, signature, digest or current founder can help.
+export function verifyStoredEligibilityDecision(record: unknown): PersistenceProblem {
+  if (!isEligibilityDecisionRecord(record)) return forbidden();
+  return missingProvenance();
+}
