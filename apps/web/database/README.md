@@ -143,6 +143,66 @@ The opt-in test's expected result columns have been updated, but it has not been
 executed for this change. All production/member/provisioning/business gates remain
 closed, and the 21 browser-local business stores remain untouched.
 
+### Founder eligibility decision preparation (inactive)
+
+[The existing provenance module](../app/lib/person-eligibility-provenance.ts) now
+contains a candidate decision planner and a permanently refusing submission
+boundary. The latter resolves Clerk into a branded principal and checks the
+configured founder, but always returns `unavailable/not-submitted` for a well-formed
+founder request. It accepts no source, writer, repository or approval callback.
+There is no route, issuer record, database operation or production switch.
+
+The pure candidate planner models only initial ordinary-Person issuance and
+append-only inactivation. It reuses the binding registry, durable tenant policy,
+IdentityPerson and existing eligibility event shape. It checks:
+
+- Authenticated configured founder, active tenant ownership/membership, current
+  founder binding and active founder Person/eligibility observations.
+- Target subject's exact current binding to the specified Person in that tenant,
+  retained membership, and active Person/membership for initial issuance.
+- Matching registry, binding, policy and Person revision fences; operation reuse
+  against the supplied tenant operation list and identity history; counter bounds.
+- Explicit issue/revoke decision, operation ID, immutable source reference/digest,
+  and a sampled observation time; authentication expiry uses the established
+  five-minute identity reauthentication window.
+- No self-approval, protected founder/system-owner targeting, or target with any
+  identity-administrator grant history. No repeat issuance, automatic reactivation,
+  founder bootstrap, identity reassignment or recovery through this path.
+
+These are **candidate consistency checks, not independently verified facts**.
+Observation fields, including authentication time, operation-history completeness,
+People truth and issuer eligibility authenticity, cannot be accepted from a request
+or localStorage. A caller can fabricate matching observations and source hashes;
+that cannot open submission or stored-event provenance verification. The immutable
+candidate carries both binding IDs, revision fences, issuer Person revision and
+expiry; it is not a signed authorization, durable receipt or executable plan.
+No passwords, identity documents or source contents are accepted or persisted.
+
+For eventual transactional issuance, an approved adapter must independently load
+and verify those facts under the existing registry-before-tenant locks, retain
+locks through append/COMMIT, resample time, enforce issuer revocation, and persist
+authenticated decision evidence tied to the exact event. The existing SQL trigger
+remains authoritative for append revision and database recorded time; a preview
+timestamp is not a substitute. After uncertain COMMIT, reconcile the original
+operation and exact database event using its recorded timestamp; do not rerun a
+planner at a new time and resubmit. The existing exact-event candidate comparison
+is not proof that reconciliation occurred.
+
+Founder recovery invariants are deliberately restrictive: missing configuration,
+revoked/unbound/inactive founder observations and founder rotation fail closed;
+no environment configuration change or generic admin capability creates historical
+issuer proof. Protected identities and previously inactive eligibility require a
+separately approved independent recovery/reauthorization process, preserving
+existing fresh-approval and identity-reassignment safeguards. The current planner
+also refuses revocation if a target binding is already absent; an independently
+authorized administrative recovery path is needed for that case.
+
+Before enabling issuance, approve the trusted Person/source verifier, authenticated
+decision persistence and runtime role contract, historical issuer revocation rules,
+founder bootstrap/rotation/recovery, and whether/when delegated issuance is allowed.
+No new trust source is invented here. All existing member, provenance, provisioning
+and business execution gates stay closed; no SQL candidate or migration changed.
+
 ## Individual contribution domain (inactive)
 
 [Individual contribution Phase 1](./design/individual-contribution.md) defines a

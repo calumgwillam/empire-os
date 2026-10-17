@@ -2,8 +2,13 @@ import "server-only";
 import { resolveClerkSession } from "./clerk-session-resolver";
 import { isAuthorizedFounder } from "./founder-access";
 import { isAuthorityIdentifier } from "./authorization-policy";
+import {
+  IDENTITY_REAUTHENTICATION_WINDOW_MS, isContributionIdentityRegistry, isIdentityPerson,
+  resolveContributionIdentityBinding, type ContributionIdentityRegistry, type IdentityPerson,
+} from "./contribution-identity-authority";
+import { validateDurableAuthorityState, type DurableAuthorityState } from "./durable-authorization-state";
 import { createServerPrincipalResolver, isAuthenticatedPrincipal } from "./server-persistence-authority";
-import { hasOnlyFields, isCounter, isObject, type PersistenceProblem } from "./server-persistence-contract";
+import { hasOnlyFields, isCounter, isIdempotencyKey, isObject, type PersistenceProblem } from "./server-persistence-contract";
 import { isPersonEligibilityEvent, type PersonEligibilityEvent } from "./trusted-person-authority-source";
 
 export const ELIGIBILITY_PROVENANCE_MISSING_DEPENDENCIES = Object.freeze([
@@ -95,4 +100,149 @@ export function validateCandidateEligibilityProvenance(
   const observed = provenance.event;
   if (fields.some(field => event[field] !== observed[field])) return forbidden();
   return { status: "valid", event: Object.freeze({ ...event }) };
+}
+
+export type FounderEligibilityDecisionRequest = Readonly<{
+  tenantId: string;
+  subject: string;
+  personId: string;
+  decision: "issue" | "revoke";
+  operationId: string;
+  expectedRegistryRevision: number;
+  expectedBindingRevision: number;
+  expectedPolicyRevision: number;
+  expectedPersonRevision: number;
+  sourceReference: string;
+  evidenceSha256: string;
+}>;
+
+// Hypothetical locked reads only. No loader exists; none of these caller-shaped
+// fields establish provenance, verified reauthentication or authoritative People.
+export type CandidateFounderEligibilityObservation = Readonly<{
+  registry: ContributionIdentityRegistry;
+  authority: DurableAuthorityState;
+  issuerPerson: IdentityPerson;
+  targetPerson: IdentityPerson;
+  issuerEligibility: PersonEligibilityEvent;
+  latestTargetEvent: PersonEligibilityEvent | null;
+  usedOperationIds: readonly string[];
+  authenticatedAtMs: number;
+  nowMs: number;
+}>;
+
+function exactData(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
+  return isObject(value) && Reflect.ownKeys(value).length === fields.length && fields.every(field => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, field);
+    return descriptor !== undefined && "value" in descriptor && descriptor.enumerable;
+  });
+}
+
+function decisionRequest(value: unknown): value is FounderEligibilityDecisionRequest {
+  return exactData(value, [
+    "tenantId", "subject", "personId", "decision", "operationId", "expectedRegistryRevision",
+    "expectedBindingRevision", "expectedPolicyRevision", "expectedPersonRevision", "sourceReference", "evidenceSha256",
+  ]) && isAuthorityIdentifier(value.tenantId) && isAuthorityIdentifier(value.personId)
+    && typeof value.subject === "string" && /^user_[A-Za-z0-9_]+$/.test(value.subject) && value.subject.length <= 512
+    && (value.decision === "issue" || value.decision === "revoke") && isIdempotencyKey(value.operationId)
+    && [value.expectedRegistryRevision, value.expectedBindingRevision,
+      value.expectedPolicyRevision, value.expectedPersonRevision].every(isCounter)
+    && isAuthorityIdentifier(value.sourceReference)
+    && typeof value.evidenceSha256 === "string" && /^[a-f0-9]{64}$/.test(value.evidenceSha256);
+}
+
+// Preparatory policy model, NOT an issuer authorization or executable plan.
+// Future installation must independently verify the reads/source, keep registry ->
+// tenant locks through append, resample time and reconcile exact events on unknown
+// COMMIT. This function cannot authenticate the observation or prove those locks.
+export function planCandidateFounderEligibilityDecision(
+  principal: unknown, input: unknown, observation: unknown,
+): Readonly<{
+  status: "candidate";
+  subject: string;
+  bindingId: string;
+  issuerBindingId: string;
+  expectedRegistryRevision: number;
+  expectedBindingRevision: number;
+  expectedPolicyRevision: number;
+  expectedPersonRevision: number;
+  issuerPersonRevision: number;
+  validUntilMs: number;
+  event: PersonEligibilityEvent;
+}> | PersistenceProblem {
+  const problem = founderProblem(principal);
+  if (problem) return problem;
+  if (!isAuthenticatedPrincipal(principal) || !decisionRequest(input)
+    || !exactData(observation, [
+      "registry", "authority", "issuerPerson", "targetPerson", "issuerEligibility",
+      "latestTargetEvent", "usedOperationIds", "authenticatedAtMs", "nowMs",
+    ]) || !isContributionIdentityRegistry(observation.registry)
+    || !isIdentityPerson(observation.issuerPerson) || !isIdentityPerson(observation.targetPerson)
+    || !isPersonEligibilityEvent(observation.issuerEligibility)
+    || !(observation.latestTargetEvent === null || isPersonEligibilityEvent(observation.latestTargetEvent))
+    || !Array.isArray(observation.usedOperationIds)
+    || Array.from(observation.usedOperationIds).some(id => !isIdempotencyKey(id))
+    || new Set(observation.usedOperationIds).size !== observation.usedOperationIds.length
+    || !isCounter(observation.nowMs) || !isCounter(observation.authenticatedAtMs)) return forbidden();
+  const { registry, issuerPerson, targetPerson, issuerEligibility, latestTargetEvent, nowMs, authenticatedAtMs } = observation;
+  const validUntilMs = authenticatedAtMs + IDENTITY_REAUTHENTICATION_WINDOW_MS;
+  const authority = validateDurableAuthorityState(observation.authority);
+  if (authority.status !== "valid" || !isCounter(validUntilMs) || authenticatedAtMs > nowMs || nowMs >= validUntilMs
+    || registry.revision !== input.expectedRegistryRevision || registry.bindingRevision !== input.expectedBindingRevision
+    || registry.events.some(event => event.recordedAtMs > nowMs || event.operationId === input.operationId)
+    || observation.usedOperationIds.includes(input.operationId)
+    || issuerEligibility.operationId === input.operationId || latestTargetEvent?.operationId === input.operationId
+    || input.expectedPersonRevision === Number.MAX_SAFE_INTEGER) return forbidden();
+  const state = authority.value.snapshot;
+  const issuer = resolveContributionIdentityBinding(registry, principal.subject);
+  const target = resolveContributionIdentityBinding(registry, input.subject);
+  const inTenant = (bindingId: string) => registry.events.some(event =>
+    (event.kind === "subject-bound" || event.kind === "binding-reassigned")
+    && event.bindingId === bindingId && event.tenantId === input.tenantId);
+  const member = state.memberships.find(entry => entry.subject === input.subject);
+  if (!issuer || !target || !inTenant(issuer.bindingId) || !inTenant(target.bindingId)
+    || principal.subject === input.subject || issuer.personId === target.personId
+    || state.tenant.id !== input.tenantId || state.tenant.status !== "active"
+    || state.revision !== input.expectedPolicyRevision || !state.tenant.ownerSubjects.includes(principal.subject)
+    || !state.memberships.some(entry => entry.subject === principal.subject && entry.status === "active")
+    || !member || (input.decision === "issue" && member.status !== "active")
+    || issuerPerson.tenantId !== input.tenantId || issuerPerson.personId !== issuer.personId
+    || issuerPerson.status !== "active" || issuerPerson.kind !== "founder"
+    || targetPerson.tenantId !== input.tenantId || targetPerson.personId !== input.personId
+    || target.personId !== input.personId || targetPerson.kind !== "other"
+    || (input.decision === "issue" && targetPerson.status !== "active")
+    || issuerEligibility.tenantId !== input.tenantId || issuerEligibility.personId !== issuerPerson.personId
+    || issuerEligibility.status !== "active" || issuerEligibility.kind !== "founder"
+    || issuerEligibility.recordedAtMs > nowMs
+    // Any administrative history is protected until the existing independent
+    // recovery/approval path is integrated; ordinary issuance cannot downgrade it.
+    || registry.events.some(event => event.kind === "administrator-granted" && event.subject === input.subject)) return forbidden();
+  if (latestTargetEvent === null ? input.expectedPersonRevision !== 0 || input.decision === "revoke"
+    : latestTargetEvent.tenantId !== input.tenantId || latestTargetEvent.personId !== input.personId
+      || latestTargetEvent.revision !== input.expectedPersonRevision || latestTargetEvent.recordedAtMs > nowMs
+      || latestTargetEvent.kind !== targetPerson.kind
+      // Re-activation is recovery, not ordinary initial issuance.
+      || latestTargetEvent.status !== "active" || input.decision !== "revoke") return forbidden();
+  const event: PersonEligibilityEvent = Object.freeze({
+    tenantId: input.tenantId, personId: input.personId, revision: input.expectedPersonRevision + 1,
+    status: input.decision === "issue" ? "active" : "inactive", kind: targetPerson.kind,
+    operationId: input.operationId, issuerSubject: principal.subject, recordedAtMs: nowMs,
+    sourceReference: input.sourceReference, evidenceSha256: input.evidenceSha256,
+  });
+  return Object.freeze({
+    status: "candidate", subject: input.subject, bindingId: target.bindingId, issuerBindingId: issuer.bindingId,
+    expectedRegistryRevision: registry.revision, expectedBindingRevision: registry.bindingRevision,
+    expectedPolicyRevision: state.revision, issuerPersonRevision: issuerEligibility.revision,
+    expectedPersonRevision: input.expectedPersonRevision, validUntilMs, event,
+  });
+}
+
+// No source/repository callback or persistence capability is accepted. A valid
+// request and verified founder session STILL cannot submit or approve issuance.
+export async function submitFounderEligibilityDecision(request: Request, input: unknown): Promise<PersistenceProblem> {
+  const principal = await createServerPrincipalResolver(resolveClerkSession)(request);
+  if (!isAuthenticatedPrincipal(principal)) return principal;
+  const problem = founderProblem(principal);
+  if (problem) return problem;
+  if (!decisionRequest(input)) return { status: "invalid-request", message: "Invalid founder eligibility decision." };
+  return missingProvenance();
 }
