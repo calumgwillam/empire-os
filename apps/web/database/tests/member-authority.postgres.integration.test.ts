@@ -34,7 +34,7 @@ function settle(query: Promise<QueryResult>): Promise<Settled> {
 }
 
 describe.skipIf(configuration.status === "skip").sequential(
-  "REAL PostgreSQL 16 member authority on an independently attested NEW cluster",
+  "REAL PostgreSQL 16 member authority on an independently identified NEW local cluster",
   () => {
     let h: Harness | undefined;
     let ready = false;

@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
+import { endianness } from "node:os";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { performance } from "node:perf_hooks";
 import { Client, type ClientConfig } from "pg";
 import {
-  MEMBER_CONSUMED_MARKER, verifyMemberClusterAttestation, verifyMemberDatabaseIdentity,
-  type MemberDatabaseIdentity, type MemberDisposableConfig,
+  MEMBER_CONSUMED_MARKER, verifyMemberProvisioningIdentity, verifyMemberDatabaseIdentity,
+  type MemberDatabaseIdentity, type MemberDisposableConfig, type MemberProvisioningIdentity,
 } from "./member-authority-disposable-config";
 import { connectDisposable, migrateEmptyAuthorizationDisposable } from "./postgres-harness";
 
@@ -15,6 +17,9 @@ export const MEMBER_CLUSTER_IDENTITY_SQL = `SELECT
   (SELECT system_identifier::text FROM pg_control_system()) AS system_identifier,
   current_setting('server_version_num') AS version,pg_is_in_recovery() AS recovery,
   current_setting('transaction_read_only') AS read_only,
+  current_setting('data_directory') AS data_directory,
+  inet_server_port() AS server_port,inet_server_addr()::text AS server_address,
+  floor(extract(epoch FROM pg_postmaster_start_time()))::text AS postmaster_started_at,
   (SELECT rolsuper FROM pg_roles WHERE rolname=current_user) AS superuser,
   shobj_description(d.oid,'pg_database') AS marker,
   (NOT EXISTS (SELECT 1 FROM pg_database
@@ -49,15 +54,32 @@ export async function memberBackendPid(client: Client): Promise<number> {
   return result.rows[0].pid;
 }
 
-export async function createMemberAuthorityHarness(config: MemberDisposableConfig) {
-  // No attestation/key I/O or connection until the suite explicitly opts in.
-  // Neither file contains credentials. The harness never signs receipts, creates
-  // clusters/databases, deletes roles, resets schemas or repairs failed attempts.
-  const [receipt, publicKey] = await Promise.all([
-    readFile(config.attestationFile, "utf8"), readFile(config.attestorPublicKeyFile, "utf8"),
+async function verifyLocalInstance(proof: MemberProvisioningIdentity): Promise<void> {
+  if (await realpath(proof.dataDirectory) !== proof.dataDirectory) throw new Error("Expected canonical disposable data directory.");
+  const [version, pidFile, control] = await Promise.all([
+    readFile(join(proof.dataDirectory, "PG_VERSION"), "utf8"),
+    readFile(join(proof.dataDirectory, "postmaster.pid"), "utf8"),
+    readFile(join(proof.dataDirectory, "global/pg_control")),
   ]);
-  const envelope: unknown = JSON.parse(receipt);
-  const proof = verifyMemberClusterAttestation(config, envelope, publicKey, Date.now());
+  const lines = pidFile.trimEnd().split("\n");
+  // PostgreSQL 16 ControlFileData begins with the native-endian uint64 system
+  // identifier. No credentials or configuration files are read.
+  if (control.length < 8) throw new Error("Missing local PostgreSQL control identity.");
+  const systemIdentifier = (endianness() === "LE" ? control.readBigUInt64LE(0) : control.readBigUInt64BE(0)).toString();
+  if (version.trim() !== "16" || systemIdentifier !== proof.systemIdentifier
+    || lines[0] !== String(proof.postmasterPid) || lines[1] !== proof.dataDirectory
+    || lines[2] !== String(proof.postmasterStartedAtSeconds) || lines[3] !== String(proof.port)
+    || lines[7]?.trim() !== "ready") throw new Error("Local disposable PostgreSQL running-instance identity mismatch.");
+}
+
+export async function createMemberAuthorityHarness(config: MemberDisposableConfig) {
+  // Independent expected identity is never populated from the SQL connection.
+  // Missing/unreadable manifest or local control/PID files abort BEFORE connecting.
+  const text = await readFile(config.identityManifestFile, "utf8");
+  if (text.length > 8192) throw new Error("Oversized local provisioning manifest.");
+  const manifest: unknown = JSON.parse(text);
+  const proof = verifyMemberProvisioningIdentity(config, manifest, Date.now());
+  await verifyLocalInstance(proof);
   const clients: Client[] = [];
   const runtimeLogins = new Map<string, string>();
   let active = true;
@@ -78,6 +100,7 @@ export async function createMemberAuthorityHarness(config: MemberDisposableConfi
     await migrateEmptyAuthorizationDisposable(admin, async verified => {
       // Existing advisory/zero-object guards run BEFORE the consumed marker.
       // This comment commits before migration 001, including when 001 later fails.
+      await verifyLocalInstance(proof);
       const fresh = await verified.query<MemberDatabaseIdentity>(MEMBER_CLUSTER_IDENTITY_SQL);
       if (fresh.rows.length !== 1) throw new Error("Missing member pre-migration identity.");
       verifyMemberDatabaseIdentity(proof, fresh.rows[0]);
@@ -116,6 +139,7 @@ export async function createMemberAuthorityHarness(config: MemberDisposableConfi
     admin,
     async owner(): Promise<Client> {
       const client = clientFor(config.database.user, config.database.password);
+      await verifyLocalInstance(proof);
       await client.connect();
       const identity = await client.query<MemberDatabaseIdentity>(MEMBER_CLUSTER_IDENTITY_SQL);
       if (identity.rows.length !== 1) throw new Error("Missing owner connection identity.");
@@ -139,14 +163,19 @@ export async function createMemberAuthorityHarness(config: MemberDisposableConfi
       const password = runtimeLogins.get(role);
       if (!password) throw new Error("Unknown member fixture login.");
       const client = clientFor(role, password);
+      await verifyLocalInstance(proof);
       await client.connect();
       const identity = await client.query(`SELECT current_database() AS database,d.oid::text AS oid,
         pg_get_userbyid(d.datdba) AS owner,current_user AS principal,session_user AS session_principal,
+        inet_server_port() AS server_port,inet_server_addr()::text AS server_address,
+        floor(extract(epoch FROM pg_postmaster_start_time()))::text AS postmaster_started_at,
         shobj_description(d.oid,'pg_database') AS marker,pg_is_in_recovery() AS recovery
         FROM pg_database d WHERE datname=current_database()`);
       const row = identity.rows[0];
       if (identity.rows.length !== 1 || row.database !== proof.database || row.oid !== proof.databaseOid
         || row.owner !== proof.owner || row.principal !== role || row.session_principal !== role
+        || row.server_port !== proof.port || row.server_address !== proof.host
+        || row.postmaster_started_at !== String(proof.postmasterStartedAtSeconds)
         || row.marker !== MEMBER_CONSUMED_MARKER || row.recovery !== false) {
         throw new Error("Member fixture login identity mismatch.");
       }

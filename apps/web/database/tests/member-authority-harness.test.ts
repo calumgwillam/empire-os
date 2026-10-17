@@ -1,4 +1,4 @@
-import { generateKeyPairSync, sign } from "node:crypto";
+import { endianness } from "node:os";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "libpg-query";
 import { DISPOSABLE_MARKER } from "./disposable-config";
@@ -6,12 +6,13 @@ import { MEMBER_CONSUMED_MARKER, memberAuthorityDisposableConfig } from "./membe
 
 const fake = vi.hoisted(() => ({
   readFile: vi.fn(),
+  realpath: vi.fn(),
   connect: vi.fn(),
   migrate: vi.fn(),
   query: vi.fn(),
   end: vi.fn(),
 }));
-vi.mock("node:fs/promises", () => ({ readFile: fake.readFile }));
+vi.mock("node:fs/promises", () => ({ readFile: fake.readFile, realpath: fake.realpath }));
 vi.mock("./postgres-harness", () => ({
   connectDisposable: fake.connect,
   migrateEmptyAuthorizationDisposable: fake.migrate,
@@ -22,8 +23,6 @@ vi.mock("pg", () => ({
 import { Client } from "pg";
 import { createMemberAuthorityHarness, MEMBER_BLOCKING_SQL, MEMBER_CLUSTER_IDENTITY_SQL, waitForMemberBlock } from "./member-authority-harness";
 
-const keys = generateKeyPairSync("ed25519");
-const publicKey = keys.publicKey.export({ format: "pem", type: "spki" }).toString();
 const runId = "b".repeat(32);
 const database = `empire_os_test_member_${runId}`;
 const admin = { query: fake.query, end: fake.end };
@@ -32,38 +31,49 @@ function config() {
     EMPIRE_OS_MEMBER_TEST_PG_HOST: "127.0.0.1", EMPIRE_OS_MEMBER_TEST_PG_PORT: "6543",
     EMPIRE_OS_MEMBER_TEST_PG_DATABASE: database, EMPIRE_OS_MEMBER_TEST_PG_USER: "test_owner",
     EMPIRE_OS_MEMBER_TEST_PG_CONFIRM: `${database}:${DISPOSABLE_MARKER}`,
-    EMPIRE_OS_MEMBER_TEST_PG_ATTESTATION_FILE: "/independent/receipt.json",
-    EMPIRE_OS_MEMBER_TEST_PG_ATTESTOR_PUBLIC_KEY_FILE: "/reviewer/public-key.pem",
+    EMPIRE_OS_MEMBER_TEST_PG_IDENTITY_MANIFEST_FILE: "/independent/identity.json",
   });
   if (result.status !== "configured") throw new Error("Expected offline configuration.");
   return result.config;
 }
-function envelope() {
-  const payload = JSON.stringify({
+const startedAt = Math.floor(Date.now() / 1000) - 2;
+function manifest() {
+  return JSON.stringify({
     version: 1, purpose: "empire-os-member-authority-pg16", runId, host: "127.0.0.1", port: 6543, database,
     databaseOid: "16384", owner: "test_owner", systemIdentifier: "123456789",
-    clusterCreatedAtMs: Date.now() - 2000, databaseCreatedAtMs: Date.now() - 1000,
+    dataDirectory: "/independent/pgdata", postmasterPid: 1234, postmasterStartedAtSeconds: startedAt,
+    clusterCreatedAtMs: startedAt * 1000 - 1000, databaseCreatedAtMs: startedAt * 1000 + 1000,
     isolatedNewCluster: true, neverPreviouslyAttempted: true,
   });
-  return JSON.stringify({ payload, signature: sign(null, Buffer.from(payload), keys.privateKey).toString("base64") });
 }
 function liveIdentity(change: Record<string, unknown> = {}) {
   return {
     database, database_oid: "16384", owner: "test_owner", principal: "test_owner", session_principal: "test_owner",
     system_identifier: "123456789", version: "160006", recovery: false, read_only: "off",
-    superuser: true, clean_cluster: true, marker: DISPOSABLE_MARKER, ...change,
+    superuser: true, clean_cluster: true, marker: DISPOSABLE_MARKER,
+    data_directory: "/independent/pgdata", server_port: 6543, server_address: "127.0.0.1",
+    postmaster_started_at: String(startedAt),
+    ...change,
   };
 }
 
 beforeEach(() => {
   vi.resetAllMocks();
   fake.end.mockResolvedValue(undefined);
+  fake.realpath.mockImplementation(async (path: string) => path);
   fake.connect.mockResolvedValue(admin);
   fake.query.mockImplementation(async (sql: string) => sql === MEMBER_CLUSTER_IDENTITY_SQL
     ? { rows: [liveIdentity()], command: "SELECT" } : { rows: [], command: "COMMENT" });
   fake.readFile.mockImplementation(async (path: string | URL) => {
-    if (path === "/independent/receipt.json") return envelope();
-    if (path === "/reviewer/public-key.pem") return publicKey;
+    if (path === "/independent/identity.json") return manifest();
+    if (path === "/independent/pgdata/PG_VERSION") return "16\n";
+    if (path === "/independent/pgdata/postmaster.pid") return `1234\n/independent/pgdata\n${startedAt}\n6543\n/tmp\n127.0.0.1\n0 0\nready\n`;
+    if (path === "/independent/pgdata/global/pg_control") {
+      const control = Buffer.alloc(8192);
+      if (endianness() === "LE") control.writeBigUInt64LE(BigInt(123456789));
+      else control.writeBigUInt64BE(BigInt(123456789));
+      return control;
+    }
     if (path instanceof URL && path.pathname.endsWith("contribution-identity-persistence-candidate.sql")) return "identity candidate";
     if (path instanceof URL && path.pathname.endsWith("member-authority-candidate.sql")) return "member candidate";
     throw new Error("Unexpected offline file read.");
@@ -89,20 +99,49 @@ describe("member harness sequencing (offline substituted I/O, not a PostgreSQL v
     ]);
   });
   it("rejects missing independent verification before connecting", async () => {
-    fake.readFile.mockRejectedValue(new Error("Missing receipt."));
+    fake.readFile.mockRejectedValue(new Error("Missing manifest."));
     await expect(createMemberAuthorityHarness(config())).rejects.toThrow();
     expect(fake.connect).not.toHaveBeenCalled();
     expect(fake.query).not.toHaveBeenCalled();
   });
-  it("rejects invalid signatures before connecting", async () => {
-    fake.readFile.mockImplementation(async (path: string) => path.endsWith(".json")
-      ? JSON.stringify({ payload: "{}", signature: "a".repeat(86) + "==" }) : publicKey);
+  it("rejects invalid manifests before connecting", async () => {
+    fake.readFile.mockResolvedValue("{}");
+    await expect(createMemberAuthorityHarness(config())).rejects.toThrow();
+    expect(fake.connect).not.toHaveBeenCalled();
+  });
+  it.each(["PG_VERSION", "postmaster.pid", "global/pg_control"])("fails closed on missing local %s", async file => {
+    const original = fake.readFile.getMockImplementation();
+    fake.readFile.mockImplementation(async (path: string | URL) => {
+      if (path === `/independent/pgdata/${file}`) throw new Error("Missing local identity.");
+      return original?.(path);
+    });
+    await expect(createMemberAuthorityHarness(config())).rejects.toThrow();
+    expect(fake.connect).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["PG_VERSION", "15\n"],
+    ["postmaster.pid", `999\n/independent/pgdata\n${startedAt}\n6543\n/tmp\n127.0.0.1\n0 0\nready\n`],
+    ["postmaster.pid", `1234\n/other/pgdata\n${startedAt}\n6543\n/tmp\n127.0.0.1\n0 0\nready\n`],
+    ["postmaster.pid", `1234\n/independent/pgdata\n${startedAt + 1}\n6543\n/tmp\n127.0.0.1\n0 0\nready\n`],
+    ["postmaster.pid", `1234\n/independent/pgdata\n${startedAt}\n5432\n/tmp\n127.0.0.1\n0 0\nready\n`],
+    ["postmaster.pid", `1234\n/independent/pgdata\n${startedAt}\n6543\n/tmp\n127.0.0.1\n0 0\nstarting\n`],
+    ["global/pg_control", Buffer.alloc(8192)],
+    ["global/pg_control", Buffer.alloc(0)],
+  ])("rejects mismatched local %s before connecting", async (file, content) => {
+    const original = fake.readFile.getMockImplementation();
+    fake.readFile.mockImplementation(async (path: string | URL) => path === `/independent/pgdata/${file}` ? content : original?.(path));
+    await expect(createMemberAuthorityHarness(config())).rejects.toThrow();
+    expect(fake.connect).not.toHaveBeenCalled();
+  });
+  it("rejects symlinked or noncanonical directories before connecting", async () => {
+    fake.realpath.mockResolvedValue("/existing/data");
     await expect(createMemberAuthorityHarness(config())).rejects.toThrow();
     expect(fake.connect).not.toHaveBeenCalled();
   });
   it.each([
     { owner: "other" }, { system_identifier: "999" }, { version: "150006" },
     { recovery: true }, { clean_cluster: false }, { marker: MEMBER_CONSUMED_MARKER },
+    { data_directory: "/other/data" }, { server_port: 5432 }, { postmaster_started_at: String(startedAt + 1) },
   ])("refuses mismatched/occupied cluster before migrations: %j", async change => {
     fake.query.mockResolvedValue({ rows: [liveIdentity(change)], command: "SELECT" });
     await expect(createMemberAuthorityHarness(config())).rejects.toThrow();
