@@ -358,13 +358,19 @@ export function isContributionIdentityRegistry(value: unknown): value is Contrib
   return projectRegistry(registry) !== null;
 }
 
+export function resolveContributionIdentityBinding(value: unknown, subject: string): ActiveBinding | null {
+  if (!isClerkSubject(subject) || !isContributionIdentityRegistry(value)) return null;
+  const binding = projectRegistry(value)?.bindings.get(subject);
+  return binding ? Object.freeze({ ...binding }) : null;
+}
+
 function isMembership(value: unknown): value is IdentityMembership {
   return exactObject(value, ["tenantId", "subject", "revision", "status"])
     && isIdentifier(value.tenantId) && isClerkSubject(value.subject) && isCounter(value.revision)
     && (value.status === "active" || value.status === "revoked");
 }
 
-function isPerson(value: unknown): value is IdentityPerson {
+export function isIdentityPerson(value: unknown): value is IdentityPerson {
   return exactObject(value, ["tenantId", "personId", "status", "kind"])
     && isIdentifier(value.tenantId) && isIdentifier(value.personId)
     && (value.status === "active" || value.status === "inactive")
@@ -379,7 +385,7 @@ function isAuthorityObservation(value: unknown): value is IdentityAuthorityObser
     || typeof value.allMembershipsObserved !== "boolean"
     || !denseList(value.memberships, isMembership)) return false;
   const memberships = value.memberships;
-  if (!denseList(value.people, isPerson)) return false;
+  if (!denseList(value.people, isIdentityPerson)) return false;
   const people = value.people;
   const tenantPolicyRevisions = value.tenantPolicyRevisions;
   if (!denseList(tenantPolicyRevisions, (entry): entry is IdentityAuthorityObservation["tenantPolicyRevisions"][number] =>
