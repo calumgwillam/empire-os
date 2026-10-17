@@ -7,6 +7,8 @@ const PREFIX = "EMPIRE_OS_MEMBER_TEST_PG_";
 // record its pg_control system identifier, then record postmaster.pid identity and
 // the freshly created template0 database's OID/owner in the manifest below.
 // Never generate expected identity by querying the connection this harness checks.
+// PID/start identify the current independently recorded postmaster, which may
+// have restarted after database creation; they are not database creation evidence.
 // The manifest is a targeting guard, not cryptographic proof of provisioning.
 // Preserve the target after EVERY migration attempt; a new run needs a new cluster,
 // manifest and database. No signing keys, cluster creation or discovery fallback.
@@ -85,7 +87,7 @@ export function verifyMemberProvisioningIdentity(
     || !time(value.postmasterStartedAtSeconds) || value.postmasterStartedAtSeconds === 0
     || !time(value.clusterCreatedAtMs) || !time(value.databaseCreatedAtMs) || !time(nowMs)
     || value.clusterCreatedAtMs > value.databaseCreatedAtMs || value.databaseCreatedAtMs > nowMs
-    || value.postmasterStartedAtSeconds * 1000 > value.databaseCreatedAtMs
+    || value.postmasterStartedAtSeconds > Math.floor(nowMs / 1000)
     || (value.postmasterStartedAtSeconds + 1) * 1000 <= value.clusterCreatedAtMs
     || value.isolatedNewCluster !== true || value.neverPreviouslyAttempted !== true) throw invalid();
   return Object.freeze({

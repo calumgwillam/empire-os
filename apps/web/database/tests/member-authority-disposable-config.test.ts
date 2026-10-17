@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { types } from "pg";
 import { DISPOSABLE_MARKER } from "./disposable-config";
 import {
   MEMBER_CONSUMED_MARKER, memberAuthorityDisposableConfig, verifyMemberProvisioningIdentity, verifyMemberDatabaseIdentity,
@@ -74,11 +75,30 @@ describe("member disposable configuration and local provisioning identity (offli
     expect(Object.isFrozen(verifyMemberProvisioningIdentity(configured(), proof(), now))).toBe(true);
     expect(() => verifyMemberProvisioningIdentity(configured(), proof(), now + 172800000)).not.toThrow();
   });
+  it("accepts a restart after database creation before the first attempt", () => {
+    const restarted = { ...proof(), postmasterPid: 5678, postmasterStartedAtSeconds: 100000 };
+    expect(verifyMemberProvisioningIdentity(configured(), restarted, now)).toEqual(restarted);
+    expect(() => verifyMemberDatabaseIdentity(restarted, {
+      ...identity(), postmaster_started_at: "100000",
+    })).not.toThrow();
+  });
+  it("preserves second-resolution startup bounds without imposing database creation ordering", () => {
+    expect(() => verifyMemberProvisioningIdentity(configured(), {
+      ...proof(), clusterCreatedAtMs: 99998999,
+    }, now)).not.toThrow();
+    expect(() => verifyMemberProvisioningIdentity(configured(), {
+      ...proof(), postmasterStartedAtSeconds: 99997,
+    }, now)).toThrow();
+    expect(() => verifyMemberProvisioningIdentity(configured(), {
+      ...proof(), postmasterStartedAtSeconds: 100001,
+    }, now + 999)).toThrow();
+  });
   it.each([
     { purpose: "other-suite" }, { database: "empire_os_test_identity_old" }, { runId: "b".repeat(32) },
     { owner: "other" }, { host: "::1" }, { port: 5432 }, { databaseOid: "" }, { systemIdentifier: "not-id" },
     { dataDirectory: "/" }, { dataDirectory: "relative" }, { dataDirectory: "/tmp/../existing" },
-    { postmasterPid: 0 }, { postmasterStartedAtSeconds: 0 }, { postmasterStartedAtSeconds: 100001 },
+    { postmasterPid: 0 }, { postmasterPid: 2147483648 }, { postmasterStartedAtSeconds: 0 },
+    { postmasterStartedAtSeconds: 100001 }, { postmasterStartedAtSeconds: Number.MAX_SAFE_INTEGER },
     { isolatedNewCluster: false }, { neverPreviouslyAttempted: false }, { clusterCreatedAtMs: now + 1 },
     { databaseCreatedAtMs: now + 1 }, { databaseCreatedAtMs: now - 3000 }, { unexpected: true },
   ])("rejects invalid independent manifests: %j", change => {
@@ -88,8 +108,37 @@ describe("member disposable configuration and local provisioning identity (offli
     expect(() => verifyMemberProvisioningIdentity(configured(), { payload: JSON.stringify(proof()), signature: "unused" }, now)).toThrow();
   });
   it.each([
+    ["127.0.0.1", "127.0.0.1/32"],
+    ["::1", "::1/128"],
+  ])("reproduces inet-to-text rejection for %s with PostgreSQL 16.11 driver types", (host, network) => {
+    const text = types.getTypeParser(types.builtins.TEXT, "text");
+    const integer = types.getTypeParser(types.builtins.INT4, "text");
+    const boolean = types.getTypeParser(types.builtins.BOOL, "text");
+    const decoded: MemberDatabaseIdentity = {
+      ...identity(),
+      database_oid: text("16384"), system_identifier: text(proof().systemIdentifier),
+      version: text("160011"), postmaster_started_at: text("99998"),
+      server_port: integer("6543"), server_address: text(network),
+      recovery: boolean("f"), superuser: boolean("t"), clean_cluster: boolean("t"),
+    };
+    expect(decoded.version).toBe("160011");
+    expect(decoded.server_port).toBe(6543);
+    expect(decoded.recovery).toBe(false);
+    expect(decoded.superuser).toBe(true);
+    expect(decoded.clean_cluster).toBe(true);
+    const expected = { ...proof(), host };
+    expect(() => verifyMemberDatabaseIdentity(expected, decoded)).toThrow();
+    expect(() => verifyMemberDatabaseIdentity(expected, {
+      ...decoded, server_address: text(host),
+    })).not.toThrow();
+    expect(() => verifyMemberDatabaseIdentity(expected, {
+      ...decoded, server_address: text(host), marker: MEMBER_CONSUMED_MARKER,
+    })).toThrow();
+  });
+  it.each([
     { database: "postgres" }, { database_oid: "16385" }, { owner: "other" }, { principal: "other" },
     { session_principal: "other" }, { system_identifier: "999" }, { version: "150010" }, { version: "170001" },
+    { version: "16.11" }, { version: "160011 " },
     { recovery: true }, { read_only: "on" }, { superuser: false }, { clean_cluster: false },
     { marker: null }, { marker: MEMBER_CONSUMED_MARKER }, { data_directory: "/existing/pgdata" },
     { server_port: 5432 }, { server_address: "::1" }, { postmaster_started_at: "99999" },
@@ -102,5 +151,14 @@ describe("member disposable configuration and local provisioning identity (offli
     expect(() => verifyMemberDatabaseIdentity(proof(), {
       ...identity(), marker: MEMBER_CONSUMED_MARKER, clean_cluster: false,
     }, "consumed")).not.toThrow();
+  });
+  it("does not let a restart or a never-attempted manifest override consumption", () => {
+    const restarted = { ...proof(), postmasterPid: 5678, postmasterStartedAtSeconds: 100000 };
+    const consumed = { ...identity(), postmaster_started_at: "100000", marker: MEMBER_CONSUMED_MARKER };
+    expect(() => verifyMemberDatabaseIdentity(restarted, consumed)).toThrow();
+    expect(() => verifyMemberDatabaseIdentity(restarted, consumed, "consumed")).not.toThrow();
+    expect(() => verifyMemberDatabaseIdentity(restarted, {
+      ...consumed, database_oid: "16385",
+    }, "consumed")).toThrow();
   });
 });

@@ -11,8 +11,10 @@ const fake = vi.hoisted(() => ({
   migrate: vi.fn(),
   query: vi.fn(),
   end: vi.fn(),
+  kill: vi.fn(),
 }));
 vi.mock("node:fs/promises", () => ({ readFile: fake.readFile, realpath: fake.realpath }));
+vi.mock("node:process", () => ({ kill: fake.kill }));
 vi.mock("./postgres-harness", () => ({
   connectDisposable: fake.connect,
   migrateEmptyAuthorizationDisposable: fake.migrate,
@@ -37,13 +39,14 @@ function config() {
   return result.config;
 }
 const startedAt = Math.floor(Date.now() / 1000) - 2;
-function manifest() {
+function manifest(change: Record<string, unknown> = {}) {
   return JSON.stringify({
     version: 1, purpose: "empire-os-member-authority-pg16", runId, host: "127.0.0.1", port: 6543, database,
     databaseOid: "16384", owner: "test_owner", systemIdentifier: "123456789",
     dataDirectory: "/independent/pgdata", postmasterPid: 1234, postmasterStartedAtSeconds: startedAt,
     clusterCreatedAtMs: startedAt * 1000 - 1000, databaseCreatedAtMs: startedAt * 1000 + 1000,
     isolatedNewCluster: true, neverPreviouslyAttempted: true,
+    ...change,
   });
 }
 function liveIdentity(change: Record<string, unknown> = {}) {
@@ -60,6 +63,7 @@ function liveIdentity(change: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.resetAllMocks();
   fake.end.mockResolvedValue(undefined);
+  fake.kill.mockReturnValue(true);
   fake.realpath.mockImplementation(async (path: string) => path);
   fake.connect.mockResolvedValue(admin);
   fake.query.mockImplementation(async (sql: string) => sql === MEMBER_CLUSTER_IDENTITY_SQL
@@ -89,6 +93,25 @@ describe("member harness sequencing (offline substituted I/O, not a PostgreSQL v
     await expect(parse(MEMBER_CLUSTER_IDENTITY_SQL)).resolves.toBeDefined();
     await expect(parse(MEMBER_BLOCKING_SQL)).resolves.toBeDefined();
   });
+  it("selects a bare server host rather than inet-to-text network notation", () => {
+    expect(MEMBER_CLUSTER_IDENTITY_SQL).toContain("host(inet_server_addr()) AS server_address");
+    expect(MEMBER_CLUSTER_IDENTITY_SQL).not.toContain("inet_server_addr()::text");
+  });
+  it("reproduces rejection of the old inet-to-text result before migrations", async () => {
+    fake.query.mockResolvedValue({
+      rows: [liveIdentity({ version: "160011", server_address: "127.0.0.1/32" })], command: "SELECT",
+    });
+    await expect(createMemberAuthorityHarness(config())).rejects.toThrow("identity verification failed");
+    expect(fake.migrate).not.toHaveBeenCalled();
+    expect(fake.query.mock.calls.every(([sql]) => sql === MEMBER_CLUSTER_IDENTITY_SQL)).toBe(true);
+  });
+  it("accepts PostgreSQL 16.11 with a bare host from the corrected SELECT", async () => {
+    fake.query.mockResolvedValue({ rows: [liveIdentity({ version: "160011" })], command: "SELECT" });
+    const h = await createMemberAuthorityHarness(config());
+    expect(fake.migrate).toHaveBeenCalledTimes(1);
+    await h.close();
+    expect(Client).not.toHaveBeenCalled();
+  });
   it("requires both the exact blocking PID edge and an ungranted database lock", async () => {
     fake.query.mockResolvedValueOnce({ rows: [{ blocked: true, waiting: false }] })
       .mockResolvedValueOnce({ rows: [{ blocked: false, waiting: true }] })
@@ -107,6 +130,37 @@ describe("member harness sequencing (offline substituted I/O, not a PostgreSQL v
   it("rejects invalid manifests before connecting", async () => {
     fake.readFile.mockResolvedValue("{}");
     await expect(createMemberAuthorityHarness(config())).rejects.toThrow();
+    expect(fake.connect).not.toHaveBeenCalled();
+  });
+  it("accepts an independently recorded restart before the first migration attempt", async () => {
+    const original = fake.readFile.getMockImplementation();
+    fake.readFile.mockImplementation(async (path: string | URL) => path === "/independent/identity.json"
+      ? manifest({ clusterCreatedAtMs: (startedAt - 20) * 1000, databaseCreatedAtMs: (startedAt - 10) * 1000 })
+      : original?.(path));
+    const h = await createMemberAuthorityHarness(config());
+    expect(fake.kill.mock.calls).toEqual([[1234, 0], [1234, 0]]);
+    expect(fake.migrate).toHaveBeenCalledTimes(1);
+    await h.close();
+    expect(Client).not.toHaveBeenCalled();
+  });
+  it.each([
+    { systemIdentifier: "987654321" }, { dataDirectory: "/forged/pgdata" },
+    { postmasterPid: 5678 }, { postmasterStartedAtSeconds: startedAt + 1 },
+    { clusterCreatedAtMs: (startedAt + 1) * 1000 }, { databaseCreatedAtMs: Date.now() + 60000 },
+    { neverPreviouslyAttempted: false },
+  ])("rejects forged manifests independently of SQL: %j", async change => {
+    const original = fake.readFile.getMockImplementation();
+    fake.readFile.mockImplementation(async (path: string | URL) => path === "/independent/identity.json"
+      ? manifest(change) : original?.(path));
+    await expect(createMemberAuthorityHarness(config())).rejects.toThrow();
+    expect(fake.connect).not.toHaveBeenCalled();
+    expect(fake.query).not.toHaveBeenCalled();
+    expect(fake.migrate).not.toHaveBeenCalled();
+  });
+  it.each(["ESRCH", "EPERM"])("fails closed on a stale or inaccessible live PID: %s", async code => {
+    fake.kill.mockImplementation(() => { throw Object.assign(new Error("PID verification failed."), { code }); });
+    await expect(createMemberAuthorityHarness(config())).rejects.toThrow("PID verification failed.");
+    expect(fake.kill).toHaveBeenCalledWith(1234, 0);
     expect(fake.connect).not.toHaveBeenCalled();
   });
   it.each(["PG_VERSION", "postmaster.pid", "global/pg_control"])("fails closed on missing local %s", async file => {
@@ -139,7 +193,7 @@ describe("member harness sequencing (offline substituted I/O, not a PostgreSQL v
     expect(fake.connect).not.toHaveBeenCalled();
   });
   it.each([
-    { owner: "other" }, { system_identifier: "999" }, { version: "150006" },
+    { database_oid: "16385" }, { owner: "other" }, { system_identifier: "999" }, { version: "150006" },
     { recovery: true }, { clean_cluster: false }, { marker: MEMBER_CONSUMED_MARKER },
     { data_directory: "/other/data" }, { server_port: 5432 }, { postmaster_started_at: String(startedAt + 1) },
   ])("refuses mismatched/occupied cluster before migrations: %j", async change => {
@@ -160,6 +214,28 @@ describe("member harness sequencing (offline substituted I/O, not a PostgreSQL v
       .mockResolvedValueOnce({ rows: [liveIdentity({ owner: "changed" })], command: "SELECT" });
     await expect(createMemberAuthorityHarness(config())).rejects.toThrow();
     expect(fake.query.mock.calls.some(([sql]) => sql.startsWith("COMMENT"))).toBe(false);
+  });
+  it("does not consume if the postmaster exits between preflight and migration", async () => {
+    fake.kill.mockReturnValueOnce(true).mockImplementationOnce(() => { throw new Error("Postmaster exited."); });
+    await expect(createMemberAuthorityHarness(config())).rejects.toThrow("Postmaster exited.");
+    expect(fake.query.mock.calls.some(([sql]) => sql.startsWith("COMMENT"))).toBe(false);
+    expect(fake.end).toHaveBeenCalledTimes(1);
+  });
+  it("does not use a SQL startup timestamp to repair a mismatched independent identity", async () => {
+    fake.query.mockResolvedValue({ rows: [liveIdentity({ postmaster_started_at: String(startedAt + 1) })], command: "SELECT" });
+    await expect(createMemberAuthorityHarness(config())).rejects.toThrow();
+    expect(fake.migrate).not.toHaveBeenCalled();
+    expect(fake.query.mock.calls.some(([sql]) => sql.startsWith("COMMENT"))).toBe(false);
+  });
+  it("rejects a consumed database after restart even with an unconsumed manifest", async () => {
+    const original = fake.readFile.getMockImplementation();
+    fake.readFile.mockImplementation(async (path: string | URL) => path === "/independent/identity.json"
+      ? manifest({ databaseCreatedAtMs: (startedAt - 1) * 1000, clusterCreatedAtMs: (startedAt - 2) * 1000 })
+      : original?.(path));
+    fake.query.mockResolvedValue({ rows: [liveIdentity({ marker: MEMBER_CONSUMED_MARKER })], command: "SELECT" });
+    await expect(createMemberAuthorityHarness(config())).rejects.toThrow();
+    expect(fake.migrate).not.toHaveBeenCalled();
+    expect(fake.query.mock.calls.every(([sql]) => sql === MEMBER_CLUSTER_IDENTITY_SQL)).toBe(true);
   });
   it("records consumption before migrations and applies exactly the candidate chain", async () => {
     const h = await createMemberAuthorityHarness(config());

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { endianness } from "node:os";
 import { join } from "node:path";
+import { kill } from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { performance } from "node:perf_hooks";
 import { Client, type ClientConfig } from "pg";
@@ -11,6 +12,8 @@ import {
 } from "./member-authority-disposable-config";
 import { connectDisposable, migrateEmptyAuthorizationDisposable } from "./postgres-harness";
 
+// host(inet) omits the /32 or /128 suffix emitted by inet::text, matching
+// the independently recorded literal loopback host without weakening comparison.
 export const MEMBER_CLUSTER_IDENTITY_SQL = `SELECT
   current_database() AS database,d.oid::text AS database_oid,pg_get_userbyid(d.datdba) AS owner,
   current_user AS principal,session_user AS session_principal,
@@ -18,7 +21,7 @@ export const MEMBER_CLUSTER_IDENTITY_SQL = `SELECT
   current_setting('server_version_num') AS version,pg_is_in_recovery() AS recovery,
   current_setting('transaction_read_only') AS read_only,
   current_setting('data_directory') AS data_directory,
-  inet_server_port() AS server_port,inet_server_addr()::text AS server_address,
+  inet_server_port() AS server_port,host(inet_server_addr()) AS server_address,
   floor(extract(epoch FROM pg_postmaster_start_time()))::text AS postmaster_started_at,
   (SELECT rolsuper FROM pg_roles WHERE rolname=current_user) AS superuser,
   shobj_description(d.oid,'pg_database') AS marker,
@@ -70,6 +73,8 @@ async function verifyLocalInstance(proof: MemberProvisioningIdentity): Promise<v
     || lines[0] !== String(proof.postmasterPid) || lines[1] !== proof.dataDirectory
     || lines[2] !== String(proof.postmasterStartedAtSeconds) || lines[3] !== String(proof.port)
     || lines[7]?.trim() !== "ready") throw new Error("Local disposable PostgreSQL running-instance identity mismatch.");
+  // Signal zero checks existence/permission without signalling the postmaster.
+  kill(proof.postmasterPid, 0);
 }
 
 export async function createMemberAuthorityHarness(config: MemberDisposableConfig) {
@@ -167,7 +172,7 @@ export async function createMemberAuthorityHarness(config: MemberDisposableConfi
       await client.connect();
       const identity = await client.query(`SELECT current_database() AS database,d.oid::text AS oid,
         pg_get_userbyid(d.datdba) AS owner,current_user AS principal,session_user AS session_principal,
-        inet_server_port() AS server_port,inet_server_addr()::text AS server_address,
+        inet_server_port() AS server_port,host(inet_server_addr()) AS server_address,
         floor(extract(epoch FROM pg_postmaster_start_time()))::text AS postmaster_started_at,
         shobj_description(d.oid,'pg_database') AS marker,pg_is_in_recovery() AS recovery
         FROM pg_database d WHERE datname=current_database()`);
