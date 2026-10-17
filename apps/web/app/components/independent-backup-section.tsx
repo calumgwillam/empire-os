@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { backupStorageContent, currentBackupStorageDigest, independentBackupHealth, readBackupVerifications,
   recordBackupVerification, verifyBackupFile, verifyBackupRecoveryDrill } from "../lib/independent-backup";
 import { buildStableFullBackup } from "../lib/backup";
+import { AutomaticBackupSection } from "./automatic-backup-section";
 
 export function IndependentBackupSection({ revision, disabled }: { revision: unknown; disabled: boolean }) {
   const [health, setHealth] = useState<ReturnType<typeof independentBackupHealth>>({ label: "Checking external backup evidence", warning: true });
@@ -99,7 +100,8 @@ export function IndependentBackupSection({ revision, disabled }: { revision: unk
     }
   };
   const field = "mt-1 w-full rounded border border-[#cfc8c1] bg-white p-2 text-[11px]";
-  return <section className="mt-3 rounded-lg border border-[#cfc8c1] p-3 text-[11px] leading-4">
+  return <><AutomaticBackupSection revision={revision} disabled={disabled} />
+    <section className="mt-3 rounded-lg border border-[#cfc8c1] p-3 text-[11px] leading-4">
     <p role="status" className={health.warning ? "font-medium text-[#7a352b]" : "font-medium text-[#315b45]"}>{health.label}</p>
     <p className="mt-2">A download request or browser recovery snapshot is not an independent backup. Read back a saved copy from storage available without this browser/device. No cloud synchronisation is performed.</p>
     {health.verification ? <div className="mt-2 break-words">
@@ -139,5 +141,5 @@ export function IndependentBackupSection({ revision, disabled }: { revision: unk
     {error ? <p role="alert" className="mt-2 text-[#7a352b]">{error}</p> : null}
     {checkError ? <p role="alert" className="mt-2 text-[#7a352b]">{checkError}</p> : null}
     {result ? <p role="status" className="mt-2">{result}</p> : null}
-  </section>;
+  </section></>;
 }

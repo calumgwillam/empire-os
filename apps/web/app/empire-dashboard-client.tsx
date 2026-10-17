@@ -201,7 +201,6 @@ import {
   STRATEGIC_OBJECTIVES_STORAGE_KEY,
   STRATEGIC_REVIEWS_STORAGE_KEY,
   TAX_PAYMENT_STORAGE_KEY,
-  validateEmpireOsBackup,
   validateStandaloneBackup,
   WORKING_RELATIONSHIP_STORAGE_KEY,
   type ChangeEvent,
@@ -213,6 +212,8 @@ import { AutomaticRecoverySnapshots, automaticRecoveryMessage, type AutomaticRec
 import { removeBrowserBusinessItem, setBrowserBusinessItem } from "./lib/browser-write-fence";
 import { readStartupStorage, validateSavedViews } from "./lib/startup-hydration";
 import { IndependentBackupSection } from "./components/independent-backup-section";
+import { assertRestoreReviewFence, buildVerifiedFullBackup, captureRestoreReviewFence, verifyBackupIntegrity,
+  type RestoreReviewFence } from "./lib/verified-backup";
 import {
   type IntegritySeverity,
 } from "./lib/integrity-core";
@@ -395,6 +396,8 @@ type RestoreBackupPreview = {
   fileName: string;
   backup: EmpireOsBackup;
   summaries: BackupStoreSummary[];
+  reviewFence: RestoreReviewFence;
+  integrity: "sha256-verified" | "legacy-unsealed";
 };
 
 const backupSummaryStores = [
@@ -8897,6 +8900,7 @@ export default function Home() {
   const [startupHydrationFailure, setStartupHydrationFailure] = useState("");
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   const restoreBackupInputRef = useRef<HTMLInputElement | null>(null);
+  const restoreReviewRunRef = useRef(0);
   const restoreInProgressRef = useRef(false);
   const [integrityAudit, setIntegrityAudit] = useState<DomainIntegrityAuditResult | null>(null);
   const [integrityAuditFeedback, setIntegrityAuditFeedback] = useState<"idle" | "running" | "complete">("idle");
@@ -16780,10 +16784,11 @@ export default function Home() {
     }
   }
 
-  function handleDownloadFullBackup() {
+  async function handleDownloadFullBackup() {
     try {
-      downloadBackup(validateStandaloneBackup(createFullBackup()), "empire-os-backup");
-      setFeedback({ type: "success", message: "Full Empire OS backup download requested. Confirm that the file was saved; no cloud backup is performed." });
+      const backup = await buildVerifiedFullBackup(window.localStorage);
+      downloadBackup(backup, "empire-os-backup");
+      setFeedback({ type: "success", message: "Full 21-store backup passed SHA-256 generation and an isolated restore drill; download requested. Confirm the file was saved and verify an independent copy. No cloud upload was performed." });
     } catch (error) {
       setFeedback({
         type: "error",
@@ -16810,10 +16815,12 @@ export default function Home() {
   }
 
   async function handleRestoreBackupFile(file: File | undefined) {
+    const reviewRun = ++restoreReviewRunRef.current;
     setRestoreBackupPreview(null);
     if (!file) return;
 
     try {
+      const reviewFence = captureRestoreReviewFence(window.localStorage);
       const text = await file.text();
       let parsed: unknown;
       try {
@@ -16821,10 +16828,13 @@ export default function Home() {
       } catch {
         throw new Error("The selected file is not valid JSON.");
       }
-      const backup = validateEmpireOsBackup(parsed);
-      setRestoreBackupPreview({ fileName: file.name, backup, summaries: summarizeBackupStores(backup.storage) });
+      const { backup, integrity } = await verifyBackupIntegrity(parsed);
+      if (reviewRun !== restoreReviewRunRef.current || restoreInProgressRef.current) return;
+      assertRestoreReviewFence(window.localStorage, reviewFence);
+      setRestoreBackupPreview({ fileName: file.name, backup, summaries: summarizeBackupStores(backup.storage), reviewFence, integrity });
       setFeedback(null);
     } catch (error) {
+      if (reviewRun !== restoreReviewRunRef.current) return;
       setFeedback({
         type: "error",
         message: error instanceof Error ? `Backup restore blocked: ${error.message}` : "Backup restore blocked: invalid backup file.",
@@ -16835,6 +16845,7 @@ export default function Home() {
   }
 
   function handleCancelRestoreBackup() {
+    restoreReviewRunRef.current++;
     setRestoreBackupPreview(null);
     if (restoreBackupInputRef.current) restoreBackupInputRef.current.value = "";
   }
@@ -16842,10 +16853,12 @@ export default function Home() {
   function handleConfirmRestoreBackup() {
     if (!restoreBackupPreview || restoreInProgressRef.current) return;
 
+    restoreReviewRunRef.current++;
     restoreInProgressRef.current = true;
     setIsRestoringBackup(true);
     const { backup } = restoreBackupPreview;
     const result = runBackupRestoreTransaction(window.localStorage, backup, (safetyBackup) => {
+      assertRestoreReviewFence(window.localStorage, restoreBackupPreview.reviewFence);
       downloadBackup(safetyBackup, "empire-os-pre-restore-safety-backup");
       auditRestoreInProgressRef.current = true;
     });
@@ -16888,9 +16901,10 @@ export default function Home() {
     auditRestoreInProgressRef.current = true;
   }
 
-  function handleRestoreEmergencySnapshot() {
+  async function handleRestoreEmergencySnapshot() {
     if (restoreInProgressRef.current) return;
     try {
+      const reviewFence = captureRestoreReviewFence(window.localStorage);
       const rawSnapshots = window.localStorage.getItem(RECOVERY_SNAPSHOTS_STORAGE_KEY);
 
       if (!rawSnapshots) {
@@ -16946,7 +16960,7 @@ export default function Home() {
       }
 
       const selectedSnapshot = validSnapshots[selectedIndex];
-      const backup = validateEmpireOsBackup({
+      const { backup } = await verifyBackupIntegrity({
         ...selectedSnapshot,
         format: selectedSnapshot.format ?? BACKUP_FORMAT,
         version: selectedSnapshot.version ?? BACKUP_VERSION,
@@ -16964,6 +16978,7 @@ export default function Home() {
 
       restoreInProgressRef.current = true;
       const result = runBackupRestoreTransaction(window.localStorage, backup, (safetyBackup) => {
+        assertRestoreReviewFence(window.localStorage, reviewFence);
         downloadBackup(safetyBackup, "empire-os-pre-emergency-restore-safety-backup");
         auditRestoreInProgressRef.current = true;
       });
@@ -17025,6 +17040,7 @@ export default function Home() {
         {restoreBackupPreview ? (
           <div className="mt-4 max-w-2xl rounded border border-[#cfc8c1] p-4">
             <p>Recovery file: {restoreBackupPreview.fileName}. Created: {restoreBackupPreview.backup.createdAt}.</p>
+            <p>{restoreBackupPreview.integrity === "sha256-verified" ? "SHA-256 integrity verified." : "Legacy backup: no embedded integrity manifest."} Any stored data change since review blocks confirmation.</p>
             <p className="mt-2">Restore replaces included business stores, preserves omitted legacy stores, checks record references and requires a verified pinned pre-restore safety copy. A blocked safety copy prevents restore.</p>
             <button type="button" disabled={isRestoringBackup} className="mt-3 rounded border border-[#cfc8c1] px-4 py-2"
               onClick={handleConfirmRestoreBackup}>Confirm verified restore</button>
@@ -17096,6 +17112,9 @@ export default function Home() {
 
             <div className="mt-4 rounded-xl border border-[#d4b4a7] bg-[#f8efeb] px-3 py-3 text-[13px] leading-5 text-[#5d342b]">
               Confirming restore replaces included Empire OS stores after cross-record validation and a verified local safety copy. Explicit null values clear a store; stores omitted by legacy backups are preserved. Other browser storage is not touched. The safety download is not proof that a file was saved.
+              <p className="mt-2">{restoreBackupPreview.integrity === "sha256-verified"
+                ? "The file's SHA-256 integrity manifest was verified. This does not prove its author or external durability."
+                : "Legacy backup without an integrity manifest: structural checks passed, but historical file integrity cannot be established."} Any stored business data change since review blocks confirmation; review the file again before deliberately replacing newer data.</p>
             </div>
 
             <dl className="mt-4 grid gap-3 text-[12px] sm:grid-cols-2">

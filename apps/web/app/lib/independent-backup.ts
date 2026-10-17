@@ -1,7 +1,10 @@
 import { buildStableFullBackup, EMPIRE_OS_BACKUP_STORAGE_KEYS, isPlainObject, validateStandaloneBackup,
-  BACKUP_CURRENT_DAYS, BACKUP_STALE_DAYS, type BackupStorage, type EmpireOsBackup } from "./backup";
+  BACKUP_CURRENT_DAYS, BACKUP_STALE_DAYS, type BackupStorage } from "./backup";
 import { persistJsonArraysTransaction } from "./persistence";
 import { runRecoveryDrill } from "./recovery-drill";
+import { backupStorageContent, sha256, type Digest } from "./backup-fingerprint";
+import { verifyBackupIntegrity } from "./verified-backup";
+export { backupStorageContent, sha256, type Digest } from "./backup-fingerprint";
 
 export const BACKUP_VERIFICATIONS_STORAGE_KEY = "empire-os-backup-file-verifications-v1";
 export type BackupFileVerification = {
@@ -9,17 +12,6 @@ export type BackupFileVerification = {
   verifier: string; externalLocation: string; independenceDeclared: true; storeCount: number;
   recoveryDrill?: { completedAt: string; checkedStoreCount: number };
 };
-export type Digest = (value: string) => Promise<string>;
-
-export async function sha256(value: string): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-export function backupStorageContent(storage: EmpireOsBackup["storage"]): string {
-  return JSON.stringify(EMPIRE_OS_BACKUP_STORAGE_KEYS.map((key) => [key, storage[key]]));
-}
-
 export function readBackupVerifications(storage: Pick<BackupStorage, "getItem">): BackupFileVerification[] {
   const raw = storage.getItem(BACKUP_VERIFICATIONS_STORAGE_KEY);
   if (raw === null) return [];
@@ -55,7 +47,8 @@ export async function verifyBackupFile(text: string, request: {
   }
 
   if (!Number.isFinite(request.nowMs)) throw new Error("Backup verification requires a valid clock.");
-  const backup = validateStandaloneBackup(JSON.parse(text));
+  const verified = await verifyBackupIntegrity(JSON.parse(text), digest);
+  const backup = validateStandaloneBackup(verified.backup);
   if (Date.parse(backup.createdAt) > request.nowMs) throw new Error("Backup creation is in the future; check the file and clock before verification.");
   const [fileSha256, storageSha256] = await Promise.all([digest(text), digest(backupStorageContent(backup.storage))]);
   if (![fileSha256, storageSha256].every((value) => /^[a-f0-9]{64}$/.test(value))) throw new Error("Backup fingerprint could not be established.");

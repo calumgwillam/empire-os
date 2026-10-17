@@ -8,6 +8,7 @@ import { buildFullBackup, validateEmpireOsBackup, validateStandaloneBackup, runB
   type BackupStorage } from "./backup";
 import { BACKUP_VERIFICATIONS_STORAGE_KEY, backupStorageContent, currentBackupStorageDigest, independentBackupHealth,
   readBackupVerifications, recordBackupVerification, sha256, verifyBackupFile, verifyBackupRecoveryDrill } from "./independent-backup";
+import { sealFullBackup } from "./verified-backup";
 
 const NOW = Date.parse("2026-10-09T19:00:00Z");
 const digest = async (value: string) => createHash("sha256").update(value).digest("hex");
@@ -347,9 +348,9 @@ describe("Production saved-file verification and download semantics", () => {
     expect(statuses.every((status) => status.warning)).toBe(true);
     expect(statuses.at(-1)?.label).toContain("Data changed");
   });
-  it("keeps raw safety downloads available but requires complete standalone validation for a normal full export", () => {
+  it("keeps raw safety downloads available but requires complete standalone validation for a normal full export", async () => {
     const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
-    const start = page.indexOf("  function handleDownloadFullBackup()");
+    const start = page.indexOf("  async function handleDownloadFullBackup()");
     const end = page.indexOf("  function handleRestoreFullBackup()", start);
     if (start < 0 || end < start) throw new Error("Full export handler could not be located.");
     let downloads = 0;
@@ -357,11 +358,13 @@ describe("Production saved-file verification and download semantics", () => {
     const backup = full();
     delete backup.storage[LEAD_STORAGE_KEY];
     const context = {
-      createFullBackup: () => backup, validateStandaloneBackup, Error,
+      createFullBackup: () => backup, buildVerifiedFullBackup: () => sealFullBackup(backup), Error,
+      window: { localStorage: memory().storage }, pending: undefined as Promise<void> | undefined,
       downloadBackup: () => { downloads++; }, setFeedback: (value: { message: string }) => { feedback = value.message; },
     };
-    runInNewContext(transpileModule(`${page.slice(start, end)}handleDownloadFullBackup();`,
+    runInNewContext(transpileModule(`${page.slice(start, end)}pending = handleDownloadFullBackup();`,
       { compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.ESNext } }).outputText, context, { timeout: 1000 });
+    await context.pending;
     expect(downloads).toBe(0);
     expect(feedback).toContain("could not be created");
     expect(page).not.toContain("Backup health: {backupHealth.label}");
@@ -370,7 +373,7 @@ describe("Production saved-file verification and download semantics", () => {
   it("never converts a download click into file verification, including safety-copy downloads", () => {
     const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
     const start = page.indexOf("  function downloadBackup(");
-    const end = page.indexOf("  function handleDownloadFullBackup()", start);
+    const end = page.indexOf("  async function handleDownloadFullBackup()", start);
     if (start < 0 || end < start) throw new Error("Download handler could not be located.");
     const target = memory();
     let clicks = 0;

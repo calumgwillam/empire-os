@@ -10,6 +10,7 @@ import { assertDelegationHandoffs } from "./delegation-handoffs";
 import { getRecoveryReferenceIssues } from "./recovery-consistency";
 import { decodeRecoverySnapshots, encodeRecoverySnapshots, RECOVERY_SNAPSHOT_BUDGET_BYTES, type RecoverySnapshot } from "./recovery-snapshot-storage";
 import { assertBrowserBusinessWritesAllowed, RESTORE_INTERRUPTION_STORAGE_KEY } from "./browser-write-fence";
+import { validateBackupIntegrity, type BackupIntegrity } from "./backup-integrity-contract";
 export { RESTORE_INTERRUPTION_STORAGE_KEY } from "./browser-write-fence";
 
 export const STORAGE_KEY = "empire-os-captures";
@@ -70,6 +71,7 @@ export type EmpireOsBackup = {
   createdAt: string;
   storage: Record<string, string | null>;
   includedStorageKeys?: string[];
+  integrity?: BackupIntegrity;
 };
 
 export type BackupStorage = {
@@ -529,6 +531,7 @@ export function validateEmpireOsBackup(value: unknown): EmpireOsBackup {
     createdAt: value.createdAt,
     storage,
     ...(value.includedStorageKeys !== undefined ? { includedStorageKeys: [...EMPIRE_OS_BACKUP_STORAGE_KEYS] } : {}),
+    ...(value.integrity !== undefined ? { integrity: validateBackupIntegrity(value.integrity, EMPIRE_OS_BACKUP_STORAGE_KEYS) } : {}),
   };
 }
 

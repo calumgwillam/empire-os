@@ -21,6 +21,7 @@ import type { IncomeRecord } from "./finance";
 import { getRecoveryReferenceIssues } from "./recovery-consistency";
 import { decodeRecoverySnapshots, encodeRecoverySnapshots } from "./recovery-snapshot-storage";
 import { AutomaticRecoverySnapshots, automaticRecoveryMessage, type AutomaticRecoveryStatus } from "./automatic-recovery";
+import { assertRestoreReviewFence, captureRestoreReviewFence, verifyBackupIntegrity } from "./verified-backup";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const person = { id: "owner", name: "Operating owner", status: "Active", role: "Delivery and commercial operations",
@@ -295,15 +296,15 @@ describe("Verified business recovery", () => {
 
 describe("Emergency recovery uses the production verified restore path", () => {
   const page = readFileSync(new URL("../empire-dashboard-client.tsx", import.meta.url), "utf8");
-  const start = page.indexOf("  function handleRestoreEmergencySnapshot()");
+  const start = page.indexOf("  async function handleRestoreEmergencySnapshot()");
   const end = page.indexOf("  const learningClosure =", start);
   if (start < 0 || end < start) throw new Error("Emergency recovery handler could not be located.");
-  const production = transpileModule(`${page.slice(start, end)}handleRestoreEmergencySnapshot();`,
+  const production = transpileModule(`${page.slice(start, end)}pending = handleRestoreEmergencySnapshot();`,
     { compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.ESNext } }).outputText;
   it.each([
     ["success", false], ["write failure", false], ["rollback failure", false],
     ["success", true], ["write failure", true], ["rollback failure", true],
-  ] as const)("verifies %s before deciding whether to reload or quarantine (compact: %s)", (mode, compact) => {
+  ] as const)("verifies %s before deciding whether to reload or quarantine (compact: %s)", async (mode, compact) => {
     const backup = backupFor();
     const legacySnapshot = { createdAt: backup.createdAt, storage: backup.storage };
     const target = memory({ [STORAGE_KEY]: '[{"id":"original"}]',
@@ -323,11 +324,14 @@ describe("Emergency recovery uses the production verified restore path", () => {
         location: { reload: () => { reloads++; } } },
       RECOVERY_SNAPSHOTS_STORAGE_KEY, BACKUP_FORMAT, BACKUP_VERSION, validateEmpireOsBackup, runBackupRestoreTransaction, decodeRecoverySnapshots,
       restoreInProgressRef: { current: false }, auditRestoreInProgressRef: { current: false }, Error,
+      captureRestoreReviewFence, assertRestoreReviewFence, verifyBackupIntegrity,
+      pending: undefined as Promise<void> | undefined,
       downloadBackup: (safety: EmpireOsBackup) => { expect(safety.storage[STORAGE_KEY]).toBe('[{"id":"original"}]'); },
       quarantineRecoveryWrites: () => { quarantines++; },
       setFeedback: (value: { message: string }) => { feedback.push(value.message); },
     };
     runInNewContext(production, context, { timeout: 1000 });
+    await context.pending;
     expect(reloads).toBe(mode === "success" ? 1 : 0);
     expect(quarantines).toBe(mode === "rollback failure" ? 1 : 0);
     if (mode === "write failure") {
@@ -339,7 +343,7 @@ describe("Emergency recovery uses the production verified restore path", () => {
   });
   it("quarantines every writable evidence store and keeps restore/audit guards active after unverified rollback", () => {
     const start = page.indexOf("  function quarantineRecoveryWrites()");
-    const end = page.indexOf("  function handleRestoreEmergencySnapshot()", start);
+    const end = page.indexOf("  async function handleRestoreEmergencySnapshot()", start);
     if (start < 0 || end < start) throw new Error("Recovery quarantine handler could not be located.");
     const refs = Object.fromEntries([
       "conversions", "people", "projects", "leads", "handoffs", "income", "expenses", "icarus", "founderIntelligence",
