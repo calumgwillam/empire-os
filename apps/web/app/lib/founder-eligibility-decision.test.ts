@@ -1,6 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("./clerk-session-resolver", () => ({ resolveClerkSession: vi.fn() }));
+vi.mock("@clerk/nextjs/server", () => ({
+  auth: async () => {
+    const session = await resolveClerkSession(request());
+    if (session.status !== "authenticated") return { userId: null };
+    const seconds = Math.floor(Date.now() / 1000);
+    return {
+      userId: session.subject, sessionId: "sess_offline_founder", sessionStatus: "active", actor: undefined,
+      sessionClaims: {
+        iss: "https://clerk.invalid", sub: session.subject, sid: "sess_offline_founder",
+        iat: seconds, nbf: seconds, exp: seconds + 60,
+      },
+      factorVerificationAge: [0, -1],
+    };
+  },
+  clerkClient: async () => ({
+    sessions: {
+      getSession: async () => ({
+        id: "sess_offline_founder", userId: FOUNDER, status: "active", actor: null,
+        expireAt: Date.now() + 60_000, abandonAt: Date.now() + 60_000,
+      }),
+    },
+  }),
+}));
 vi.mock("pg", () => ({
   Pool: vi.fn(function () { throw new Error("Offline decisions must not open PostgreSQL."); }),
 }));

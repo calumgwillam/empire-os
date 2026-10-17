@@ -7,6 +7,10 @@ import {
   resolveContributionIdentityBinding, type ContributionIdentityRegistry, type IdentityPerson,
 } from "./contribution-identity-authority";
 import { validateDurableAuthorityState, type DurableAuthorityState } from "./durable-authorization-state";
+import {
+  isExactDataRecord as exactData, isFounderEligibilityDecisionRequest as decisionRequest,
+  type FounderEligibilityDecisionRequest,
+} from "./founder-eligibility-decision-contract";
 import { createServerPrincipalResolver, isAuthenticatedPrincipal } from "./server-persistence-authority";
 import { hasOnlyFields, isCounter, isIdempotencyKey, isObject, type PersistenceProblem } from "./server-persistence-contract";
 import { isPersonEligibilityEvent, type PersonEligibilityEvent } from "./trusted-person-authority-source";
@@ -102,19 +106,7 @@ export function validateCandidateEligibilityProvenance(
   return { status: "valid", event: Object.freeze({ ...event }) };
 }
 
-export type FounderEligibilityDecisionRequest = Readonly<{
-  tenantId: string;
-  subject: string;
-  personId: string;
-  decision: "issue" | "revoke";
-  operationId: string;
-  expectedRegistryRevision: number;
-  expectedBindingRevision: number;
-  expectedPolicyRevision: number;
-  expectedPersonRevision: number;
-  sourceReference: string;
-  evidenceSha256: string;
-}>;
+export type { FounderEligibilityDecisionRequest };
 
 // Hypothetical locked reads only. No loader exists; none of these caller-shaped
 // fields establish provenance, verified reauthentication or authoritative People.
@@ -129,26 +121,6 @@ export type CandidateFounderEligibilityObservation = Readonly<{
   authenticatedAtMs: number;
   nowMs: number;
 }>;
-
-function exactData(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
-  return isObject(value) && Reflect.ownKeys(value).length === fields.length && fields.every(field => {
-    const descriptor = Object.getOwnPropertyDescriptor(value, field);
-    return descriptor !== undefined && "value" in descriptor && descriptor.enumerable;
-  });
-}
-
-function decisionRequest(value: unknown): value is FounderEligibilityDecisionRequest {
-  return exactData(value, [
-    "tenantId", "subject", "personId", "decision", "operationId", "expectedRegistryRevision",
-    "expectedBindingRevision", "expectedPolicyRevision", "expectedPersonRevision", "sourceReference", "evidenceSha256",
-  ]) && isAuthorityIdentifier(value.tenantId) && isAuthorityIdentifier(value.personId)
-    && typeof value.subject === "string" && /^user_[A-Za-z0-9_]+$/.test(value.subject) && value.subject.length <= 512
-    && (value.decision === "issue" || value.decision === "revoke") && isIdempotencyKey(value.operationId)
-    && [value.expectedRegistryRevision, value.expectedBindingRevision,
-      value.expectedPolicyRevision, value.expectedPersonRevision].every(isCounter)
-    && isAuthorityIdentifier(value.sourceReference)
-    && typeof value.evidenceSha256 === "string" && /^[a-f0-9]{64}$/.test(value.evidenceSha256);
-}
 
 // Preparatory policy model, NOT an issuer authorization or executable plan.
 // Future installation must independently verify the reads/source, keep registry ->
@@ -236,14 +208,17 @@ export function planCandidateFounderEligibilityDecision(
   });
 }
 
-// No source/repository callback or persistence capability is accepted. A valid
-// request and verified founder session STILL cannot submit or approve issuance.
+// Fresh first-factor and live session verification bind one exact current command.
+// This cannot authenticate historical issuance or install a durable issuer.
+// No source/repository callback or persistence capability is accepted.
 export async function submitFounderEligibilityDecision(request: Request, input: unknown): Promise<PersistenceProblem> {
-  const principal = await createServerPrincipalResolver(resolveClerkSession)(request);
-  if (!isAuthenticatedPrincipal(principal)) return principal;
-  const problem = founderProblem(principal);
-  if (problem) return problem;
-  if (!decisionRequest(input)) return { status: "invalid-request", message: "Invalid founder eligibility decision." };
+  const {
+    consumeFounderEligibilityIntent, isAuthenticatedFounderEligibilityIntent, prepareFounderEligibilityIntent,
+  } = await import("./founder-eligibility-intent");
+  const prepared = await prepareFounderEligibilityIntent(request, input);
+  if (!isAuthenticatedFounderEligibilityIntent(prepared)) return prepared;
+  const intent = consumeFounderEligibilityIntent(prepared);
+  if (!isAuthenticatedFounderEligibilityIntent(intent)) return intent;
   return missingProvenance();
 }
 
