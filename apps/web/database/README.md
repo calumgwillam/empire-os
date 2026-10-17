@@ -11,6 +11,53 @@ that instance, and never reset or clear it. Use a separate fresh disposable data
 future real PostgreSQL integration runs. Do not interpret unit tests as database
 integration or durability tests.
 
+## Phase 8 Person authority-source contract (inactive)
+
+[The server-only source boundary](../app/lib/trusted-person-authority-source.ts)
+explicitly reports `unavailable/not-submitted`. Trusted multi-user snapshot, write
+and reconciliation entry points refuse execution before selecting any source or
+repository while this dependency remains unresolved. There is no approval flag,
+issuer, route, runtime writer, source loader or new eligibility registry.
+
+Existing canonical models remain distinct:
+
+- Clerk establishes authentication, not organisational eligibility.
+- The contribution identity registry establishes the current subject-to-Person
+  binding, including revocation/reassignment history.
+- The Phase 7 `person_authority_events` SQL candidate defines immutable minimal
+  eligibility/audit evidence, not an operational People directory. It does **not**
+  implement or approve the verifier that establishes Person truth or the issuer.
+- Durable tenant authority supplies membership, dataset scope and permissions.
+- Browser-local People are business information, never login eligibility evidence.
+
+The candidate evidence validator reuses these models and revision counters. It
+checks scope, binding origin, active Person and membership, issuer subject, audit
+metadata, current checkpoints and existing operation policy. Its `valid` result
+means internal consistency only, not trusted provenance, source approval or an
+execution grant. Fabricated matching evidence cannot open the source interlock.
+Current checkpoints and founder identity must eventually come from independent
+server-owned configuration/locked reads, never from request data. Timestamps or
+caller-provided revision numbers alone cannot establish freshness.
+
+Founder-controlled issuance is a **proposal awaiting approval**, not activated
+policy. No generic identity-administrator grant or Person `kind` label approves
+eligibility issuance. Before a future issuer is implemented, approve the canonical
+Person verifier, founder identity/rotation and recovery rules, and how source
+evidence is independently verified. Issuance/inactivation must use the existing
+append-only event contract with operation ID, expected next revision, issuer,
+source reference and evidence hash. Binding revocation/reassignment must reuse the
+existing identity event mechanism and its approval/audit requirements, not a
+parallel eligibility-to-subject map. An uncertain commit requires exact-event
+reconciliation, never blind resubmission.
+
+Future integration must hold compatible registry-before-tenant locks while reading
+the latest eligibility event, current binding and durable policy, through operation
+completion. It must reject stale evidence at that boundary; this pure validator
+cannot prove lock ownership or source authenticity. Existing member/provisioning
+release gates, migration blockers, founder-only UI and browser persistence remain
+unchanged. Offline tests prove validation and refusal behavior, not PostgreSQL
+concurrency, live issuer provenance or production readiness.
+
 ## Individual contribution domain (inactive)
 
 [Individual contribution Phase 1](./design/individual-contribution.md) defines a

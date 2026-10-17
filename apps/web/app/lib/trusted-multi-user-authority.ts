@@ -8,6 +8,7 @@ import {
 import { validateDurableAuthorityState } from "./durable-authorization-state";
 import type { AuthorizationPostgresSource } from "./postgres-authorization-store";
 import { restrictedSourceBinding } from "./restricted-postgres-provider";
+import { trustedPersonAuthoritySourceProblem } from "./trusted-person-authority-source";
 import {
   createServerPrincipalResolver, isAuthenticatedPrincipal,
   type AuthenticatedPrincipal, type PersistenceCapability,
@@ -97,6 +98,8 @@ export function createTrustedMultiUserAuthority(dependencies: TrustedMultiUserAu
     if (!isAuthenticatedPrincipal(principal)) return principal;
     const validated = validate(input);
     if (validated.status !== "valid") return validated;
+    const sourceProblem = trustedPersonAuthoritySourceProblem();
+    if (sourceProblem) return sourceProblem;
     const datasetId = target(validated.value);
     let submitted = false;
     let authorizedTransactions = 0;

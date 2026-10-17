@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 vi.mock("./clerk-session-resolver", () => ({ resolveClerkSession: vi.fn() }));
+// Exercise the pre-existing hypothetical transaction model, not source approval.
+// The real unresolved-source interlock is covered without substitution separately.
+vi.mock("./trusted-person-authority-source", () => ({ trustedPersonAuthoritySourceProblem: () => null }));
 vi.mock("pg", () => ({
   Pool: vi.fn(function () { throw new Error("Offline boundary tests must never construct a database pool."); }),
 }));
